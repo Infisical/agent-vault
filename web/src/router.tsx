@@ -12,7 +12,7 @@ import Vaults from "./pages/Vaults";
 import VaultInvite from "./pages/VaultInvite";
 import ProposalApprove from "./pages/ProposalApprove";
 import VaultLayout from "./components/VaultLayout";
-import RequestsTab from "./pages/vault/RequestsTab";
+import ProposalsTab from "./pages/vault/ProposalsTab";
 import PolicyTab from "./pages/vault/PolicyTab";
 import CredentialsTab from "./pages/vault/CredentialsTab";
 import UsersTab from "./pages/vault/UsersTab";
@@ -239,14 +239,14 @@ const vaultIndexRoute = createRoute({
   getParentRoute: () => vaultLayoutRoute,
   path: "/",
   beforeLoad: async ({ params }) => {
-    throw redirect({ to: "/vaults/$name/requests", params });
+    throw redirect({ to: "/vaults/$name/proposals", params });
   },
 });
 
-const requestsTabRoute = createRoute({
+const proposalsTabRoute = createRoute({
   getParentRoute: () => vaultLayoutRoute,
-  path: "/requests",
-  component: RequestsTab,
+  path: "/proposals",
+  component: ProposalsTab,
 });
 
 const policyTabRoute = createRoute({
@@ -316,7 +316,7 @@ const routeTree = rootRoute.addChildren([
     ]),
     vaultLayoutRoute.addChildren([
       vaultIndexRoute,
-      requestsTabRoute,
+      proposalsTabRoute,
       policyTabRoute,
       credentialsTabRoute,
       usersTabRoute,

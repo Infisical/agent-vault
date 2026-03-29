@@ -20,7 +20,7 @@ interface Proposal {
   created_at: string;
 }
 
-export default function RequestsTab() {
+export default function ProposalsTab() {
   const { vaultName } = useVaultParams();
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [loading, setLoading] = useState(true);
@@ -117,7 +117,7 @@ export default function RequestsTab() {
     <div className="p-8 w-full max-w-[960px]">
       <div className="mb-6">
         <h2 className="text-[22px] font-semibold text-text tracking-tight mb-1">
-          Requests
+          Proposals
         </h2>
         <p className="text-sm text-text-muted">
           Review and approve access requests proposed by agents.
