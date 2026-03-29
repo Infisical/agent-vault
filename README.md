@@ -20,32 +20,15 @@ Agent ────▶ Agent Vault Proxy ────▶ api.stripe.com
 
 ## Install
 
-### GitHub Releases (macOS / Linux)
+### Script (macOS / Linux)
 
-Download the latest binary for your platform from
-[Releases](https://github.com/Infisical/agent-vault/releases/latest), then:
+Auto-detects your OS and architecture, downloads the latest release, and installs. Works for both fresh installs and upgrades (backs up your database before upgrading).
 
 ```bash
-# macOS (Apple Silicon)
-curl -Lo agent-vault.tar.gz https://github.com/Infisical/agent-vault/releases/latest/download/agent-vault_0.1.0_darwin_arm64.tar.gz
-tar xzf agent-vault.tar.gz
-sudo mv agent-vault /usr/local/bin/
-
-# macOS (Intel)
-curl -Lo agent-vault.tar.gz https://github.com/Infisical/agent-vault/releases/latest/download/agent-vault_0.1.0_darwin_amd64.tar.gz
-tar xzf agent-vault.tar.gz
-sudo mv agent-vault /usr/local/bin/
-
-# Linux (x86_64)
-curl -Lo agent-vault.tar.gz https://github.com/Infisical/agent-vault/releases/latest/download/agent-vault_0.1.0_linux_amd64.tar.gz
-tar xzf agent-vault.tar.gz
-sudo mv agent-vault /usr/local/bin/
-
-# Linux (ARM64)
-curl -Lo agent-vault.tar.gz https://github.com/Infisical/agent-vault/releases/latest/download/agent-vault_0.1.0_linux_arm64.tar.gz
-tar xzf agent-vault.tar.gz
-sudo mv agent-vault /usr/local/bin/
+curl -fsSL https://raw.githubusercontent.com/Infisical/agent-vault/main/install.sh | sh
 ```
+
+Supports macOS (Intel + Apple Silicon) and Linux (x86_64 + ARM64).
 
 ### Docker
 
