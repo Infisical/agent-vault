@@ -76,6 +76,42 @@ changelog:
 #     test: |
 #       system "#{bin}/agent-vault", "version"
 
+dockers:
+  - id: amd64
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile.goreleaser
+    use: buildx
+    image_templates:
+      - "infisical/agent-vault:{{ .Version }}-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+    extra_files:
+      - scripts/docker-entrypoint.sh
+
+  - id: arm64
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile.goreleaser
+    use: buildx
+    image_templates:
+      - "infisical/agent-vault:{{ .Version }}-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+    extra_files:
+      - scripts/docker-entrypoint.sh
+
+docker_manifests:
+  - name_template: "infisical/agent-vault:{{ .Version }}"
+    image_templates:
+      - "infisical/agent-vault:{{ .Version }}-amd64"
+      - "infisical/agent-vault:{{ .Version }}-arm64"
+
+  - name_template: "infisical/agent-vault:latest"
+    image_templates:
+      - "infisical/agent-vault:{{ .Version }}-amd64"
+      - "infisical/agent-vault:{{ .Version }}-arm64"
+
 release:
   github:
     owner: Infisical
