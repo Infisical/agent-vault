@@ -74,13 +74,13 @@ Ask the agent to call an external API. It discovers available services, proposes
 
 ## Documentation
 
-Full documentation at **[agentvault.mintlify.app](https://agentvault.mintlify.app)**
+Full documentation at **[docs.agent-vault.dev](https://docs.agent-vault.dev)**
 
-- [Quickstart: Claude Code](https://agentvault.mintlify.app/quickstart/claude-code)
-- [Quickstart: Cursor](https://agentvault.mintlify.app/quickstart/cursor)
-- [Self-Hosting](https://agentvault.mintlify.app/self-hosting/local) (Local, Docker, Fly.io)
-- [Agent Protocol](https://agentvault.mintlify.app/agents/protocol)
-- [CLI Reference](https://agentvault.mintlify.app/reference/cli)
+- [Quickstart: Claude Code](https://docs.agent-vault.dev/quickstart/claude-code)
+- [Quickstart: Cursor](https://docs.agent-vault.dev/quickstart/cursor)
+- [Self-Hosting](https://docs.agent-vault.dev/self-hosting/local) (Local, Docker, Fly.io)
+- [Agent Protocol](https://docs.agent-vault.dev/agents/protocol)
+- [CLI Reference](https://docs.agent-vault.dev/reference/cli)
 
 ## Development
 

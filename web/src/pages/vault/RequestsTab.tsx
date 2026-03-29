@@ -169,7 +169,7 @@ export default function RequestsTab() {
               <div className="flex flex-col items-center">
                 <span>Invite an agent to get started. It will request access to services and credentials to be approved here.</span>
                 <a
-                  href="https://github.com/Infisical/agent-vault"
+                  href="https://docs.agent-vault.dev"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1.5 mt-4 px-4 py-2 text-sm font-medium text-text border border-border rounded-lg hover:bg-bg transition-colors"
