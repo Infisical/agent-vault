@@ -8,33 +8,19 @@ Agent Vault ships as a single binary that acts as both the server and the CLI cl
 ## Install
 
 <Tabs>
-  <Tab title="macOS">
-    Download the pre-built binary from [GitHub Releases](https://github.com/Infisical/agent-vault/releases/latest):
+  <Tab title="Script">
+    Auto-detects your OS and architecture, downloads the latest release, and installs.
+    Works for both fresh installs and upgrades (backs up your database before upgrading).
 
     ```bash
-    # Apple Silicon (M1/M2/M3/M4)
-    curl -Lo agent-vault.tar.gz https://github.com/Infisical/agent-vault/releases/latest/download/agent-vault_0.1.0_darwin_arm64.tar.gz
-
-    # Intel
-    curl -Lo agent-vault.tar.gz https://github.com/Infisical/agent-vault/releases/latest/download/agent-vault_0.1.0_darwin_amd64.tar.gz
-
-    tar xzf agent-vault.tar.gz
-    sudo mv agent-vault /usr/local/bin/
+    curl -fsSL https://raw.githubusercontent.com/Infisical/agent-vault/main/install.sh | sh
     ```
-  </Tab>
-  <Tab title="Linux">
-    Download the pre-built binary from [GitHub Releases](https://github.com/Infisical/agent-vault/releases/latest):
 
-    ```bash
-    # x86_64
-    curl -Lo agent-vault.tar.gz https://github.com/Infisical/agent-vault/releases/latest/download/agent-vault_0.1.0_linux_amd64.tar.gz
+    Supports macOS (Intel + Apple Silicon) and Linux (x86\_64 + ARM64).
 
-    # ARM64
-    curl -Lo agent-vault.tar.gz https://github.com/Infisical/agent-vault/releases/latest/download/agent-vault_0.1.0_linux_arm64.tar.gz
-
-    tar xzf agent-vault.tar.gz
-    sudo mv agent-vault /usr/local/bin/
-    ```
+    <Tip>
+      If upgrading, the script automatically stops a running server, backs up your database, and installs the new version. Run `agent-vault server` afterward to start it again — any pending database migrations will run automatically.
+    </Tip>
   </Tab>
   <Tab title="Docker">
     No build tools required. Pull the image and run:
