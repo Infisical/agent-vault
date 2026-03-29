@@ -59,6 +59,6 @@ jobs:
         run: cd web && npm ci && npm run build
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v6.5.0
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v6.5.0
         with:
           version: v2.11
