@@ -46,7 +46,7 @@ var emailTestCmd = &cobra.Command{
 			To      string `json:"to"`
 		}
 		if json.Unmarshal(respBody, &result) == nil {
-			fmt.Fprintf(cmd.OutOrStdout(), "Test email sent to %s\n", result.To)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Test email sent to %s\n", result.To)
 		}
 
 		return nil

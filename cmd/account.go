@@ -30,7 +30,7 @@ var accountDeleteCmd = &cobra.Command{
 		// Clear local session since the account no longer exists.
 		_ = session.Clear()
 
-		fmt.Fprintln(cmd.OutOrStdout(), successText("✓")+" Account deleted.")
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), successText("✓")+" Account deleted.")
 		return nil
 	},
 }

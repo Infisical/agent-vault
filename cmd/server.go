@@ -48,7 +48,7 @@ var serverCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("opening store: %w", err)
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		passwordStdin, _ := cmd.Flags().GetBool("password-stdin")
 		interactive := !passwordStdin && os.Getenv("AGENT_VAULT_MASTER_PASSWORD") == ""
@@ -134,7 +134,7 @@ func promptOwnerSetup(cmd *cobra.Command, db *store.SQLiteStore, masterPassword 
 func unlockOrSetup(cmd *cobra.Command, db *store.SQLiteStore, passwordStdin bool) (*auth.MasterKey, error) {
 	// 1. AGENT_VAULT_MASTER_PASSWORD envvar (highest priority, for containerized/cloud deployments)
 	if envPw := os.Getenv("AGENT_VAULT_MASTER_PASSWORD"); envPw != "" {
-		os.Unsetenv("AGENT_VAULT_MASTER_PASSWORD")
+		_ = os.Unsetenv("AGENT_VAULT_MASTER_PASSWORD")
 		return unlockOrSetupWithPassword(db, []byte(envPw))
 	}
 
@@ -283,7 +283,7 @@ func runDetachedChild(addr string) error {
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	baseURL := os.Getenv("AGENT_VAULT_ADDR")
 	if baseURL == "" {
@@ -305,7 +305,7 @@ func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bo
 			return fmt.Errorf("server is already running (PID %d). Use 'agent-vault server stop' to stop it first", pid)
 		}
 		// Stale PID file — clean up.
-		pidfile.Remove()
+		_ = pidfile.Remove()
 	}
 
 	exe, err := os.Executable()
@@ -324,8 +324,8 @@ func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bo
 	}
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
-		pr.Close()
-		pw.Close()
+		_ = pr.Close()
+		_ = pw.Close()
 		return fmt.Errorf("opening log file: %w", err)
 	}
 
@@ -337,9 +337,9 @@ func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bo
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := child.Start(); err != nil {
-		pr.Close()
-		pw.Close()
-		logFile.Close()
+		_ = pr.Close()
+		_ = pw.Close()
+		_ = logFile.Close()
 		return fmt.Errorf("starting detached server: %w", err)
 	}
 
@@ -356,18 +356,18 @@ func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bo
 		for i := range payload {
 			payload[i] = 0
 		}
-		pw.Close()
-		pr.Close()
-		logFile.Close()
+		_ = pw.Close()
+		_ = pr.Close()
+		_ = logFile.Close()
 		return fmt.Errorf("sending master key to child: %w", err)
 	}
 	// Wipe the payload copy of the master key.
 	for i := range payload {
 		payload[i] = 0
 	}
-	pw.Close()
-	pr.Close()
-	logFile.Close()
+	_ = pw.Close()
+	_ = pr.Close()
+	_ = logFile.Close()
 
 	// Poll the health endpoint to verify the child started.
 	healthURL := fmt.Sprintf("http://%s/health", addr)
@@ -376,7 +376,7 @@ func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bo
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(healthURL)
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				started = true
 				break
@@ -420,7 +420,7 @@ var stopCmd = &cobra.Command{
 		}
 
 		if !pidfile.IsRunning(pid) {
-			pidfile.Remove()
+			_ = pidfile.Remove()
 			return fmt.Errorf("server process %d is not running (stale PID file removed)", pid)
 		}
 

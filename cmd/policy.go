@@ -58,7 +58,7 @@ var policyGetCmd = &cobra.Command{
 			return fmt.Errorf("marshalling yaml: %w", err)
 		}
 
-		fmt.Fprint(cmd.OutOrStdout(), string(out))
+		_, _ = fmt.Fprint(cmd.OutOrStdout(), string(out))
 		return nil
 	},
 }
@@ -139,7 +139,7 @@ var policyClearCmd = &cobra.Command{
 			}
 			answer = strings.TrimSpace(strings.ToLower(answer))
 			if answer != "y" && answer != "yes" {
-				fmt.Fprintln(cmd.OutOrStdout(), mutedText("Aborted."))
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), mutedText("Aborted."))
 				return nil
 			}
 		}

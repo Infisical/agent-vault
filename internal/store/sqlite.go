@@ -45,15 +45,15 @@ func Open(dbPath string) (*SQLiteStore, error) {
 	db.SetMaxOpenConns(1)
 
 	if err := db.Ping(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("pinging sqlite: %w", err)
 	}
 
 	// Restrict database file permissions (SQLite creates with umask default).
-	os.Chmod(dbPath, 0600)
+	_ = os.Chmod(dbPath, 0600)
 
 	if err := migrate(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
@@ -76,7 +76,7 @@ func (s *SQLiteStore) CreateVault(ctx context.Context, name string) (*Vault, err
 	if err != nil {
 		return nil, fmt.Errorf("beginning transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	_, err = tx.ExecContext(ctx,
 		"INSERT INTO vaults (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
@@ -120,7 +120,7 @@ func (s *SQLiteStore) ListVaults(ctx context.Context) ([]Vault, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing vaults: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var vaults []Vault
 	for rows.Next() {
@@ -141,7 +141,7 @@ func (s *SQLiteStore) DeleteVault(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Look up vault ID.
 	var vaultID string
@@ -230,7 +230,7 @@ func (s *SQLiteStore) ListCredentials(ctx context.Context, vaultID string) ([]Cr
 	if err != nil {
 		return nil, fmt.Errorf("listing credentials: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var creds []Credential
 	for rows.Next() {
@@ -308,7 +308,7 @@ func (s *SQLiteStore) RegisterFirstUser(ctx context.Context, email string, passw
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var count int
 	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&count); err != nil {
@@ -373,7 +373,7 @@ func (s *SQLiteStore) ListUsers(ctx context.Context) ([]User, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing users: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var users []User
 	for rows.Next() {
@@ -477,7 +477,7 @@ func (s *SQLiteStore) ListUserGrants(ctx context.Context, userID string) ([]Vaul
 	if err != nil {
 		return nil, fmt.Errorf("listing user grants: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var grants []VaultGrant
 	for rows.Next() {
@@ -536,7 +536,7 @@ func (s *SQLiteStore) ListVaultUsers(ctx context.Context, vaultID string) ([]Vau
 	if err != nil {
 		return nil, fmt.Errorf("listing vault users: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var grants []VaultGrant
 	for rows.Next() {
@@ -739,7 +739,7 @@ func (s *SQLiteStore) CreateProposal(ctx context.Context, vaultID, sessionID, ru
 	if err != nil {
 		return nil, fmt.Errorf("beginning transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Compute next sequential ID for this vault.
 	var nextID int
@@ -818,7 +818,7 @@ func (s *SQLiteStore) ListProposals(ctx context.Context, vaultID, status string)
 	if err != nil {
 		return nil, fmt.Errorf("listing proposals: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var proposals []Proposal
 	for rows.Next() {
@@ -884,7 +884,7 @@ func (s *SQLiteStore) GetProposalCredentials(ctx context.Context, vaultID string
 	if err != nil {
 		return nil, fmt.Errorf("getting proposal credentials: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	creds := make(map[string]EncryptedCredential)
 	for rows.Next() {
@@ -905,7 +905,7 @@ func (s *SQLiteStore) ApplyProposal(ctx context.Context, vaultID string, proposa
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// 1. Update broker config with merged rules.
 	_, err = tx.ExecContext(ctx,
@@ -1120,7 +1120,7 @@ func (s *SQLiteStore) ListInvites(ctx context.Context, vaultID, status string) (
 	if err != nil {
 		return nil, fmt.Errorf("listing invites: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var invites []Invite
 	for rows.Next() {
@@ -1319,7 +1319,7 @@ func (s *SQLiteStore) ListVaultInvites(ctx context.Context, vaultID, status stri
 	if err != nil {
 		return nil, fmt.Errorf("listing vault invites: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var invites []VaultInvite
 	for rows.Next() {
@@ -1498,16 +1498,6 @@ func (s *SQLiteStore) CountPendingEmailVerifications(ctx context.Context, email 
 
 // --- Agents ---
 
-// newAgentToken generates a cryptographically random service token
-// with the av_agent_ prefix followed by 64 hex characters (32 random bytes).
-func newAgentToken() string {
-	var b [32]byte
-	if _, err := io.ReadFull(rand.Reader, b[:]); err != nil {
-		panic("crypto/rand: " + err.Error())
-	}
-	return "av_agent_" + hex.EncodeToString(b[:])
-}
-
 func (s *SQLiteStore) CreateAgent(ctx context.Context, name, vaultID string, tokenHash, tokenSalt []byte, tokenPrefix, vaultRole, createdBy string) (*Agent, error) {
 	id := newUUID()
 	now := time.Now().UTC()
@@ -1583,7 +1573,7 @@ func (s *SQLiteStore) ListAgents(ctx context.Context, vaultID string) ([]Agent, 
 	if err != nil {
 		return nil, fmt.Errorf("listing agents: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var agents []Agent
 	for rows.Next() {
@@ -1603,7 +1593,7 @@ func (s *SQLiteStore) RevokeAgent(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.ExecContext(ctx,
 		`UPDATE agents SET status = 'revoked', revoked_at = ?, updated_at = ?

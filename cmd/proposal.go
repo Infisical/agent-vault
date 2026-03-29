@@ -53,7 +53,7 @@ func printRules(w io.Writer, rulesJSON string) {
 			if r.Description != "" {
 				fmt.Fprintf(w, "  %s", mutedText(fmt.Sprintf("(%s)", r.Description)))
 			}
-			fmt.Fprintln(w)
+			_, _ = fmt.Fprintln(w)
 			if r.Action == proposal.ActionSet && r.Auth != nil {
 				fmt.Fprintf(w, "      %s: %s\n", mutedText("auth"), r.Auth.Type)
 			}
@@ -78,7 +78,7 @@ func printCredentialSlots(w io.Writer, credentialsJSON string) {
 			if s.Obtain != "" {
 				fmt.Fprintf(w, "\n    %s", mutedText("obtain: "+s.Obtain))
 			}
-			fmt.Fprintln(w)
+			_, _ = fmt.Fprintln(w)
 		}
 	}
 }
@@ -110,7 +110,7 @@ func collectCredentialValues(cmd *cobra.Command, cs *store.Proposal, credentialO
 		// Agent-provided — the server will handle decryption; skip prompting.
 		if slot.HasValue {
 			fmt.Fprintf(cmd.OutOrStderr(), "%s: [agent-provided] ****\n", slot.Key)
-			fmt.Fprint(cmd.OutOrStderr(), "Accept agent value? [Y/n] ")
+			_, _ = fmt.Fprint(cmd.OutOrStderr(), "Accept agent value? [Y/n] ")
 			reader := bufio.NewReader(os.Stdin)
 			answer, _ := reader.ReadString('\n')
 			answer = strings.TrimSpace(strings.ToLower(answer))
@@ -120,7 +120,7 @@ func collectCredentialValues(cmd *cobra.Command, cs *store.Proposal, credentialO
 			// Human wants to override the agent value.
 			fmt.Fprintf(cmd.OutOrStderr(), "Enter value for %s: ", slot.Key)
 			valBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
-			fmt.Fprintln(cmd.OutOrStderr())
+			_, _ = fmt.Fprintln(cmd.OutOrStderr())
 			if err != nil {
 				return nil, fmt.Errorf("reading credential: %w", err)
 			}
@@ -133,9 +133,9 @@ func collectCredentialValues(cmd *cobra.Command, cs *store.Proposal, credentialO
 		if slot.Description != "" {
 			fmt.Fprintf(cmd.OutOrStderr(), " (%s)", slot.Description)
 		}
-		fmt.Fprint(cmd.OutOrStderr(), ": ")
+		_, _ = fmt.Fprint(cmd.OutOrStderr(), ": ")
 		valBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(cmd.OutOrStderr())
+		_, _ = fmt.Fprintln(cmd.OutOrStderr())
 		if err != nil {
 			return nil, fmt.Errorf("reading credential: %w", err)
 		}
@@ -368,7 +368,7 @@ var proposalApproveCmd = &cobra.Command{
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\n\n", boldText(fmt.Sprintf("Proposal #%d: %s", id, cs.Message)))
 		printRules(cmd.OutOrStdout(), cs.RulesJSON)
 		printCredentialSlots(cmd.OutOrStdout(), cs.CredentialsJSON)
-		fmt.Fprintln(cmd.OutOrStdout())
+		_, _ = fmt.Fprintln(cmd.OutOrStdout())
 
 		if !yes {
 			fmt.Fprintf(cmd.OutOrStderr(), "Approve this proposal? [y/N] ")
@@ -379,7 +379,7 @@ var proposalApproveCmd = &cobra.Command{
 			}
 			answer = strings.TrimSpace(strings.ToLower(answer))
 			if answer != "y" && answer != "yes" {
-				fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
 				return nil
 			}
 		}
@@ -482,7 +482,7 @@ var proposalReviewCmd = &cobra.Command{
 			}
 
 			displayProposal(w, fresh)
-			fmt.Fprintln(w)
+			_, _ = fmt.Fprintln(w)
 
 			var action string
 			err = huh.NewSelect[string]().
@@ -497,7 +497,7 @@ var proposalReviewCmd = &cobra.Command{
 				Run()
 			if err != nil {
 				if errors.Is(err, huh.ErrUserAborted) {
-					fmt.Fprintln(w, "Aborted.")
+					_, _ = fmt.Fprintln(w, "Aborted.")
 					break
 				}
 				return err
@@ -548,7 +548,7 @@ var proposalReviewCmd = &cobra.Command{
 		}
 
 		// Print summary.
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 		fmt.Fprintf(w, "%s\n", boldText("Review complete:"))
 		fmt.Fprintf(w, "  %s %d %s\n", successText("Approved:"), len(approved), formatIDs(approved))
 		fmt.Fprintf(w, "  %s %d %s\n", errorText("Rejected:"), len(rejected), formatIDs(rejected))

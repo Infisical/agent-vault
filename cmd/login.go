@@ -76,7 +76,7 @@ func readLoginEmail(cmd *cobra.Command) (string, error) {
 		return "", fmt.Errorf("--email is required when using --password-stdin")
 	}
 
-	fmt.Fprint(cmd.ErrOrStderr(), "Email: ")
+	_, _ = fmt.Fprint(cmd.ErrOrStderr(), "Email: ")
 	reader := bufio.NewReader(os.Stdin)
 	line, err := reader.ReadString('\n')
 	if err != nil {
@@ -102,9 +102,9 @@ func readPassword(cmd *cobra.Command) (string, error) {
 		return "", fmt.Errorf("no TTY detected; use --password-stdin for non-interactive input")
 	}
 
-	fmt.Fprint(cmd.ErrOrStderr(), "Password: ")
+	_, _ = fmt.Fprint(cmd.ErrOrStderr(), "Password: ")
 	pw, err := term.ReadPassword(fd)
-	fmt.Fprintln(cmd.ErrOrStderr()) // newline after hidden input
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr()) // newline after hidden input
 	if err != nil {
 		return "", fmt.Errorf("reading password: %w", err)
 	}
@@ -154,7 +154,7 @@ var loginCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("could not reach server at %s: %w", address, err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode == http.StatusUnauthorized {
 			return fmt.Errorf("invalid email or password")
@@ -164,7 +164,7 @@ var loginCmd = &cobra.Command{
 			var errResp struct {
 				Error string `json:"error"`
 			}
-			json.NewDecoder(resp.Body).Decode(&errResp)
+			_ = json.NewDecoder(resp.Body).Decode(&errResp)
 			if errResp.Error != "" {
 				return fmt.Errorf("login failed: %s", errResp.Error)
 			}
@@ -186,7 +186,7 @@ var loginCmd = &cobra.Command{
 			return fmt.Errorf("saving session: %w", err)
 		}
 
-		fmt.Fprintln(cmd.OutOrStdout(), successText("✓")+" Login successful.")
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), successText("✓")+" Login successful.")
 		return nil
 	},
 }

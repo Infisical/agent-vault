@@ -100,33 +100,33 @@ func migrate(db *sql.DB) error {
 				return fmt.Errorf("acquiring connection for migration %d: %w", version, err)
 			}
 			if _, err := conn.ExecContext(context.Background(), "PRAGMA foreign_keys = OFF"); err != nil {
-				conn.Close()
+				_ = conn.Close()
 				return fmt.Errorf("disabling FK for migration %d: %w", version, err)
 			}
 
 			tx, err := conn.BeginTx(context.Background(), nil)
 			if err != nil {
-				conn.Close()
+				_ = conn.Close()
 				return fmt.Errorf("beginning transaction for migration %d: %w", version, err)
 			}
 			for _, stmt := range cleanStmts {
 				if _, err := tx.Exec(stmt); err != nil {
-					tx.Rollback()
-					conn.Close()
+					_ = tx.Rollback()
+					_ = conn.Close()
 					return fmt.Errorf("executing migration %d: %w", version, err)
 				}
 			}
 			if _, err := tx.Exec("INSERT INTO schema_migrations (version) VALUES (?)", version); err != nil {
-				tx.Rollback()
-				conn.Close()
+				_ = tx.Rollback()
+				_ = conn.Close()
 				return fmt.Errorf("recording migration %d: %w", version, err)
 			}
 			if err := tx.Commit(); err != nil {
-				conn.Close()
+				_ = conn.Close()
 				return fmt.Errorf("committing migration %d: %w", version, err)
 			}
-			conn.ExecContext(context.Background(), "PRAGMA foreign_keys = ON")
-			conn.Close()
+			_, _ = conn.ExecContext(context.Background(), "PRAGMA foreign_keys = ON")
+			_ = conn.Close()
 			continue
 		}
 
@@ -137,13 +137,13 @@ func migrate(db *sql.DB) error {
 
 		for _, stmt := range cleanStmts {
 			if _, err := tx.Exec(stmt); err != nil {
-				tx.Rollback()
+				_ = tx.Rollback()
 				return fmt.Errorf("executing migration %d: %w", version, err)
 			}
 		}
 
 		if _, err := tx.Exec("INSERT INTO schema_migrations (version) VALUES (?)", version); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("recording migration %d: %w", version, err)
 		}
 

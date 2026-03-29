@@ -42,25 +42,25 @@ var changePasswordCmd = &cobra.Command{
 				return fmt.Errorf("no TTY detected; use --password-stdin for non-interactive input")
 			}
 
-			fmt.Fprint(cmd.ErrOrStderr(), "Current password: ")
+			_, _ = fmt.Fprint(cmd.ErrOrStderr(), "Current password: ")
 			pw, err := term.ReadPassword(fd)
-			fmt.Fprintln(cmd.ErrOrStderr())
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr())
 			if err != nil {
 				return fmt.Errorf("reading current password: %w", err)
 			}
 			currentPw = string(pw)
 
-			fmt.Fprint(cmd.ErrOrStderr(), "New password: ")
+			_, _ = fmt.Fprint(cmd.ErrOrStderr(), "New password: ")
 			pw, err = term.ReadPassword(fd)
-			fmt.Fprintln(cmd.ErrOrStderr())
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr())
 			if err != nil {
 				return fmt.Errorf("reading new password: %w", err)
 			}
 			newPw = string(pw)
 
-			fmt.Fprint(cmd.ErrOrStderr(), "Confirm new password: ")
+			_, _ = fmt.Fprint(cmd.ErrOrStderr(), "Confirm new password: ")
 			pw2, err := term.ReadPassword(fd)
-			fmt.Fprintln(cmd.ErrOrStderr())
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr())
 			if err != nil {
 				return fmt.Errorf("reading password confirmation: %w", err)
 			}
@@ -93,13 +93,13 @@ var changePasswordCmd = &cobra.Command{
 		if err := json.Unmarshal(respBody, &result); err == nil && result.Token != "" {
 			sess.Token = result.Token
 			if err := session.Save(sess); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: password changed but failed to save new session: %v\n", err)
-				fmt.Fprintf(cmd.ErrOrStderr(), "You may need to run 'agent-vault login' again.\n")
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: password changed but failed to save new session: %v\n", err)
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "You may need to run 'agent-vault login' again.\n")
 				return nil
 			}
 		}
 
-		fmt.Fprintln(cmd.OutOrStdout(), successText("✓")+" Password changed successfully.")
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), successText("✓")+" Password changed successfully.")
 		return nil
 	},
 }

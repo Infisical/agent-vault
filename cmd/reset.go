@@ -86,12 +86,12 @@ it will be stopped automatically before the reset.`,
 						if n > remaining {
 							n = remaining
 						}
-						f.Write(zeros[:n])
+						_, _ = f.Write(zeros[:n])
 						remaining -= n
 					}
-					f.Sync()
+					_ = f.Sync()
 				}
-				f.Close()
+				_ = f.Close()
 			}
 		}
 
@@ -107,7 +107,7 @@ it will be stopped automatically before the reset.`,
 		}
 
 		// 7. Remove PID file
-		pidfile.Remove()
+		_ = pidfile.Remove()
 
 		fmt.Fprintf(cmd.OutOrStdout(), "%s Instance reset. Run 'agent-vault server' to start fresh.\n", successText("✓"))
 		return nil

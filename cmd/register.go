@@ -29,7 +29,7 @@ var registerCmd = &cobra.Command{
 			if fromStdin {
 				return fmt.Errorf("--email is required when using --password-stdin")
 			}
-			fmt.Fprint(cmd.ErrOrStderr(), "Email: ")
+			_, _ = fmt.Fprint(cmd.ErrOrStderr(), "Email: ")
 			reader := bufio.NewReader(os.Stdin)
 			line, err := reader.ReadString('\n')
 			if err != nil {
@@ -54,15 +54,15 @@ var registerCmd = &cobra.Command{
 			if !term.IsTerminal(fd) {
 				return fmt.Errorf("no TTY detected; use --password-stdin and --email for non-interactive input")
 			}
-			fmt.Fprint(cmd.ErrOrStderr(), "Password: ")
+			_, _ = fmt.Fprint(cmd.ErrOrStderr(), "Password: ")
 			pw1, err := term.ReadPassword(fd)
-			fmt.Fprintln(cmd.ErrOrStderr())
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr())
 			if err != nil {
 				return fmt.Errorf("reading password: %w", err)
 			}
-			fmt.Fprint(cmd.ErrOrStderr(), "Confirm password: ")
+			_, _ = fmt.Fprint(cmd.ErrOrStderr(), "Confirm password: ")
 			pw2, err := term.ReadPassword(fd)
-			fmt.Fprintln(cmd.ErrOrStderr())
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr())
 			if err != nil {
 				return fmt.Errorf("reading password confirmation: %w", err)
 			}
@@ -89,7 +89,7 @@ var registerCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("could not reach server at %s: %w", address, err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		var result struct {
 			Email                string `json:"email"`
@@ -99,7 +99,7 @@ var registerCmd = &cobra.Command{
 			Message              string `json:"message"`
 			Error                string `json:"error"`
 		}
-		json.NewDecoder(resp.Body).Decode(&result)
+		_ = json.NewDecoder(resp.Body).Decode(&result)
 
 		if resp.StatusCode >= 400 {
 			if result.Error != "" {
@@ -121,11 +121,11 @@ var registerCmd = &cobra.Command{
 
 		// Prompt for verification code.
 		if fromStdin {
-			fmt.Fprintln(cmd.OutOrStdout(), "Use 'agent-vault verify' to complete verification.")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Use 'agent-vault verify' to complete verification.")
 			return nil
 		}
 
-		fmt.Fprint(cmd.ErrOrStderr(), "Verification code: ")
+		_, _ = fmt.Fprint(cmd.ErrOrStderr(), "Verification code: ")
 		reader := bufio.NewReader(os.Stdin)
 		codeLine, err := reader.ReadString('\n')
 		if err != nil {
@@ -142,13 +142,13 @@ var registerCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("could not reach server: %w", err)
 		}
-		defer verifyResp.Body.Close()
+		defer func() { _ = verifyResp.Body.Close() }()
 
 		var verifyResult struct {
 			Message string `json:"message"`
 			Error   string `json:"error"`
 		}
-		json.NewDecoder(verifyResp.Body).Decode(&verifyResult)
+		_ = json.NewDecoder(verifyResp.Body).Decode(&verifyResult)
 
 		if verifyResp.StatusCode >= 400 {
 			if verifyResult.Error != "" {

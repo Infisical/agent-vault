@@ -10,6 +10,26 @@ linters:
     - gosec
     - bodyclose
     - gocritic
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*encoding/json.Encoder).Encode
+    gosec:
+      excludes:
+        - G101 # false positives on test data / credential key names
+        - G104 # unhandled errors in tests — covered by errcheck exclusion for test files
+        - G107 # variable URL in health check — intentional
+        - G115 # uintptr→int in term.ReadPassword — safe on 64-bit
+        - G204 # subprocess with variable — intentional exec wrapper / self-daemonize
+        - G304 # file inclusion via variable — intentional pidfile / session reading
+        - G704 # SSRF — this IS a proxy, SSRF is the feature
   exclusions:
     paths:
       - internal/server/webdist
+    rules:
+      - linters:
+          - errcheck
+        path: _test\.go

@@ -56,7 +56,7 @@ func doAdminRequestWithBody(method, url, token string, body []byte) ([]byte, err
 	if err != nil {
 		return nil, fmt.Errorf("could not reach server: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -67,7 +67,7 @@ func doAdminRequestWithBody(method, url, token string, body []byte) ([]byte, err
 		var errResp struct {
 			Error string `json:"error"`
 		}
-		json.Unmarshal(respBody, &errResp)
+		_ = json.Unmarshal(respBody, &errResp)
 		if errResp.Error != "" {
 			return nil, fmt.Errorf("%s", errResp.Error)
 		}
@@ -95,7 +95,7 @@ func stopServer() error {
 	}
 
 	if !pidfile.IsRunning(pid) {
-		pidfile.Remove()
+		_ = pidfile.Remove()
 		return nil
 	}
 
@@ -110,7 +110,7 @@ func stopServer() error {
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if !pidfile.IsRunning(pid) {
-			pidfile.Remove()
+			_ = pidfile.Remove()
 			return nil
 		}
 		time.Sleep(200 * time.Millisecond)

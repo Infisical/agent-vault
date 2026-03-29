@@ -42,7 +42,7 @@ var ownerVaultListCmd = &cobra.Command{
 		}
 
 		if len(resp.Vaults) == 0 {
-			fmt.Fprintln(cmd.OutOrStdout(), "No vaults found.")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "No vaults found.")
 			return nil
 		}
 

@@ -489,7 +489,7 @@ func (s *Server) requireInitialized(next http.HandlerFunc) http.HandlerFunc {
 		if !s.initialized {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]string{
+			_ = json.NewEncoder(w).Encode(map[string]string{
 				"error":   "not_initialized",
 				"message": "No owner account exists. Run 'agent-vault register' to create the first account.",
 			})
@@ -520,7 +520,7 @@ func (s *Server) Start() error {
 	if err := pidfile.Write(os.Getpid()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write PID file: %v\n", err)
 	}
-	defer pidfile.Remove()
+	defer func() { _ = pidfile.Remove() }()
 
 	select {
 	case err := <-errCh:
@@ -542,7 +542,7 @@ func (s *Server) Start() error {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 const emailVerificationTTL = 15 * time.Minute
@@ -621,7 +621,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// Uniform response — don't reveal that the email is already registered.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"email":                 req.Email,
 			"requires_verification": true,
 			"email_sent":            s.notifier.Enabled(),
@@ -680,7 +680,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"email":                 existing.Email,
 			"requires_verification": true,
 			"email_sent":            emailSent,
@@ -710,7 +710,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"email":                 user.Email,
 			"role":                  "owner",
 			"requires_verification": false,
@@ -769,7 +769,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"email":                 req.Email,
 		"requires_verification": true,
 		"email_sent":            emailSent,
@@ -839,7 +839,7 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, sessionCookie(r, session.ID, int(sessionTTL.Seconds())))
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"email":         user.Email,
 		"authenticated": true,
 		"message":       "Account verified.",
@@ -849,7 +849,7 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 // handleStatus returns the instance initialization status (public, no auth).
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"initialized":    s.initialized,
 		"needs_first_user": !s.initialized,
 	})
@@ -868,7 +868,7 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"email":    user.Email,
 		"role":     user.Role,
 		"is_owner": user.Role == "owner",
@@ -906,7 +906,7 @@ func (s *Server) handleVaultContext(w http.ResponseWriter, r *http.Request) {
 	vaultRole, _ := s.store.GetVaultRole(ctx, user.ID, vault.ID)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"vault_name": vault.Name,
 		"vault_role": vaultRole,
 	})
@@ -926,21 +926,21 @@ func (s *Server) handleVaultInviteDetails(w http.ResponseWriter, r *http.Request
 	switch inv.Status {
 	case "accepted":
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"error": true, "error_title": "Already Accepted",
 			"error_message": "This invitation has already been accepted. You can log in using 'agent-vault login'.",
 		})
 		return
 	case "revoked":
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"error": true, "error_title": "Invite Revoked",
 			"error_message": "This invitation was revoked. Please ask the vault admin for a new one.",
 		})
 		return
 	case "expired":
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"error": true, "error_title": "Invite Expired",
 			"error_message": "This invitation has expired. Please ask the vault admin for a new one.",
 		})
@@ -949,7 +949,7 @@ func (s *Server) handleVaultInviteDetails(w http.ResponseWriter, r *http.Request
 
 	if time.Now().After(inv.ExpiresAt) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"error": true, "error_title": "Invite Expired",
 			"error_message": "This invitation has expired. Please ask the vault admin for a new one.",
 		})
@@ -966,7 +966,7 @@ func (s *Server) handleVaultInviteDetails(w http.ResponseWriter, r *http.Request
 	needsAccount := existing == nil
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"token":         inv.Token,
 		"email":         inv.Email,
 		"vault_name":    vaultName,
@@ -1005,7 +1005,7 @@ func (s *Server) handleProposalApproveDetails(w http.ResponseWriter, r *http.Req
 
 	if cs.Status != "pending" {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"error":       true,
 			"error_title": strings.ToUpper(cs.Status[:1]) + cs.Status[1:],
 			"error_message": "This request has already been " + cs.Status + ".",
@@ -1038,7 +1038,7 @@ func (s *Server) handleProposalApproveDetails(w http.ResponseWriter, r *http.Req
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"proposal_id":  cs.ID,
 		"vault":         ns.Name,
 		"status":        cs.Status,
@@ -1062,7 +1062,7 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Write(indexHTML)
+	_, _ = w.Write(indexHTML)
 }
 
 type loginRequest struct {
@@ -1232,7 +1232,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, sessionCookie(r, session.ID, int(sessionTTL.Seconds())))
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(loginResponse{
+	_ = json.NewEncoder(w).Encode(loginResponse{
 		Token:     session.ID,
 		ExpiresAt: session.ExpiresAt.Format(time.RFC3339),
 	})
@@ -1298,7 +1298,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, sessionCookie(r, newSess.ID, int(sessionTTL.Seconds())))
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(loginResponse{
+	_ = json.NewEncoder(w).Encode(loginResponse{
 		Token:     newSess.ID,
 		ExpiresAt: newSess.ExpiresAt.Format(time.RFC3339),
 	})
@@ -1323,7 +1323,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.store.DeleteUserSessions(ctx, user.ID)
+	_ = s.store.DeleteUserSessions(ctx, user.ID)
 	if err := s.store.DeleteUser(ctx, user.ID); err != nil {
 		jsonError(w, http.StatusInternalServerError, "failed to delete account")
 		return
@@ -1333,7 +1333,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, sessionCookie(r, "", -1))
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "email": user.Email})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "email": user.Email})
 }
 
 // requireAuth wraps a handler and validates the Bearer token or av_session cookie.
@@ -1402,7 +1402,7 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(scopedSessionResponse{
+	_ = json.NewEncoder(w).Encode(scopedSessionResponse{
 		Token:     sess.ID,
 		ExpiresAt: sess.ExpiresAt.Format(time.RFC3339),
 	})
@@ -2249,7 +2249,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("failed to reach %s", targetHost))
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// 10. Stream response back to agent (filter unsafe headers).
 	for k, vv := range resp.Header {
@@ -2263,12 +2263,10 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	// Limit response body to 100 MB to prevent resource exhaustion.
-	io.Copy(w, io.LimitReader(resp.Body, 100<<20))
+	_, _ = io.Copy(w, io.LimitReader(resp.Body, 100<<20))
 }
 
 // --- Invites ---
-
-const maxPendingInvites = 10
 
 type inviteRedeemResponse struct {
 	SBAddr         string            `json:"av_addr"`
@@ -2656,7 +2654,7 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Delete sessions, then user (grants cascade via FK).
-	s.store.DeleteUserSessions(ctx, user.ID)
+	_ = s.store.DeleteUserSessions(ctx, user.ID)
 	if err := s.store.DeleteUser(ctx, user.ID); err != nil {
 		jsonError(w, http.StatusInternalServerError, "failed to delete user")
 		return
@@ -2922,7 +2920,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, sessionCookie(r, "", -1))
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 
@@ -2934,7 +2932,7 @@ func (s *Server) handleVaultInviteAccept(w http.ResponseWriter, r *http.Request)
 		Password string `json:"password"`
 	}
 	// Body may be empty for existing users.
-	json.NewDecoder(r.Body).Decode(&req)
+	_ = json.NewDecoder(r.Body).Decode(&req)
 
 	inv, err := s.store.GetVaultInviteByToken(ctx, token)
 	if err != nil || inv == nil {
@@ -2993,7 +2991,7 @@ func (s *Server) handleVaultInviteAccept(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		// Activate immediately — invite is the verification.
-		s.store.ActivateUser(ctx, newUser.ID)
+		_ = s.store.ActivateUser(ctx, newUser.ID)
 		user = newUser
 	}
 
@@ -3419,7 +3417,7 @@ func validateSlug(name string) bool {
 		return false
 	}
 	for _, c := range name {
-		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
 			return false
 		}
 	}
@@ -3540,7 +3538,7 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 		Name string `json:"name"`
 	}
 	if r.Body != nil {
-		json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewDecoder(r.Body).Decode(&body)
 	}
 
 	// Rotation invite: agent_id is set, no new agent creation needed.
@@ -4006,7 +4004,7 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Creator becomes vault admin.
-	s.store.GrantVaultRole(ctx, user.ID, ns.ID, "admin")
+	_ = s.store.GrantVaultRole(ctx, user.ID, ns.ID, "admin")
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -4563,7 +4561,7 @@ func (s *Server) handleAdminProposalList(w http.ResponseWriter, r *http.Request)
 	isConsumer := sess != nil && sess.VaultID != "" && sess.VaultRole == "consumer"
 
 	// Lazy expiration.
-	s.store.ExpirePendingProposals(ctx, time.Now().Add(-7*24*time.Hour))
+	_, _ = s.store.ExpirePendingProposals(ctx, time.Now().Add(-7*24*time.Hour))
 
 	status := r.URL.Query().Get("status")
 	if isConsumer {

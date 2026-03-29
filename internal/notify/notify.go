@@ -94,10 +94,10 @@ func sendSTARTTLS(cfg *SMTPConfig, addr string, to []string, msg []byte) error {
 
 	c, err := smtp.NewClient(conn, cfg.Host)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return fmt.Errorf("smtp client: %w", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if ok, _ := c.Extension("STARTTLS"); ok {
 		tlsCfg := &tls.Config{ServerName: cfg.Host}
@@ -119,10 +119,10 @@ func sendImplicitTLS(cfg *SMTPConfig, addr string, to []string, msg []byte) erro
 
 	c, err := smtp.NewClient(conn, cfg.Host)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return fmt.Errorf("smtp client: %w", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	return finishSend(c, cfg, to, msg)
 }

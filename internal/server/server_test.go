@@ -2435,7 +2435,7 @@ func setupMemberSession(t *testing.T, ms *mockStore, grantVaultIDs ...string) st
 	ms.sessions[memberSess.ID] = memberSess
 
 	for _, nsID := range grantVaultIDs {
-		ms.GrantVaultRole(nil, "member-user-id", nsID, "member")
+		ms.GrantVaultRole(context.Background(), "member-user-id", nsID, "member")
 	}
 	return memberSess.ID
 }

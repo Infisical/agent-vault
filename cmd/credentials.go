@@ -41,7 +41,7 @@ var credentialsListCmd = &cobra.Command{
 		}
 
 		if len(result.Keys) == 0 {
-			fmt.Fprintf(cmd.OutOrStdout(), "No credentials found in vault %q.\n", vault)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "No credentials found in vault %q.\n", vault)
 			return nil
 		}
 
@@ -98,7 +98,7 @@ var credentialsSetCmd = &cobra.Command{
 		}
 
 		for _, key := range result.Set {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s Set credential %q in vault %q\n", successText("✓"), key, vault)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s Set credential %q in vault %q\n", successText("✓"), key, vault)
 		}
 		return nil
 	},
@@ -138,7 +138,7 @@ var credentialsDeleteCmd = &cobra.Command{
 		}
 
 		for _, key := range result.Deleted {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s Deleted credential %q from vault %q\n", successText("✓"), key, vault)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s Deleted credential %q from vault %q\n", successText("✓"), key, vault)
 		}
 		return nil
 	},

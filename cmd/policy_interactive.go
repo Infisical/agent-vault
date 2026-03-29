@@ -79,7 +79,7 @@ func runInteractivePolicySet(cmd *cobra.Command) error {
 
 	// Step 5: Preview
 	preview := renderPreview(nsName, finalRules)
-	fmt.Fprintln(cmd.OutOrStdout(), preview)
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), preview)
 
 	// Step 6: Confirm
 	ok, err := confirmApply()
@@ -87,7 +87,7 @@ func runInteractivePolicySet(cmd *cobra.Command) error {
 		return handleAbort(cmd, err)
 	}
 	if !ok {
-		fmt.Fprintln(cmd.OutOrStdout(), mutedText("Aborted."))
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), mutedText("Aborted."))
 		return nil
 	}
 
@@ -114,7 +114,7 @@ func runInteractivePolicySet(cmd *cobra.Command) error {
 // handleAbort checks for user abort (Ctrl+C) and returns nil with a message.
 func handleAbort(cmd *cobra.Command, err error) error {
 	if err != nil && errors.Is(err, huh.ErrUserAborted) {
-		fmt.Fprintln(cmd.OutOrStdout(), mutedText("Aborted."))
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), mutedText("Aborted."))
 		return nil
 	}
 	return err

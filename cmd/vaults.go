@@ -48,7 +48,7 @@ var vaultCreateCmd = &cobra.Command{
 			ID   string `json:"id"`
 			Name string `json:"name"`
 		}
-		json.Unmarshal(respBody, &resp)
+		_ = json.Unmarshal(respBody, &resp)
 
 		fmt.Fprintf(cmd.OutOrStdout(), "%s Created vault %q (id: %s)\n", successText("✓"), resp.Name, mutedText(resp.ID))
 		return nil
@@ -172,7 +172,7 @@ var vaultUserInviteCmd = &cobra.Command{
 			EmailSent  bool   `json:"email_sent"`
 			InviteLink string `json:"invite_link"`
 		}
-		json.Unmarshal(respBody, &result)
+		_ = json.Unmarshal(respBody, &result)
 
 		if result.EmailSent {
 			fmt.Fprintf(cmd.OutOrStdout(), "%s Invitation sent to %s (vault: %s, role: %s)\n", successText("✓"), email, vaultName, role)
@@ -301,7 +301,7 @@ var vaultRenameCmd = &cobra.Command{
 
 		// Update vault context if the renamed vault was the active one.
 		if ctx := session.LoadVaultContext(); ctx == oldName {
-			session.SaveVaultContext(newName)
+			_ = session.SaveVaultContext(newName)
 		}
 
 		fmt.Fprintf(cmd.OutOrStdout(), "%s Vault renamed from %q to %q.\n", successText("✓"), oldName, newName)

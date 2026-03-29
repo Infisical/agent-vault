@@ -86,13 +86,13 @@ func requestScopedSession(addr, adminToken, vault string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("could not reach server at %s: %w", addr, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		var errResp struct {
 			Error string `json:"error"`
 		}
-		json.NewDecoder(resp.Body).Decode(&errResp)
+		_ = json.NewDecoder(resp.Body).Decode(&errResp)
 		if errResp.Error != "" {
 			return "", fmt.Errorf("failed to create scoped session: %s", errResp.Error)
 		}

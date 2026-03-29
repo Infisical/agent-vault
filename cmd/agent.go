@@ -46,7 +46,7 @@ var agentListCmd = &cobra.Command{
 		}
 
 		if len(result.Agents) == 0 {
-			fmt.Fprintln(cmd.OutOrStdout(), "No agents found.")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "No agents found.")
 			return nil
 		}
 
@@ -93,16 +93,16 @@ var agentInfoCmd = &cobra.Command{
 		}
 
 		w := cmd.OutOrStdout()
-		fmt.Fprintf(w, "%s\n", boldText("Agent: "+info.Name))
-		fmt.Fprintf(w, "%s %s\n", fieldLabel("Vault:"), info.Vault)
-		fmt.Fprintf(w, "%s %s\n", fieldLabel("Role:"), info.VaultRole)
-		fmt.Fprintf(w, "%s %s\n", fieldLabel("Status:"), statusBadge(info.Status))
-		fmt.Fprintf(w, "%s %s\n", fieldLabel("Created:"), info.CreatedAt)
-		fmt.Fprintf(w, "%s %s\n", fieldLabel("Updated:"), info.UpdatedAt)
+		_, _ = fmt.Fprintf(w, "%s\n", boldText("Agent: "+info.Name))
+		_, _ = fmt.Fprintf(w, "%s %s\n", fieldLabel("Vault:"), info.Vault)
+		_, _ = fmt.Fprintf(w, "%s %s\n", fieldLabel("Role:"), info.VaultRole)
+		_, _ = fmt.Fprintf(w, "%s %s\n", fieldLabel("Status:"), statusBadge(info.Status))
+		_, _ = fmt.Fprintf(w, "%s %s\n", fieldLabel("Created:"), info.CreatedAt)
+		_, _ = fmt.Fprintf(w, "%s %s\n", fieldLabel("Updated:"), info.UpdatedAt)
 		if info.RevokedAt != nil {
-			fmt.Fprintf(w, "%s %s\n", fieldLabel("Revoked:"), *info.RevokedAt)
+			_, _ = fmt.Fprintf(w, "%s %s\n", fieldLabel("Revoked:"), *info.RevokedAt)
 		}
-		fmt.Fprintf(w, "%s %d\n", fieldLabel("Active sessions:"), info.ActiveSessions)
+		_, _ = fmt.Fprintf(w, "%s %d\n", fieldLabel("Active sessions:"), info.ActiveSessions)
 		return nil
 	},
 }
@@ -123,7 +123,7 @@ var agentRevokeCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "%s Agent %q revoked.\n", successText("✓"), name)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s Agent %q revoked.\n", successText("✓"), name)
 		return nil
 	},
 }
@@ -155,12 +155,12 @@ var agentRotateCmd = &cobra.Command{
 		}
 
 		w := cmd.OutOrStdout()
-		fmt.Fprintf(w, "Rotation invite created for agent %q (expires in %s).\n", name, result.ExpiresIn)
-		fmt.Fprintf(w, "Paste the following into the agent's chat:\n\n")
-		fmt.Fprintf(w, "---\n\n%s\n---\n", result.Prompt)
+		_, _ = fmt.Fprintf(w, "Rotation invite created for agent %q (expires in %s).\n", name, result.ExpiresIn)
+		_, _ = fmt.Fprintf(w, "Paste the following into the agent's chat:\n\n")
+		_, _ = fmt.Fprintf(w, "---\n\n%s\n---\n", result.Prompt)
 
 		if err := copyToClipboard(result.Prompt); err == nil {
-			fmt.Fprintf(w, "\n(Copied to clipboard)\n")
+			_, _ = fmt.Fprintf(w, "\n(Copied to clipboard)\n")
 		}
 		return nil
 	},
@@ -188,7 +188,7 @@ var agentRenameCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "%s Agent renamed from %q to %q.\n", successText("✓"), name, newName)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s Agent renamed from %q to %q.\n", successText("✓"), name, newName)
 		return nil
 	},
 }
@@ -222,7 +222,7 @@ var agentSetRoleCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "%s Agent %q role set to %q.\n", successText("✓"), name, role)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s Agent %q role set to %q.\n", successText("✓"), name, role)
 		return nil
 	},
 }
