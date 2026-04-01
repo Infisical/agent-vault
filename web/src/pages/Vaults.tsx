@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { Link, useRouteContext } from "@tanstack/react-router";
+import { Link, useNavigate, useRouteContext } from "@tanstack/react-router";
 import type { AuthContext } from "../router";
 import Navbar from "../components/Navbar";
 import Modal from "../components/Modal";
@@ -13,12 +13,14 @@ interface Vault {
   id: string;
   name: string;
   role: string;
+  membership: "explicit" | "implicit";
   created_at: string;
   pending_proposals: number;
 }
 
 export default function Vaults() {
   const { auth } = useRouteContext({ from: "/_auth" }) as { auth: AuthContext };
+  const navigate = useNavigate();
   const [vaults, setVaults] = useState<Vault[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -51,6 +53,9 @@ export default function Vaults() {
     return vaults.filter((v) => v.name.toLowerCase().includes(q));
   }, [vaults, search]);
 
+  const myVaults = useMemo(() => filtered.filter((v) => v.membership === "explicit"), [filtered]);
+  const otherVaults = useMemo(() => filtered.filter((v) => v.membership === "implicit"), [filtered]);
+
   return (
     <div className="min-h-screen w-full flex flex-col bg-bg">
       <Navbar email={auth.email} isOwner={auth.is_owner} />
@@ -60,7 +65,7 @@ export default function Vaults() {
           <h1 className="text-[28px] font-semibold tracking-tight text-text">
             Vaults
           </h1>
-          <CreateVaultButton onCreated={fetchVaults} />
+          <CreateVaultButton onCreated={(name) => navigate({ to: "/vaults/$name", params: { name } })} />
         </div>
 
         {/* Search */}
@@ -96,31 +101,90 @@ export default function Vaults() {
             {search ? "No vaults match your search." : "No vaults yet."}
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filtered.map((vault) => (
-              <VaultCard key={vault.id} vault={vault} />
-            ))}
-          </div>
+          <>
+            {myVaults.length > 0 && (
+              <div className={otherVaults.length > 0 ? "mb-10" : ""}>
+                {otherVaults.length > 0 && (
+                  <h2 className="text-sm font-medium text-text-muted uppercase tracking-wide mb-3">My Vaults</h2>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {myVaults.map((vault) => (
+                    <VaultCard key={vault.id} vault={vault} />
+                  ))}
+                </div>
+              </div>
+            )}
+            {otherVaults.length > 0 && (
+              <div>
+                <h2 className="text-sm font-medium text-text-muted uppercase tracking-wide mb-3">Other Vaults</h2>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {otherVaults.map((vault) => (
+                    <VaultCard key={vault.id} vault={vault} onJoined={fetchVaults} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
   );
 }
 
-function VaultCard({ vault }: { vault: Vault }) {
-  return (
-    <Link to="/vaults/$name" params={{ name: vault.name }} className="block bg-surface border border-border rounded-xl p-5 hover:border-border-focus/40 transition-colors cursor-pointer no-underline">
+function VaultCard({ vault, onJoined }: { vault: Vault; onJoined?: () => void }) {
+  const [joining, setJoining] = useState(false);
+  const [joinError, setJoinError] = useState("");
+  const navigate = useNavigate();
+
+  async function handleJoin(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setJoining(true);
+    setJoinError("");
+    try {
+      const resp = await apiFetch(`/v1/vaults/${vault.name}/join`, { method: "POST" });
+      if (resp.ok) {
+        onJoined?.();
+      } else {
+        const data = await resp.json();
+        setJoinError(data.error || "Failed to join vault.");
+      }
+    } catch {
+      setJoinError("Network error.");
+    } finally {
+      setJoining(false);
+    }
+  }
+
+  const isImplicit = vault.membership === "implicit";
+
+  const card = (
+    <div
+      className={`bg-surface border border-border rounded-xl p-5 transition-colors ${isImplicit ? "" : "hover:border-border-focus/40 cursor-pointer"}`}
+      onClick={isImplicit ? undefined : () => navigate({ to: "/vaults/$name", params: { name: vault.name } })}
+    >
       <div className="flex items-start justify-between mb-3">
         <h3 className="text-base font-semibold text-text tracking-tight">
           {vault.name}
         </h3>
-        {vault.pending_proposals > 0 && (
+        {isImplicit ? (
+          <button
+            onClick={handleJoin}
+            disabled={joining}
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-primary text-primary-text hover:bg-primary-hover transition-colors disabled:opacity-50"
+          >
+            {joining ? "Joining..." : "Join"}
+          </button>
+        ) : vault.pending_proposals > 0 ? (
           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-warning-bg text-warning border border-warning/20">
             {vault.pending_proposals}{" "}
             {vault.pending_proposals === 1 ? "review needed" : "reviews needed"}
           </span>
-        )}
+        ) : null}
       </div>
+      {joinError && (
+        <div className="text-xs text-danger mb-2">{joinError}</div>
+      )}
       <div className="flex items-center gap-3 text-xs text-text-muted">
         <span className="flex items-center gap-1.5">
           <svg
@@ -143,11 +207,19 @@ function VaultCard({ vault }: { vault: Vault }) {
           </span>
         )}
       </div>
+    </div>
+  );
+
+  if (isImplicit) return card;
+
+  return (
+    <Link to="/vaults/$name" params={{ name: vault.name }} className="block no-underline">
+      {card}
     </Link>
   );
 }
 
-function CreateVaultButton({ onCreated }: { onCreated: () => void }) {
+function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -163,14 +235,15 @@ function CreateVaultButton({ onCreated }: { onCreated: () => void }) {
     if (!name.trim()) return;
     setSubmitting(true);
     setError("");
+    const trimmed = name.trim();
     try {
       const resp = await apiFetch("/v1/vaults", {
         method: "POST",
-        body: JSON.stringify({ name: name.trim() }),
+        body: JSON.stringify({ name: trimmed }),
       });
       if (resp.ok) {
         close();
-        onCreated();
+        onCreated(trimmed);
       } else {
         const data = await resp.json();
         setError(data.error || "Failed to create vault.");

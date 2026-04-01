@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -30,7 +32,9 @@ type mockStore struct {
 	grants             map[string]map[string]string          // keyed by userID -> vaultID -> role
 	vaultInvites       map[string]*store.VaultInvite         // keyed by token
 	emailVerifications []*store.EmailVerification
+	passwordResets     []*store.PasswordReset
 	agents             map[string]*store.Agent               // keyed by name
+	settings           map[string]string                     // instance settings
 	sessionCounter     int
 }
 
@@ -44,6 +48,7 @@ func newMockStore() *mockStore {
 		users:         make(map[string]*store.User),
 		vaultInvites:  make(map[string]*store.VaultInvite),
 		agents:        make(map[string]*store.Agent),
+		settings:      make(map[string]string),
 	}
 	// Seed root vault
 	ms.vaults["default"] = &store.Vault{ID: "root-ns-id", Name: "default"}
@@ -77,6 +82,9 @@ func (m *mockStore) RegisterFirstUser(_ context.Context, email string, passwordH
 	}
 	m.users[email] = u
 	if defaultVaultID != "" {
+		if m.grants == nil {
+			m.grants = make(map[string]map[string]string)
+		}
 		if m.grants[u.ID] == nil {
 			m.grants[u.ID] = make(map[string]string)
 		}
@@ -691,6 +699,59 @@ func (m *mockStore) CountPendingEmailVerifications(_ context.Context, email stri
 	return count, nil
 }
 
+func (m *mockStore) CreatePasswordReset(_ context.Context, email, code string, expiresAt time.Time) (*store.PasswordReset, error) {
+	pr := &store.PasswordReset{
+		ID:        len(m.passwordResets) + 1,
+		Email:     email,
+		Code:      code,
+		Status:    "pending",
+		CreatedAt: time.Now(),
+		ExpiresAt: expiresAt,
+	}
+	m.passwordResets = append(m.passwordResets, pr)
+	return pr, nil
+}
+
+func (m *mockStore) GetPendingPasswordReset(_ context.Context, email, code string) (*store.PasswordReset, error) {
+	for _, pr := range m.passwordResets {
+		if pr.Email == email && pr.Code == code && pr.Status == "pending" && time.Now().Before(pr.ExpiresAt) {
+			return pr, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *mockStore) MarkPasswordResetUsed(_ context.Context, id int) error {
+	for _, pr := range m.passwordResets {
+		if pr.ID == id {
+			pr.Status = "used"
+			return nil
+		}
+	}
+	return fmt.Errorf("not found")
+}
+
+func (m *mockStore) CountPendingPasswordResets(_ context.Context, email string) (int, error) {
+	count := 0
+	for _, pr := range m.passwordResets {
+		if pr.Email == email && pr.Status == "pending" {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (m *mockStore) ExpirePendingPasswordResets(_ context.Context, before time.Time) (int, error) {
+	count := 0
+	for _, pr := range m.passwordResets {
+		if pr.Status == "pending" && pr.ExpiresAt.Before(before) {
+			pr.Status = "expired"
+			count++
+		}
+	}
+	return count, nil
+}
+
 func (m *mockStore) GetProposalByApprovalToken(_ context.Context, token string) (*store.Proposal, error) {
 	return nil, nil
 }
@@ -752,11 +813,22 @@ func (m *mockStore) GetAgentByTokenPrefix(_ context.Context, prefix string) (*st
 }
 
 func (m *mockStore) ListAgents(_ context.Context, vaultID string) ([]store.Agent, error) {
+	if vaultID == "" {
+		return nil, fmt.Errorf("vaultID is required")
+	}
 	var result []store.Agent
 	for _, ag := range m.agents {
-		if vaultID == "" || ag.VaultID == vaultID {
+		if ag.VaultID == vaultID {
 			result = append(result, *ag)
 		}
+	}
+	return result, nil
+}
+
+func (m *mockStore) ListAllAgents(_ context.Context) ([]store.Agent, error) {
+	var result []store.Agent
+	for _, ag := range m.agents {
+		result = append(result, *ag)
 	}
 	return result, nil
 }
@@ -874,6 +946,94 @@ func (m *mockStore) CreateRotationInvite(_ context.Context, agentID, vaultID, cr
 	return inv, nil
 }
 
+// --- OAuth mock methods (no-op stubs for interface compliance) ---
+
+func (m *mockStore) CreateOAuthAccount(_ context.Context, userID, provider, providerUserID, email, name, avatarURL string) (*store.OAuthAccount, error) {
+	return &store.OAuthAccount{
+		ID: "oa-" + provider + "-" + providerUserID, UserID: userID,
+		Provider: provider, ProviderUserID: providerUserID,
+		Email: email, Name: name, AvatarURL: avatarURL,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}, nil
+}
+
+func (m *mockStore) GetOAuthAccount(_ context.Context, provider, providerUserID string) (*store.OAuthAccount, error) {
+	return nil, nil
+}
+
+func (m *mockStore) GetOAuthAccountByUser(_ context.Context, userID, provider string) (*store.OAuthAccount, error) {
+	return nil, nil
+}
+
+func (m *mockStore) ListUserOAuthAccounts(_ context.Context, userID string) ([]store.OAuthAccount, error) {
+	return nil, nil
+}
+
+func (m *mockStore) DeleteOAuthAccount(_ context.Context, userID, provider string) error {
+	return nil
+}
+
+func (m *mockStore) CreateOAuthState(_ context.Context, stateHash, codeVerifier, nonce, redirectURL, mode, userID string, expiresAt time.Time) (*store.OAuthState, error) {
+	return &store.OAuthState{
+		ID: "state-1", StateHash: stateHash, CodeVerifier: codeVerifier, Nonce: nonce,
+		RedirectURL: redirectURL, Mode: mode, UserID: userID,
+		CreatedAt: time.Now(), ExpiresAt: expiresAt,
+	}, nil
+}
+
+func (m *mockStore) GetOAuthStateByHash(_ context.Context, stateHash string) (*store.OAuthState, error) {
+	return nil, nil
+}
+
+func (m *mockStore) DeleteOAuthState(_ context.Context, id string) error {
+	return nil
+}
+
+func (m *mockStore) ExpireOAuthStates(_ context.Context, before time.Time) (int, error) {
+	return 0, nil
+}
+
+func (m *mockStore) CreateOAuthUser(_ context.Context, email, role string) (*store.User, error) {
+	id := fmt.Sprintf("user-%d", len(m.users)+1)
+	u := &store.User{ID: id, Email: email, Role: role, IsActive: true, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	m.users[email] = u
+	return u, nil
+}
+
+func (m *mockStore) CreateOAuthUserAndAccount(_ context.Context, email, role, provider, providerUserID, oauthEmail, name, avatarURL string) (*store.User, *store.OAuthAccount, error) {
+	u, err := m.CreateOAuthUser(context.Background(), email, role)
+	if err != nil {
+		return nil, nil, err
+	}
+	oa, err := m.CreateOAuthAccount(context.Background(), u.ID, provider, providerUserID, oauthEmail, name, avatarURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	return u, oa, nil
+}
+
+// --- Instance settings mock methods ---
+
+func (m *mockStore) GetSetting(_ context.Context, key string) (string, error) {
+	if v, ok := m.settings[key]; ok {
+		return v, nil
+	}
+	return "", sql.ErrNoRows
+}
+
+func (m *mockStore) SetSetting(_ context.Context, key, value string) error {
+	m.settings[key] = value
+	return nil
+}
+
+func (m *mockStore) GetAllSettings(_ context.Context) (map[string]string, error) {
+	result := make(map[string]string)
+	for k, v := range m.settings {
+		result[k] = v
+	}
+	return result, nil
+}
+
 // testKDFParams returns fast KDF params suitable for tests.
 func testKDFParams() crypto.KDFParams {
 	return crypto.KDFParams{Time: 1, Memory: 64, Threads: 1, KeyLen: 32, SaltLen: 16}
@@ -907,7 +1067,7 @@ func setupMockStoreWithPassword(t *testing.T, password string) *mockStore {
 }
 
 func TestHealthEndpoint(t *testing.T) {
-	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -933,7 +1093,7 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestHealthEndpointRejectsPost(t *testing.T) {
-	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -964,7 +1124,7 @@ func setupMockStoreWithUser(t *testing.T, email, password string) *mockStore {
 
 func TestLoginSuccess(t *testing.T) {
 	ms := setupMockStoreWithUser(t, "admin@test.com", "test-password-123")
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	body := `{"email":"admin@test.com","password":"test-password-123"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(body))
@@ -990,7 +1150,7 @@ func TestLoginSuccess(t *testing.T) {
 
 func TestLoginWrongPassword(t *testing.T) {
 	ms := setupMockStoreWithUser(t, "admin@test.com", "correct-password-123")
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	body := `{"email":"admin@test.com","password":"wrong-password-123"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(body))
@@ -1004,7 +1164,7 @@ func TestLoginWrongPassword(t *testing.T) {
 }
 
 func TestLoginEmptyFields(t *testing.T) {
-	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	body := `{"email":"","password":""}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(body))
@@ -1019,7 +1179,7 @@ func TestLoginEmptyFields(t *testing.T) {
 
 func TestLoginUserNotFound(t *testing.T) {
 	ms := newMockStore() // no users
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	body := `{"email":"nobody@test.com","password":"some-password-123"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(body))
@@ -1053,7 +1213,7 @@ func setupMockStoreWithSession(t *testing.T) (*mockStore, string) {
 func TestCredentialsSetSuccess(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	encKey := make([]byte, 32)
-	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	body := `{"vault":"default","credentials":{"FOO":"bar","BAZ":"qux"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/credentials", strings.NewReader(body))
@@ -1081,7 +1241,7 @@ func TestCredentialsSetSuccess(t *testing.T) {
 
 func TestCredentialsSetUnauthenticated(t *testing.T) {
 	ms := newMockStore()
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	body := `{"vault":"default","credentials":{"FOO":"bar"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/credentials", strings.NewReader(body))
@@ -1096,7 +1256,7 @@ func TestCredentialsSetUnauthenticated(t *testing.T) {
 
 func TestCredentialsSetInvalidVault(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	body := `{"vault":"/nonexistent","credentials":{"FOO":"bar"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/credentials", strings.NewReader(body))
@@ -1113,7 +1273,7 @@ func TestCredentialsSetInvalidVault(t *testing.T) {
 func TestCredentialsDeleteSuccess(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	encKey := make([]byte, 32)
-	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	// Pre-populate a credential
 	ms.credentials["root-ns-id:FOO"] = &store.Credential{
@@ -1145,7 +1305,7 @@ func TestCredentialsDeleteSuccess(t *testing.T) {
 
 func TestCredentialsDeleteUnauthenticated(t *testing.T) {
 	ms := newMockStore()
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	body := `{"vault":"default","keys":["FOO"]}`
 	req := httptest.NewRequest(http.MethodDelete, "/v1/credentials", strings.NewReader(body))
@@ -1160,7 +1320,7 @@ func TestCredentialsDeleteUnauthenticated(t *testing.T) {
 
 func TestCredentialsDeleteNotFound(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	body := `{"vault":"default","keys":["NONEXISTENT"]}`
 	req := httptest.NewRequest(http.MethodDelete, "/v1/credentials", strings.NewReader(body))
@@ -1178,7 +1338,7 @@ func TestCredentialsDeleteNotFound(t *testing.T) {
 
 func TestScopedSessionSuccess(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	body := `{"vault":"default"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/scoped", strings.NewReader(body))
@@ -1213,7 +1373,7 @@ func TestScopedSessionSuccess(t *testing.T) {
 
 func TestScopedSessionVaultNotFound(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	body := `{"vault":"nonexistent"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/scoped", strings.NewReader(body))
@@ -1229,7 +1389,7 @@ func TestScopedSessionVaultNotFound(t *testing.T) {
 
 func TestScopedSessionUnauthenticated(t *testing.T) {
 	ms := newMockStore()
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	body := `{"vault":"default"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/scoped", strings.NewReader(body))
@@ -1266,7 +1426,7 @@ func setupMockStoreWithScopedSessionRole(t *testing.T, vaultName, vaultID, role 
 func TestScopedSessionEnforcesVaultOnSet(t *testing.T) {
 	// Create a scoped session for vault "proj" (not "default")
 	ms, token := setupMockStoreWithScopedSession(t, "proj", "proj-ns-id")
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	// Try to set credentials in "default" vault with a token scoped to "proj"
 	body := `{"vault":"default","credentials":{"FOO":"bar"}}`
@@ -1284,7 +1444,7 @@ func TestScopedSessionEnforcesVaultOnSet(t *testing.T) {
 func TestScopedSessionAllowsOwnVaultOnSet(t *testing.T) {
 	ms, token := setupMockStoreWithScopedSessionRole(t, "default", "root-ns-id", "member")
 	encKey := make([]byte, 32)
-	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	body := `{"vault":"default","credentials":{"FOO":"bar"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/credentials", strings.NewReader(body))
@@ -1300,7 +1460,7 @@ func TestScopedSessionAllowsOwnVaultOnSet(t *testing.T) {
 
 func TestCredentialsListSuccess(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	// Pre-populate credentials
 	ms.credentials["root-ns-id:FOO"] = &store.Credential{
@@ -1331,7 +1491,7 @@ func TestCredentialsListSuccess(t *testing.T) {
 
 func TestCredentialsListEmpty(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -1354,7 +1514,7 @@ func TestCredentialsListEmpty(t *testing.T) {
 
 func TestCredentialsListUnauthenticated(t *testing.T) {
 	ms := newMockStore()
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default", nil)
 	rec := httptest.NewRecorder()
@@ -1368,7 +1528,7 @@ func TestCredentialsListUnauthenticated(t *testing.T) {
 
 func TestCredentialsListDefaultVault(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	// No vault query param — should default to "default"
 	req := httptest.NewRequest(http.MethodGet, "/v1/credentials", nil)
@@ -1384,7 +1544,7 @@ func TestCredentialsListDefaultVault(t *testing.T) {
 
 func TestScopedSessionEnforcesVaultOnList(t *testing.T) {
 	ms, token := setupMockStoreWithScopedSession(t, "proj", "proj-ns-id")
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	// Try to list credentials in "default" with a token scoped to "proj"
 	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default", nil)
@@ -1400,7 +1560,7 @@ func TestScopedSessionEnforcesVaultOnList(t *testing.T) {
 
 func TestScopedSessionEnforcesVaultOnDelete(t *testing.T) {
 	ms, token := setupMockStoreWithScopedSession(t, "proj", "proj-ns-id")
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	// Pre-populate a credential in the root vault
 	ms.credentials["root-ns-id:FOO"] = &store.Credential{
@@ -1473,9 +1633,10 @@ func TestProxySuccess(t *testing.T) {
 	defer upstream.Close()
 
 	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	rules := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, upstreamHost)
+	ruleHost, _, _ := net.SplitHostPort(upstreamHost)
+	rules := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, ruleHost)
 	ms, token, encKey := setupProxyTest(t, rules)
-	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	origClient := proxyClient
 	proxyClient = upstream.Client()
@@ -1504,7 +1665,7 @@ func TestProxySuccess(t *testing.T) {
 func TestProxyNoMatchingRule(t *testing.T) {
 	rules := `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
 	ms, token, encKey := setupProxyTest(t, rules)
-	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/proxy/evil.com/exfiltrate", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -1536,7 +1697,7 @@ func TestProxyNoMatchingRule(t *testing.T) {
 func TestProxyMissingCredential(t *testing.T) {
 	rules := `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"nonexistent_key"}}]`
 	ms, token, encKey := setupProxyTest(t, rules)
-	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/proxy/api.stripe.com/v1/charges", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -1556,7 +1717,7 @@ func TestProxyMissingCredential(t *testing.T) {
 
 func TestProxyUnauthenticated(t *testing.T) {
 	ms := newMockStore()
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/proxy/api.stripe.com/v1/charges", nil)
 	rec := httptest.NewRecorder()
@@ -1571,7 +1732,7 @@ func TestProxyUnauthenticated(t *testing.T) {
 func TestProxyGlobalSessionForbidden(t *testing.T) {
 	ms := newMockStore()
 	sess, _ := ms.CreateSession(context.Background(), "", time.Now().Add(time.Hour))
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/proxy/api.stripe.com/v1/charges", nil)
 	req.Header.Set("Authorization", "Bearer "+sess.ID)
@@ -1598,9 +1759,10 @@ func TestProxyStripsAuthHeader(t *testing.T) {
 	defer upstream.Close()
 
 	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	rules := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, upstreamHost)
+	ruleHost, _, _ := net.SplitHostPort(upstreamHost)
+	rules := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, ruleHost)
 	ms, token, encKey := setupProxyTest(t, rules)
-	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	origClient := proxyClient
 	proxyClient = upstream.Client()
@@ -1626,9 +1788,10 @@ func TestProxyPreservesMethod(t *testing.T) {
 	defer upstream.Close()
 
 	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	rules := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, upstreamHost)
+	ruleHost, _, _ := net.SplitHostPort(upstreamHost)
+	rules := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, ruleHost)
 	ms, token, encKey := setupProxyTest(t, rules)
-	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	origClient := proxyClient
 	proxyClient = upstream.Client()
@@ -1661,9 +1824,10 @@ func TestProxyHeaderMerge(t *testing.T) {
 	defer upstream.Close()
 
 	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	rules := fmt.Sprintf(`[{"host":"%s","auth":{"type":"custom","headers":{"Authorization":"Bearer {{ STRIPE_KEY }}","X-Custom":"injected-value"}}}]`, upstreamHost)
+	ruleHost, _, _ := net.SplitHostPort(upstreamHost)
+	rules := fmt.Sprintf(`[{"host":"%s","auth":{"type":"custom","headers":{"Authorization":"Bearer {{ STRIPE_KEY }}","X-Custom":"injected-value"}}}]`, ruleHost)
 	ms, token, encKey := setupProxyTest(t, rules)
-	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	origClient := proxyClient
 	proxyClient = upstream.Client()
@@ -1688,7 +1852,7 @@ func TestDiscoverSuccess(t *testing.T) {
 	desc := "GitHub API"
 	rulesJSON := `[{"host":"*.github.com","description":"GitHub API","auth":{"type":"bearer","token":"GITHUB_TOKEN"}},{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
 	ms, token, _ := setupProxyTest(t, rulesJSON)
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/discover", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -1734,7 +1898,7 @@ func TestDiscoverSuccess(t *testing.T) {
 }
 
 func TestDiscoverUnauthenticated(t *testing.T) {
-	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/discover", nil)
 	rec := httptest.NewRecorder()
@@ -1748,7 +1912,7 @@ func TestDiscoverUnauthenticated(t *testing.T) {
 
 func TestDiscoverGlobalSessionForbidden(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/discover", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -1763,7 +1927,7 @@ func TestDiscoverGlobalSessionForbidden(t *testing.T) {
 
 func TestDiscoverEmptyRules(t *testing.T) {
 	ms, token, _ := setupProxyTest(t, "[]")
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/discover", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -1799,7 +1963,7 @@ func TestDiscoverNoCredentials(t *testing.T) {
 		RulesJSON: `[{"host":"example.com","auth":{"type":"custom","headers":{"X":"static"}}}]`,
 	}
 
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 	req := httptest.NewRequest(http.MethodGet, "/discover", nil)
 	req.Header.Set("Authorization", "Bearer "+sess.ID)
 	rec := httptest.NewRecorder()
@@ -1828,7 +1992,7 @@ func setupProposalTest(t *testing.T) (*Server, *mockStore, string) {
 	ms := newMockStore()
 	ms.proposals = make(map[string][]store.Proposal)
 	encKey := make([]byte, 32)
-	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	// Create a scoped session for the root vault.
 	sess := &store.Session{
@@ -1872,7 +2036,7 @@ func TestProposalCreateSuccess(t *testing.T) {
 func TestProposalCreateRequiresScopedSession(t *testing.T) {
 	ms := newMockStore()
 	ms.proposals = make(map[string][]store.Proposal)
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	// Create a global (admin) session.
 	sess := &store.Session{
@@ -2108,7 +2272,7 @@ func setupInviteTest(t *testing.T) (*Server, *mockStore) {
 		RulesJSON: `[{"host":"api.stripe.com","description":"Stripe API","auth":{"type":"bearer","token":"SK"}}]`,
 	}
 	encKey := make([]byte, 32)
-	srv := New(":0", ms, encKey, nil, true, "http://127.0.0.1:14321")
+	srv := New(":0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 	return srv, ms
 }
 
@@ -2132,7 +2296,7 @@ func setupAdminProposalTest(t *testing.T) (*Server, *mockStore, string) {
 	ms.sessions[adminSess.ID] = adminSess
 
 	encKey := make([]byte, 32)
-	srv := New(":0", ms, encKey, nil, true, "http://127.0.0.1:14321")
+	srv := New(":0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	// Seed a broker config and a pending proposal.
 	ms.proposals = make(map[string][]store.Proposal)
@@ -2443,7 +2607,7 @@ func setupMemberSession(t *testing.T, ms *mockStore, grantVaultIDs ...string) st
 func TestMemberCanAccessGrantedVault(t *testing.T) {
 	ms, _ := setupMockStoreWithSession(t)
 	memberToken := setupMemberSession(t, ms, "root-ns-id")
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default", nil)
 	req.Header.Set("Authorization", "Bearer "+memberToken)
@@ -2460,7 +2624,7 @@ func TestMemberCannotAccessNonGrantedVault(t *testing.T) {
 	ms, _ := setupMockStoreWithSession(t)
 	// Create member without grants
 	memberToken := setupMemberSession(t, ms)
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default", nil)
 	req.Header.Set("Authorization", "Bearer "+memberToken)
@@ -2477,7 +2641,7 @@ func TestOwnerCannotAccessVaultWithoutGrant(t *testing.T) {
 	ms, ownerToken := setupMockStoreWithSession(t)
 	// Add a second vault — owner should NOT access without explicit grant.
 	ms.vaults["prod"] = &store.Vault{ID: "prod-ns-id", Name: "prod"}
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=prod", nil)
 	req.Header.Set("Authorization", "Bearer "+ownerToken)
@@ -2492,7 +2656,7 @@ func TestOwnerCannotAccessVaultWithoutGrant(t *testing.T) {
 
 func TestVaultCreateSlugValidation(t *testing.T) {
 	ms, ownerToken := setupMockStoreWithSession(t)
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	tests := []struct {
 		name       string
@@ -2529,7 +2693,7 @@ func TestMemberCanApproveProposalInAnyMemberVault(t *testing.T) {
 	memberToken := setupMemberSession(t, ms, "root-ns-id")
 
 	encKey := make([]byte, 32)
-	srv := New(":0", ms, encKey, nil, true, "http://127.0.0.1:14321")
+	srv := New(":0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{VaultID: "root-ns-id", RulesJSON: `[]`}
 	ms.proposals = map[string][]store.Proposal{
@@ -2555,7 +2719,7 @@ func TestMemberCanApproveProposalInAnyMemberVault(t *testing.T) {
 func TestUserCreateRequiresOwner(t *testing.T) {
 	ms := newMockStore()
 	memberToken := setupMemberSession(t, ms, "root-ns-id")
-	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	body := `{"email":"new@test.com","password":"password12345","vaults":[]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/users", strings.NewReader(body))
@@ -2571,7 +2735,7 @@ func TestUserCreateRequiresOwner(t *testing.T) {
 
 func TestUserCreateSuccess(t *testing.T) {
 	ms, ownerToken := setupMockStoreWithSession(t)
-	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	body := `{"email":"new@test.com","password":"password12345","vaults":["default"]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/users", strings.NewReader(body))
@@ -2597,7 +2761,7 @@ func TestUserCreateSuccess(t *testing.T) {
 
 func TestLastOwnerCannotBeDemoted(t *testing.T) {
 	ms, ownerToken := setupMockStoreWithSession(t)
-	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	body := `{"role":"member"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/users/owner@test.com/role", strings.NewReader(body))
@@ -2614,7 +2778,7 @@ func TestLastOwnerCannotBeDemoted(t *testing.T) {
 
 func TestLastOwnerCannotBeRemoved(t *testing.T) {
 	ms, ownerToken := setupMockStoreWithSession(t)
-	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/admin/users/owner@test.com", nil)
 	req.Header.Set("Authorization", "Bearer "+ownerToken)
@@ -2630,7 +2794,7 @@ func TestLastOwnerCannotBeRemoved(t *testing.T) {
 
 func TestEmailTestRequiresOwner(t *testing.T) {
 	ms, agentToken := setupMockStoreWithScopedSession(t, "default", "root-ns-id")
-	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/email/test", nil)
 	req.Header.Set("Authorization", "Bearer "+agentToken)
@@ -2646,7 +2810,7 @@ func TestEmailTestRequiresOwner(t *testing.T) {
 func TestEmailTestMemberForbidden(t *testing.T) {
 	ms := newMockStore()
 	memberToken := setupMemberSession(t, ms, "root-ns-id")
-	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/email/test", nil)
 	req.Header.Set("Authorization", "Bearer "+memberToken)
@@ -2662,7 +2826,7 @@ func TestEmailTestMemberForbidden(t *testing.T) {
 func TestEmailTestSMTPNotConfigured(t *testing.T) {
 	ms, ownerToken := setupMockStoreWithSession(t)
 	// nil notifier = SMTP not configured
-	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/email/test", nil)
 	req.Header.Set("Authorization", "Bearer "+ownerToken)
@@ -2689,7 +2853,7 @@ func TestEmailTestSMTPFailure(t *testing.T) {
 		Port: 1, // unreachable port
 		From: "test@example.com",
 	})
-	srv := New(":0", ms, make([]byte, 32), notifier, true, "http://127.0.0.1:14321")
+	srv := New(":0", ms, make([]byte, 32), notifier, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/email/test", nil)
 	req.Header.Set("Authorization", "Bearer "+ownerToken)
@@ -2719,7 +2883,7 @@ func setupAgentTest(t *testing.T) (*Server, *mockStore, string) {
 	}
 	ms.sessions[adminSess.ID] = adminSess
 	encKey := make([]byte, 32)
-	srv := New(":0", ms, encKey, nil, true, "http://127.0.0.1:14321")
+	srv := New(":0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 	return srv, ms, adminSess.ID
 }
 
@@ -3045,7 +3209,7 @@ func TestAgentRename(t *testing.T) {
 
 func TestVaultRename(t *testing.T) {
 	ms, ownerToken := setupMockStoreWithSession(t)
-	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	// Create a non-default vault to rename.
 	ms.vaults["oldvault"] = &store.Vault{ID: "old-vault-id", Name: "oldvault"}
@@ -3101,7 +3265,7 @@ func TestVaultRename(t *testing.T) {
 
 func TestUserGetMe(t *testing.T) {
 	ms, ownerToken := setupMockStoreWithSession(t)
-	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/admin/users/me", nil)
 	req.Header.Set("Authorization", "Bearer "+ownerToken)
@@ -3142,7 +3306,7 @@ func loginAndGetToken(t *testing.T, srv *Server, email, password string) string 
 
 func TestChangePasswordSuccess(t *testing.T) {
 	ms := setupMockStoreWithUser(t, "admin@test.com", "old-password-123")
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	token := loginAndGetToken(t, srv, "admin@test.com", "old-password-123")
 
@@ -3182,7 +3346,7 @@ func TestChangePasswordSuccess(t *testing.T) {
 
 func TestChangePasswordWrongCurrent(t *testing.T) {
 	ms := setupMockStoreWithUser(t, "admin@test.com", "correct-password-123")
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	token := loginAndGetToken(t, srv, "admin@test.com", "correct-password-123")
 
@@ -3199,7 +3363,7 @@ func TestChangePasswordWrongCurrent(t *testing.T) {
 
 func TestChangePasswordTooShort(t *testing.T) {
 	ms := setupMockStoreWithUser(t, "admin@test.com", "old-password-123")
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	token := loginAndGetToken(t, srv, "admin@test.com", "old-password-123")
 
@@ -3215,7 +3379,7 @@ func TestChangePasswordTooShort(t *testing.T) {
 }
 
 func TestChangePasswordNoAuth(t *testing.T) {
-	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	body := `{"current_password":"old","new_password":"new-password-456"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/change-password", strings.NewReader(body))
@@ -3230,7 +3394,7 @@ func TestChangePasswordNoAuth(t *testing.T) {
 func TestDeleteAccountMemberSuccess(t *testing.T) {
 	ms, _ := setupMockStoreWithSession(t)
 	memberToken := setupMemberSession(t, ms, "root-ns-id")
-	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/auth/account", nil)
 	req.Header.Set("Authorization", "Bearer "+memberToken)
@@ -3249,7 +3413,7 @@ func TestDeleteAccountMemberSuccess(t *testing.T) {
 
 func TestDeleteAccountOwnerBlocked(t *testing.T) {
 	ms, ownerToken := setupMockStoreWithSession(t)
-	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/auth/account", nil)
 	req.Header.Set("Authorization", "Bearer "+ownerToken)
@@ -3262,7 +3426,7 @@ func TestDeleteAccountOwnerBlocked(t *testing.T) {
 }
 
 func TestDeleteAccountNoAuth(t *testing.T) {
-	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321")
+	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/auth/account", nil)
 	rec := httptest.NewRecorder()
@@ -3270,5 +3434,505 @@ func TestDeleteAccountNoAuth(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestForgotPasswordSuccess(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "admin@test.com", "old-password-123")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{"email":"admin@test.com"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/forgot-password", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["message"] == nil {
+		t.Fatal("expected message in response")
+	}
+
+	// Verify a password reset was created in the store.
+	if len(ms.passwordResets) != 1 {
+		t.Fatalf("expected 1 password reset, got %d", len(ms.passwordResets))
+	}
+}
+
+func TestForgotPasswordUnknownEmail(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "admin@test.com", "old-password-123")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	// Request reset for unknown email — should return 200 (uniform response).
+	body := `{"email":"unknown@test.com"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/forgot-password", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// No password reset should have been created.
+	if len(ms.passwordResets) != 0 {
+		t.Fatalf("expected 0 password resets, got %d", len(ms.passwordResets))
+	}
+}
+
+func TestForgotPasswordEmptyEmail(t *testing.T) {
+	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{"email":""}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/forgot-password", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestResetPasswordSuccess(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "admin@test.com", "old-password-123")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	// First request a reset code.
+	forgotBody := `{"email":"admin@test.com"}`
+	forgotReq := httptest.NewRequest(http.MethodPost, "/v1/auth/forgot-password", strings.NewReader(forgotBody))
+	forgotRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(forgotRec, forgotReq)
+	if forgotRec.Code != http.StatusOK {
+		t.Fatalf("forgot-password: expected 200, got %d", forgotRec.Code)
+	}
+
+	// Get the code from the mock store.
+	if len(ms.passwordResets) == 0 {
+		t.Fatal("no password reset created")
+	}
+	code := ms.passwordResets[0].Code
+
+	// Reset password.
+	resetBody := fmt.Sprintf(`{"email":"admin@test.com","code":"%s","new_password":"new-password-456"}`, code)
+	resetReq := httptest.NewRequest(http.MethodPost, "/v1/auth/reset-password", strings.NewReader(resetBody))
+	resetRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(resetRec, resetReq)
+
+	if resetRec.Code != http.StatusOK {
+		t.Fatalf("reset-password: expected 200, got %d: %s", resetRec.Code, resetRec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(resetRec.Body).Decode(&resp)
+	if resp["authenticated"] != true {
+		t.Fatalf("expected authenticated=true, got %v", resp["authenticated"])
+	}
+
+	// Login with new password should succeed.
+	newToken := loginAndGetToken(t, srv, "admin@test.com", "new-password-456")
+	if newToken == "" {
+		t.Fatal("login with new password failed")
+	}
+}
+
+func TestResetPasswordWrongCode(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "admin@test.com", "old-password-123")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	// Request a reset code.
+	forgotBody := `{"email":"admin@test.com"}`
+	forgotReq := httptest.NewRequest(http.MethodPost, "/v1/auth/forgot-password", strings.NewReader(forgotBody))
+	forgotRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(forgotRec, forgotReq)
+
+	// Try wrong code.
+	resetBody := `{"email":"admin@test.com","code":"000000","new_password":"new-password-456"}`
+	resetReq := httptest.NewRequest(http.MethodPost, "/v1/auth/reset-password", strings.NewReader(resetBody))
+	resetRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(resetRec, resetReq)
+
+	if resetRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", resetRec.Code, resetRec.Body.String())
+	}
+}
+
+func TestResetPasswordTooShort(t *testing.T) {
+	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{"email":"admin@test.com","code":"123456","new_password":"short"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/reset-password", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestResetPasswordMissingFields(t *testing.T) {
+	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{"email":"admin@test.com","code":"","new_password":"new-password-456"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/reset-password", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestInviteOnlyBlocksRegistration(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "owner@test.com", "owner-password-123")
+	ms.settings[settingInviteOnly] = "true"
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{"email":"new@test.com","password":"test-password-123"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 when invite-only is enabled, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invite-only") {
+		t.Fatalf("expected invite-only error message, got: %s", rec.Body.String())
+	}
+}
+
+func TestInviteOnlyAllowsFirstUser(t *testing.T) {
+	// Even with invite-only enabled, the first user (owner) should be able to register.
+	ms := newMockStore()
+	ms.settings[settingInviteOnly] = "true"
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{"email":"owner@test.com","password":"owner-password-123"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for first user even with invite-only, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestInviteOnlyDisabledAllowsRegistration(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "owner@test.com", "owner-password-123")
+	// invite_only not set (default: disabled)
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{"email":"new@test.com","password":"test-password-123"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	// Should succeed (201 with verification required)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 when invite-only is disabled, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestInviteOnlyAppearsInStatus(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "owner@test.com", "owner-password-123")
+	ms.settings[settingInviteOnly] = "true"
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	inviteOnly, ok := resp["invite_only"]
+	if !ok {
+		t.Fatal("expected invite_only in status response")
+	}
+	if inviteOnly != true {
+		t.Fatalf("expected invite_only=true, got %v", inviteOnly)
+	}
+}
+
+func TestInviteOnlyNotInStatusWhenDisabled(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "owner@test.com", "owner-password-123")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if _, ok := resp["invite_only"]; ok {
+		t.Fatal("invite_only should not appear in status when disabled")
+	}
+}
+
+func TestSettingsGetIncludesInviteOnly(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "owner@test.com", "owner-password-123")
+	ms.settings[settingInviteOnly] = "true"
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	// Login to get a session token
+	loginBody := `{"email":"owner@test.com","password":"owner-password-123"}`
+	loginReq := httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(loginBody))
+	loginRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(loginRec, loginReq)
+
+	var loginResp loginResponse
+	json.NewDecoder(loginRec.Body).Decode(&loginResp)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/settings", nil)
+	req.Header.Set("Authorization", "Bearer "+loginResp.Token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["invite_only"] != true {
+		t.Fatalf("expected invite_only=true in settings, got %v", resp["invite_only"])
+	}
+}
+
+func TestSettingsSetInviteOnly(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "owner@test.com", "owner-password-123")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	// Login
+	loginBody := `{"email":"owner@test.com","password":"owner-password-123"}`
+	loginReq := httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(loginBody))
+	loginRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(loginRec, loginReq)
+
+	var loginResp loginResponse
+	json.NewDecoder(loginRec.Body).Decode(&loginResp)
+
+	// Set invite_only
+	body := `{"invite_only": true}`
+	req := httptest.NewRequest(http.MethodPut, "/v1/admin/settings", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+loginResp.Token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if ms.settings[settingInviteOnly] != "true" {
+		t.Fatalf("expected setting to be stored as 'true', got %q", ms.settings[settingInviteOnly])
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["invite_only"] != true {
+		t.Fatalf("expected invite_only=true in response, got %v", resp["invite_only"])
+	}
+}
+
+func TestOwnerVaultListShowsAllVaultsWithMembership(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	// Create a second vault that the owner has NO grant for.
+	ms.CreateVault(context.Background(), "orphaned")
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults", nil)
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Vaults []struct {
+			Name       string `json:"name"`
+			Role       string `json:"role"`
+			Membership string `json:"membership"`
+		} `json:"vaults"`
+	}
+	json.NewDecoder(rec.Body).Decode(&resp)
+
+	if len(resp.Vaults) < 2 {
+		t.Fatalf("expected at least 2 vaults, got %d", len(resp.Vaults))
+	}
+
+	byName := map[string]struct{ Role, Membership string }{}
+	for _, v := range resp.Vaults {
+		byName[v.Name] = struct{ Role, Membership string }{v.Role, v.Membership}
+	}
+
+	// default vault: owner has explicit admin grant
+	if v, ok := byName["default"]; !ok || v.Membership != "explicit" || v.Role != "admin" {
+		t.Errorf("default vault: expected explicit/admin, got %+v", byName["default"])
+	}
+
+	// orphaned vault: owner has no grant, should be implicit
+	if v, ok := byName["orphaned"]; !ok || v.Membership != "implicit" || v.Role != "" {
+		t.Errorf("orphaned vault: expected implicit/empty role, got %+v", byName["orphaned"])
+	}
+}
+
+func TestMemberVaultListOnlyShowsGrantedVaults(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	// Create a vault the member has no access to.
+	ms.CreateVault(context.Background(), "secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults", nil)
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Vaults []struct {
+			Name       string `json:"name"`
+			Membership string `json:"membership"`
+		} `json:"vaults"`
+	}
+	json.NewDecoder(rec.Body).Decode(&resp)
+
+	for _, v := range resp.Vaults {
+		if v.Name == "secret" {
+			t.Fatalf("member should not see vault %q", v.Name)
+		}
+		if v.Membership != "explicit" {
+			t.Errorf("member vault %q: expected explicit membership, got %q", v.Name, v.Membership)
+		}
+	}
+}
+
+func TestOwnerVaultJoinSuccess(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	// Create a vault the owner has no grant for.
+	ms.CreateVault(context.Background(), "team-x")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/team-x/join", nil)
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify grant was created as admin.
+	role, err := ms.GetVaultRole(context.Background(), "owner-user-id", "ns-team-x")
+	if err != nil || role != "admin" {
+		t.Fatalf("expected admin grant, got role=%q err=%v", role, err)
+	}
+}
+
+func TestOwnerVaultJoinAlreadyMember(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	// Owner already has a grant on the default vault.
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/join", nil)
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMemberCannotJoinVault(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	ms.CreateVault(context.Background(), "team-x")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/team-x/join", nil)
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestOwnerVaultJoinNotFound(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/nonexistent/join", nil)
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVaultInviteCreateBlockedByAllowedDomains(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	ms.settings[settingAllowedDomains] = `["acme.com"]`
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{"email":"user@gmail.com","role":"member"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/invites", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for disallowed domain, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVaultInviteCreateAllowedDomain(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	ms.settings[settingAllowedDomains] = `["acme.com"]`
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{"email":"user@acme.com","role":"member"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/invites", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for allowed domain, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVaultInviteCreateNoDomainRestrictions(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	// No domain restrictions set
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{"email":"user@gmail.com","role":"member"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/invites", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 with no domain restrictions, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

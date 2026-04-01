@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { StatusBadge, LoadingSpinner, ErrorBanner, timeAgo, timeUntil } from "../../components/shared";
 import DataTable, { type Column } from "../../components/DataTable";
 import DropdownMenu from "../../components/DropdownMenu";
+import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
 
 interface AgentRow {
   name: string;
@@ -14,26 +15,18 @@ interface AgentRow {
 
 function RowActions({
   agent,
-  onDone,
+  onRevoke,
 }: {
   agent: AgentRow;
-  onDone: () => void;
+  onRevoke: (agent: AgentRow) => void;
 }) {
   if (agent.status === "revoked") return null;
-
-  async function handleRevoke() {
-    await fetch(
-      `/v1/admin/agents/${encodeURIComponent(agent.name)}`,
-      { method: "DELETE" }
-    );
-    onDone();
-  }
 
   return (
     <DropdownMenu
       width={192}
       items={[
-        { label: "Revoke agent", onClick: handleRevoke, variant: "danger" },
+        { label: "Revoke agent", onClick: () => onRevoke(agent), variant: "danger" },
       ]}
     />
   );
@@ -43,6 +36,7 @@ export default function InstanceAgentsTab() {
   const [rows, setRows] = useState<AgentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [revokeTarget, setRevokeTarget] = useState<AgentRow | null>(null);
 
   const columns: Column<AgentRow>[] = [
     {
@@ -98,7 +92,7 @@ export default function InstanceAgentsTab() {
       header: "",
       align: "right" as const,
       render: (agent: AgentRow) => (
-        <RowActions agent={agent} onDone={fetchData} />
+        <RowActions agent={agent} onRevoke={setRevokeTarget} />
       ),
     },
   ];
@@ -177,6 +171,29 @@ export default function InstanceAgentsTab() {
           emptyDescription="No persistent agents have been registered yet."
         />
       )}
+
+      <ConfirmDeleteModal
+        open={revokeTarget !== null}
+        onClose={() => setRevokeTarget(null)}
+        onConfirm={async () => {
+          if (!revokeTarget) return;
+          const resp = await fetch(
+            `/v1/admin/agents/${encodeURIComponent(revokeTarget.name)}`,
+            { method: "DELETE" }
+          );
+          if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            throw new Error(data.error || "Failed to revoke agent");
+          }
+          setRevokeTarget(null);
+          fetchData();
+        }}
+        title="Revoke agent"
+        description={`This will permanently revoke the agent "${revokeTarget?.name}" and invalidate all its sessions. This action cannot be undone.`}
+        confirmLabel="Revoke agent"
+        confirmValue={revokeTarget?.name ?? ""}
+        inputLabel="Type the agent name to confirm"
+      />
     </div>
   );
 }

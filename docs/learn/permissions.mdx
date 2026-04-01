@@ -11,20 +11,23 @@ Instance-level roles govern administrative operations across the entire Agent Va
 
 | Capability                            | Owner           | Member          |
 | ------------------------------------- | --------------- | --------------- |
+| [Instance settings](/guides/instance-settings) (invite-only, domains) | Yes | No |
 | Manage users (list, remove, set-role) | Yes             | No              |
 | Manage agents (list, revoke, rotate, rename) | Yes      | No              |
 | List / delete all vaults              | Yes             | No              |
+| See all vaults & join as admin        | Yes             | No              |
 | Send test emails                      | Yes             | No              |
 | Reset instance                        | Yes             | No              |
-| Access vault contents                 | Only if invited | Only if invited |
+| Access vault contents                 | Only if member  | Only if member  |
 
-<Warning>
-  Owners do **not** get implicit vault access. An instance owner must be
-  explicitly invited to each [vault](/learn/vaults), just like any other user.
-  Ownership grants administrative control over the Agent Vault instance, not
-  visibility into vault [credentials](/learn/credentials) or
-  [proposals](/learn/proposals).
-</Warning>
+<Info>
+  Owners can **see** every vault and **join** any vault as admin, but they are
+  not automatic members. Until an owner explicitly joins a vault (via
+  `agent-vault owner vault join` or the web UI), they cannot view its
+  [credentials](/learn/credentials) or approve [proposals](/learn/proposals).
+  This lets owners recover orphaned vaults while keeping vault contents
+  access-controlled.
+</Info>
 
 ## Vault roles
 
@@ -52,9 +55,9 @@ Vault admins and members can both review agent [proposals](/learn/proposals). Wh
 
 ## How the two axes interact
 
-The two permission axes are fully independent. An instance owner who is not invited to a vault cannot see its credentials or approve proposals. A vault admin who is not an instance owner cannot manage users or reset the instance.
+The two permission axes are fully independent. An instance owner who has not joined a vault cannot see its credentials or approve proposals. A vault admin who is not an instance owner cannot manage users or reset the instance.
 
-**Example**: Alice is an instance owner but not a member of the `payments` vault. She can list all vaults and manage users, but she cannot approve proposals or proxy requests through `payments` until she is invited. Meanwhile, Bob is a vault admin on `payments` but a regular instance member. He can approve proposals and manage agents within `payments`, but he cannot create new users or reset the instance.
+**Example**: Alice is an instance owner but has not joined the `payments` vault. She can see it in her vault list and join it at any time, but she cannot approve proposals or proxy requests through `payments` until she does. Meanwhile, Bob is a vault admin on `payments` but a regular instance member. He can approve proposals and manage agents within `payments`, but he cannot create new users or reset the instance.
 
 ## The first user
 
@@ -102,13 +105,14 @@ agent-vault vault user set-role alice@example.com --role consumer --vault my-vau
 
 <AccordionGroup>
   <Accordion title="Owner-level vault operations">
-    Instance owners have a small set of cross-vault operations that do not require vault membership:
+    Instance owners have a set of cross-vault operations that do not require vault membership:
 
-    - **List all vaults**: `agent-vault owner vault list` shows every vault in the instance.
+    - **See all vaults**: Owners see every vault in their vault list, including vaults they have not joined.
+    - **Join any vault**: `agent-vault owner vault join <name>` grants the owner admin access to a vault. Useful for recovering orphaned vaults.
     - **Delete any vault**: `agent-vault owner vault remove <name>` removes a vault regardless of membership.
     - **Manage agents**: `agent-vault vault agent list`, `info`, `revoke`, `rotate`, and `rename` are owner-only operations that work across all vaults.
 
-    These operations affect vault existence and agent lifecycle, not vault contents. An owner still cannot view credentials, approve proposals, or proxy requests through a vault unless they are an invited member.
+    These operations affect vault existence and agent lifecycle. To access vault contents (credentials, proposals, proxy), the owner must first join the vault.
 
   </Accordion>
 </AccordionGroup>

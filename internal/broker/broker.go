@@ -3,6 +3,7 @@ package broker
 import (
 	"encoding/base64"
 	"fmt"
+	"net"
 	"regexp"
 	"strings"
 )
@@ -260,18 +261,28 @@ var CredentialRef = regexp.MustCompile(`\{\{\s*(\w+)\s*\}\}`)
 
 // MatchHost returns the first rule whose Host pattern matches the given host,
 // or nil if no rule matches. Supports exact match and wildcard prefix (e.g.
-// "*.github.com" matches "api.github.com").
+// "*.github.com" matches "api.github.com"). The host parameter should already
+// have its port stripped by the caller; rule hosts are also compared port-stripped.
 func MatchHost(host string, rules []Rule) *Rule {
 	for i := range rules {
 		pattern := rules[i].Host
+		// Strip port from rule host for comparison (rules should be bare
+		// hostnames, but handle legacy rules that include a port).
+		if h, _, err := net.SplitHostPort(pattern); err == nil {
+			pattern = h
+		}
 		if pattern == host {
 			return &rules[i]
 		}
 		if strings.HasPrefix(pattern, "*.") {
-			// *.github.com → .github.com suffix match
+			// *.github.com → match exactly one subdomain level (e.g. api.github.com but not a.b.github.com)
 			suffix := pattern[1:] // ".github.com"
 			if strings.HasSuffix(host, suffix) {
-				return &rules[i]
+				// Ensure only one subdomain level: no dots in the part before the suffix.
+				prefix := strings.TrimSuffix(host, suffix)
+				if prefix != "" && !strings.Contains(prefix, ".") {
+					return &rules[i]
+				}
 			}
 		}
 	}

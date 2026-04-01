@@ -395,18 +395,29 @@ function InviteUserButton({
               <label className="block text-xs font-semibold text-text-muted uppercase tracking-wider mb-2">
                 Role
               </label>
-              <div className="flex gap-3">
+              <div className="space-y-2">
                 {(["member", "admin"] as const).map((r) => (
                   <button
                     key={r}
+                    type="button"
                     onClick={() => setRole(r)}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                    className={`w-full text-left px-4 py-3 rounded-lg border-2 transition-all ${
                       role === r
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-border bg-surface text-text-muted hover:border-border-focus"
+                        ? "border-primary bg-primary/[0.04]"
+                        : "border-border hover:border-border-focus bg-surface"
                     }`}
                   >
-                    {r.charAt(0).toUpperCase() + r.slice(1)}
+                    <div className="text-sm font-medium text-text capitalize">
+                      {r}
+                      {r === "member" && (
+                        <span className="ml-1.5 text-xs font-normal text-text-muted">(Default)</span>
+                      )}
+                    </div>
+                    <p className="text-xs text-text-muted mt-0.5">
+                      {r === "member"
+                        ? "View credentials, use proxy, and raise proposals."
+                        : "All member permissions, plus invite users, manage vault settings, and approve proposals."}
+                    </p>
                   </button>
                 ))}
               </div>

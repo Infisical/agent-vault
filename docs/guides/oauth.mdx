@@ -1,0 +1,52 @@
+---
+title: "Login with Google"
+description: "Set up Google OAuth for one-click sign-in to Agent Vault"
+---
+
+Agent Vault supports Google OAuth 2.0 (OpenID Connect) as an authentication method alongside email/password. When configured, users see a "Continue with Google" button on the login and registration pages.
+
+## Setting up Google OAuth credentials
+
+<Steps>
+  <Step title="Create a Google Cloud project">
+    Go to the [Google Cloud Console](https://console.cloud.google.com/) and create a project (or select an existing one).
+
+    Navigate to **APIs & Services** in the sidebar.
+
+    ![GCP API & Services](/images/oauth/google/api-services.png)
+  </Step>
+  <Step title="Configure the OAuth consent screen">
+    Go to **APIs & Services > OAuth consent screen**. Choose **External** (or Internal for Google Workspace), fill in the app name and support email, and add the `email`, `profile`, and `openid` scopes.
+  </Step>
+  <Step title="Create OAuth 2.0 credentials">
+    Go to **APIs & Services > Credentials > Create Credentials > OAuth client ID**. Select **Web application** as the type.
+
+    ![GCP create new OAuth client ID](/images/oauth/google/new-app.png)
+
+    Set the **Authorized redirect URI** to:
+
+    ```
+    {AGENT_VAULT_ADDR}/v1/auth/oauth/google/callback
+    ```
+
+    For example: `http://localhost:14321/v1/auth/oauth/google/callback` for local development, or `https://agent-vault.example.com/v1/auth/oauth/google/callback` for production.
+
+    ![GCP OAuth client ID form](/images/oauth/google/new-app-form.png)
+  </Step>
+  <Step title="Copy the credentials">
+    Once created, copy the **Client ID** and **Client Secret** from the credentials page.
+
+    ![GCP OAuth credentials](/images/oauth/google/credentials.png)
+  </Step>
+</Steps>
+
+## Configuring Agent Vault
+
+Set the following environment variables on your Agent Vault instance and restart:
+
+| Variable | Description |
+|---|---|
+| `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_ID` | Google OAuth 2.0 Client ID |
+| `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 Client Secret |
+
+When both variables are set, the "Continue with Google" button appears on the login and registration pages. See the [self-hosting guides](/self-hosting/docker) for how to set environment variables on your deployment.

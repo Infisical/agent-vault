@@ -1,0 +1,31 @@
+app = "agent-vault"
+primary_region = "sjc"
+
+[build]
+
+[env]
+  # Set AGENT_VAULT_ADDR via `fly secrets set` to your app's public URL.
+  # Set AGENT_VAULT_MASTER_PASSWORD via `fly secrets set`.
+
+[http_service]
+  internal_port = 14321
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+[mounts]
+  source = "agent_vault_data"
+  destination = "/data"
+
+[checks]
+  [checks.health]
+    type = "http"
+    port = 14321
+    path = "/health"
+    interval = "30s"
+    timeout = "5s"

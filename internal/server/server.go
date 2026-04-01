@@ -3,6 +3,9 @@ package server
 import (
 	"context"
 	crand "crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"errors"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -10,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -23,11 +27,12 @@ import (
 
 	"github.com/Infisical/agent-vault/internal/auth"
 	"github.com/Infisical/agent-vault/internal/broker"
-	"github.com/Infisical/agent-vault/internal/proposal"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/netguard"
 	"github.com/Infisical/agent-vault/internal/notify"
+	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/pidfile"
+	"github.com/Infisical/agent-vault/internal/proposal"
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
@@ -53,7 +58,8 @@ type Server struct {
 	encKey      []byte // 32-byte encryption key, held in memory while running
 	notifier    *notify.Notifier
 	initialized bool   // true when at least one owner account exists
-	baseURL     string // externally-reachable base URL (e.g. "https://sb.example.com")
+	baseURL        string // externally-reachable base URL (e.g. "https://sb.example.com")
+	oauthProviders map[string]oauth.Provider
 }
 
 // Store is the persistence interface used by the server.
@@ -141,12 +147,42 @@ type Store interface {
 	MarkEmailVerificationUsed(ctx context.Context, id int) error
 	CountPendingEmailVerifications(ctx context.Context, email string) (int, error)
 
+	// Password resets
+	CreatePasswordReset(ctx context.Context, email, code string, expiresAt time.Time) (*store.PasswordReset, error)
+	GetPendingPasswordReset(ctx context.Context, email, code string) (*store.PasswordReset, error)
+	MarkPasswordResetUsed(ctx context.Context, id int) error
+	CountPendingPasswordResets(ctx context.Context, email string) (int, error)
+	ExpirePendingPasswordResets(ctx context.Context, before time.Time) (int, error)
+
+	// OAuth accounts
+	CreateOAuthAccount(ctx context.Context, userID, provider, providerUserID, email, name, avatarURL string) (*store.OAuthAccount, error)
+	GetOAuthAccount(ctx context.Context, provider, providerUserID string) (*store.OAuthAccount, error)
+	GetOAuthAccountByUser(ctx context.Context, userID, provider string) (*store.OAuthAccount, error)
+	ListUserOAuthAccounts(ctx context.Context, userID string) ([]store.OAuthAccount, error)
+	DeleteOAuthAccount(ctx context.Context, userID, provider string) error
+
+	// OAuth state
+	CreateOAuthState(ctx context.Context, stateHash, codeVerifier, nonce, redirectURL, mode, userID string, expiresAt time.Time) (*store.OAuthState, error)
+	GetOAuthStateByHash(ctx context.Context, stateHash string) (*store.OAuthState, error)
+	DeleteOAuthState(ctx context.Context, id string) error
+	ExpireOAuthStates(ctx context.Context, before time.Time) (int, error)
+
+	// OAuth user creation
+	CreateOAuthUser(ctx context.Context, email, role string) (*store.User, error)
+	CreateOAuthUserAndAccount(ctx context.Context, email, role, provider, providerUserID, oauthEmail, name, avatarURL string) (*store.User, *store.OAuthAccount, error)
+
+	// Instance settings
+	GetSetting(ctx context.Context, key string) (string, error)
+	SetSetting(ctx context.Context, key, value string) error
+	GetAllSettings(ctx context.Context) (map[string]string, error)
+
 	// Agents
 	CreateAgent(ctx context.Context, name, vaultID string, tokenHash, tokenSalt []byte, tokenPrefix, vaultRole, createdBy string) (*store.Agent, error)
 	GetAgentByID(ctx context.Context, id string) (*store.Agent, error)
 	GetAgentByName(ctx context.Context, name string) (*store.Agent, error)
 	GetAgentByTokenPrefix(ctx context.Context, prefix string) (*store.Agent, error)
 	ListAgents(ctx context.Context, vaultID string) ([]store.Agent, error)
+	ListAllAgents(ctx context.Context) ([]store.Agent, error)
 	RevokeAgent(ctx context.Context, id string) error
 	UpdateAgentServiceToken(ctx context.Context, id string, tokenHash, tokenSalt []byte, tokenPrefix string) error
 	UpdateAgentVaultRole(ctx context.Context, id, role string) error
@@ -186,16 +222,16 @@ func (s *Server) userFromSession(ctx context.Context, sess *store.Session) (*sto
 func (s *Server) requireOwner(w http.ResponseWriter, r *http.Request) (*store.User, error) {
 	sess := sessionFromContext(r.Context())
 	if sess == nil || sess.UserID == "" {
-		jsonError(w, http.StatusForbidden, "owner session required")
+		jsonError(w, http.StatusForbidden, "Owner session required")
 		return nil, fmt.Errorf("no user session")
 	}
 	user, err := s.userFromSession(r.Context(), sess)
 	if err != nil || user == nil {
-		jsonError(w, http.StatusForbidden, "owner session required")
+		jsonError(w, http.StatusForbidden, "Owner session required")
 		return nil, fmt.Errorf("user not found")
 	}
 	if user.Role != "owner" {
-		jsonError(w, http.StatusForbidden, "owner role required")
+		jsonError(w, http.StatusForbidden, "Owner role required")
 		return nil, fmt.Errorf("not owner")
 	}
 	return user, nil
@@ -208,14 +244,14 @@ func (s *Server) requireOwner(w http.ResponseWriter, r *http.Request) (*store.Us
 func (s *Server) requireVaultAccess(w http.ResponseWriter, r *http.Request, vaultID string) (*store.User, error) {
 	sess := sessionFromContext(r.Context())
 	if sess == nil {
-		jsonError(w, http.StatusForbidden, "authentication required")
+		jsonError(w, http.StatusForbidden, "Authentication required")
 		return nil, fmt.Errorf("no session")
 	}
 
 	// Agent session: relies on vault_id scoping.
 	if sess.VaultID != "" {
 		if sess.VaultID != vaultID {
-			jsonError(w, http.StatusForbidden, "session not authorized for this vault")
+			jsonError(w, http.StatusForbidden, "Session not authorized for this vault")
 			return nil, fmt.Errorf("vault mismatch")
 		}
 		return nil, nil // agent session, no user
@@ -224,18 +260,18 @@ func (s *Server) requireVaultAccess(w http.ResponseWriter, r *http.Request, vaul
 	// User session: check grants (no implicit owner bypass).
 	user, err := s.userFromSession(r.Context(), sess)
 	if err != nil || user == nil {
-		jsonError(w, http.StatusForbidden, "invalid session")
+		jsonError(w, http.StatusForbidden, "Invalid session")
 		return nil, fmt.Errorf("user not found")
 	}
 
 	// All users need an explicit grant.
 	has, err := s.store.HasVaultAccess(r.Context(), user.ID, vaultID)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to check vault access")
+		jsonError(w, http.StatusInternalServerError, "Failed to check vault access")
 		return nil, err
 	}
 	if !has {
-		jsonError(w, http.StatusForbidden, "no access to this vault")
+		jsonError(w, http.StatusForbidden, "No access to this vault")
 		return nil, fmt.Errorf("no grant")
 	}
 
@@ -250,13 +286,13 @@ func (s *Server) requireVaultAdmin(w http.ResponseWriter, r *http.Request, vault
 	}
 	if user == nil {
 		// Agent session — agents cannot be vault admins.
-		jsonError(w, http.StatusForbidden, "vault admin role required")
+		jsonError(w, http.StatusForbidden, "Vault admin role required")
 		return nil, fmt.Errorf("agent session")
 	}
 
 	role, err := s.store.GetVaultRole(r.Context(), user.ID, vaultID)
 	if err != nil || role != "admin" {
-		jsonError(w, http.StatusForbidden, "vault admin role required")
+		jsonError(w, http.StatusForbidden, "Vault admin role required")
 		return nil, fmt.Errorf("not vault admin")
 	}
 	return user, nil
@@ -276,18 +312,18 @@ func agentRoleSatisfies(agentRole, requiredRole string) bool {
 func (s *Server) requireVaultMember(w http.ResponseWriter, r *http.Request, vaultID string) (*store.User, error) {
 	sess := sessionFromContext(r.Context())
 	if sess == nil {
-		jsonError(w, http.StatusForbidden, "authentication required")
+		jsonError(w, http.StatusForbidden, "Authentication required")
 		return nil, fmt.Errorf("no session")
 	}
 
 	// Scoped session (agent or temp invite): check vault_role.
 	if sess.VaultID != "" {
 		if sess.VaultID != vaultID {
-			jsonError(w, http.StatusForbidden, "session not authorized for this vault")
+			jsonError(w, http.StatusForbidden, "Session not authorized for this vault")
 			return nil, fmt.Errorf("vault mismatch")
 		}
 		if !agentRoleSatisfies(sess.VaultRole, "member") {
-			jsonError(w, http.StatusForbidden, "member role required")
+			jsonError(w, http.StatusForbidden, "Member role required")
 			return nil, fmt.Errorf("insufficient role: %s", sess.VaultRole)
 		}
 		return nil, nil
@@ -297,24 +333,51 @@ func (s *Server) requireVaultMember(w http.ResponseWriter, r *http.Request, vaul
 	return s.requireVaultAccess(w, r, vaultID)
 }
 
+// requireProposalReview checks proposal approve/reject access.
+// Agent/scoped sessions require admin role (consumers cannot self-approve).
+// User sessions require any vault access (member or admin — by design).
+func (s *Server) requireProposalReview(w http.ResponseWriter, r *http.Request, vaultID string) (*store.User, error) {
+	sess := sessionFromContext(r.Context())
+	if sess == nil {
+		jsonError(w, http.StatusForbidden, "Authentication required")
+		return nil, fmt.Errorf("no session")
+	}
+
+	// Scoped session (agent or temp invite): require admin role.
+	if sess.VaultID != "" {
+		if sess.VaultID != vaultID {
+			jsonError(w, http.StatusForbidden, "Session not authorized for this vault")
+			return nil, fmt.Errorf("vault mismatch")
+		}
+		if sess.VaultRole != "admin" {
+			jsonError(w, http.StatusForbidden, "Admin role required")
+			return nil, fmt.Errorf("insufficient role: %s", sess.VaultRole)
+		}
+		return nil, nil
+	}
+
+	// User session: any vault member can review proposals.
+	return s.requireVaultAccess(w, r, vaultID)
+}
+
 // requireVaultAdminSession checks that the session has admin access to the vault.
 // For agent/scoped sessions: requires sess.VaultRole == "admin".
 // For user sessions: requires vault admin role.
 func (s *Server) requireVaultAdminSession(w http.ResponseWriter, r *http.Request, vaultID string) (*store.User, error) {
 	sess := sessionFromContext(r.Context())
 	if sess == nil {
-		jsonError(w, http.StatusForbidden, "authentication required")
+		jsonError(w, http.StatusForbidden, "Authentication required")
 		return nil, fmt.Errorf("no session")
 	}
 
 	// Scoped session (agent or temp invite): check vault_role.
 	if sess.VaultID != "" {
 		if sess.VaultID != vaultID {
-			jsonError(w, http.StatusForbidden, "session not authorized for this vault")
+			jsonError(w, http.StatusForbidden, "Session not authorized for this vault")
 			return nil, fmt.Errorf("vault mismatch")
 		}
 		if sess.VaultRole != "admin" {
-			jsonError(w, http.StatusForbidden, "admin role required")
+			jsonError(w, http.StatusForbidden, "Admin role required")
 			return nil, fmt.Errorf("insufficient role: %s", sess.VaultRole)
 		}
 		return nil, nil
@@ -350,7 +413,7 @@ func limitBody(next http.HandlerFunc) http.HandlerFunc {
 // New creates a new Server listening on the given address.
 // The initialized parameter indicates whether at least one owner account exists.
 // When false, all endpoints except /health and POST /v1/init return 503.
-func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string) *Server {
+func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string, oauthProviders map[string]oauth.Provider) *Server {
 	mux := http.NewServeMux()
 
 	// Initialize proxy client once (reads AGENT_VAULT_NETWORK_MODE after env is configured).
@@ -367,11 +430,12 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 			WriteTimeout:      60 * time.Second,
 			IdleTimeout:       120 * time.Second,
 		},
-		store:       store,
-		encKey:      encKey,
-		notifier:    notifier,
-		initialized: initialized,
-		baseURL:     strings.TrimRight(baseURL, "/"),
+		store:          store,
+		encKey:         encKey,
+		notifier:       notifier,
+		initialized:    initialized,
+		baseURL:        strings.TrimRight(baseURL, "/"),
+		oauthProviders: oauthProviders,
 	}
 
 	// Always available (no initialization required)
@@ -379,6 +443,8 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("POST /v1/auth/register", limitBody(s.handleRegister))
 	mux.HandleFunc("POST /v1/auth/verify", limitBody(s.handleVerify))
+	mux.HandleFunc("POST /v1/auth/forgot-password", limitBody(s.handleForgotPassword))
+	mux.HandleFunc("POST /v1/auth/reset-password", limitBody(s.handleResetPassword))
 
 	// Require initialization
 	mux.HandleFunc("GET /v1/auth/me", s.requireInitialized(s.requireAuth(s.handleAuthMe)))
@@ -413,6 +479,10 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("DELETE /v1/admin/agents/{name}", s.requireInitialized(s.requireAuth(s.handleAgentRevoke)))
 	mux.HandleFunc("POST /v1/admin/agents/{name}/rotate", s.requireInitialized(s.requireAuth(limitBody(s.handleAgentRotate))))
 	mux.HandleFunc("POST /v1/admin/agents/{name}/rename", s.requireInitialized(s.requireAuth(limitBody(s.handleAgentRename))))
+
+	// Instance settings (owner-only)
+	mux.HandleFunc("GET /v1/admin/settings", s.requireInitialized(s.requireAuth(s.handleGetSettings)))
+	mux.HandleFunc("PUT /v1/admin/settings", s.requireInitialized(s.requireAuth(limitBody(s.handleUpdateSettings))))
 	mux.HandleFunc("POST /v1/admin/agents/{name}/vault-role", s.requireInitialized(s.requireAuth(limitBody(s.handleAgentSetRole))))
 
 	// User management (owner-only, except GET self)
@@ -428,6 +498,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/vaults", s.requireInitialized(s.requireAuth(s.handleVaultList)))
 	mux.HandleFunc("DELETE /v1/vaults/{name}", s.requireInitialized(s.requireAuth(s.handleVaultDelete)))
 	mux.HandleFunc("POST /v1/vaults/{name}/rename", s.requireInitialized(s.requireAuth(limitBody(s.handleVaultRename))))
+	mux.HandleFunc("POST /v1/vaults/{name}/join", s.requireInitialized(s.requireAuth(limitBody(s.handleVaultJoin))))
 
 	// Vault admin (owner-only)
 	mux.HandleFunc("GET /v1/admin/vaults", s.requireInitialized(s.requireAuth(s.handleAdminVaultList)))
@@ -464,6 +535,13 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 
 	mux.HandleFunc("POST /v1/auth/logout", s.requireInitialized(s.handleLogout))
 
+	// OAuth
+	mux.HandleFunc("GET /v1/auth/oauth/providers", s.handleOAuthProviders)
+	mux.HandleFunc("GET /v1/auth/oauth/{provider}/login", s.requireInitialized(s.optionalAuth(s.handleOAuthLogin)))
+	mux.HandleFunc("GET /v1/auth/oauth/{provider}/callback", s.requireInitialized(s.handleOAuthCallback))
+	mux.HandleFunc("POST /v1/auth/oauth/{provider}/connect", s.requireInitialized(s.requireAuth(s.handleOAuthConnect)))
+	mux.HandleFunc("DELETE /v1/auth/oauth/{provider}", s.requireInitialized(s.requireAuth(s.handleOAuthDisconnect)))
+
 	// React app static assets (Vite outputs to /assets/ with base "/")
 	webFS, _ := fs.Sub(webDistFS, "webdist")
 	mux.Handle("GET /assets/", http.FileServer(http.FS(webFS)))
@@ -478,6 +556,8 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /approve/{id...}", s.handleSPA)
 	mux.HandleFunc("GET /manage/{path...}", s.handleSPA)
 	mux.HandleFunc("GET /change-password", s.handleSPA)
+	mux.HandleFunc("GET /oauth/callback", s.handleSPA)
+	mux.HandleFunc("GET /account/{path...}", s.handleSPA)
 	mux.HandleFunc("GET /{$}", s.handleSPA)
 
 	return s
@@ -593,7 +673,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid request body")
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 	if err := auth.ValidateEmail(req.Email); err != nil {
@@ -601,18 +681,31 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(req.Password) < 8 {
-		jsonError(w, http.StatusBadRequest, "password must be at least 8 characters")
+		jsonError(w, http.StatusBadRequest, "Password must be at least 8 characters")
 		return
 	}
 
 	// Rate limit registrations by IP to prevent account creation floods.
 	ip := clientIP(r)
 	if !registerLimiter.allow(ip) {
-		jsonError(w, http.StatusTooManyRequests, "too many registration attempts, try again later")
+		jsonError(w, http.StatusTooManyRequests, "Too many registration attempts, try again later")
 		return
 	}
 
 	ctx := r.Context()
+
+	// Check domain and invite-only restrictions (skip for first user — owner can set any email).
+	userCount, _ := s.store.CountUsers(ctx)
+	if userCount > 0 {
+		if msg := s.checkEmailDomain(ctx, req.Email); msg != "" {
+			jsonError(w, http.StatusForbidden, msg)
+			return
+		}
+		if s.isInviteOnly(ctx) {
+			jsonError(w, http.StatusForbidden, "This instance is invite-only; accounts can only be created through an invite")
+			return
+		}
+	}
 
 	// Check if email is already taken.
 	// Return a uniform response to prevent email enumeration.
@@ -632,21 +725,21 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	hash, salt, kdfParams, err := auth.HashUserPassword([]byte(req.Password))
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to hash password")
+		jsonError(w, http.StatusInternalServerError, "Failed to hash password")
 		return
 	}
 
 	// If an inactive user exists, update their password and resend verification.
 	if existing != nil && !existing.IsActive {
 		if err := s.store.UpdateUserPassword(ctx, existing.ID, hash, salt, kdfParams.Time, kdfParams.Memory, kdfParams.Threads); err != nil {
-			jsonError(w, http.StatusInternalServerError, "failed to update account")
+			jsonError(w, http.StatusInternalServerError, "Failed to update account")
 			return
 		}
 
 		// Rate limit verification codes.
 		pendingCount, _ := s.store.CountPendingEmailVerifications(ctx, req.Email)
 		if pendingCount >= maxPendingVerifications {
-			jsonError(w, http.StatusTooManyRequests, "too many pending verification codes")
+			jsonError(w, http.StatusTooManyRequests, "Too many pending verification codes")
 			return
 		}
 
@@ -656,7 +749,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 		_, err = s.store.CreateEmailVerification(ctx, req.Email, code, time.Now().Add(emailVerificationTTL))
 		if err != nil {
-			jsonError(w, http.StatusInternalServerError, "failed to create verification")
+			jsonError(w, http.StatusInternalServerError, "Failed to create verification")
 			return
 		}
 
@@ -703,10 +796,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// Auto-login: create session and set cookie.
 		session, err := s.store.CreateSession(ctx, user.ID, time.Now().Add(sessionTTL))
 		if err != nil {
-			jsonError(w, http.StatusInternalServerError, "failed to create session")
+			jsonError(w, http.StatusInternalServerError, "Failed to create session")
 			return
 		}
-		http.SetCookie(w, sessionCookie(r, session.ID, int(sessionTTL.Seconds())))
+		http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(sessionTTL.Seconds())))
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -720,21 +813,28 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != store.ErrNotFirstUser {
-		jsonError(w, http.StatusInternalServerError, "failed to create owner account")
+		jsonError(w, http.StatusInternalServerError, "Failed to create owner account")
 		return
 	}
 
-	// Not the first user: create as inactive member, require email verification.
+	// Not the first user: re-check domain restriction. This covers the TOCTOU
+	// race where two requests both saw CountUsers==0 and skipped the earlier check.
+	if msg := s.checkEmailDomain(ctx, req.Email); msg != "" {
+		jsonError(w, http.StatusForbidden, msg)
+		return
+	}
+
+	// Create as inactive member, require email verification.
 	_, err = s.store.CreateUser(ctx, req.Email, hash, salt, "member", kdfParams.Time, kdfParams.Memory, kdfParams.Threads)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to create user")
+		jsonError(w, http.StatusInternalServerError, "Failed to create user")
 		return
 	}
 
 	// Rate limit verification codes.
 	pendingCount, _ := s.store.CountPendingEmailVerifications(ctx, req.Email)
 	if pendingCount >= maxPendingVerifications {
-		jsonError(w, http.StatusTooManyRequests, "too many pending verification codes")
+		jsonError(w, http.StatusTooManyRequests, "Too many pending verification codes")
 		return
 	}
 
@@ -744,7 +844,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	_, err = s.store.CreateEmailVerification(ctx, req.Email, code, time.Now().Add(emailVerificationTTL))
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to create verification")
+		jsonError(w, http.StatusInternalServerError, "Failed to create verification")
 		return
 	}
 
@@ -783,11 +883,11 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		Code  string `json:"code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid request body")
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 	if req.Email == "" || req.Code == "" {
-		jsonError(w, http.StatusBadRequest, "email and code are required")
+		jsonError(w, http.StatusBadRequest, "Email and code are required")
 		return
 	}
 
@@ -795,35 +895,35 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 
 	// Rate limit verification attempts per email.
 	if !verifyLimiter.check(req.Email) {
-		jsonError(w, http.StatusTooManyRequests, "too many failed verification attempts; request a new code")
+		jsonError(w, http.StatusTooManyRequests, "Too many failed verification attempts; request a new code")
 		return
 	}
 
 	ev, err := s.store.GetPendingEmailVerification(ctx, req.Email, req.Code)
 	if err != nil || ev == nil {
 		verifyLimiter.recordFailure(req.Email)
-		jsonError(w, http.StatusBadRequest, "invalid or expired verification code")
+		jsonError(w, http.StatusBadRequest, "Invalid or expired verification code")
 		return
 	}
 
 	user, err := s.store.GetUserByEmail(ctx, req.Email)
 	if err != nil || user == nil {
-		jsonError(w, http.StatusNotFound, "user not found")
+		jsonError(w, http.StatusNotFound, "User not found")
 		return
 	}
 
 	if user.IsActive {
-		jsonError(w, http.StatusConflict, "account is already verified")
+		jsonError(w, http.StatusConflict, "Account is already verified")
 		return
 	}
 
 	if err := s.store.MarkEmailVerificationUsed(ctx, ev.ID); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to mark verification used")
+		jsonError(w, http.StatusInternalServerError, "Failed to mark verification used")
 		return
 	}
 
 	if err := s.store.ActivateUser(ctx, user.ID); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to activate account")
+		jsonError(w, http.StatusInternalServerError, "Failed to activate account")
 		return
 	}
 
@@ -833,10 +933,10 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	// Auto-login: create session and set cookie.
 	session, err := s.store.CreateSession(ctx, user.ID, time.Now().Add(sessionTTL))
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to create session")
+		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
 	}
-	http.SetCookie(w, sessionCookie(r, session.ID, int(sessionTTL.Seconds())))
+	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(sessionTTL.Seconds())))
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -846,32 +946,235 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleStatus returns the instance initialization status (public, no auth).
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+const passwordResetTTL = 15 * time.Minute
+const maxPendingPasswordResets = 3
+
+func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" {
+		jsonError(w, http.StatusBadRequest, "Email is required")
+		return
+	}
+
+	// Rate limit by IP.
+	ip := clientIP(r)
+	if !forgotPasswordLimiter.allow(ip) {
+		jsonError(w, http.StatusTooManyRequests, "Too many requests, try again later")
+		return
+	}
+
+	ctx := r.Context()
+
+	// Lazy expiration of old password resets.
+	_, _ = s.store.ExpirePendingPasswordResets(ctx, time.Now())
+
+	// Uniform response to prevent email enumeration.
+	uniformResponse := func(emailSent bool) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"message":    "If an account with that email exists, a password reset code has been sent.",
+			"email_sent": emailSent,
+		})
+	}
+
+	user, err := s.store.GetUserByEmail(ctx, req.Email)
+	if err != nil || user == nil {
+		uniformResponse(false)
+		return
+	}
+
+	// Only allow reset for active accounts with a password.
+	if !user.IsActive || user.PasswordHash == nil {
+		uniformResponse(false)
+		return
+	}
+
+	// Rate limit pending reset codes per email.
+	count, err := s.store.CountPendingPasswordResets(ctx, req.Email)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Internal error")
+		return
+	}
+	if count >= maxPendingPasswordResets {
+		// Still return uniform response (don't reveal that the email exists).
+		uniformResponse(false)
+		return
+	}
+
+	// Generate 6-digit code (uniform distribution via rejection sampling).
+	codeInt, _ := crand.Int(crand.Reader, big.NewInt(1_000_000))
+	code := fmt.Sprintf("%06d", codeInt.Int64())
+
+	_, err = s.store.CreatePasswordReset(ctx, req.Email, code, time.Now().Add(passwordResetTTL))
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to create password reset")
+		return
+	}
+
+	// Send code via email or log to stderr.
+	emailSent := false
+	if s.notifier.Enabled() {
+		body := fmt.Sprintf("Your Agent Vault password reset code is: %s\n\nThis code expires in 15 minutes.\n\nIf you didn't request this, you can safely ignore this email.", code)
+		if err := s.notifier.SendMail([]string{req.Email}, "Agent Vault password reset code", body); err != nil {
+			fmt.Fprintf(os.Stderr, "[agent-vault] Failed to send password reset email to %s: %v\n", req.Email, err)
+			fmt.Fprintf(os.Stderr, "[agent-vault] Password reset code for %s: %s\n", req.Email, code)
+		} else {
+			emailSent = true
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "[agent-vault] Password reset code for %s: %s\n", req.Email, code)
+	}
+
+	uniformResponse(emailSent)
+}
+
+func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email       string `json:"email"`
+		Code        string `json:"code"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if req.Email == "" || req.Code == "" || req.NewPassword == "" {
+		jsonError(w, http.StatusBadRequest, "Email, code, and new_password are required")
+		return
+	}
+	if len(req.NewPassword) < 8 {
+		jsonError(w, http.StatusBadRequest, "New password must be at least 8 characters")
+		return
+	}
+
+	ctx := r.Context()
+
+	// Rate limit verification attempts per email.
+	if !resetVerifyLimiter.check(req.Email) {
+		jsonError(w, http.StatusTooManyRequests, "Too many failed reset attempts; request a new code")
+		return
+	}
+
+	pr, err := s.store.GetPendingPasswordReset(ctx, req.Email, req.Code)
+	if err != nil || pr == nil {
+		resetVerifyLimiter.recordFailure(req.Email)
+		jsonError(w, http.StatusBadRequest, "Invalid or expired reset code")
+		return
+	}
+
+	user, err := s.store.GetUserByEmail(ctx, req.Email)
+	if err != nil || user == nil {
+		jsonError(w, http.StatusBadRequest, "Invalid or expired reset code")
+		return
+	}
+
+	if !user.IsActive || user.PasswordHash == nil {
+		jsonError(w, http.StatusBadRequest, "Invalid or expired reset code")
+		return
+	}
+
+	if err := s.store.MarkPasswordResetUsed(ctx, pr.ID); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to process reset")
+		return
+	}
+
+	// Hash new password.
+	hash, salt, newKDFParams, err := auth.HashUserPassword([]byte(req.NewPassword))
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to hash password")
+		return
+	}
+
+	if err := s.store.UpdateUserPassword(ctx, user.ID, hash, salt, newKDFParams.Time, newKDFParams.Memory, newKDFParams.Threads); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to update password")
+		return
+	}
+
+	// Invalidate all existing sessions.
+	_ = s.store.DeleteUserSessions(ctx, user.ID)
+
+	// Reset rate limit on successful reset.
+	resetVerifyLimiter.reset(req.Email)
+
+	// Create new session and auto-login.
+	session, err := s.store.CreateSession(ctx, user.ID, time.Now().Add(sessionTTL))
+	if err != nil {
+		// Password was reset but session creation failed — user can re-login.
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"message":       "Password reset successfully. Please log in.",
+			"authenticated": false,
+		})
+		return
+	}
+
+	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(sessionTTL.Seconds())))
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"initialized":    s.initialized,
-		"needs_first_user": !s.initialized,
+		"message":       "Password reset successfully.",
+		"authenticated": true,
+		"expires_at":    session.ExpiresAt.Format(time.RFC3339),
 	})
+}
+
+// handleStatus returns the instance initialization status (public, no auth).
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	resp := map[string]interface{}{
+		"initialized":      s.initialized,
+		"needs_first_user": !s.initialized,
+	}
+
+	// Read all settings in one query instead of two separate reads.
+	if settings, err := s.store.GetAllSettings(r.Context()); err == nil {
+		if raw, ok := settings[settingAllowedDomains]; ok {
+			var domains []string
+			if json.Unmarshal([]byte(raw), &domains) == nil && len(domains) > 0 {
+				resp["allowed_email_domains"] = domains
+			}
+		}
+		if raw, ok := settings[settingInviteOnly]; ok && raw == "true" {
+			resp["invite_only"] = true
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handleAuthMe returns the current authenticated user's info.
 func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	sess := sessionFromContext(r.Context())
 	if sess == nil || sess.UserID == "" {
-		jsonError(w, http.StatusUnauthorized, "not authenticated")
+		jsonError(w, http.StatusUnauthorized, "Not authenticated")
 		return
 	}
 	user, err := s.userFromSession(r.Context(), sess)
 	if err != nil || user == nil {
-		jsonError(w, http.StatusUnauthorized, "not authenticated")
+		jsonError(w, http.StatusUnauthorized, "Not authenticated")
 		return
 	}
+	// Collect OAuth providers linked to this user.
+	var oauthProviders []string
+	oauthAccounts, err := s.store.ListUserOAuthAccounts(r.Context(), user.ID)
+	if err == nil {
+		for _, oa := range oauthAccounts {
+			oauthProviders = append(oauthProviders, oa.Provider)
+		}
+	}
+	if oauthProviders == nil {
+		oauthProviders = []string{}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"email":    user.Email,
-		"role":     user.Role,
-		"is_owner": user.Role == "owner",
+		"email":           user.Email,
+		"role":            user.Role,
+		"is_owner":        user.Role == "owner",
+		"has_password":    user.PasswordHash != nil,
+		"oauth_providers": oauthProviders,
 	})
 }
 
@@ -882,24 +1185,24 @@ func (s *Server) handleVaultContext(w http.ResponseWriter, r *http.Request) {
 
 	sess := sessionFromContext(ctx)
 	if sess == nil || sess.UserID == "" {
-		jsonError(w, http.StatusUnauthorized, "not authenticated")
+		jsonError(w, http.StatusUnauthorized, "Not authenticated")
 		return
 	}
 	user, err := s.userFromSession(ctx, sess)
 	if err != nil || user == nil {
-		jsonError(w, http.StatusUnauthorized, "not authenticated")
+		jsonError(w, http.StatusUnauthorized, "Not authenticated")
 		return
 	}
 
 	vault, err := s.store.GetVault(ctx, vaultName)
 	if err != nil || vault == nil {
-		jsonError(w, http.StatusNotFound, "vault not found")
+		jsonError(w, http.StatusNotFound, "Vault not found")
 		return
 	}
 
 	has, err := s.store.HasVaultAccess(ctx, user.ID, vault.ID)
 	if err != nil || !has {
-		jsonError(w, http.StatusForbidden, "no vault access")
+		jsonError(w, http.StatusForbidden, "No vault access")
 		return
 	}
 
@@ -919,7 +1222,7 @@ func (s *Server) handleVaultInviteDetails(w http.ResponseWriter, r *http.Request
 
 	inv, err := s.store.GetVaultInviteByToken(ctx, token)
 	if err != nil || inv == nil {
-		jsonError(w, http.StatusNotFound, "invite not found")
+		jsonError(w, http.StatusNotFound, "Invite not found")
 		return
 	}
 
@@ -983,23 +1286,23 @@ func (s *Server) handleProposalApproveDetails(w http.ResponseWriter, r *http.Req
 	idStr := r.URL.Query().Get("id")
 
 	if token == "" {
-		jsonError(w, http.StatusBadRequest, "missing token")
+		jsonError(w, http.StatusBadRequest, "Missing token")
 		return
 	}
 
 	cs, err := s.store.GetProposalByApprovalToken(ctx, token)
 	if err != nil || cs == nil {
-		jsonError(w, http.StatusNotFound, "invalid or expired approval link")
+		jsonError(w, http.StatusNotFound, "Invalid or expired approval link")
 		return
 	}
 
 	if id, err := strconv.Atoi(idStr); err != nil || id != cs.ID {
-		jsonError(w, http.StatusBadRequest, "proposal ID mismatch")
+		jsonError(w, http.StatusBadRequest, "Proposal ID mismatch")
 		return
 	}
 
 	if cs.ApprovalTokenExpiresAt != nil && time.Now().After(*cs.ApprovalTokenExpiresAt) {
-		jsonError(w, http.StatusGone, "approval link has expired")
+		jsonError(w, http.StatusGone, "Approval link has expired")
 		return
 	}
 
@@ -1015,7 +1318,7 @@ func (s *Server) handleProposalApproveDetails(w http.ResponseWriter, r *http.Req
 
 	ns, err := s.store.GetVaultByID(ctx, cs.VaultID)
 	if err != nil || ns == nil {
-		jsonError(w, http.StatusInternalServerError, "could not load vault details")
+		jsonError(w, http.StatusInternalServerError, "Could not load vault details")
 		return
 	}
 
@@ -1057,7 +1360,7 @@ func (s *Server) handleProposalApproveDetails(w http.ResponseWriter, r *http.Req
 func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 	indexHTML, err := fs.ReadFile(webDistFS, "webdist/index.html")
 	if err != nil {
-		http.Error(w, "frontend not built", http.StatusInternalServerError)
+		http.Error(w, "Frontend not built", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1091,25 +1394,66 @@ func userKDFParams(u *store.User) crypto.KDFParams {
 
 // --- Rate limiting ---
 
-// clientIP extracts the client's IP address. When behind a reverse proxy
-// (detected via X-Forwarded-For header), uses the rightmost non-empty entry.
-// Falls back to RemoteAddr for direct connections.
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		// Use the last entry (closest to the proxy / most trustworthy).
-		for i := len(parts) - 1; i >= 0; i-- {
-			ip := strings.TrimSpace(parts[i])
-			if ip != "" {
-				return ip
+// trustedProxyCIDRs holds parsed CIDR ranges from AGENT_VAULT_TRUSTED_PROXIES.
+// When non-empty, X-Forwarded-For is only trusted if RemoteAddr matches one of these.
+var trustedProxyCIDRs []*net.IPNet
+
+func init() {
+	if raw := os.Getenv("AGENT_VAULT_TRUSTED_PROXIES"); raw != "" {
+		for _, cidr := range strings.Split(raw, ",") {
+			cidr = strings.TrimSpace(cidr)
+			if cidr == "" {
+				continue
+			}
+			// Allow bare IPs (e.g. "10.0.0.1") by appending /32 or /128.
+			if !strings.Contains(cidr, "/") {
+				if strings.Contains(cidr, ":") {
+					cidr += "/128"
+				} else {
+					cidr += "/32"
+				}
+			}
+			if _, ipNet, err := net.ParseCIDR(cidr); err == nil {
+				trustedProxyCIDRs = append(trustedProxyCIDRs, ipNet)
 			}
 		}
 	}
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-	if ip == "" {
-		ip = r.RemoteAddr
+}
+
+// clientIP extracts the client's IP address. X-Forwarded-For is only trusted
+// when AGENT_VAULT_TRUSTED_PROXIES is configured and the direct connection
+// comes from a listed proxy. Falls back to RemoteAddr for direct connections.
+func clientIP(r *http.Request) string {
+	remoteIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if remoteIP == "" {
+		remoteIP = r.RemoteAddr
 	}
-	return ip
+
+	// Only trust XFF when the request comes from a configured trusted proxy.
+	if len(trustedProxyCIDRs) > 0 {
+		ip := net.ParseIP(remoteIP)
+		trusted := false
+		if ip != nil {
+			for _, cidr := range trustedProxyCIDRs {
+				if cidr.Contains(ip) {
+					trusted = true
+					break
+				}
+			}
+		}
+		if trusted {
+			if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+				parts := strings.Split(xff, ",")
+				for i := len(parts) - 1; i >= 0; i-- {
+					entry := strings.TrimSpace(parts[i])
+					if entry != "" {
+						return entry
+					}
+				}
+			}
+		}
+	}
+	return remoteIP
 }
 
 // slidingWindowLimiter is a generic sliding-window rate limiter keyed by string.
@@ -1173,7 +1517,10 @@ const (
 var (
 	loginIPLimiter    = newSlidingWindowLimiter(loginRateWindow, loginRateMax, 10000)
 	loginEmailLimiter = newSlidingWindowLimiter(loginRateWindow, loginRateMax, 10000)
-	registerLimiter   = newSlidingWindowLimiter(loginRateWindow, 5, 10000) // 5 registrations per IP per 5 min
+	registerLimiter          = newSlidingWindowLimiter(loginRateWindow, 5, 10000) // 5 registrations per IP per 5 min
+	forgotPasswordLimiter    = newSlidingWindowLimiter(loginRateWindow, 5, 10000) // 5 forgot-password requests per IP per 5 min
+	vaultInviteAcceptLimiter = newSlidingWindowLimiter(loginRateWindow, 10, 10000) // 10 invite accepts per IP per 5 min
+	resetVerifyLimiter    = &verifyRateLimiter{attempts: make(map[string]int), maxKeys: maxVerifyKeys}
 )
 
 // dummyPasswordHash and dummyPasswordSalt are pre-computed KDF outputs used to
@@ -1192,14 +1539,14 @@ func init() {
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" || req.Password == "" {
-		jsonError(w, http.StatusBadRequest, "email and password are required")
+		jsonError(w, http.StatusBadRequest, "Email and password are required")
 		return
 	}
 
 	// Rate limit by IP and by email.
 	ip := clientIP(r)
 	if !loginIPLimiter.allow(ip) || !loginEmailLimiter.allow(req.Email) {
-		http.Error(w, `{"error":"too many login attempts, try again later"}`, http.StatusTooManyRequests)
+		http.Error(w, `{"error":"Too many login attempts, try again later"}`, http.StatusTooManyRequests)
 		return
 	}
 
@@ -1209,27 +1556,34 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Run KDF against dummy hash to equalize response time (prevent user enumeration).
 		auth.VerifyUserPassword([]byte(req.Password), dummyPasswordHash, dummyPasswordSalt, dummyKDFParams)
-		http.Error(w, `{"error":"invalid email or password"}`, http.StatusUnauthorized)
+		http.Error(w, `{"error":"Invalid email or password"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// OAuth-only user trying to use password login — run dummy KDF to prevent timing attacks.
+	if user.PasswordHash == nil {
+		auth.VerifyUserPassword([]byte(req.Password), dummyPasswordHash, dummyPasswordSalt, dummyKDFParams)
+		http.Error(w, `{"error":"This account uses social login. Use the 'Continue with Google' button on the login page."}`, http.StatusUnauthorized)
 		return
 	}
 
 	if !auth.VerifyUserPassword([]byte(req.Password), user.PasswordHash, user.PasswordSalt, userKDFParams(user)) {
-		http.Error(w, `{"error":"invalid email or password"}`, http.StatusUnauthorized)
+		http.Error(w, `{"error":"Invalid email or password"}`, http.StatusUnauthorized)
 		return
 	}
 
 	if !user.IsActive {
-		http.Error(w, `{"error":"invalid email or password"}`, http.StatusUnauthorized)
+		http.Error(w, `{"error":"Invalid email or password"}`, http.StatusUnauthorized)
 		return
 	}
 
 	session, err := s.store.CreateSession(ctx, user.ID, time.Now().Add(sessionTTL))
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to create session")
+		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
 	}
 
-	http.SetCookie(w, sessionCookie(r, session.ID, int(sessionTTL.Seconds())))
+	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(sessionTTL.Seconds())))
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(loginResponse{
@@ -1244,44 +1598,52 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		NewPassword     string `json:"new_password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid request body")
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if req.CurrentPassword == "" || req.NewPassword == "" {
-		jsonError(w, http.StatusBadRequest, "current_password and new_password are required")
+	if req.NewPassword == "" {
+		jsonError(w, http.StatusBadRequest, "New_password is required")
 		return
 	}
 	if len(req.NewPassword) < 8 {
-		jsonError(w, http.StatusBadRequest, "new password must be at least 8 characters")
+		jsonError(w, http.StatusBadRequest, "New password must be at least 8 characters")
 		return
 	}
 
 	ctx := r.Context()
 	sess := sessionFromContext(ctx)
 	if sess == nil || sess.UserID == "" {
-		jsonError(w, http.StatusForbidden, "user session required")
+		jsonError(w, http.StatusForbidden, "User session required")
 		return
 	}
 
 	user, err := s.store.GetUserByID(ctx, sess.UserID)
 	if err != nil || user == nil {
-		jsonError(w, http.StatusInternalServerError, "failed to load user")
+		jsonError(w, http.StatusInternalServerError, "Failed to load user")
 		return
 	}
 
-	if !auth.VerifyUserPassword([]byte(req.CurrentPassword), user.PasswordHash, user.PasswordSalt, userKDFParams(user)) {
-		jsonError(w, http.StatusUnauthorized, "current password is incorrect")
-		return
+	// OAuth-only users (no password) can set a password without providing current_password.
+	// Users with an existing password must verify it first.
+	if user.PasswordHash != nil {
+		if req.CurrentPassword == "" {
+			jsonError(w, http.StatusBadRequest, "Current_password is required")
+			return
+		}
+		if !auth.VerifyUserPassword([]byte(req.CurrentPassword), user.PasswordHash, user.PasswordSalt, userKDFParams(user)) {
+			jsonError(w, http.StatusUnauthorized, "Current password is incorrect")
+			return
+		}
 	}
 
 	hash, salt, newKDFParams, err := auth.HashUserPassword([]byte(req.NewPassword))
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to hash password")
+		jsonError(w, http.StatusInternalServerError, "Failed to hash password")
 		return
 	}
 
 	if err := s.store.UpdateUserPassword(ctx, user.ID, hash, salt, newKDFParams.Time, newKDFParams.Memory, newKDFParams.Threads); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to update password")
+		jsonError(w, http.StatusInternalServerError, "Failed to update password")
 		return
 	}
 
@@ -1291,11 +1653,11 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	newSess, err := s.store.CreateSession(ctx, user.ID, time.Now().Add(sessionTTL))
 	if err != nil {
 		// Password was changed but session creation failed — user can re-login.
-		jsonError(w, http.StatusInternalServerError, "password changed but failed to create new session")
+		jsonError(w, http.StatusInternalServerError, "Password changed but failed to create new session")
 		return
 	}
 
-	http.SetCookie(w, sessionCookie(r, newSess.ID, int(sessionTTL.Seconds())))
+	http.SetCookie(w, sessionCookie(r, s.baseURL, newSess.ID, int(sessionTTL.Seconds())))
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(loginResponse{
@@ -1308,29 +1670,29 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	sess := sessionFromContext(ctx)
 	if sess == nil || sess.UserID == "" {
-		jsonError(w, http.StatusForbidden, "user session required")
+		jsonError(w, http.StatusForbidden, "User session required")
 		return
 	}
 
 	user, err := s.store.GetUserByID(ctx, sess.UserID)
 	if err != nil || user == nil {
-		jsonError(w, http.StatusInternalServerError, "failed to load user")
+		jsonError(w, http.StatusInternalServerError, "Failed to load user")
 		return
 	}
 
 	if user.Role == "owner" {
-		jsonError(w, http.StatusConflict, "owners cannot delete their own account; transfer ownership first")
+		jsonError(w, http.StatusConflict, "Owners cannot delete their own account; transfer ownership first")
 		return
 	}
 
 	_ = s.store.DeleteUserSessions(ctx, user.ID)
 	if err := s.store.DeleteUser(ctx, user.ID); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to delete account")
+		jsonError(w, http.StatusInternalServerError, "Failed to delete account")
 		return
 	}
 
 	// Clear session cookie.
-	http.SetCookie(w, sessionCookie(r, "", -1))
+	http.SetCookie(w, sessionCookie(r, s.baseURL, "", -1))
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "email": user.Email})
@@ -1347,22 +1709,47 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		} else if c, err := r.Cookie("av_session"); err == nil && c.Value != "" {
 			token = c.Value
 		} else {
-			http.Error(w, `{"error":"authorization required"}`, http.StatusUnauthorized)
+			http.Error(w, `{"error":"Authorization required"}`, http.StatusUnauthorized)
 			return
 		}
 
 		sess, err := s.store.GetSession(r.Context(), token)
 		if err != nil || sess == nil {
-			http.Error(w, `{"error":"invalid or expired session"}`, http.StatusUnauthorized)
+			http.Error(w, `{"error":"Invalid or expired session"}`, http.StatusUnauthorized)
 			return
 		}
 		if time.Now().After(sess.ExpiresAt) {
-			http.Error(w, `{"error":"session expired"}`, http.StatusUnauthorized)
+			http.Error(w, `{"error":"Session expired"}`, http.StatusUnauthorized)
 			return
 		}
 
 		ctx := context.WithValue(r.Context(), sessionContextKey, sess)
 		next(w, r.WithContext(ctx))
+	}
+}
+
+// optionalAuth is like requireAuth but does not reject unauthenticated
+// requests. If a valid session token is present it is placed in context;
+// otherwise the handler runs without a session.
+func (s *Server) optionalAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var token string
+		header := r.Header.Get("Authorization")
+		if strings.HasPrefix(header, "Bearer ") {
+			token = strings.TrimPrefix(header, "Bearer ")
+		} else if c, err := r.Cookie("av_session"); err == nil && c.Value != "" {
+			token = c.Value
+		}
+
+		if token != "" {
+			if sess, err := s.store.GetSession(r.Context(), token); err == nil && sess != nil && !time.Now().After(sess.ExpiresAt) {
+				ctx := context.WithValue(r.Context(), sessionContextKey, sess)
+				next(w, r.WithContext(ctx))
+				return
+			}
+		}
+
+		next(w, r)
 	}
 }
 
@@ -1378,7 +1765,7 @@ type scopedSessionResponse struct {
 func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 	var req scopedSessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Vault == "" {
-		http.Error(w, `{"error":"vault is required"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"Vault is required"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -1386,7 +1773,7 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 
 	ns, err := s.store.GetVault(ctx, req.Vault)
 	if err != nil || ns == nil {
-		http.Error(w, fmt.Sprintf(`{"error":"vault %q not found"}`, req.Vault), http.StatusNotFound)
+		http.Error(w, fmt.Sprintf(`{"error":"Vault %q not found"}`, req.Vault), http.StatusNotFound)
 		return
 	}
 
@@ -1397,7 +1784,7 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 
 	sess, err := s.store.CreateScopedSession(ctx, ns.ID, "", time.Now().Add(sessionTTL))
 	if err != nil {
-		http.Error(w, `{"error":"failed to create scoped session"}`, http.StatusInternalServerError)
+		http.Error(w, `{"error":"Failed to create scoped session"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -1420,14 +1807,14 @@ type credentialsSetResponse struct {
 func (s *Server) handleCredentialsSet(w http.ResponseWriter, r *http.Request) {
 	var req credentialsSetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"Invalid request body"}`, http.StatusBadRequest)
 		return
 	}
 	if req.Vault == "" {
 		req.Vault = store.DefaultVault
 	}
 	if len(req.Credentials) == 0 {
-		http.Error(w, `{"error":"credentials map is required"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"Credentials map is required"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -1435,7 +1822,7 @@ func (s *Server) handleCredentialsSet(w http.ResponseWriter, r *http.Request) {
 
 	ns, err := s.store.GetVault(ctx, req.Vault)
 	if err != nil || ns == nil {
-		http.Error(w, fmt.Sprintf(`{"error":"vault %q not found"}`, req.Vault), http.StatusNotFound)
+		http.Error(w, fmt.Sprintf(`{"error":"Vault %q not found"}`, req.Vault), http.StatusNotFound)
 		return
 	}
 
@@ -1448,11 +1835,11 @@ func (s *Server) handleCredentialsSet(w http.ResponseWriter, r *http.Request) {
 	for key, value := range req.Credentials {
 		ciphertext, nonce, err := crypto.Encrypt([]byte(value), s.encKey)
 		if err != nil {
-			http.Error(w, `{"error":"encryption failed"}`, http.StatusInternalServerError)
+			http.Error(w, `{"error":"Encryption failed"}`, http.StatusInternalServerError)
 			return
 		}
 		if _, err := s.store.SetCredential(ctx, ns.ID, key, ciphertext, nonce); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"failed to set credential %q"}`, key), http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf(`{"error":"Failed to set credential %q"}`, key), http.StatusInternalServerError)
 			return
 		}
 		setKeys = append(setKeys, key)
@@ -1476,7 +1863,7 @@ func (s *Server) handleCredentialsList(w http.ResponseWriter, r *http.Request) {
 
 	ns, err := s.store.GetVault(ctx, vault)
 	if err != nil || ns == nil {
-		http.Error(w, fmt.Sprintf(`{"error":"vault %q not found"}`, vault), http.StatusNotFound)
+		http.Error(w, fmt.Sprintf(`{"error":"Vault %q not found"}`, vault), http.StatusNotFound)
 		return
 	}
 
@@ -1487,7 +1874,7 @@ func (s *Server) handleCredentialsList(w http.ResponseWriter, r *http.Request) {
 
 	creds, err := s.store.ListCredentials(ctx, ns.ID)
 	if err != nil {
-		http.Error(w, `{"error":"failed to list credentials"}`, http.StatusInternalServerError)
+		http.Error(w, `{"error":"Failed to list credentials"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -1512,14 +1899,14 @@ type credentialsDeleteResponse struct {
 func (s *Server) handleCredentialsDelete(w http.ResponseWriter, r *http.Request) {
 	var req credentialsDeleteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"Invalid request body"}`, http.StatusBadRequest)
 		return
 	}
 	if req.Vault == "" {
 		req.Vault = store.DefaultVault
 	}
 	if len(req.Keys) == 0 {
-		http.Error(w, `{"error":"keys list is required"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"Keys list is required"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -1527,7 +1914,7 @@ func (s *Server) handleCredentialsDelete(w http.ResponseWriter, r *http.Request)
 
 	ns, err := s.store.GetVault(ctx, req.Vault)
 	if err != nil || ns == nil {
-		http.Error(w, fmt.Sprintf(`{"error":"vault %q not found"}`, req.Vault), http.StatusNotFound)
+		http.Error(w, fmt.Sprintf(`{"error":"Vault %q not found"}`, req.Vault), http.StatusNotFound)
 		return
 	}
 
@@ -1539,7 +1926,7 @@ func (s *Server) handleCredentialsDelete(w http.ResponseWriter, r *http.Request)
 	var deleted []string
 	for _, key := range req.Keys {
 		if err := s.store.DeleteCredential(ctx, ns.ID, key); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"failed to delete credential %q"}`, key), http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf(`{"error":"Failed to delete credential %q"}`, key), http.StatusInternalServerError)
 			return
 		}
 		deleted = append(deleted, key)
@@ -1581,13 +1968,13 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	// Require scoped session — global admin sessions may not use discovery.
 	sess := sessionFromContext(ctx)
 	if sess == nil || sess.VaultID == "" {
-		proxyError(w, http.StatusForbidden, "forbidden", "discovery requires a vault-scoped session")
+		proxyError(w, http.StatusForbidden, "forbidden", "Discovery requires a vault-scoped session")
 		return
 	}
 
 	ns, err := s.store.GetVaultByID(ctx, sess.VaultID)
 	if err != nil || ns == nil {
-		proxyError(w, http.StatusInternalServerError, "internal", "failed to resolve vault")
+		proxyError(w, http.StatusInternalServerError, "internal", "Failed to resolve vault")
 		return
 	}
 
@@ -1609,7 +1996,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 
 	var rules []broker.Rule
 	if err := json.Unmarshal([]byte(brokerCfg.RulesJSON), &rules); err != nil {
-		proxyError(w, http.StatusInternalServerError, "internal", "failed to parse broker rules")
+		proxyError(w, http.StatusInternalServerError, "internal", "Failed to parse broker rules")
 		return
 	}
 
@@ -1647,13 +2034,13 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	// Enforce scoped session.
 	sess := sessionFromContext(ctx)
 	if sess == nil || sess.VaultID == "" {
-		jsonError(w, http.StatusForbidden, "proposals require a vault-scoped session")
+		jsonError(w, http.StatusForbidden, "Proposals require a vault-scoped session")
 		return
 	}
 
 	var req proposalCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid request body")
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -1673,11 +2060,11 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	// Check pending limit.
 	count, err := s.store.CountPendingProposals(ctx, sess.VaultID)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to count pending proposals")
+		jsonError(w, http.StatusInternalServerError, "Failed to count pending proposals")
 		return
 	}
 	if count >= maxPendingProposals {
-		jsonError(w, http.StatusTooManyRequests, fmt.Sprintf("too many pending proposals (max %d)", maxPendingProposals))
+		jsonError(w, http.StatusTooManyRequests, fmt.Sprintf("Too many pending proposals (max %d)", maxPendingProposals))
 		return
 	}
 
@@ -1690,7 +2077,7 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 		if req.Credentials[i].Value != nil && *req.Credentials[i].Value != "" {
 			ct, nonce, err := crypto.Encrypt([]byte(*req.Credentials[i].Value), s.encKey)
 			if err != nil {
-				jsonError(w, http.StatusInternalServerError, "encryption failed")
+				jsonError(w, http.StatusInternalServerError, "Encryption failed")
 				return
 			}
 			encCredentials[req.Credentials[i].Key] = store.EncryptedCredential{Ciphertext: ct, Nonce: nonce}
@@ -1705,7 +2092,7 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 
 	cs, err := s.store.CreateProposal(ctx, sess.VaultID, sess.ID, string(rulesJSON), string(credentialsJSON), req.Message, req.UserMessage, encCredentials)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to create proposal")
+		jsonError(w, http.StatusInternalServerError, "Failed to create proposal")
 		return
 	}
 
@@ -1733,20 +2120,20 @@ func (s *Server) handleProposalGet(w http.ResponseWriter, r *http.Request) {
 
 	sess := sessionFromContext(ctx)
 	if sess == nil || sess.VaultID == "" {
-		jsonError(w, http.StatusForbidden, "proposals require a vault-scoped session")
+		jsonError(w, http.StatusForbidden, "Proposals require a vault-scoped session")
 		return
 	}
 
 	idStr := r.PathValue("id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid proposal id")
+		jsonError(w, http.StatusBadRequest, "Invalid proposal id")
 		return
 	}
 
 	cs, err := s.store.GetProposal(ctx, sess.VaultID, id)
 	if err != nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("proposal %d not found", id))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Proposal %d not found", id))
 		return
 	}
 
@@ -1768,14 +2155,14 @@ func (s *Server) handleProposalList(w http.ResponseWriter, r *http.Request) {
 
 	sess := sessionFromContext(ctx)
 	if sess == nil || sess.VaultID == "" {
-		jsonError(w, http.StatusForbidden, "proposals require a vault-scoped session")
+		jsonError(w, http.StatusForbidden, "Proposals require a vault-scoped session")
 		return
 	}
 
 	status := r.URL.Query().Get("status")
 	list, err := s.store.ListProposals(ctx, sess.VaultID, status)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to list proposals")
+		jsonError(w, http.StatusInternalServerError, "Failed to list proposals")
 		return
 	}
 
@@ -1814,13 +2201,13 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 	idStr := r.PathValue("id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid proposal id")
+		jsonError(w, http.StatusBadRequest, "Invalid proposal id")
 		return
 	}
 
 	var req adminApproveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid request body")
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 	if req.Vault == "" {
@@ -1829,41 +2216,41 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 
 	ns, err := s.store.GetVault(ctx, req.Vault)
 	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", req.Vault))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", req.Vault))
 		return
 	}
 
-	// Approving proposals requires member+ role.
-	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
+	// Approving proposals: agents need admin role; users need vault access.
+	if _, err := s.requireProposalReview(w, r, ns.ID); err != nil {
 		return
 	}
 
 	cs, err := s.store.GetProposal(ctx, ns.ID, id)
 	if err != nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("proposal %d not found", id))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Proposal %d not found", id))
 		return
 	}
 	if cs.Status != "pending" {
-		jsonError(w, http.StatusConflict, fmt.Sprintf("proposal %d is already %s", id, cs.Status))
+		jsonError(w, http.StatusConflict, fmt.Sprintf("Proposal %d is already %s", id, cs.Status))
 		return
 	}
 
 	// Parse proposed rules and credential slots.
 	var proposedRules []proposal.Rule
 	if err := json.Unmarshal([]byte(cs.RulesJSON), &proposedRules); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to parse proposal rules")
+		jsonError(w, http.StatusInternalServerError, "Failed to parse proposal rules")
 		return
 	}
 	var credentialSlots []proposal.CredentialSlot
 	if err := json.Unmarshal([]byte(cs.CredentialsJSON), &credentialSlots); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to parse proposal credentials")
+		jsonError(w, http.StatusInternalServerError, "Failed to parse proposal credentials")
 		return
 	}
 
 	// Load agent-provided encrypted credentials.
 	agentCredentials, err := s.store.GetProposalCredentials(ctx, ns.ID, cs.ID)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to load proposal credentials")
+		jsonError(w, http.StatusInternalServerError, "Failed to load proposal credentials")
 		return
 	}
 
@@ -1885,29 +2272,29 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 			// Agent-provided value: decrypt to re-encrypt with current key.
 			enc, ok := agentCredentials[slot.Key]
 			if !ok {
-				jsonError(w, http.StatusBadRequest, fmt.Sprintf("agent-provided credential %q not found in proposal", slot.Key))
+				jsonError(w, http.StatusBadRequest, fmt.Sprintf("Agent-provided credential %q not found in proposal", slot.Key))
 				return
 			}
 			decrypted, err := crypto.Decrypt(enc.Ciphertext, enc.Nonce, s.encKey)
 			if err != nil {
-				jsonError(w, http.StatusInternalServerError, fmt.Sprintf("failed to decrypt agent-provided credential %q", slot.Key))
+				jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to decrypt agent-provided credential %q", slot.Key))
 				return
 			}
 			plaintext = string(decrypted)
 			crypto.WipeBytes(decrypted)
 		} else {
-			jsonError(w, http.StatusBadRequest, fmt.Sprintf("missing value for credential %q", slot.Key))
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("Missing value for credential %q", slot.Key))
 			return
 		}
 
 		if plaintext == "" {
-			jsonError(w, http.StatusBadRequest, fmt.Sprintf("credential %q cannot be empty", slot.Key))
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("Credential %q cannot be empty", slot.Key))
 			return
 		}
 
 		ct, nonce, err := crypto.Encrypt([]byte(plaintext), s.encKey)
 		if err != nil {
-			jsonError(w, http.StatusInternalServerError, fmt.Sprintf("failed to encrypt credential %q", slot.Key))
+			jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to encrypt credential %q", slot.Key))
 			return
 		}
 		finalCredentials[slot.Key] = store.EncryptedCredential{Ciphertext: ct, Nonce: nonce}
@@ -1922,20 +2309,20 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 
 	var existingRules []broker.Rule
 	if err := json.Unmarshal([]byte(bc.RulesJSON), &existingRules); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to parse existing rules")
+		jsonError(w, http.StatusInternalServerError, "Failed to parse existing rules")
 		return
 	}
 
 	merged, _ := proposal.MergeRules(existingRules, proposedRules)
 	mergedJSON, err := json.Marshal(merged)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to marshal merged rules")
+		jsonError(w, http.StatusInternalServerError, "Failed to marshal merged rules")
 		return
 	}
 
 	// Apply atomically.
 	if err := s.store.ApplyProposal(ctx, ns.ID, cs.ID, string(mergedJSON), finalCredentials, deleteCredentialKeys); err != nil {
-		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("failed to apply proposal: %v", err))
+		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to apply proposal: %v", err))
 		return
 	}
 
@@ -1957,13 +2344,13 @@ func (s *Server) handleAdminProposalReject(w http.ResponseWriter, r *http.Reques
 	idStr := r.PathValue("id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid proposal id")
+		jsonError(w, http.StatusBadRequest, "Invalid proposal id")
 		return
 	}
 
 	var req adminRejectRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid request body")
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 	if req.Vault == "" {
@@ -1972,27 +2359,27 @@ func (s *Server) handleAdminProposalReject(w http.ResponseWriter, r *http.Reques
 
 	ns, err := s.store.GetVault(ctx, req.Vault)
 	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", req.Vault))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", req.Vault))
 		return
 	}
 
-	// Rejecting proposals requires member+ role.
-	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
+	// Rejecting proposals: agents need admin role; users need vault access.
+	if _, err := s.requireProposalReview(w, r, ns.ID); err != nil {
 		return
 	}
 
 	cs, err := s.store.GetProposal(ctx, ns.ID, id)
 	if err != nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("proposal %d not found", id))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Proposal %d not found", id))
 		return
 	}
 	if cs.Status != "pending" {
-		jsonError(w, http.StatusConflict, fmt.Sprintf("proposal %d is already %s", id, cs.Status))
+		jsonError(w, http.StatusConflict, fmt.Sprintf("Proposal %d is already %s", id, cs.Status))
 		return
 	}
 
 	if err := s.store.UpdateProposalStatus(ctx, ns.ID, id, "rejected", req.Reason); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to reject proposal")
+		jsonError(w, http.StatusInternalServerError, "Failed to reject proposal")
 		return
 	}
 
@@ -2003,25 +2390,26 @@ func (s *Server) handleAdminProposalReject(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// isSecureRequest returns true if the request arrived over TLS (direct or via
-// a trusted reverse proxy such as Fly.io or nginx).
-func isSecureRequest(r *http.Request) bool {
+// isSecureRequest returns true if the request arrived over TLS (direct) or if
+// the configured baseURL uses HTTPS (proxy deployments). We derive the flag
+// from the trusted server-side baseURL rather than the client-supplied
+// X-Forwarded-Proto header to avoid spoofing.
+func isSecureRequest(r *http.Request, baseURL string) bool {
 	if r.TLS != nil {
 		return true
 	}
-	proto := r.Header.Get("X-Forwarded-Proto")
-	return proto == "https"
+	return strings.HasPrefix(baseURL, "https://")
 }
 
 // sessionCookie builds an av_session cookie with all hardening flags set.
-// Secure is set dynamically based on whether the request arrived over HTTPS.
-func sessionCookie(r *http.Request, value string, maxAge int) *http.Cookie {
+// Secure is set based on TLS state or the server's configured baseURL.
+func sessionCookie(r *http.Request, baseURL, value string, maxAge int) *http.Cookie {
 	return &http.Cookie{
 		Name:     "av_session",
 		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   isSecureRequest(r),
+		Secure:   isSecureRequest(r, baseURL),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   maxAge,
 	}
@@ -2047,7 +2435,7 @@ func proxyForbiddenWithHint(w http.ResponseWriter, targetHost, nsName string) {
 	w.WriteHeader(http.StatusForbidden)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"error":   "forbidden",
-		"message": fmt.Sprintf("no broker rule matching host %q in vault %q", targetHost, nsName),
+		"message": fmt.Sprintf("No broker rule matching host %q in vault %q", targetHost, nsName),
 		"proposal_hint": map[string]interface{}{
 			"host":                 targetHost,
 			"endpoint":             "POST /v1/proposals",
@@ -2107,7 +2495,6 @@ func isValidProxyHost(host string) bool {
 // requests to upstream services. All other agent headers are dropped.
 var proxyPassthroughHeaders = []string{
 	"Content-Type",
-	"Content-Length",
 	"Content-Encoding",
 	"Accept",
 	"Accept-Encoding",
@@ -2140,20 +2527,20 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// 1. Parse target host and path from /proxy/{target_host}/{path...}
 	trimmed := strings.TrimPrefix(r.URL.Path, "/proxy/")
 	if trimmed == "" {
-		proxyError(w, http.StatusBadRequest, "bad_request", "missing target host in proxy URL")
+		proxyError(w, http.StatusBadRequest, "bad_request", "Missing target host in proxy URL")
 		return
 	}
 	// Split into host and remaining path.
 	targetHost, remainingPath, _ := strings.Cut(trimmed, "/")
 	if targetHost == "" {
-		proxyError(w, http.StatusBadRequest, "bad_request", "missing target host in proxy URL")
+		proxyError(w, http.StatusBadRequest, "bad_request", "Missing target host in proxy URL")
 		return
 	}
 
 	// Validate targetHost is a safe hostname (no @, ?, #, spaces, control chars).
 	// This prevents userinfo injection (e.g. host@evil.com) in the outbound URL.
 	if !isValidProxyHost(targetHost) {
-		proxyError(w, http.StatusBadRequest, "bad_request", "invalid target host")
+		proxyError(w, http.StatusBadRequest, "bad_request", "Invalid target host")
 		return
 	}
 
@@ -2162,14 +2549,14 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// 2. Enforce scoped session — global admin sessions may not use the proxy.
 	sess := sessionFromContext(ctx)
 	if sess == nil || sess.VaultID == "" {
-		proxyError(w, http.StatusForbidden, "forbidden", "proxy requires a vault-scoped session")
+		proxyError(w, http.StatusForbidden, "forbidden", "Proxy requires a vault-scoped session")
 		return
 	}
 
 	// 3. Look up vault name for error messages.
 	ns, err := s.store.GetVaultByID(ctx, sess.VaultID)
 	if err != nil || ns == nil {
-		proxyError(w, http.StatusInternalServerError, "internal", "failed to resolve vault")
+		proxyError(w, http.StatusInternalServerError, "internal", "Failed to resolve vault")
 		return
 	}
 
@@ -2182,12 +2569,17 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	var rules []broker.Rule
 	if err := json.Unmarshal([]byte(brokerCfg.RulesJSON), &rules); err != nil {
-		proxyError(w, http.StatusInternalServerError, "internal", "failed to parse broker rules")
+		proxyError(w, http.StatusInternalServerError, "internal", "Failed to parse broker rules")
 		return
 	}
 
 	// 5. Match host against broker rules.
-	matched := broker.MatchHost(targetHost, rules)
+	// Strip port for rule matching (rules use bare hostnames).
+	matchHost := targetHost
+	if h, _, err := net.SplitHostPort(targetHost); err == nil {
+		matchHost = h
+	}
+	matched := broker.MatchHost(matchHost, rules)
 	if matched == nil {
 		proxyForbiddenWithHint(w, targetHost, ns.Name)
 		return
@@ -2206,7 +2598,8 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return string(plaintext), nil
 	})
 	if err != nil {
-		proxyError(w, http.StatusBadGateway, "credential_not_found", err.Error())
+		fmt.Fprintf(os.Stderr, "[agent-vault] credential resolution failed for vault %s: %v\n", sess.VaultID, err)
+		proxyError(w, http.StatusBadGateway, "credential_not_found", "A required credential could not be resolved; check vault configuration")
 		return
 	}
 
@@ -2222,7 +2615,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// 8. Build outbound request.
 	outReq, err := http.NewRequestWithContext(ctx, r.Method, targetURL, r.Body)
 	if err != nil {
-		proxyError(w, http.StatusInternalServerError, "internal", "failed to create outbound request")
+		proxyError(w, http.StatusInternalServerError, "internal", "Failed to create outbound request")
 		return
 	}
 
@@ -2246,7 +2639,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Sanitize error — do not leak internal IPs or hostnames to the agent.
 		proxyError(w, http.StatusBadGateway, "upstream_error",
-			fmt.Sprintf("failed to reach %s", targetHost))
+			fmt.Sprintf("Failed to reach %s", targetHost))
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -2284,26 +2677,26 @@ func (s *Server) handleInviteRedeem(w http.ResponseWriter, r *http.Request) {
 
 	inv, err := s.store.GetInviteByToken(ctx, token)
 	if err != nil || inv == nil {
-		proxyError(w, http.StatusNotFound, "invite_not_found", "invite not found")
+		proxyError(w, http.StatusNotFound, "invite_not_found", "Invite not found")
 		return
 	}
 
 	// Check status — return distinct codes for each terminal state.
 	switch inv.Status {
 	case "redeemed":
-		proxyError(w, http.StatusGone, "invite_redeemed", "this invite has already been used — ask for a new one")
+		proxyError(w, http.StatusGone, "invite_redeemed", "This invite has already been used — ask for a new one")
 		return
 	case "revoked":
-		proxyError(w, http.StatusGone, "invite_revoked", "this invite was revoked — ask for a new one")
+		proxyError(w, http.StatusGone, "invite_revoked", "This invite was revoked — ask for a new one")
 		return
 	case "expired":
-		proxyError(w, http.StatusGone, "invite_expired", "this invite has expired — ask for a new one")
+		proxyError(w, http.StatusGone, "invite_expired", "This invite has expired — ask for a new one")
 		return
 	}
 
 	// Lazy expiry check for pending invites whose TTL has passed.
 	if time.Now().After(inv.ExpiresAt) {
-		proxyError(w, http.StatusGone, "invite_expired", "this invite has expired — ask for a new one")
+		proxyError(w, http.StatusGone, "invite_expired", "This invite has expired — ask for a new one")
 		return
 	}
 
@@ -2320,21 +2713,21 @@ func (s *Server) handleInviteRedeem(w http.ResponseWriter, r *http.Request) {
 
 	// Burn the invite first to prevent double-redeem race conditions.
 	if err := s.store.RedeemInvite(ctx, token, ""); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to redeem invite")
+		jsonError(w, http.StatusInternalServerError, "Failed to redeem invite")
 		return
 	}
 
 	// Create a vault-scoped session for the agent with the invite's role.
 	sess, err := s.store.CreateScopedSession(ctx, inv.VaultID, inv.VaultRole, time.Now().Add(sessionTTL))
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to create session")
+		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
 	}
 
 	// Build the onboarding payload — same data as /discover plus instructions.
 	ns, err := s.store.GetVaultByID(ctx, inv.VaultID)
 	if err != nil || ns == nil {
-		jsonError(w, http.StatusInternalServerError, "failed to resolve vault")
+		jsonError(w, http.StatusInternalServerError, "Failed to resolve vault")
 		return
 	}
 
@@ -2362,7 +2755,7 @@ func (s *Server) handleInviteList(w http.ResponseWriter, r *http.Request) {
 	}
 	ns, err := s.store.GetVault(ctx, nsName)
 	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, "vault not found")
+		jsonError(w, http.StatusNotFound, "Vault not found")
 		return
 	}
 
@@ -2374,7 +2767,7 @@ func (s *Server) handleInviteList(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 	invites, err := s.store.ListInvites(ctx, ns.ID, status)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to list invites")
+		jsonError(w, http.StatusInternalServerError, "Failed to list invites")
 		return
 	}
 
@@ -2437,7 +2830,7 @@ func (s *Server) handleInviteRevoke(w http.ResponseWriter, r *http.Request) {
 
 	inv, err := s.store.GetInviteByToken(ctx, token)
 	if err != nil || inv == nil {
-		proxyError(w, http.StatusNotFound, "invite_not_found", "invite not found")
+		proxyError(w, http.StatusNotFound, "invite_not_found", "Invite not found")
 		return
 	}
 
@@ -2447,12 +2840,12 @@ func (s *Server) handleInviteRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if inv.Status != "pending" {
-		jsonError(w, http.StatusConflict, fmt.Sprintf("invite is already %s", inv.Status))
+		jsonError(w, http.StatusConflict, fmt.Sprintf("Invite is already %s", inv.Status))
 		return
 	}
 
 	if err := s.store.RevokeInvite(ctx, token); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to revoke invite")
+		jsonError(w, http.StatusInternalServerError, "Failed to revoke invite")
 		return
 	}
 
@@ -2475,7 +2868,7 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 
 	var req userCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid request body")
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 	if err := auth.ValidateEmail(req.Email); err != nil {
@@ -2483,7 +2876,7 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(req.Password) < 8 {
-		jsonError(w, http.StatusBadRequest, "password must be at least 8 characters")
+		jsonError(w, http.StatusBadRequest, "Password must be at least 8 characters")
 		return
 	}
 
@@ -2491,25 +2884,25 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 
 	// Check email uniqueness.
 	if existing, _ := s.store.GetUserByEmail(ctx, req.Email); existing != nil {
-		jsonError(w, http.StatusConflict, fmt.Sprintf("user %q already exists", req.Email))
+		jsonError(w, http.StatusConflict, fmt.Sprintf("User %q already exists", req.Email))
 		return
 	}
 
 	hash, salt, kdfP, err := auth.HashUserPassword([]byte(req.Password))
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to hash password")
+		jsonError(w, http.StatusInternalServerError, "Failed to hash password")
 		return
 	}
 
 	user, err := s.store.CreateUser(ctx, req.Email, hash, salt, "member", kdfP.Time, kdfP.Memory, kdfP.Threads)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to create user")
+		jsonError(w, http.StatusInternalServerError, "Failed to create user")
 		return
 	}
 
 	// Admin-created users are active immediately (no email verification needed).
 	if err := s.store.ActivateUser(ctx, user.ID); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to activate user")
+		jsonError(w, http.StatusInternalServerError, "Failed to activate user")
 		return
 	}
 	user.IsActive = true
@@ -2518,11 +2911,11 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 	for _, nsName := range req.Vaults {
 		ns, err := s.store.GetVault(ctx, nsName)
 		if err != nil || ns == nil {
-			jsonError(w, http.StatusBadRequest, fmt.Sprintf("vault %q not found", nsName))
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("Vault %q not found", nsName))
 			return
 		}
 		if err := s.store.GrantVaultRole(ctx, user.ID, ns.ID, "member"); err != nil {
-			jsonError(w, http.StatusInternalServerError, fmt.Sprintf("failed to grant vault %q", nsName))
+			jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to grant vault %q", nsName))
 			return
 		}
 	}
@@ -2544,7 +2937,7 @@ func (s *Server) handleUserList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	users, err := s.store.ListUsers(ctx)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to list users")
+		jsonError(w, http.StatusInternalServerError, "Failed to list users")
 		return
 	}
 
@@ -2582,13 +2975,13 @@ func (s *Server) handleUserGet(w http.ResponseWriter, r *http.Request) {
 
 	sess := sessionFromContext(ctx)
 	if sess == nil || sess.UserID == "" {
-		jsonError(w, http.StatusForbidden, "user session required")
+		jsonError(w, http.StatusForbidden, "User session required")
 		return
 	}
 
 	caller, err := s.userFromSession(ctx, sess)
 	if err != nil || caller == nil {
-		jsonError(w, http.StatusForbidden, "invalid session")
+		jsonError(w, http.StatusForbidden, "Invalid session")
 		return
 	}
 
@@ -2599,13 +2992,13 @@ func (s *Server) handleUserGet(w http.ResponseWriter, r *http.Request) {
 
 	// Members can only view themselves.
 	if caller.Role != "owner" && caller.Email != email {
-		jsonError(w, http.StatusForbidden, "owner role required to view other users")
+		jsonError(w, http.StatusForbidden, "Owner role required to view other users")
 		return
 	}
 
 	user, err := s.store.GetUserByEmail(ctx, email)
 	if err != nil || user == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("user %q not found", email))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("User %q not found", email))
 		return
 	}
 
@@ -2636,7 +3029,7 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 
 	user, err := s.store.GetUserByEmail(ctx, email)
 	if err != nil || user == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("user %q not found", email))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("User %q not found", email))
 		return
 	}
 
@@ -2644,11 +3037,11 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 	if user.Role == "owner" {
 		count, err := s.store.CountOwners(ctx)
 		if err != nil {
-			jsonError(w, http.StatusInternalServerError, "failed to count owners")
+			jsonError(w, http.StatusInternalServerError, "Failed to count owners")
 			return
 		}
 		if count <= 1 {
-			jsonError(w, http.StatusConflict, "cannot remove the last owner")
+			jsonError(w, http.StatusConflict, "Cannot remove the last owner")
 			return
 		}
 	}
@@ -2656,7 +3049,7 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 	// Delete sessions, then user (grants cascade via FK).
 	_ = s.store.DeleteUserSessions(ctx, user.ID)
 	if err := s.store.DeleteUser(ctx, user.ID); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to delete user")
+		jsonError(w, http.StatusInternalServerError, "Failed to delete user")
 		return
 	}
 
@@ -2678,17 +3071,17 @@ func (s *Server) handleUserSetRole(w http.ResponseWriter, r *http.Request) {
 
 	var req setRoleRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid request body")
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 	if req.Role != "owner" && req.Role != "member" {
-		jsonError(w, http.StatusBadRequest, "role must be 'owner' or 'member'")
+		jsonError(w, http.StatusBadRequest, "Role must be 'owner' or 'member'")
 		return
 	}
 
 	user, err := s.store.GetUserByEmail(ctx, email)
 	if err != nil || user == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("user %q not found", email))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("User %q not found", email))
 		return
 	}
 
@@ -2696,17 +3089,17 @@ func (s *Server) handleUserSetRole(w http.ResponseWriter, r *http.Request) {
 	if user.Role == "owner" && req.Role == "member" {
 		count, err := s.store.CountOwners(ctx)
 		if err != nil {
-			jsonError(w, http.StatusInternalServerError, "failed to count owners")
+			jsonError(w, http.StatusInternalServerError, "Failed to count owners")
 			return
 		}
 		if count <= 1 {
-			jsonError(w, http.StatusConflict, "cannot demote the last owner")
+			jsonError(w, http.StatusConflict, "Cannot demote the last owner")
 			return
 		}
 	}
 
 	if err := s.store.UpdateUserRole(ctx, user.ID, req.Role); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to update role")
+		jsonError(w, http.StatusInternalServerError, "Failed to update role")
 		return
 	}
 
@@ -2766,13 +3159,13 @@ func (s *Server) handleEmailTest(w http.ResponseWriter, r *http.Request) {
 		"Agent Vault \u2014 Test Email",
 		"This is a test email from Agent Vault.\nIf you received this, your SMTP configuration is working correctly.",
 	); err != nil {
-		jsonError(w, http.StatusBadGateway, fmt.Sprintf("failed to send test email: %v", err))
+		jsonError(w, http.StatusBadGateway, fmt.Sprintf("Failed to send test email: %v", err))
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"message": "test email sent",
+		"message": "Test email sent",
 		"to":      to,
 	})
 }
@@ -2788,7 +3181,7 @@ func (s *Server) handleVaultInviteCreate(w http.ResponseWriter, r *http.Request)
 
 	vault, err := s.store.GetVault(ctx, vaultName)
 	if err != nil || vault == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", vaultName))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
 		return
 	}
 
@@ -2803,7 +3196,7 @@ func (s *Server) handleVaultInviteCreate(w http.ResponseWriter, r *http.Request)
 		Role  string `json:"role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid request body")
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 	if err := auth.ValidateEmail(req.Email); err != nil {
@@ -2814,13 +3207,13 @@ func (s *Server) handleVaultInviteCreate(w http.ResponseWriter, r *http.Request)
 		req.Role = "member"
 	}
 	if req.Role != "admin" && req.Role != "member" {
-		jsonError(w, http.StatusBadRequest, "role must be 'admin' or 'member'")
+		jsonError(w, http.StatusBadRequest, "Role must be 'admin' or 'member'")
 		return
 	}
 
 	// Check for existing pending invite for this email+vault.
 	if pending, _ := s.store.GetPendingVaultInviteByEmailAndVault(ctx, req.Email, vault.ID); pending != nil {
-		jsonError(w, http.StatusConflict, fmt.Sprintf("a pending invite already exists for %q in vault %q", req.Email, vaultName))
+		jsonError(w, http.StatusConflict, fmt.Sprintf("A pending invite already exists for %q in vault %q", req.Email, vaultName))
 		return
 	}
 
@@ -2828,19 +3221,25 @@ func (s *Server) handleVaultInviteCreate(w http.ResponseWriter, r *http.Request)
 	if existing, _ := s.store.GetUserByEmail(ctx, req.Email); existing != nil {
 		has, _ := s.store.HasVaultAccess(ctx, existing.ID, vault.ID)
 		if has {
-			jsonError(w, http.StatusConflict, fmt.Sprintf("user %q already has access to vault %q", req.Email, vaultName))
+			jsonError(w, http.StatusConflict, fmt.Sprintf("User %q already has access to vault %q", req.Email, vaultName))
 			return
 		}
+	}
+
+	// Check allowed email domains.
+	if msg := s.checkEmailDomain(ctx, req.Email); msg != "" {
+		jsonError(w, http.StatusForbidden, msg)
+		return
 	}
 
 	// Check pending invite limit.
 	count, err := s.store.CountPendingVaultInvites(ctx, vault.ID)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to count pending invites")
+		jsonError(w, http.StatusInternalServerError, "Failed to count pending invites")
 		return
 	}
 	if count >= maxPendingVaultInvites {
-		jsonError(w, http.StatusTooManyRequests, "too many pending vault invites")
+		jsonError(w, http.StatusTooManyRequests, "Too many pending vault invites")
 		return
 	}
 
@@ -2853,7 +3252,7 @@ func (s *Server) handleVaultInviteCreate(w http.ResponseWriter, r *http.Request)
 
 	inv, err := s.store.CreateVaultInvite(ctx, req.Email, vault.ID, req.Role, createdBy, time.Now().Add(vaultInviteTTL))
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to create invite")
+		jsonError(w, http.StatusInternalServerError, "Failed to create invite")
 		return
 	}
 
@@ -2918,13 +3317,19 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if token != "" {
 		_ = s.store.DeleteSession(r.Context(), token)
 	}
-	http.SetCookie(w, sessionCookie(r, "", -1))
+	http.SetCookie(w, sessionCookie(r, s.baseURL, "", -1))
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 
 func (s *Server) handleVaultInviteAccept(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if !vaultInviteAcceptLimiter.allow(ip) {
+		jsonError(w, http.StatusTooManyRequests, "Too many requests. Please try again later.")
+		return
+	}
+
 	ctx := r.Context()
 	token := r.PathValue("token")
 
@@ -2936,58 +3341,69 @@ func (s *Server) handleVaultInviteAccept(w http.ResponseWriter, r *http.Request)
 
 	inv, err := s.store.GetVaultInviteByToken(ctx, token)
 	if err != nil || inv == nil {
-		jsonError(w, http.StatusNotFound, "invite not found")
+		jsonError(w, http.StatusNotFound, "Invite not found")
 		return
 	}
 
 	switch inv.Status {
 	case "accepted":
-		jsonError(w, http.StatusGone, "this invite has already been accepted")
+		jsonError(w, http.StatusGone, "This invite has already been accepted")
 		return
 	case "revoked":
-		jsonError(w, http.StatusGone, "this invite was revoked")
+		jsonError(w, http.StatusGone, "This invite was revoked")
 		return
 	case "expired":
-		jsonError(w, http.StatusGone, "this invite has expired")
+		jsonError(w, http.StatusGone, "This invite has expired")
 		return
 	}
 
 	if time.Now().After(inv.ExpiresAt) {
-		jsonError(w, http.StatusGone, "this invite has expired")
-		return
-	}
-
-	// Atomically claim the invite first (prevents double-spend race).
-	// AcceptVaultInvite uses UPDATE ... WHERE status='pending', so only
-	// the first concurrent request succeeds.
-	if err := s.store.AcceptVaultInvite(ctx, token); err != nil {
-		jsonError(w, http.StatusGone, "this invite has already been accepted")
+		jsonError(w, http.StatusGone, "This invite has expired")
 		return
 	}
 
 	// Does the invitee already have an account?
 	existing, _ := s.store.GetUserByEmail(ctx, inv.Email)
+
+	// For new users, validate password and domain BEFORE claiming the invite
+	// so the invite isn't burned on a validation failure.
+	if existing == nil {
+		if msg := s.checkEmailDomain(ctx, inv.Email); msg != "" {
+			jsonError(w, http.StatusForbidden, msg)
+			return
+		}
+		if len(req.Password) < 8 {
+			jsonError(w, http.StatusBadRequest, "Password must be at least 8 characters")
+			return
+		}
+	}
+
+	// Atomically claim the invite (prevents double-spend race).
+	// AcceptVaultInvite uses UPDATE ... WHERE status='pending', so only
+	// the first concurrent request succeeds.
+	if err := s.store.AcceptVaultInvite(ctx, token); err != nil {
+		jsonError(w, http.StatusGone, "This invite has already been accepted")
+		return
+	}
+
 	var user *store.User
 
 	if existing != nil {
 		// Existing user — just grant vault role, no password needed.
 		user = existing
 	} else {
-		// New user — require password.
-		if len(req.Password) < 8 {
-			jsonError(w, http.StatusBadRequest, "password must be at least 8 characters")
-			return
-		}
+
+		// New user — password already validated above.
 
 		hash, salt, kdfP, err := auth.HashUserPassword([]byte(req.Password))
 		if err != nil {
-			jsonError(w, http.StatusInternalServerError, "failed to hash password")
+			jsonError(w, http.StatusInternalServerError, "Failed to hash password")
 			return
 		}
 
 		newUser, err := s.store.CreateUser(ctx, inv.Email, hash, salt, "member", kdfP.Time, kdfP.Memory, kdfP.Threads)
 		if err != nil {
-			jsonError(w, http.StatusInternalServerError, "failed to create user")
+			jsonError(w, http.StatusInternalServerError, "Failed to create user")
 			return
 		}
 		// Activate immediately — invite is the verification.
@@ -2997,7 +3413,7 @@ func (s *Server) handleVaultInviteAccept(w http.ResponseWriter, r *http.Request)
 
 	// Grant vault access with the invited role.
 	if err := s.store.GrantVaultRole(ctx, user.ID, inv.VaultID, inv.VaultRole); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to grant vault access")
+		jsonError(w, http.StatusInternalServerError, "Failed to grant vault access")
 		return
 	}
 
@@ -3019,7 +3435,7 @@ func (s *Server) handleVaultInviteList(w http.ResponseWriter, r *http.Request) {
 
 	vault, err := s.store.GetVault(ctx, vaultName)
 	if err != nil || vault == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", vaultName))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
 		return
 	}
 
@@ -3030,7 +3446,7 @@ func (s *Server) handleVaultInviteList(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 	invites, err := s.store.ListVaultInvites(ctx, vault.ID, status)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to list vault invites")
+		jsonError(w, http.StatusInternalServerError, "Failed to list vault invites")
 		return
 	}
 
@@ -3065,7 +3481,7 @@ func (s *Server) handleVaultInviteRevoke(w http.ResponseWriter, r *http.Request)
 
 	vault, err := s.store.GetVault(ctx, vaultName)
 	if err != nil || vault == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", vaultName))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
 		return
 	}
 
@@ -3075,12 +3491,12 @@ func (s *Server) handleVaultInviteRevoke(w http.ResponseWriter, r *http.Request)
 
 	token := r.PathValue("token")
 	if err := s.store.RevokeVaultInvite(ctx, token, vault.ID); err != nil {
-		jsonError(w, http.StatusNotFound, "invite not found or not pending")
+		jsonError(w, http.StatusNotFound, "Invite not found or not pending")
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"message": "invite revoked"})
+	json.NewEncoder(w).Encode(map[string]string{"message": "Invite revoked"})
 }
 
 // handleVaultInviteReinvite revokes an existing pending invite and creates a
@@ -3091,7 +3507,7 @@ func (s *Server) handleVaultInviteReinvite(w http.ResponseWriter, r *http.Reques
 
 	vault, err := s.store.GetVault(ctx, vaultName)
 	if err != nil || vault == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", vaultName))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
 		return
 	}
 
@@ -3112,28 +3528,28 @@ func (s *Server) handleVaultInviteReinvite(w http.ResponseWriter, r *http.Reques
 	// Look up the existing invite to get email and role.
 	existing, err := s.store.GetVaultInviteByToken(ctx, token)
 	if err != nil || existing == nil {
-		jsonError(w, http.StatusNotFound, "invite not found")
+		jsonError(w, http.StatusNotFound, "Invite not found")
 		return
 	}
 	if existing.VaultID != vault.ID {
-		jsonError(w, http.StatusNotFound, "invite not found")
+		jsonError(w, http.StatusNotFound, "Invite not found")
 		return
 	}
 	if existing.Status != "pending" {
-		jsonError(w, http.StatusConflict, "invite is not pending")
+		jsonError(w, http.StatusConflict, "Invite is not pending")
 		return
 	}
 
 	// Revoke the old invite.
 	if err := s.store.RevokeVaultInvite(ctx, token, vault.ID); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to revoke old invite")
+		jsonError(w, http.StatusInternalServerError, "Failed to revoke old invite")
 		return
 	}
 
 	// Create a new invite with the same email and role.
 	inv, err := s.store.CreateVaultInvite(ctx, existing.Email, vault.ID, existing.VaultRole, createdBy, time.Now().Add(vaultInviteTTL))
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to create new invite")
+		jsonError(w, http.StatusInternalServerError, "Failed to create new invite")
 		return
 	}
 
@@ -3190,7 +3606,7 @@ func (s *Server) handleVaultInviteUpdate(w http.ResponseWriter, r *http.Request)
 
 	vault, err := s.store.GetVault(ctx, vaultName)
 	if err != nil || vault == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", vaultName))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
 		return
 	}
 
@@ -3204,16 +3620,16 @@ func (s *Server) handleVaultInviteUpdate(w http.ResponseWriter, r *http.Request)
 		Role string `json:"role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid request body")
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 	if req.Role != "admin" && req.Role != "member" {
-		jsonError(w, http.StatusBadRequest, "role must be 'admin' or 'member'")
+		jsonError(w, http.StatusBadRequest, "Role must be 'admin' or 'member'")
 		return
 	}
 
 	if err := s.store.UpdateVaultInviteRole(ctx, token, vault.ID, req.Role); err != nil {
-		jsonError(w, http.StatusNotFound, "invite not found or not pending")
+		jsonError(w, http.StatusNotFound, "Invite not found or not pending")
 		return
 	}
 
@@ -3229,7 +3645,7 @@ func (s *Server) handleVaultUserList(w http.ResponseWriter, r *http.Request) {
 
 	vault, err := s.store.GetVault(ctx, vaultName)
 	if err != nil || vault == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", vaultName))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
 		return
 	}
 
@@ -3239,7 +3655,7 @@ func (s *Server) handleVaultUserList(w http.ResponseWriter, r *http.Request) {
 
 	grants, err := s.store.ListVaultUsers(ctx, vault.ID)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to list vault users")
+		jsonError(w, http.StatusInternalServerError, "Failed to list vault users")
 		return
 	}
 
@@ -3268,7 +3684,7 @@ func (s *Server) handleVaultUserRemove(w http.ResponseWriter, r *http.Request) {
 
 	vault, err := s.store.GetVault(ctx, vaultName)
 	if err != nil || vault == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", vaultName))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
 		return
 	}
 
@@ -3278,7 +3694,7 @@ func (s *Server) handleVaultUserRemove(w http.ResponseWriter, r *http.Request) {
 
 	user, err := s.store.GetUserByEmail(ctx, email)
 	if err != nil || user == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("user %q not found", email))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("User %q not found", email))
 		return
 	}
 
@@ -3287,13 +3703,13 @@ func (s *Server) handleVaultUserRemove(w http.ResponseWriter, r *http.Request) {
 	if role == "admin" {
 		adminCount, _ := s.store.CountVaultAdmins(ctx, vault.ID)
 		if adminCount <= 1 {
-			jsonError(w, http.StatusConflict, "cannot remove the last admin from this vault")
+			jsonError(w, http.StatusConflict, "Cannot remove the last admin from this vault")
 			return
 		}
 	}
 
 	if err := s.store.RevokeVaultAccess(ctx, user.ID, vault.ID); err != nil {
-		jsonError(w, http.StatusNotFound, "user does not belong to this vault")
+		jsonError(w, http.StatusNotFound, "User does not belong to this vault")
 		return
 	}
 
@@ -3308,7 +3724,7 @@ func (s *Server) handleVaultUserSetRole(w http.ResponseWriter, r *http.Request) 
 
 	vault, err := s.store.GetVault(ctx, vaultName)
 	if err != nil || vault == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", vaultName))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
 		return
 	}
 
@@ -3320,36 +3736,36 @@ func (s *Server) handleVaultUserSetRole(w http.ResponseWriter, r *http.Request) 
 		Role string `json:"role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid request body")
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 	if req.Role != "admin" && req.Role != "member" {
-		jsonError(w, http.StatusBadRequest, "role must be 'admin' or 'member'")
+		jsonError(w, http.StatusBadRequest, "Role must be 'admin' or 'member'")
 		return
 	}
 
 	user, err := s.store.GetUserByEmail(ctx, email)
 	if err != nil || user == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("user %q not found", email))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("User %q not found", email))
 		return
 	}
 
 	// Guard: can't demote last admin.
 	currentRole, _ := s.store.GetVaultRole(ctx, user.ID, vault.ID)
 	if currentRole == "" {
-		jsonError(w, http.StatusNotFound, "user does not belong to this vault")
+		jsonError(w, http.StatusNotFound, "User does not belong to this vault")
 		return
 	}
 	if currentRole == "admin" && req.Role == "member" {
 		adminCount, _ := s.store.CountVaultAdmins(ctx, vault.ID)
 		if adminCount <= 1 {
-			jsonError(w, http.StatusConflict, "cannot demote the last admin of this vault")
+			jsonError(w, http.StatusConflict, "Cannot demote the last admin of this vault")
 			return
 		}
 	}
 
 	if err := s.store.GrantVaultRole(ctx, user.ID, vault.ID, req.Role); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to update role")
+		jsonError(w, http.StatusInternalServerError, "Failed to update role")
 		return
 	}
 
@@ -3432,7 +3848,7 @@ func (s *Server) handleAgentSessionMint(w http.ResponseWriter, r *http.Request) 
 	// Extract service token from Authorization header.
 	header := r.Header.Get("Authorization")
 	if !strings.HasPrefix(header, "Bearer av_agent_") {
-		jsonError(w, http.StatusUnauthorized, "valid service token required (Authorization: Bearer av_agent_...)")
+		jsonError(w, http.StatusUnauthorized, "Valid service token required (Authorization: Bearer av_agent_...)")
 		return
 	}
 	token := strings.TrimPrefix(header, "Bearer ")
@@ -3440,32 +3856,32 @@ func (s *Server) handleAgentSessionMint(w http.ResponseWriter, r *http.Request) 
 	// Extract prefix for lookup (first 16 hex chars after "av_agent_").
 	tokenBody := strings.TrimPrefix(token, "av_agent_")
 	if len(tokenBody) < 16 {
-		jsonError(w, http.StatusUnauthorized, "invalid service token format")
+		jsonError(w, http.StatusUnauthorized, "Invalid service token format")
 		return
 	}
 	prefix := tokenBody[:16]
 
 	agent, err := s.store.GetAgentByTokenPrefix(ctx, prefix)
 	if err != nil {
-		jsonError(w, http.StatusUnauthorized, "invalid or revoked service token")
+		jsonError(w, http.StatusUnauthorized, "Invalid or revoked service token")
 		return
 	}
 
 	// Verify the full token hash.
 	if !auth.VerifyUserPassword([]byte(token), agent.ServiceTokenHash, agent.ServiceTokenSalt, crypto.DefaultKDFParams()) {
-		jsonError(w, http.StatusUnauthorized, "invalid service token")
+		jsonError(w, http.StatusUnauthorized, "Invalid service token")
 		return
 	}
 
 	if agent.Status != "active" {
-		jsonError(w, http.StatusForbidden, "agent has been revoked")
+		jsonError(w, http.StatusForbidden, "Agent has been revoked")
 		return
 	}
 
 	// Rate limit: max active sessions per agent.
 	count, err := s.store.CountAgentSessions(ctx, agent.ID)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to check session count")
+		jsonError(w, http.StatusInternalServerError, "Failed to check session count")
 		return
 	}
 	if count >= maxAgentSessions {
@@ -3480,7 +3896,7 @@ func (s *Server) handleAgentSessionMint(w http.ResponseWriter, r *http.Request) 
 
 	sess, err := s.store.CreateAgentSession(ctx, agent.ID, agent.VaultID, agent.VaultRole, time.Now().Add(sessionTTL))
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to create session")
+		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
 	}
 
@@ -3507,29 +3923,29 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 
 	inv, err := s.store.GetInviteByToken(ctx, token)
 	if err != nil || inv == nil {
-		proxyError(w, http.StatusNotFound, "invite_not_found", "invite not found")
+		proxyError(w, http.StatusNotFound, "invite_not_found", "Invite not found")
 		return
 	}
 
 	// Check status.
 	switch inv.Status {
 	case "redeemed":
-		proxyError(w, http.StatusGone, "invite_redeemed", "this invite has already been used — ask for a new one")
+		proxyError(w, http.StatusGone, "invite_redeemed", "This invite has already been used — ask for a new one")
 		return
 	case "revoked":
-		proxyError(w, http.StatusGone, "invite_revoked", "this invite was revoked — ask for a new one")
+		proxyError(w, http.StatusGone, "invite_revoked", "This invite was revoked — ask for a new one")
 		return
 	case "expired":
-		proxyError(w, http.StatusGone, "invite_expired", "this invite has expired — ask for a new one")
+		proxyError(w, http.StatusGone, "invite_expired", "This invite has expired — ask for a new one")
 		return
 	}
 	if time.Now().After(inv.ExpiresAt) {
-		proxyError(w, http.StatusGone, "invite_expired", "this invite has expired — ask for a new one")
+		proxyError(w, http.StatusGone, "invite_expired", "This invite has expired — ask for a new one")
 		return
 	}
 
 	if !inv.Persistent {
-		proxyError(w, http.StatusBadRequest, "not_persistent", "this is a temporary invite — use GET /invite/{token} instead")
+		proxyError(w, http.StatusBadRequest, "not_persistent", "This is a temporary invite — use GET /invite/{token} instead")
 		return
 	}
 
@@ -3553,25 +3969,25 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 		agentName = body.Name
 	}
 	if agentName == "" {
-		proxyError(w, http.StatusBadRequest, "name_required", "agent name is required — provide {\"name\": \"my-agent\"} in the request body")
+		proxyError(w, http.StatusBadRequest, "name_required", "Agent name is required — provide {\"name\": \"my-agent\"} in the request body")
 		return
 	}
 	if !validateSlug(agentName) {
-		proxyError(w, http.StatusBadRequest, "invalid_name", "agent name must be 3-64 characters, lowercase alphanumeric and hyphens only")
+		proxyError(w, http.StatusBadRequest, "invalid_name", "Agent name must be 3-64 characters, lowercase alphanumeric and hyphens only")
 		return
 	}
 
 	// Check name uniqueness.
 	existing, _ := s.store.GetAgentByName(ctx, agentName)
 	if existing != nil {
-		proxyError(w, http.StatusConflict, "name_taken", fmt.Sprintf("an agent named %q already exists", agentName))
+		proxyError(w, http.StatusConflict, "name_taken", fmt.Sprintf("An agent named %q already exists", agentName))
 		return
 	}
 
 	// Burn the invite first (atomic CAS via status='pending' guard) to prevent
 	// double-redeem race conditions. Only one concurrent request can succeed.
 	if err := s.store.RedeemInvite(ctx, token, ""); err != nil {
-		proxyError(w, http.StatusGone, "invite_redeemed", "this invite has already been used — ask for a new one")
+		proxyError(w, http.StatusGone, "invite_redeemed", "This invite has already been used — ask for a new one")
 		return
 	}
 
@@ -3579,7 +3995,7 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 	serviceToken := newServiceToken()
 	tokenHash, tokenSalt, _, err := auth.HashUserPassword([]byte(serviceToken))
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to hash service token")
+		jsonError(w, http.StatusInternalServerError, "Failed to hash service token")
 		return
 	}
 	tokenPrefix := serviceTokenPrefix(serviceToken)
@@ -3587,14 +4003,14 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 	// Create agent record.
 	agent, err := s.store.CreateAgent(ctx, agentName, inv.VaultID, tokenHash, tokenSalt, tokenPrefix, inv.VaultRole, inv.CreatedBy)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to create agent")
+		jsonError(w, http.StatusInternalServerError, "Failed to create agent")
 		return
 	}
 
 	// Create initial session for immediate use.
 	sess, err := s.store.CreateAgentSession(ctx, agent.ID, inv.VaultID, agent.VaultRole, time.Now().Add(sessionTTL))
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to create session")
+		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
 	}
 
@@ -3639,14 +4055,14 @@ func (s *Server) handleRotationRedeem(w http.ResponseWriter, r *http.Request, in
 
 	agent, err := s.store.GetAgentByID(ctx, inv.AgentID)
 	if err != nil || agent == nil || agent.Status != "active" {
-		proxyError(w, http.StatusGone, "agent_not_found", "the agent for this rotation invite no longer exists or has been revoked")
+		proxyError(w, http.StatusGone, "agent_not_found", "The agent for this rotation invite no longer exists or has been revoked")
 		return
 	}
 
 	// Burn the invite first (atomic CAS via status='pending' guard) to prevent
 	// double-redeem race conditions. Only one concurrent request can succeed.
 	if err := s.store.RedeemInvite(ctx, token, ""); err != nil {
-		proxyError(w, http.StatusGone, "invite_redeemed", "this invite has already been used — ask for a new one")
+		proxyError(w, http.StatusGone, "invite_redeemed", "This invite has already been used — ask for a new one")
 		return
 	}
 
@@ -3654,21 +4070,21 @@ func (s *Server) handleRotationRedeem(w http.ResponseWriter, r *http.Request, in
 	serviceToken := newServiceToken()
 	tokenHash, tokenSalt, _, err := auth.HashUserPassword([]byte(serviceToken))
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to hash service token")
+		jsonError(w, http.StatusInternalServerError, "Failed to hash service token")
 		return
 	}
 	tokenPrefix := serviceTokenPrefix(serviceToken)
 
 	// Update the agent's service token (invalidates the old one at this moment).
 	if err := s.store.UpdateAgentServiceToken(ctx, agent.ID, tokenHash, tokenSalt, tokenPrefix); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to update service token")
+		jsonError(w, http.StatusInternalServerError, "Failed to update service token")
 		return
 	}
 
 	// Create a fresh session.
 	sess, err := s.store.CreateAgentSession(ctx, agent.ID, agent.VaultID, agent.VaultRole, time.Now().Add(sessionTTL))
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to create session")
+		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
 	}
 
@@ -3698,25 +4114,39 @@ func (s *Server) handleRotationRedeem(w http.ResponseWriter, r *http.Request, in
 // --- Agent Admin Endpoints ---
 
 func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.requireOwner(w, r); err != nil {
-		return
-	}
 	ctx := r.Context()
 
 	nsName := r.URL.Query().Get("vault")
+	if nsName == "" {
+		// Without a vault filter, only owners can list all agents.
+		if _, err := s.requireOwner(w, r); err != nil {
+			return
+		}
+	}
+
 	var vaultID string
 	if nsName != "" {
 		ns, err := s.store.GetVault(ctx, nsName)
 		if err != nil || ns == nil {
-			jsonError(w, http.StatusNotFound, "vault not found")
+			jsonError(w, http.StatusNotFound, "Vault not found")
 			return
 		}
 		vaultID = ns.ID
+		// Any vault member can list agents in their vault.
+		if _, err := s.requireVaultAccess(w, r, vaultID); err != nil {
+			return
+		}
 	}
 
-	agents, err := s.store.ListAgents(ctx, vaultID)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to list agents")
+	var agents []store.Agent
+	var agentErr error
+	if vaultID != "" {
+		agents, agentErr = s.store.ListAgents(ctx, vaultID)
+	} else {
+		agents, agentErr = s.store.ListAllAgents(ctx)
+	}
+	if agentErr != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to list agents")
 		return
 	}
 
@@ -3757,15 +4187,17 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.requireOwner(w, r); err != nil {
-		return
-	}
 	ctx := r.Context()
 	name := r.PathValue("name")
 
 	agent, err := s.store.GetAgentByName(ctx, name)
 	if err != nil {
-		jsonError(w, http.StatusNotFound, "agent not found")
+		jsonError(w, http.StatusNotFound, "Agent not found")
+		return
+	}
+
+	// Any vault member can view agents in their vault.
+	if _, err := s.requireVaultAccess(w, r, agent.VaultID); err != nil {
 		return
 	}
 
@@ -3802,24 +4234,26 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.requireOwner(w, r); err != nil {
-		return
-	}
 	ctx := r.Context()
 	name := r.PathValue("name")
 
 	agent, err := s.store.GetAgentByName(ctx, name)
 	if err != nil {
-		jsonError(w, http.StatusNotFound, "agent not found")
+		jsonError(w, http.StatusNotFound, "Agent not found")
+		return
+	}
+
+	// Vault admins can revoke agents in their vault.
+	if _, err := s.requireVaultAdminSession(w, r, agent.VaultID); err != nil {
 		return
 	}
 	if agent.Status != "active" {
-		jsonError(w, http.StatusConflict, "agent is already revoked")
+		jsonError(w, http.StatusConflict, "Agent is already revoked")
 		return
 	}
 
 	if err := s.store.RevokeAgent(ctx, agent.ID); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to revoke agent")
+		jsonError(w, http.StatusInternalServerError, "Failed to revoke agent")
 		return
 	}
 
@@ -3828,27 +4262,29 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentRotate(w http.ResponseWriter, r *http.Request) {
-	user, err := s.requireOwner(w, r)
-	if err != nil {
-		return
-	}
 	ctx := r.Context()
 	name := r.PathValue("name")
 
 	agent, err := s.store.GetAgentByName(ctx, name)
 	if err != nil {
-		jsonError(w, http.StatusNotFound, "agent not found")
+		jsonError(w, http.StatusNotFound, "Agent not found")
+		return
+	}
+
+	// Vault admins can rotate agents in their vault.
+	user, err := s.requireVaultAdmin(w, r, agent.VaultID)
+	if err != nil {
 		return
 	}
 	if agent.Status != "active" {
-		jsonError(w, http.StatusConflict, "agent is revoked — cannot rotate")
+		jsonError(w, http.StatusConflict, "Agent is revoked — cannot rotate")
 		return
 	}
 
 	// Create a rotation invite.
 	inv, err := s.store.CreateRotationInvite(ctx, agent.ID, agent.VaultID, user.ID, time.Now().Add(15*time.Minute))
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to create rotation invite")
+		jsonError(w, http.StatusInternalServerError, "Failed to create rotation invite")
 		return
 	}
 
@@ -3874,15 +4310,17 @@ This link expires in 15 minutes and can only be used once.
 }
 
 func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.requireOwner(w, r); err != nil {
-		return
-	}
 	ctx := r.Context()
 	name := r.PathValue("name")
 
 	agent, err := s.store.GetAgentByName(ctx, name)
 	if err != nil {
-		jsonError(w, http.StatusNotFound, "agent not found")
+		jsonError(w, http.StatusNotFound, "Agent not found")
+		return
+	}
+
+	// Vault admins can rename agents in their vault.
+	if _, err := s.requireVaultAdminSession(w, r, agent.VaultID); err != nil {
 		return
 	}
 
@@ -3890,23 +4328,23 @@ func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
-		jsonError(w, http.StatusBadRequest, "request body must include {\"name\": \"new-name\"}")
+		jsonError(w, http.StatusBadRequest, "Request body must include {\"name\": \"new-name\"}")
 		return
 	}
 	if !validateSlug(body.Name) {
-		jsonError(w, http.StatusBadRequest, "agent name must be 3-64 characters, lowercase alphanumeric and hyphens only")
+		jsonError(w, http.StatusBadRequest, "Agent name must be 3-64 characters, lowercase alphanumeric and hyphens only")
 		return
 	}
 
 	// Check uniqueness.
 	existing, _ := s.store.GetAgentByName(ctx, body.Name)
 	if existing != nil {
-		jsonError(w, http.StatusConflict, fmt.Sprintf("an agent named %q already exists", body.Name))
+		jsonError(w, http.StatusConflict, fmt.Sprintf("An agent named %q already exists", body.Name))
 		return
 	}
 
 	if err := s.store.RenameAgent(ctx, agent.ID, body.Name); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to rename agent")
+		jsonError(w, http.StatusInternalServerError, "Failed to rename agent")
 		return
 	}
 
@@ -3924,7 +4362,7 @@ func (s *Server) handleAgentSetRole(w http.ResponseWriter, r *http.Request) {
 
 	agent, err := s.store.GetAgentByName(ctx, name)
 	if err != nil {
-		jsonError(w, http.StatusNotFound, "agent not found")
+		jsonError(w, http.StatusNotFound, "Agent not found")
 		return
 	}
 
@@ -3937,16 +4375,16 @@ func (s *Server) handleAgentSetRole(w http.ResponseWriter, r *http.Request) {
 		Role string `json:"role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Role == "" {
-		jsonError(w, http.StatusBadRequest, `request body must include {"role": "consumer|member|admin"}`)
+		jsonError(w, http.StatusBadRequest, `Request body must include {"role": "consumer|member|admin"}`)
 		return
 	}
 	if body.Role != "consumer" && body.Role != "member" && body.Role != "admin" {
-		jsonError(w, http.StatusBadRequest, "role must be one of: consumer, member, admin")
+		jsonError(w, http.StatusBadRequest, "Role must be one of: consumer, member, admin")
 		return
 	}
 
 	if err := s.store.UpdateAgentVaultRole(ctx, agent.ID, body.Role); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to update agent role")
+		jsonError(w, http.StatusInternalServerError, "Failed to update agent role")
 		return
 	}
 
@@ -3967,12 +4405,12 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 	// Any auth'd user can create vaults.
 	sess := sessionFromContext(r.Context())
 	if sess == nil {
-		jsonError(w, http.StatusForbidden, "authentication required")
+		jsonError(w, http.StatusForbidden, "Authentication required")
 		return
 	}
 	user, err := s.userFromSession(r.Context(), sess)
 	if err != nil || user == nil {
-		jsonError(w, http.StatusForbidden, "user session required")
+		jsonError(w, http.StatusForbidden, "User session required")
 		return
 	}
 
@@ -3980,15 +4418,15 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid request body")
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 	if req.Name == "" {
-		jsonError(w, http.StatusBadRequest, "name is required")
+		jsonError(w, http.StatusBadRequest, "Name is required")
 		return
 	}
 	if !validateSlug(req.Name) {
-		jsonError(w, http.StatusBadRequest, "vault name must be 3-64 characters, lowercase alphanumeric and hyphens only")
+		jsonError(w, http.StatusBadRequest, "Vault name must be 3-64 characters, lowercase alphanumeric and hyphens only")
 		return
 	}
 
@@ -3996,10 +4434,10 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 	ns, err := s.store.CreateVault(ctx, req.Name)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
-			jsonError(w, http.StatusConflict, fmt.Sprintf("vault %q already exists", req.Name))
+			jsonError(w, http.StatusConflict, fmt.Sprintf("Vault %q already exists", req.Name))
 			return
 		}
-		jsonError(w, http.StatusInternalServerError, "failed to create vault")
+		jsonError(w, http.StatusInternalServerError, "Failed to create vault")
 		return
 	}
 
@@ -4019,46 +4457,74 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 	// Any auth'd user can list vaults.
 	sess := sessionFromContext(r.Context())
 	if sess == nil {
-		jsonError(w, http.StatusForbidden, "authentication required")
+		jsonError(w, http.StatusForbidden, "Authentication required")
 		return
 	}
 	user, err := s.userFromSession(r.Context(), sess)
 	if err != nil || user == nil {
-		jsonError(w, http.StatusForbidden, "user session required")
+		jsonError(w, http.StatusForbidden, "User session required")
 		return
 	}
 
 	ctx := r.Context()
 
 	type nsItem struct {
-		ID                string `json:"id"`
-		Name              string `json:"name"`
-		Role              string `json:"role,omitempty"`
-		CreatedAt         string `json:"created_at"`
+		ID               string `json:"id"`
+		Name             string `json:"name"`
+		Role             string `json:"role,omitempty"`
+		Membership       string `json:"membership"`
+		CreatedAt        string `json:"created_at"`
 		PendingProposals int    `json:"pending_proposals"`
 	}
 
-	// All users (including owners) see only vaults they have explicit grants for.
-	grants, err := s.store.ListUserGrants(ctx, user.ID)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to list vaults")
-		return
-	}
-
 	var items []nsItem
-	for _, g := range grants {
-		ns, err := s.store.GetVaultByID(ctx, g.VaultID)
-		if err != nil || ns == nil {
-			continue
+
+	if user.Role == "owner" {
+		// Owners see all vaults. Vaults they have explicit grants for are
+		// "explicit"; the rest are "implicit" (visible but not yet joined).
+		vaults, err := s.store.ListVaults(ctx)
+		if err != nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to list vaults")
+			return
 		}
-		pending, _ := s.store.CountPendingProposals(ctx, ns.ID)
-		items = append(items, nsItem{
-			ID:                ns.ID,
-			Name:              ns.Name,
-			Role:              g.Role,
-			CreatedAt:         ns.CreatedAt.Format(time.RFC3339),
-			PendingProposals: pending,
-		})
+		for _, v := range vaults {
+			pending, _ := s.store.CountPendingProposals(ctx, v.ID)
+			role, _ := s.store.GetVaultRole(ctx, user.ID, v.ID)
+			membership := "implicit"
+			if role != "" {
+				membership = "explicit"
+			}
+			items = append(items, nsItem{
+				ID:               v.ID,
+				Name:             v.Name,
+				Role:             role,
+				Membership:       membership,
+				CreatedAt:        v.CreatedAt.Format(time.RFC3339),
+				PendingProposals: pending,
+			})
+		}
+	} else {
+		// Non-owners see only vaults they have explicit grants for.
+		grants, err := s.store.ListUserGrants(ctx, user.ID)
+		if err != nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to list vaults")
+			return
+		}
+		for _, g := range grants {
+			ns, err := s.store.GetVaultByID(ctx, g.VaultID)
+			if err != nil || ns == nil {
+				continue
+			}
+			pending, _ := s.store.CountPendingProposals(ctx, ns.ID)
+			items = append(items, nsItem{
+				ID:               ns.ID,
+				Name:             ns.Name,
+				Role:             g.Role,
+				Membership:       "explicit",
+				CreatedAt:        ns.CreatedAt.Format(time.RFC3339),
+				PendingProposals: pending,
+			})
+		}
 	}
 	if items == nil {
 		items = []nsItem{}
@@ -4076,13 +4542,14 @@ func (s *Server) handleAdminVaultList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	vaults, err := s.store.ListVaults(ctx)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to list vaults")
+		jsonError(w, http.StatusInternalServerError, "Failed to list vaults")
 		return
 	}
 
 	type vaultItem struct {
 		ID        string `json:"id"`
 		Name      string `json:"name"`
+		IsDefault bool   `json:"is_default"`
 		CreatedAt string `json:"created_at"`
 	}
 
@@ -4091,6 +4558,7 @@ func (s *Server) handleAdminVaultList(w http.ResponseWriter, r *http.Request) {
 		items[i] = vaultItem{
 			ID:        v.ID,
 			Name:      v.Name,
+			IsDefault: v.Name == store.DefaultVault,
 			CreatedAt: v.CreatedAt.Format(time.RFC3339),
 		}
 	}
@@ -4102,26 +4570,26 @@ func (s *Server) handleAdminVaultList(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleVaultDelete(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if name == store.DefaultVault {
-		jsonError(w, http.StatusBadRequest, "cannot delete the default vault")
+		jsonError(w, http.StatusBadRequest, "Cannot delete the default vault")
 		return
 	}
 
 	ctx := r.Context()
 	ns, err := s.store.GetVault(ctx, name)
 	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", name))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
 		return
 	}
 
 	// Vault admin OR instance owner can delete.
 	sess := sessionFromContext(ctx)
 	if sess == nil {
-		jsonError(w, http.StatusForbidden, "authentication required")
+		jsonError(w, http.StatusForbidden, "Authentication required")
 		return
 	}
 	user, err := s.userFromSession(ctx, sess)
 	if err != nil || user == nil {
-		jsonError(w, http.StatusForbidden, "user session required")
+		jsonError(w, http.StatusForbidden, "User session required")
 		return
 	}
 
@@ -4130,12 +4598,12 @@ func (s *Server) handleVaultDelete(w http.ResponseWriter, r *http.Request) {
 		isVaultAdmin = true
 	}
 	if !isVaultAdmin && user.Role != "owner" {
-		jsonError(w, http.StatusForbidden, "vault admin or instance owner required")
+		jsonError(w, http.StatusForbidden, "Vault admin or instance owner required")
 		return
 	}
 
 	if err := s.store.DeleteVault(ctx, name); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to delete vault")
+		jsonError(w, http.StatusInternalServerError, "Failed to delete vault")
 		return
 	}
 
@@ -4146,26 +4614,26 @@ func (s *Server) handleVaultDelete(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleVaultRename(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if name == store.DefaultVault {
-		jsonError(w, http.StatusBadRequest, "cannot rename the default vault")
+		jsonError(w, http.StatusBadRequest, "Cannot rename the default vault")
 		return
 	}
 
 	ctx := r.Context()
 	ns, err := s.store.GetVault(ctx, name)
 	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", name))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
 		return
 	}
 
 	// Vault admin OR instance owner can rename.
 	sess := sessionFromContext(ctx)
 	if sess == nil {
-		jsonError(w, http.StatusForbidden, "authentication required")
+		jsonError(w, http.StatusForbidden, "Authentication required")
 		return
 	}
 	user, err := s.userFromSession(ctx, sess)
 	if err != nil || user == nil {
-		jsonError(w, http.StatusForbidden, "user session required")
+		jsonError(w, http.StatusForbidden, "User session required")
 		return
 	}
 
@@ -4174,7 +4642,7 @@ func (s *Server) handleVaultRename(w http.ResponseWriter, r *http.Request) {
 		isVaultAdmin = true
 	}
 	if !isVaultAdmin && user.Role != "owner" {
-		jsonError(w, http.StatusForbidden, "vault admin or instance owner required")
+		jsonError(w, http.StatusForbidden, "Vault admin or instance owner required")
 		return
 	}
 
@@ -4182,23 +4650,23 @@ func (s *Server) handleVaultRename(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
-		jsonError(w, http.StatusBadRequest, "request body must include {\"name\": \"new-name\"}")
+		jsonError(w, http.StatusBadRequest, "Request body must include {\"name\": \"new-name\"}")
 		return
 	}
 	if !validateSlug(body.Name) {
-		jsonError(w, http.StatusBadRequest, "vault name must be 3-64 characters, lowercase alphanumeric and hyphens only")
+		jsonError(w, http.StatusBadRequest, "Vault name must be 3-64 characters, lowercase alphanumeric and hyphens only")
 		return
 	}
 
 	// Check uniqueness.
 	existing, _ := s.store.GetVault(ctx, body.Name)
 	if existing != nil {
-		jsonError(w, http.StatusConflict, fmt.Sprintf("a vault named %q already exists", body.Name))
+		jsonError(w, http.StatusConflict, fmt.Sprintf("A vault named %q already exists", body.Name))
 		return
 	}
 
 	if err := s.store.RenameVault(ctx, name, body.Name); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to rename vault")
+		jsonError(w, http.StatusInternalServerError, "Failed to rename vault")
 		return
 	}
 
@@ -4207,6 +4675,43 @@ func (s *Server) handleVaultRename(w http.ResponseWriter, r *http.Request) {
 		"message":  fmt.Sprintf("vault renamed from %q to %q", name, body.Name),
 		"old_name": name,
 		"new_name": body.Name,
+	})
+}
+
+func (s *Server) handleVaultJoin(w http.ResponseWriter, r *http.Request) {
+	user, err := s.requireOwner(w, r)
+	if err != nil {
+		return
+	}
+
+	name := r.PathValue("name")
+	ctx := r.Context()
+	ns, err := s.store.GetVault(ctx, name)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
+		return
+	}
+
+	has, err := s.store.HasVaultAccess(ctx, user.ID, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to check vault access")
+		return
+	}
+	if has {
+		jsonError(w, http.StatusConflict, "Already a member of this vault")
+		return
+	}
+
+	if err := s.store.GrantVaultRole(ctx, user.ID, ns.ID, "admin"); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to join vault")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"vault":  name,
+		"role":   "admin",
+		"joined": true,
 	})
 }
 
@@ -4220,7 +4725,7 @@ func (s *Server) handlePolicyGet(w http.ResponseWriter, r *http.Request) {
 
 	ns, err := s.store.GetVault(ctx, name)
 	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", name))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
 		return
 	}
 
@@ -4238,7 +4743,7 @@ func (s *Server) handlePolicyGet(w http.ResponseWriter, r *http.Request) {
 
 	var rules json.RawMessage
 	if err := json.Unmarshal([]byte(bc.RulesJSON), &rules); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to parse policy rules")
+		jsonError(w, http.StatusInternalServerError, "Failed to parse policy rules")
 		return
 	}
 
@@ -4252,7 +4757,7 @@ func (s *Server) handlePolicyCredentialUsage(w http.ResponseWriter, r *http.Requ
 
 	ns, err := s.store.GetVault(ctx, name)
 	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", name))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
 		return
 	}
 
@@ -4262,7 +4767,7 @@ func (s *Server) handlePolicyCredentialUsage(w http.ResponseWriter, r *http.Requ
 
 	key := r.URL.Query().Get("key")
 	if key == "" {
-		jsonError(w, http.StatusBadRequest, "missing required query parameter: key")
+		jsonError(w, http.StatusBadRequest, "Missing required query parameter: key")
 		return
 	}
 
@@ -4275,7 +4780,7 @@ func (s *Server) handlePolicyCredentialUsage(w http.ResponseWriter, r *http.Requ
 
 	var rules []broker.Rule
 	if err := json.Unmarshal([]byte(bc.RulesJSON), &rules); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to parse policy rules")
+		jsonError(w, http.StatusInternalServerError, "Failed to parse policy rules")
 		return
 	}
 
@@ -4310,7 +4815,7 @@ func (s *Server) handlePolicySet(w http.ResponseWriter, r *http.Request) {
 
 	ns, err := s.store.GetVault(ctx, name)
 	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", name))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
 		return
 	}
 
@@ -4323,30 +4828,30 @@ func (s *Server) handlePolicySet(w http.ResponseWriter, r *http.Request) {
 		Rules json.RawMessage `json:"rules"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid request body")
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	// Validate rules by unmarshalling into broker.Rule slice and running broker.Validate.
 	var rules []broker.Rule
 	if err := json.Unmarshal(req.Rules, &rules); err != nil {
-		jsonError(w, http.StatusBadRequest, fmt.Sprintf("invalid rules: %v", err))
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid rules: %v", err))
 		return
 	}
 	cfg := broker.Config{Vault: name, Rules: rules}
 	if err := broker.Validate(&cfg); err != nil {
-		jsonError(w, http.StatusBadRequest, fmt.Sprintf("invalid policy: %v", err))
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid policy: %v", err))
 		return
 	}
 
 	rulesJSON, err := json.Marshal(rules)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to marshal rules")
+		jsonError(w, http.StatusInternalServerError, "Failed to marshal rules")
 		return
 	}
 
 	if _, err := s.store.SetBrokerConfig(ctx, ns.ID, string(rulesJSON)); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to set policy")
+		jsonError(w, http.StatusInternalServerError, "Failed to set policy")
 		return
 	}
 
@@ -4360,7 +4865,7 @@ func (s *Server) handlePolicyClear(w http.ResponseWriter, r *http.Request) {
 
 	ns, err := s.store.GetVault(ctx, name)
 	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", name))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
 		return
 	}
 
@@ -4370,7 +4875,7 @@ func (s *Server) handlePolicyClear(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := s.store.SetBrokerConfig(ctx, ns.ID, "[]"); err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to clear policy")
+		jsonError(w, http.StatusInternalServerError, "Failed to clear policy")
 		return
 	}
 
@@ -4393,7 +4898,7 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 		VaultRole  string `json:"vault_role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid request body")
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 	if req.Vault == "" {
@@ -4414,18 +4919,18 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 		req.VaultRole = "consumer"
 	}
 	if req.VaultRole != "consumer" && req.VaultRole != "member" && req.VaultRole != "admin" {
-		jsonError(w, http.StatusBadRequest, "vault_role must be one of: consumer, member, admin")
+		jsonError(w, http.StatusBadRequest, "Vault_role must be one of: consumer, member, admin")
 		return
 	}
 
 	if req.AgentName != "" && !req.Persistent {
-		jsonError(w, http.StatusBadRequest, "agent_name requires persistent=true")
+		jsonError(w, http.StatusBadRequest, "Agent_name requires persistent=true")
 		return
 	}
 
 	ns, err := s.store.GetVault(ctx, req.Vault)
 	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", req.Vault))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", req.Vault))
 		return
 	}
 
@@ -4435,18 +4940,18 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 	// - Admins (user vault admin or admin agent) can invite with any role.
 	sess := sessionFromContext(ctx)
 	if sess == nil {
-		jsonError(w, http.StatusForbidden, "authentication required")
+		jsonError(w, http.StatusForbidden, "Authentication required")
 		return
 	}
 
 	if sess.VaultID != "" {
 		// Scoped session (agent or temp invite).
 		if sess.VaultID != ns.ID {
-			jsonError(w, http.StatusForbidden, "session not authorized for this vault")
+			jsonError(w, http.StatusForbidden, "Session not authorized for this vault")
 			return
 		}
 		if !agentRoleSatisfies(sess.VaultRole, "member") {
-			jsonError(w, http.StatusForbidden, "member role required to create agent invites")
+			jsonError(w, http.StatusForbidden, "Member role required to create agent invites")
 			return
 		}
 		// Members can only invite consumers.
@@ -4457,12 +4962,12 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 		// User session: require vault access.
 		user, err := s.userFromSession(ctx, sess)
 		if err != nil || user == nil {
-			jsonError(w, http.StatusForbidden, "invalid session")
+			jsonError(w, http.StatusForbidden, "Invalid session")
 			return
 		}
 		has, err := s.store.HasVaultAccess(ctx, user.ID, ns.ID)
 		if err != nil || !has {
-			jsonError(w, http.StatusForbidden, "no access to this vault")
+			jsonError(w, http.StatusForbidden, "No access to this vault")
 			return
 		}
 		// User vault members can only invite consumers.
@@ -4475,11 +4980,11 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 	// Check pending invite limit.
 	count, err := s.store.CountPendingInvites(ctx, ns.ID)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to check pending invites")
+		jsonError(w, http.StatusInternalServerError, "Failed to check pending invites")
 		return
 	}
 	if count >= 10 {
-		jsonError(w, http.StatusTooManyRequests, fmt.Sprintf("too many pending invites (%d) — revoke some before creating new ones", count))
+		jsonError(w, http.StatusTooManyRequests, fmt.Sprintf("Too many pending invites (%d) — revoke some before creating new ones", count))
 		return
 	}
 
@@ -4495,14 +5000,14 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 		if req.AgentName != "" {
 			existing, _ := s.store.GetAgentByName(ctx, req.AgentName)
 			if existing != nil {
-				jsonError(w, http.StatusConflict, fmt.Sprintf("an agent named %q already exists", req.AgentName))
+				jsonError(w, http.StatusConflict, fmt.Sprintf("An agent named %q already exists", req.AgentName))
 				return
 			}
 		}
 
 		inv, err := s.store.CreatePersistentInvite(ctx, ns.ID, req.VaultRole, createdBy, req.AgentName, expiresAt)
 		if err != nil {
-			jsonError(w, http.StatusInternalServerError, "failed to create persistent invite")
+			jsonError(w, http.StatusInternalServerError, "Failed to create persistent invite")
 			return
 		}
 
@@ -4520,7 +5025,7 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 
 	inv, err := s.store.CreateInvite(ctx, ns.ID, req.VaultRole, createdBy, expiresAt)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to create invite")
+		jsonError(w, http.StatusInternalServerError, "Failed to create invite")
 		return
 	}
 
@@ -4548,7 +5053,7 @@ func (s *Server) handleAdminProposalList(w http.ResponseWriter, r *http.Request)
 
 	ns, err := s.store.GetVault(ctx, nsName)
 	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", nsName))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", nsName))
 		return
 	}
 
@@ -4569,7 +5074,7 @@ func (s *Server) handleAdminProposalList(w http.ResponseWriter, r *http.Request)
 	}
 	list, err := s.store.ListProposals(ctx, ns.ID, status)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "failed to list proposals")
+		jsonError(w, http.StatusInternalServerError, "Failed to list proposals")
 		return
 	}
 
@@ -4616,7 +5121,7 @@ func (s *Server) handleAdminProposalGet(w http.ResponseWriter, r *http.Request) 
 
 	ns, err := s.store.GetVault(ctx, nsName)
 	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("vault %q not found", nsName))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", nsName))
 		return
 	}
 
@@ -4627,20 +5132,20 @@ func (s *Server) handleAdminProposalGet(w http.ResponseWriter, r *http.Request) 
 	idStr := r.PathValue("id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid proposal id")
+		jsonError(w, http.StatusBadRequest, "Invalid proposal id")
 		return
 	}
 
 	cs, err := s.store.GetProposal(ctx, ns.ID, id)
 	if err != nil || cs == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("proposal #%d not found in vault %q", id, nsName))
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Proposal #%d not found in vault %q", id, nsName))
 		return
 	}
 
 	// Consumer-role agents can only view pending proposals.
 	sess := sessionFromContext(r.Context())
 	if sess != nil && sess.VaultID != "" && sess.VaultRole == "consumer" && cs.Status != "pending" {
-		jsonError(w, http.StatusForbidden, "consumer agents can only view pending proposals")
+		jsonError(w, http.StatusForbidden, "Consumer agents can only view pending proposals")
 		return
 	}
 
@@ -4678,4 +5183,561 @@ func serviceTokenPrefix(token string) string {
 		return body
 	}
 	return body[:16]
+}
+
+// --- OAuth handlers ---
+
+const oauthStateTTL = 10 * time.Minute
+
+var oauthLoginLimiter = newSlidingWindowLimiter(5*time.Minute, 20, 10000) // 20 OAuth initiations per IP per 5 min
+
+// handleOAuthProviders returns the list of enabled OAuth providers.
+func (s *Server) handleOAuthProviders(w http.ResponseWriter, r *http.Request) {
+	type providerInfo struct {
+		Name        string `json:"name"`
+		DisplayName string `json:"display_name"`
+	}
+
+	var providers []providerInfo
+	for _, p := range s.oauthProviders {
+		if p.Enabled() {
+			providers = append(providers, providerInfo{Name: p.Name(), DisplayName: p.DisplayName()})
+		}
+	}
+	if providers == nil {
+		providers = []providerInfo{} // ensure JSON [] not null
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"providers": providers})
+}
+
+// handleOAuthLogin initiates an OAuth flow by redirecting to the provider.
+func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
+	providerName := r.PathValue("provider")
+	provider, ok := s.oauthProviders[providerName]
+	if !ok || !provider.Enabled() {
+		jsonError(w, http.StatusNotFound, "Unknown OAuth provider")
+		return
+	}
+
+	ip := clientIP(r)
+	if !oauthLoginLimiter.allow(ip) {
+		jsonError(w, http.StatusTooManyRequests, "Too many login attempts, try again later")
+		return
+	}
+
+	// Generate CSRF state, PKCE code verifier, and OIDC nonce.
+	state, err := generateRandomHex(32)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to generate state")
+		return
+	}
+	codeVerifier, err := oauth.GenerateCodeVerifier()
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to generate code verifier")
+		return
+	}
+	nonce, err := generateRandomHex(32)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to generate nonce")
+		return
+	}
+
+	// Validate redirect URL.
+	redirectURL := r.URL.Query().Get("redirect")
+	if redirectURL != "" && !isValidOAuthRedirect(redirectURL) {
+		redirectURL = ""
+	}
+
+	// Determine mode: "login" (default) or "connect" (authenticated linking).
+	mode := "login"
+	var userID string
+	if r.URL.Query().Get("mode") == "connect" {
+		sess := sessionFromContext(r.Context())
+		if sess == nil || sess.UserID == "" {
+			jsonError(w, http.StatusUnauthorized, "Authentication required for connect mode")
+			return
+		}
+		mode = "connect"
+		userID = sess.UserID
+	}
+
+	// Store state in DB.
+	stateHash := fmt.Sprintf("%x", sha256.Sum256([]byte(state)))
+	_, err = s.store.CreateOAuthState(r.Context(), stateHash, codeVerifier, nonce, redirectURL, mode, userID, time.Now().Add(oauthStateTTL))
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to store OAuth state")
+		return
+	}
+
+	// Redirect to provider.
+	authURL := provider.AuthCodeURL(state, codeVerifier, nonce)
+	http.Redirect(w, r, authURL, http.StatusFound)
+}
+
+// handleOAuthCallback handles the OAuth provider's callback.
+func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	providerName := r.PathValue("provider")
+	provider, ok := s.oauthProviders[providerName]
+	if !ok || !provider.Enabled() {
+		s.oauthErrorRedirect(w, r, "unknown_provider")
+		return
+	}
+
+	// Lazy expiration of old states.
+	_, _ = s.store.ExpireOAuthStates(ctx, time.Now())
+
+	state := r.URL.Query().Get("state")
+	code := r.URL.Query().Get("code")
+	if state == "" || code == "" {
+		s.oauthErrorRedirect(w, r, "invalid_request")
+		return
+	}
+
+	// Look up and consume state.
+	stateHash := fmt.Sprintf("%x", sha256.Sum256([]byte(state)))
+	oauthState, err := s.store.GetOAuthStateByHash(ctx, stateHash)
+	if err != nil {
+		s.oauthErrorRedirect(w, r, "expired")
+		return
+	}
+	if time.Now().After(oauthState.ExpiresAt) {
+		_ = s.store.DeleteOAuthState(ctx, oauthState.ID)
+		s.oauthErrorRedirect(w, r, "expired")
+		return
+	}
+
+	// Single-use: consume the state. If deletion fails, reject the request
+	// to preserve the single-use guarantee.
+	if err := s.store.DeleteOAuthState(ctx, oauthState.ID); err != nil {
+		fmt.Fprintf(os.Stderr, "[agent-vault] failed to consume OAuth state: %v\n", err)
+		s.oauthErrorRedirect(w, r, "expired")
+		return
+	}
+
+	// Exchange code for user info (nonce binds the ID token to this request).
+	userInfo, err := provider.Exchange(ctx, code, oauthState.CodeVerifier, oauthState.Nonce)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[agent-vault] OAuth exchange error: %v\n", err)
+		s.oauthErrorRedirect(w, r, "exchange_failed")
+		return
+	}
+
+	if !userInfo.EmailVerified {
+		s.oauthErrorRedirect(w, r, "email_not_verified")
+		return
+	}
+
+	// Branch on mode.
+	if oauthState.Mode == "connect" {
+		s.handleOAuthCallbackConnect(w, r, oauthState, provider, userInfo)
+		return
+	}
+
+	// Mode: "login" — sign in or register.
+	s.handleOAuthCallbackLogin(w, r, provider, userInfo, oauthState.RedirectURL)
+}
+
+func (s *Server) handleOAuthCallbackLogin(w http.ResponseWriter, r *http.Request, provider oauth.Provider, userInfo *oauth.UserInfo, redirectURL string) {
+	ctx := r.Context()
+
+	// Check if this OAuth identity is already linked to a user.
+	existing, err := s.store.GetOAuthAccount(ctx, provider.Name(), userInfo.ProviderUserID)
+	if err == nil && existing != nil {
+		// Returning OAuth user — load user and create session.
+		user, err := s.store.GetUserByID(ctx, existing.UserID)
+		if err != nil || user == nil || !user.IsActive {
+			s.oauthErrorRedirect(w, r, "signin_failed")
+			return
+		}
+		s.createOAuthSession(w, r, user, redirectURL)
+		return
+	}
+
+	// First-time OAuth login — check if email already exists.
+	existingUser, _ := s.store.GetUserByEmail(ctx, userInfo.Email)
+	if existingUser != nil {
+		// Email taken by an existing account. Reject with generic message.
+		s.oauthErrorRedirect(w, r, "signin_failed")
+		return
+	}
+
+	// Owner must be created with email/password — reject if no users exist.
+	userCount, _ := s.store.CountUsers(ctx)
+	if userCount == 0 {
+		s.oauthErrorRedirect(w, r, "owner_required")
+		return
+	}
+
+	// Check domain restriction. Use generic error to avoid leaking policy info.
+	if msg := s.checkEmailDomain(ctx, userInfo.Email); msg != "" {
+		s.oauthErrorRedirect(w, r, "signin_failed")
+		return
+	}
+
+	// Block new OAuth signups when invite-only mode is enabled.
+	if s.isInviteOnly(ctx) {
+		s.oauthErrorRedirect(w, r, "signin_failed")
+		return
+	}
+
+	// Atomically create new OAuth user + link identity.
+	newUser, _, err := s.store.CreateOAuthUserAndAccount(ctx, userInfo.Email, "member", provider.Name(), userInfo.ProviderUserID, userInfo.Email, userInfo.Name, userInfo.AvatarURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[agent-vault] OAuth user creation error: %v\n", err)
+		s.oauthErrorRedirect(w, r, "signin_failed")
+		return
+	}
+
+	s.createOAuthSession(w, r, newUser, redirectURL)
+}
+
+func (s *Server) handleOAuthCallbackConnect(w http.ResponseWriter, r *http.Request, oauthState *store.OAuthState, provider oauth.Provider, userInfo *oauth.UserInfo) {
+	ctx := r.Context()
+
+	// Load the authenticated user from the stored user ID.
+	user, err := s.store.GetUserByID(ctx, oauthState.UserID)
+	if err != nil || user == nil {
+		s.oauthErrorRedirect(w, r, "signin_failed")
+		return
+	}
+
+	// Validate that the OAuth email matches the user's account email.
+	if !strings.EqualFold(user.Email, userInfo.Email) {
+		s.oauthErrorRedirect(w, r, "email_mismatch")
+		return
+	}
+
+	// Check this provider identity isn't already linked to another user.
+	existingOAuth, _ := s.store.GetOAuthAccount(ctx, provider.Name(), userInfo.ProviderUserID)
+	if existingOAuth != nil {
+		s.oauthErrorRedirect(w, r, "already_linked")
+		return
+	}
+
+	// Check user doesn't already have this provider connected.
+	existingByUser, _ := s.store.GetOAuthAccountByUser(ctx, user.ID, provider.Name())
+	if existingByUser != nil {
+		s.oauthErrorRedirect(w, r, "already_linked")
+		return
+	}
+
+	// Link the OAuth identity.
+	_, err = s.store.CreateOAuthAccount(ctx, user.ID, provider.Name(), userInfo.ProviderUserID, userInfo.Email, userInfo.Name, userInfo.AvatarURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[agent-vault] OAuth connect error: %v\n", err)
+		s.oauthErrorRedirect(w, r, "connect_failed")
+		return
+	}
+
+	// Redirect to account settings.
+	target := "/account/settings"
+	if oauthState.RedirectURL != "" && isValidOAuthRedirect(oauthState.RedirectURL) {
+		target = oauthState.RedirectURL
+	}
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
+// handleOAuthConnect initiates an OAuth flow in "connect" mode for authenticated users.
+func (s *Server) handleOAuthConnect(w http.ResponseWriter, r *http.Request) {
+	providerName := r.PathValue("provider")
+	provider, ok := s.oauthProviders[providerName]
+	if !ok || !provider.Enabled() {
+		jsonError(w, http.StatusNotFound, "Unknown OAuth provider")
+		return
+	}
+
+	sess := sessionFromContext(r.Context())
+	if sess == nil || sess.UserID == "" {
+		jsonError(w, http.StatusUnauthorized, "User session required")
+		return
+	}
+
+	// Check if already connected.
+	existing, _ := s.store.GetOAuthAccountByUser(r.Context(), sess.UserID, providerName)
+	if existing != nil {
+		jsonError(w, http.StatusConflict, "Provider already connected")
+		return
+	}
+
+	// Generate state + PKCE and store in "connect" mode.
+	state, err := generateRandomHex(32)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to generate state")
+		return
+	}
+	codeVerifier, err := oauth.GenerateCodeVerifier()
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to generate code verifier")
+		return
+	}
+	nonce, err := generateRandomHex(32)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to generate nonce")
+		return
+	}
+
+	stateHash := fmt.Sprintf("%x", sha256.Sum256([]byte(state)))
+	_, err = s.store.CreateOAuthState(r.Context(), stateHash, codeVerifier, nonce, "", "connect", sess.UserID, time.Now().Add(oauthStateTTL))
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to store OAuth state")
+		return
+	}
+
+	authURL := provider.AuthCodeURL(state, codeVerifier, nonce)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"redirect_url": authURL})
+}
+
+// handleOAuthDisconnect removes an OAuth provider from an authenticated user.
+func (s *Server) handleOAuthDisconnect(w http.ResponseWriter, r *http.Request) {
+	providerName := r.PathValue("provider")
+	sess := sessionFromContext(r.Context())
+	if sess == nil || sess.UserID == "" {
+		jsonError(w, http.StatusUnauthorized, "User session required")
+		return
+	}
+
+	ctx := r.Context()
+	user, err := s.store.GetUserByID(ctx, sess.UserID)
+	if err != nil || user == nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to load user")
+		return
+	}
+
+	// Cannot disconnect if the user has no password (would lock them out).
+	if user.PasswordHash == nil {
+		jsonError(w, http.StatusConflict, "Cannot disconnect: no password set. Set a password first.")
+		return
+	}
+
+	if err := s.store.DeleteOAuthAccount(ctx, user.ID, providerName); err != nil {
+		jsonError(w, http.StatusNotFound, "Provider not connected")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"message": "Provider disconnected"})
+}
+
+// createOAuthSession creates a session for an OAuth user and redirects.
+func (s *Server) createOAuthSession(w http.ResponseWriter, r *http.Request, user *store.User, redirectURL string) {
+	session, err := s.store.CreateSession(r.Context(), user.ID, time.Now().Add(sessionTTL))
+	if err != nil {
+		s.oauthErrorRedirect(w, r, "session_failed")
+		return
+	}
+
+	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(sessionTTL.Seconds())))
+
+	target := "/vaults"
+	if redirectURL != "" && isValidOAuthRedirect(redirectURL) {
+		target = redirectURL
+	}
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
+// oauthErrorRedirect redirects to the frontend OAuth error page.
+func (s *Server) oauthErrorRedirect(w http.ResponseWriter, r *http.Request, errorCode string) {
+	http.Redirect(w, r, "/oauth/callback?"+url.Values{"error": {errorCode}}.Encode(), http.StatusFound)
+}
+
+// isValidOAuthRedirect validates that a redirect URL is a safe relative path.
+func isValidOAuthRedirect(u string) bool {
+	if u == "" {
+		return false
+	}
+	if !strings.HasPrefix(u, "/") {
+		return false
+	}
+	// Reject protocol-relative URLs and double slashes.
+	if strings.HasPrefix(u, "//") {
+		return false
+	}
+	// Reject URLs with scheme.
+	if strings.Contains(u, "://") {
+		return false
+	}
+	return true
+}
+
+// generateRandomHex generates n random bytes and returns them as a hex string.
+func generateRandomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := io.ReadFull(crand.Reader, b); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", b), nil
+}
+
+// --- Instance Settings ---
+
+const settingAllowedDomains = "allowed_email_domains"
+const settingInviteOnly = "invite_only"
+
+func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.requireOwner(w, r); err != nil {
+		return
+	}
+	s.writeSettingsResponse(w, r.Context())
+}
+
+// writeSettingsResponse reads all settings and writes the JSON response.
+func (s *Server) writeSettingsResponse(w http.ResponseWriter, ctx context.Context) {
+	settings, err := s.store.GetAllSettings(ctx)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to read settings")
+		return
+	}
+
+	resp := map[string]interface{}{
+		"allowed_email_domains": []string{},
+		"invite_only":          false,
+	}
+	if raw, ok := settings[settingAllowedDomains]; ok {
+		var domains []string
+		if json.Unmarshal([]byte(raw), &domains) == nil {
+			resp["allowed_email_domains"] = domains
+		}
+	}
+	if raw, ok := settings[settingInviteOnly]; ok {
+		resp["invite_only"] = raw == "true"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.requireOwner(w, r); err != nil {
+		return
+	}
+
+	var req struct {
+		AllowedEmailDomains *[]string `json:"allowed_email_domains"`
+		InviteOnly          *bool     `json:"invite_only"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	ctx := r.Context()
+
+	if req.InviteOnly != nil {
+		val := "false"
+		if *req.InviteOnly {
+			val = "true"
+		}
+		if err := s.store.SetSetting(ctx, settingInviteOnly, val); err != nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to save settings")
+			return
+		}
+	}
+
+	if req.AllowedEmailDomains != nil {
+		// Normalize: lowercase, trim whitespace, deduplicate, reject empty.
+		seen := make(map[string]bool)
+		var cleaned []string
+		for _, d := range *req.AllowedEmailDomains {
+			d = strings.ToLower(strings.TrimSpace(d))
+			if d == "" {
+				continue
+			}
+			// Basic domain validation: must contain at least one dot, no spaces.
+			if !strings.Contains(d, ".") || strings.ContainsAny(d, " \t@") {
+				jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid domain: %q", d))
+				return
+			}
+			if !seen[d] {
+				seen[d] = true
+				cleaned = append(cleaned, d)
+			}
+		}
+
+		if len(cleaned) == 0 {
+			// Empty list = unrestricted, delete the setting.
+			if err := s.store.SetSetting(ctx, settingAllowedDomains, "[]"); err != nil {
+				jsonError(w, http.StatusInternalServerError, "Failed to save settings")
+				return
+			}
+		} else {
+			encoded, _ := json.Marshal(cleaned)
+			if err := s.store.SetSetting(ctx, settingAllowedDomains, string(encoded)); err != nil {
+				jsonError(w, http.StatusInternalServerError, "Failed to save settings")
+				return
+			}
+		}
+	}
+
+	// Return the updated settings.
+	s.writeSettingsResponse(w, r.Context())
+}
+
+// getAllowedDomains reads the allowed_email_domains setting from the store.
+// Returns (nil, nil) if the setting is not set or is an empty array (unrestricted).
+// Returns a non-nil error on database or parse failures so callers can fail closed.
+func (s *Server) getAllowedDomains(ctx context.Context) ([]string, error) {
+	raw, err := s.store.GetSetting(ctx, settingAllowedDomains)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil // setting not configured — unrestricted
+		}
+		return nil, fmt.Errorf("failed to read allowed domains setting: %w", err)
+	}
+	var domains []string
+	if err := json.Unmarshal([]byte(raw), &domains); err != nil {
+		return nil, fmt.Errorf("failed to parse allowed domains setting: %w", err)
+	}
+	if len(domains) == 0 {
+		return nil, nil
+	}
+	return domains, nil
+}
+
+// checkEmailDomain returns an error message if the email's domain is not in the allowed list.
+// Returns "" if the domain is allowed or no restrictions are set.
+// Returns a non-empty string on domain mismatch or on internal errors (fail-closed).
+func (s *Server) checkEmailDomain(ctx context.Context, email string) string {
+	domains, err := s.getAllowedDomains(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[agent-vault] %v\n", err)
+		return "unable to verify email domain restrictions, please try again later"
+	}
+	if domains == nil {
+		return ""
+	}
+
+	parts := strings.SplitN(email, "@", 2)
+	if len(parts) != 2 {
+		return "invalid email address"
+	}
+	emailDomain := strings.ToLower(parts[1])
+
+	for _, d := range domains {
+		if emailDomain == d {
+			return ""
+		}
+	}
+
+	if len(domains) == 1 {
+		return fmt.Sprintf("signups are restricted to @%s email addresses", domains[0])
+	}
+	return "signups are restricted to specific email domains"
+}
+
+// isInviteOnly returns true if invite-only registration mode is enabled.
+// Fails closed: returns true on database/parse errors to prevent accidental open registration.
+func (s *Server) isInviteOnly(ctx context.Context) bool {
+	raw, err := s.store.GetSetting(ctx, settingInviteOnly)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false // setting not configured — open registration
+		}
+		fmt.Fprintf(os.Stderr, "[agent-vault] failed to read invite_only setting: %v\n", err)
+		return true // fail closed
+	}
+	return raw == "true"
 }

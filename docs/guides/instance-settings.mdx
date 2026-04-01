@@ -1,0 +1,88 @@
+---
+title: "Instance Settings"
+description: "Configure instance-wide settings for your Agent Vault server."
+---
+
+`Instance Settings` are instance-wide configurations that apply across your entire Agent Vault server. Only instance [owners](/learn/permissions#instance-roles) can view or change these settings.
+
+Currently, instance settings control how new users can register and join:
+
+- **Invite-only registration**: Disables self-registration entirely. New users can only join through [vault invites](/learn/vaults#invite-users-to-a-vault).
+- **Allowed email domains**: Restricts registration to specific email domains (e.g. `acme.com`, `acme.org`).
+
+<Tip>
+  The first user (instance [owner](/learn/permissions#instance-roles)) is always
+  exempt from both restrictions and can register normally to initialize the
+  instance.
+</Tip>
+
+## Invite-only registration
+
+When invite-only mode is enabled, self-registration is completely disabled. New users can only join through [vault invites](/learn/vaults#invite-users-to-a-vault) sent by a vault [admin](/learn/permissions#vault-roles). This applies to both email/password registration and OAuth signup.
+
+<Tabs>
+  <Tab title="Web UI">
+    Go to **Manage Instance > Settings**, toggle **Invite-Only Registration** on,
+    and click **Save Changes**.
+  </Tab>
+  <Tab title="CLI">
+    ```bash
+    # Enable invite-only
+    agent-vault owner settings set --invite-only
+
+    # Disable invite-only
+    agent-vault owner settings set --invite-only=false
+    ```
+  </Tab>
+</Tabs>
+
+When invite-only is active:
+
+- The **Register** page directs users to request an invite from an administrator.
+- The **Login** page hides the "Register" link.
+- `POST /v1/auth/register` returns `403 Forbidden`.
+- OAuth signup for new users is blocked (existing OAuth users can still log in).
+- [Vault invites](/learn/vaults#invite-users-to-a-vault) still work — this is the intended onboarding path.
+
+## Allowed email domains
+
+You can restrict registration to specific email domains. When set, only users with matching email addresses can register (via email/password, OAuth, or vault invite). Leave the list empty to allow all domains.
+
+<Tabs>
+  <Tab title="Web UI">
+    Go to **Manage Instance > Settings**, add domains under **Allowed Email
+    Domains**, and click **Save Changes**.
+  </Tab>
+  <Tab title="CLI">
+    ```bash
+    # Restrict to specific domains
+    agent-vault owner settings set --allowed-domains "acme.com,acme.org"
+
+    # Remove restrictions (allow all domains)
+    agent-vault owner settings set --allowed-domains ""
+    ```
+  </Tab>
+</Tabs>
+
+## Combining both settings
+
+Both settings stack — invite-only controls *whether* someone can register, and domain restrictions control *who* can register. When both are active, self-registration is blocked and vault invites are limited to matching email domains.
+
+| Configuration | Who can register |
+| --- | --- |
+| Invite-only only | No self-registration. Any email can join through [vault invites](/learn/vaults#invite-users-to-a-vault). |
+| Domain restrictions only | Anyone with a matching email domain can self-register. |
+| Both | No self-registration. Only [vault invites](/learn/vaults#invite-users-to-a-vault) with a matching email domain. |
+
+## View current settings
+
+```bash
+agent-vault owner settings get
+```
+
+Example output:
+
+```
+invite_only: disabled
+allowed_email_domains: acme.com, acme.org
+```

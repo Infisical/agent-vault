@@ -8,6 +8,7 @@ import {
 import { apiFetch } from "./lib/api";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
+import ForgotPassword from "./pages/ForgotPassword";
 import Vaults from "./pages/Vaults";
 import VaultInvite from "./pages/VaultInvite";
 import ProposalApprove from "./pages/ProposalApprove";
@@ -24,6 +25,8 @@ import AccountSettingsTab from "./pages/account/SettingsTab";
 import InstanceUsersTab from "./pages/instance/UsersTab";
 import InstanceVaultsTab from "./pages/instance/VaultsTab";
 import InstanceAgentsTab from "./pages/instance/AgentsTab";
+import InstanceSettingsTab from "./pages/instance/SettingsTab";
+import OAuthCallback from "./pages/OAuthCallback";
 
 // --- Types ---
 
@@ -31,6 +34,8 @@ export interface AuthContext {
   email: string;
   role: string;
   is_owner: boolean;
+  has_password: boolean;
+  oauth_providers: string[];
 }
 
 export interface VaultContext {
@@ -82,6 +87,19 @@ const registerRoute = createRoute({
     return { initialized: false, needs_first_user: true };
   },
   component: Register,
+});
+
+const forgotPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/forgot-password",
+  beforeLoad: async () => {
+    await requireInitializedOrRedirect();
+    const resp = await apiFetch("/v1/auth/me");
+    if (resp.ok) {
+      throw redirect({ to: "/vaults" });
+    }
+  },
+  component: ForgotPassword,
 });
 
 const vaultInviteRoute = createRoute({
@@ -136,6 +154,15 @@ const proposalApproveRoute = createRoute({
     };
   },
   component: ProposalApprove,
+});
+
+const oauthCallbackRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/oauth/callback",
+  validateSearch: (search: Record<string, unknown>) => ({
+    error: (search.error as string) || "",
+  }),
+  component: OAuthCallback,
 });
 
 // --- Auth Layout (protected routes) ---
@@ -219,6 +246,12 @@ const manageAgentsRoute = createRoute({
   component: InstanceAgentsTab,
 });
 
+const manageSettingsRoute = createRoute({
+  getParentRoute: () => manageInstanceRoute,
+  path: "/settings",
+  component: InstanceSettingsTab,
+});
+
 // --- Vault Layout (sidebar) ---
 
 const vaultLayoutRoute = createRoute({
@@ -300,8 +333,10 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   loginRoute,
   registerRoute,
+  forgotPasswordRoute,
   vaultInviteRoute,
   proposalApproveRoute,
+  oauthCallbackRoute,
   authLayoutRoute.addChildren([
     vaultsRoute,
     accountRoute.addChildren([
@@ -313,6 +348,7 @@ const routeTree = rootRoute.addChildren([
       manageUsersRoute,
       manageVaultsRoute,
       manageAgentsRoute,
+      manageSettingsRoute,
     ]),
     vaultLayoutRoute.addChildren([
       vaultIndexRoute,

@@ -1,4 +1,4 @@
-import { useState, useRef, type FormEvent } from "react";
+import { useState, useEffect, useRef, type FormEvent } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import Navbar from "../components/Navbar";
 import Button from "../components/Button";
@@ -6,8 +6,21 @@ import Input from "../components/Input";
 import FormField from "../components/FormField";
 import { ErrorBanner } from "../components/shared";
 import { apiFetch } from "../lib/api";
+import { OAuthSection } from "../components/GoogleButton";
+import { DomainNotice } from "../components/DomainNotice";
 
 export default function Login() {
+  const [inviteOnly, setInviteOnly] = useState(false);
+
+  useEffect(() => {
+    apiFetch("/v1/status")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.invite_only) setInviteOnly(true);
+      })
+      .catch(() => {});
+  }, []);
+
   return (
     <div className="min-h-screen w-full flex flex-col bg-bg">
       <Navbar />
@@ -17,12 +30,14 @@ export default function Login() {
             <LoginForm />
           </div>
 
-          <p className="text-sm text-text-muted mt-6 text-center">
-            Don't have an account?{" "}
-            <Link to="/register" className="text-primary font-medium hover:underline">
-              Register
-            </Link>
-          </p>
+          {!inviteOnly && (
+            <p className="text-sm text-text-muted mt-6 text-center">
+              Don't have an account?{" "}
+              <Link to="/register" className="text-primary font-medium hover:underline">
+                Register
+              </Link>
+            </p>
+          )}
         </div>
       </div>
     </div>
@@ -82,6 +97,10 @@ function LoginForm() {
         Access your team's Agent Vault instance.
       </p>
 
+      <DomainNotice className="mb-6" />
+
+      <OAuthSection />
+
       <form onSubmit={handleSubmit} autoComplete="on">
         <div className="mb-6">
           <FormField label="Email">
@@ -111,6 +130,11 @@ function LoginForm() {
               onChange={(e) => setPassword(e.target.value)}
             />
           </FormField>
+          <div className="text-right mt-2">
+            <Link to="/forgot-password" className="text-sm text-primary font-medium hover:underline">
+              Forgot password?
+            </Link>
+          </div>
         </div>
 
         {formError && <ErrorBanner message={formError} className="mb-4" />}
@@ -135,3 +159,4 @@ function LoginForm() {
     </>
   );
 }
+

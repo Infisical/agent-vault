@@ -17,6 +17,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/auth"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/notify"
+	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/pidfile"
 	"github.com/Infisical/agent-vault/internal/server"
 	"github.com/Infisical/agent-vault/internal/store"
@@ -86,8 +87,10 @@ var serverCmd = &cobra.Command{
 			baseURL = "http://" + addr
 		}
 		smtpCfg := notify.LoadSMTPConfig()
+		_ = os.Unsetenv("AGENT_VAULT_SMTP_PASSWORD")
 		notifier := notify.New(smtpCfg)
-		srv := server.New(addr, db, masterKey.Key(), notifier, initialized, baseURL)
+		oauthProviders := loadOAuthProviders(baseURL)
+		srv := server.New(addr, db, masterKey.Key(), notifier, initialized, baseURL, oauthProviders)
 		return srv.Start()
 	},
 }
@@ -290,8 +293,10 @@ func runDetachedChild(addr string) error {
 		baseURL = "http://" + addr
 	}
 	smtpCfg := notify.LoadSMTPConfig()
+	_ = os.Unsetenv("AGENT_VAULT_SMTP_PASSWORD")
 	notifier := notify.New(smtpCfg)
-	srv := server.New(addr, db, key, notifier, initialized, baseURL)
+	oauthProviders := loadOAuthProviders(baseURL)
+	srv := server.New(addr, db, key, notifier, initialized, baseURL, oauthProviders)
 	return srv.Start()
 }
 
@@ -433,6 +438,26 @@ var stopCmd = &cobra.Command{
 		fmt.Fprintf(cmd.OutOrStdout(), "%s Server stopped.\n", successText("✓"))
 		return nil
 	},
+}
+
+// loadOAuthProviders reads OAuth configuration from environment variables
+// and returns a map of enabled providers.
+func loadOAuthProviders(baseURL string) map[string]oauth.Provider {
+	providers := make(map[string]oauth.Provider)
+
+	google := oauth.NewGoogleProvider(oauth.GoogleConfig{
+		ClientID:     os.Getenv("AGENT_VAULT_OAUTH_GOOGLE_CLIENT_ID"),
+		ClientSecret: os.Getenv("AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET"),
+		RedirectURL:  strings.TrimRight(baseURL, "/") + "/v1/auth/oauth/google/callback",
+	})
+	if google.Enabled() {
+		providers["google"] = google
+	}
+
+	// Clear sensitive env var after reading (matches master password pattern).
+	_ = os.Unsetenv("AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET")
+
+	return providers
 }
 
 func init() {

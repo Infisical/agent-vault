@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"os"
 	"strconv"
@@ -14,11 +15,14 @@ import (
 
 // SMTPConfig holds the SMTP server configuration loaded from environment variables.
 type SMTPConfig struct {
-	Host     string
-	Port     int
-	Username string
-	Password string
-	From     string
+	Host          string
+	Port          int
+	Username      string
+	Password      string
+	From          string
+	FromName      string // Display name for From header (default "Agent Vault")
+	TLSMode       string // "opportunistic" (default), "required", "none"
+	TLSSkipVerify bool   // Skip TLS certificate verification
 }
 
 // LoadSMTPConfig reads SMTP configuration from AGENT_VAULT_SMTP_* environment variables.
@@ -41,12 +45,31 @@ func LoadSMTPConfig() *SMTPConfig {
 		return nil
 	}
 
+	fromName := os.Getenv("AGENT_VAULT_SMTP_FROM_NAME")
+	if fromName == "" {
+		fromName = "Agent Vault"
+	}
+
+	tlsMode := strings.ToLower(os.Getenv("AGENT_VAULT_SMTP_TLS_MODE"))
+	switch tlsMode {
+	case "opportunistic", "required", "none":
+		// valid
+	default:
+		tlsMode = "opportunistic"
+	}
+
+	tlsSkipVerify := os.Getenv("AGENT_VAULT_SMTP_TLS_SKIP_VERIFY")
+	skipVerify := tlsSkipVerify == "true" || tlsSkipVerify == "1"
+
 	return &SMTPConfig{
-		Host:     host,
-		Port:     port,
-		Username: os.Getenv("AGENT_VAULT_SMTP_USERNAME"),
-		Password: os.Getenv("AGENT_VAULT_SMTP_PASSWORD"),
-		From:     from,
+		Host:          host,
+		Port:          port,
+		Username:      os.Getenv("AGENT_VAULT_SMTP_USERNAME"),
+		Password:      os.Getenv("AGENT_VAULT_SMTP_PASSWORD"),
+		From:          from,
+		FromName:      fromName,
+		TLSMode:       tlsMode,
+		TLSSkipVerify: skipVerify,
 	}
 }
 
@@ -77,7 +100,7 @@ func (n *Notifier) SendMail(to []string, subject, body string) error {
 	cfg := n.config
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 
-	msg := buildMessage(cfg.From, to, subject, body)
+	msg := buildMessage(cfg.FromName, cfg.From, to, subject, body)
 
 	if cfg.Port == 465 {
 		return sendImplicitTLS(cfg, addr, to, msg)
@@ -99,19 +122,27 @@ func sendSTARTTLS(cfg *SMTPConfig, addr string, to []string, msg []byte) error {
 	}
 	defer func() { _ = c.Close() }()
 
-	if ok, _ := c.Extension("STARTTLS"); ok {
-		tlsCfg := &tls.Config{ServerName: cfg.Host}
-		if err := c.StartTLS(tlsCfg); err != nil {
-			return fmt.Errorf("starttls: %w", err)
+	tlsEstablished := false
+	if cfg.TLSMode != "none" {
+		tlsCfg := &tls.Config{ServerName: cfg.Host, InsecureSkipVerify: cfg.TLSSkipVerify}
+		if ok, _ := c.Extension("STARTTLS"); ok {
+			if err := c.StartTLS(tlsCfg); err != nil {
+				return fmt.Errorf("starttls: %w", err)
+			}
+			tlsEstablished = true
+		} else if cfg.TLSMode == "required" {
+			return fmt.Errorf("smtp: server does not support STARTTLS (tls_mode=required)")
 		}
+		// Opportunistic mode: STARTTLS not available, skip authentication
+		// to prevent sending credentials over a plaintext connection.
 	}
 
-	return finishSend(c, cfg, to, msg)
+	return finishSend(c, cfg, to, msg, tlsEstablished)
 }
 
 // sendImplicitTLS connects over TLS directly (port 465).
 func sendImplicitTLS(cfg *SMTPConfig, addr string, to []string, msg []byte) error {
-	tlsCfg := &tls.Config{ServerName: cfg.Host}
+	tlsCfg := &tls.Config{ServerName: cfg.Host, InsecureSkipVerify: cfg.TLSSkipVerify}
 	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, tlsCfg)
 	if err != nil {
 		return fmt.Errorf("smtp tls dial: %w", err)
@@ -124,12 +155,15 @@ func sendImplicitTLS(cfg *SMTPConfig, addr string, to []string, msg []byte) erro
 	}
 	defer func() { _ = c.Close() }()
 
-	return finishSend(c, cfg, to, msg)
+	return finishSend(c, cfg, to, msg, true) // implicit TLS = always encrypted
 }
 
-// finishSend authenticates (if credentials are set), then sends the message.
-func finishSend(c *smtp.Client, cfg *SMTPConfig, to []string, msg []byte) error {
+// finishSend authenticates (if credentials are set and TLS is active), then sends the message.
+func finishSend(c *smtp.Client, cfg *SMTPConfig, to []string, msg []byte, tlsEstablished bool) error {
 	if cfg.Username != "" && cfg.Password != "" {
+		if !tlsEstablished {
+			return fmt.Errorf("smtp: refusing to send credentials over unencrypted connection")
+		}
 		auth := smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
 		if err := c.Auth(auth); err != nil {
 			return fmt.Errorf("smtp auth: %w", err)
@@ -168,7 +202,7 @@ func (n *Notifier) SendHTMLMail(to []string, subject, htmlBody string) error {
 	cfg := n.config
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 
-	msg := buildHTMLMessage(cfg.From, to, subject, htmlBody)
+	msg := buildHTMLMessage(cfg.FromName, cfg.From, to, subject, htmlBody)
 
 	if cfg.Port == 465 {
 		return sendImplicitTLS(cfg, addr, to, msg)
@@ -181,40 +215,33 @@ func sanitizeHeader(s string) string {
 	return strings.NewReplacer("\r", "", "\n", "").Replace(s)
 }
 
-// buildMessage constructs a basic RFC 2822 plain text email message.
-func buildMessage(from string, to []string, subject, body string) []byte {
+// buildRFC2822 constructs an RFC 2822 email with the given content type.
+func buildRFC2822(fromName, from string, to []string, subject, contentType, body string) []byte {
 	from = sanitizeHeader(from)
+	fromName = sanitizeHeader(fromName)
 	subject = sanitizeHeader(subject)
 	sanitizedTo := make([]string, len(to))
 	for i, t := range to {
 		sanitizedTo[i] = sanitizeHeader(t)
 	}
+	addr := mail.Address{Name: fromName, Address: from}
 	var b strings.Builder
-	fmt.Fprintf(&b, "From: Agent Vault <%s>\r\n", from)
+	fmt.Fprintf(&b, "From: %s\r\n", addr.String())
 	fmt.Fprintf(&b, "To: %s\r\n", strings.Join(sanitizedTo, ", "))
 	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
 	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
+	fmt.Fprintf(&b, "Content-Type: %s\r\n", contentType)
 	b.WriteString("\r\n")
 	b.WriteString(body)
 	return []byte(b.String())
 }
 
+// buildMessage constructs a basic RFC 2822 plain text email message.
+func buildMessage(fromName, from string, to []string, subject, body string) []byte {
+	return buildRFC2822(fromName, from, to, subject, "text/plain; charset=UTF-8", body)
+}
+
 // buildHTMLMessage constructs an RFC 2822 HTML email message.
-func buildHTMLMessage(from string, to []string, subject, htmlBody string) []byte {
-	from = sanitizeHeader(from)
-	subject = sanitizeHeader(subject)
-	sanitizedTo := make([]string, len(to))
-	for i, t := range to {
-		sanitizedTo[i] = sanitizeHeader(t)
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "From: Agent Vault <%s>\r\n", from)
-	fmt.Fprintf(&b, "To: %s\r\n", strings.Join(sanitizedTo, ", "))
-	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
-	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
-	b.WriteString("\r\n")
-	b.WriteString(htmlBody)
-	return []byte(b.String())
+func buildHTMLMessage(fromName, from string, to []string, subject, htmlBody string) []byte {
+	return buildRFC2822(fromName, from, to, subject, "text/html; charset=UTF-8", htmlBody)
 }

@@ -3,6 +3,7 @@ package proposal
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -28,7 +29,12 @@ var CredentialKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 var hostLabelPattern = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
 
 // internalHosts are names blocked unless AGENT_VAULT_DEV_MODE=true.
-var internalHosts = []string{"localhost", "localhost.localdomain", "internal", "kubernetes", "kubernetes.default"}
+var internalHosts = []string{
+	"localhost", "localhost.localdomain", "internal",
+	"kubernetes", "kubernetes.default",
+	"metadata.google.internal", "metadata.google",
+	"instance-data",
+}
 
 // ValidateHost checks that a host string is safe and well-formed.
 func ValidateHost(host string) error {
@@ -172,6 +178,12 @@ func Validate(rules []Rule, credentials []CredentialSlot) error {
 		}
 		if len(s.Obtain) > MaxObtainLen {
 			return fmt.Errorf("credential slot %q: obtain too long (max %d characters)", s.Key, MaxObtainLen)
+		}
+		if s.Obtain != "" {
+			u, err := url.Parse(s.Obtain)
+			if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+				return fmt.Errorf("credential slot %q: obtain must be a valid https:// or http:// URL", s.Key)
+			}
 		}
 		if len(s.ObtainInstructions) > MaxObtainInstructionsLen {
 			return fmt.Errorf("credential slot %q: obtain_instructions too long (max %d characters)", s.Key, MaxObtainInstructionsLen)

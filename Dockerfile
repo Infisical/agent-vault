@@ -10,12 +10,20 @@ RUN npm run build
 # ---- Go build stage ----
 FROM golang:1.25-alpine AS builder
 
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=frontend /internal/server/webdist /src/internal/server/webdist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /agent-vault .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w \
+    -X github.com/Infisical/agent-vault/cmd.version=${VERSION} \
+    -X github.com/Infisical/agent-vault/cmd.commit=${COMMIT} \
+    -X github.com/Infisical/agent-vault/cmd.date=${BUILD_DATE}" \
+    -o /agent-vault .
 
 # ---- Runtime stage ----
 FROM alpine:3.21

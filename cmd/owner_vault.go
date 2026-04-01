@@ -82,7 +82,29 @@ var ownerVaultRemoveCmd = &cobra.Command{
 	},
 }
 
+var ownerVaultJoinCmd = &cobra.Command{
+	Use:   "join <name>",
+	Short: "Join a vault as admin (owner only)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+
+		sess, err := loadSession()
+		if err != nil {
+			return err
+		}
+
+		url := fmt.Sprintf("%s/v1/vaults/%s/join", sess.Address, name)
+		if err := doAdminRequest("POST", url, sess.Token, nil); err != nil {
+			return err
+		}
+
+		fmt.Fprintf(cmd.OutOrStdout(), "%s Joined vault %q as admin\n", successText("✓"), name)
+		return nil
+	},
+}
+
 func init() {
-	ownerVaultCmd.AddCommand(ownerVaultListCmd, ownerVaultRemoveCmd)
+	ownerVaultCmd.AddCommand(ownerVaultListCmd, ownerVaultRemoveCmd, ownerVaultJoinCmd)
 	ownerCmd.AddCommand(ownerVaultCmd)
 }

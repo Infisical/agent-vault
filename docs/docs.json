@@ -12,7 +12,7 @@
         "pages": [
           "index",
           "installation",
-          "how-it-works"
+          "first-proposal"
         ]
       },
       {
@@ -27,10 +27,12 @@
       {
         "group": "Self-Hosting",
         "pages": [
-          "self-hosting/local",
           "self-hosting/docker",
           "self-hosting/fly-io",
-          "self-hosting/environment-variables"
+          "self-hosting/environment-variables",
+          "guides/instance-settings",
+          "guides/smtp",
+          "guides/oauth"
         ]
       },
       {
@@ -68,6 +70,9 @@
     { "source": "/team/users-and-roles", "destination": "/learn/permissions" },
     { "source": "/configuration/secrets", "destination": "/learn/credentials" },
     { "source": "/configuration/policies", "destination": "/learn/policies" },
-    { "source": "/agents/persistent-agents", "destination": "/agents/overview" }
+    { "source": "/agents/persistent-agents", "destination": "/agents/overview" },
+    { "source": "/self-hosting/local", "destination": "/installation" },
+    { "source": "/learn/oauth", "destination": "/guides/oauth" },
+    { "source": "/how-it-works", "destination": "/" }
   ]
 }

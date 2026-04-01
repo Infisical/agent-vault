@@ -20,9 +20,9 @@ Master password resolution order:
   Never put `AGENT_VAULT_MASTER_PASSWORD` in Dockerfiles, committed `.env` files, or shell history. Use secret management features of your deployment platform (e.g., `fly secrets set`, Docker secrets, or your CI/CD provider's secret store).
 </Warning>
 
-## SMTP configuration
+## Email SMTP configuration
 
-If `AGENT_VAULT_SMTP_HOST` is unset, email notifications are silently disabled. All other SMTP variables are only read when `AGENT_VAULT_SMTP_HOST` is set.
+Configure SMTP to enable Agent Vault to send emails for verification codes, vault invites, and notifications.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -31,40 +31,28 @@ If `AGENT_VAULT_SMTP_HOST` is unset, email notifications are silently disabled. 
 | `AGENT_VAULT_SMTP_USERNAME` | (unset) | SMTP authentication username. |
 | `AGENT_VAULT_SMTP_PASSWORD` | (unset) | SMTP authentication password. |
 | `AGENT_VAULT_SMTP_FROM` | (unset) | Sender email address. Required if SMTP is enabled. |
-
-SMTP is used for:
-
-- **Registration verification codes** -- 6-digit codes sent to new users (15-minute TTL)
-- **Vault invite emails** -- links sent to users invited to a vault
-- **Test emails** -- `agent-vault email test` sends a verification email to the owner's address
+| `AGENT_VAULT_SMTP_FROM_NAME` | `Agent Vault` | Display name used in the From header of outgoing emails. |
+| `AGENT_VAULT_SMTP_TLS_MODE` | `opportunistic` | TLS behavior for non-465 ports: `opportunistic` (try STARTTLS, fall back to plain), `required` (STARTTLS must succeed), `none` (skip STARTTLS). Port 465 always uses implicit TLS. |
+| `AGENT_VAULT_SMTP_TLS_SKIP_VERIFY` | `false` | Skip TLS certificate verification. Set to `true` or `1` to enable. Useful for self-signed certificates in development. |
 
 <Tip>
-  To verify SMTP is working, run `agent-vault email test` -- it sends a test email to the owner's address.
+  To verify SMTP is working, run `agent-vault email test`. It sends a test email to the owner's address. See the [SMTP configuration guide](/guides/smtp) for step-by-step setup instructions for popular providers like SendGrid, AWS SES, Resend, and more.
 </Tip>
 
-### Example: Gmail SMTP
+## OAuth configuration
 
-<CodeGroup>
-```bash Docker
-docker run -it -p 14321:14321 \
-  -v agent-vault-data:/data \
-  -e AGENT_VAULT_MASTER_PASSWORD=your-password \
-  -e AGENT_VAULT_SMTP_HOST=smtp.gmail.com \
-  -e AGENT_VAULT_SMTP_PORT=587 \
-  -e AGENT_VAULT_SMTP_USERNAME=you@gmail.com \
-  -e AGENT_VAULT_SMTP_PASSWORD=your-app-password \
-  -e AGENT_VAULT_SMTP_FROM=you@gmail.com \
-  infisical/agent-vault
-```
+When both variables for a provider are set, the corresponding "Continue with ..." button appears on login and registration pages. If either is unset, the provider is disabled.
 
-```bash Fly.io
-fly secrets set AGENT_VAULT_SMTP_HOST=smtp.gmail.com
-fly secrets set AGENT_VAULT_SMTP_PORT=587
-fly secrets set AGENT_VAULT_SMTP_USERNAME=you@gmail.com
-fly secrets set AGENT_VAULT_SMTP_PASSWORD=your-app-password
-fly secrets set AGENT_VAULT_SMTP_FROM=you@gmail.com
-```
-</CodeGroup>
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_ID` | (unset) | Google OAuth 2.0 Client ID. Obtain from [Google Cloud Console](https://console.cloud.google.com/apis/credentials). |
+| `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET` | (unset) | Google OAuth 2.0 Client Secret. |
+
+The callback URL configured in Google Cloud Console must be `{AGENT_VAULT_ADDR}/v1/auth/oauth/google/callback`.
+
+<Tip>
+  See the [Login with Google](/guides/oauth) guide for step-by-step setup instructions.
+</Tip>
 
 ## Agent runtime variables
 

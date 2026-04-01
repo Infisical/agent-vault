@@ -7,8 +7,9 @@ description: "Deploy Agent Vault to Fly.io with persistent storage"
 
 <Steps>
   <Step title="Install the Fly CLI and authenticate">
+    Install `flyctl` using the [official instructions](https://fly.io/docs/flyctl/install/), then log in:
+
     ```bash
-    curl -L https://fly.io/install.sh | sh
     fly auth login
     ```
   </Step>
@@ -20,15 +21,7 @@ description: "Deploy Agent Vault to Fly.io with persistent storage"
     fly launch
     ```
 
-    The included `fly.toml` configures port 14321, HTTPS, and health checks automatically.
-  </Step>
-
-  <Step title="Create a persistent volume">
-    ```bash
-    fly volumes create agent_vault_data --size 1 --region sjc
-    ```
-
-    The volume mounts at `/data` and stores the SQLite database at `/data/.agent-vault/agent-vault.db`.
+    The included `fly.toml` configures port 14321, HTTPS, health checks, and a persistent volume automatically. Fly will prompt you to create the volume on first deploy.
   </Step>
 
   <Step title="Set secrets">
@@ -37,7 +30,14 @@ description: "Deploy Agent Vault to Fly.io with persistent storage"
     fly secrets set AGENT_VAULT_ADDR=https://your-app.fly.dev
     ```
 
-    `AGENT_VAULT_ADDR` is the externally-reachable URL used for generating links in emails, invites, and discovery responses.
+    | Variable | Required | Description |
+    |----------|----------|-------------|
+    | `AGENT_VAULT_MASTER_PASSWORD` | **Yes** | Master key for encrypting credentials at rest. |
+    | `AGENT_VAULT_ADDR` | Recommended | Externally-reachable base URL. Used for generating links in emails, invites, and discovery responses. |
+
+    <Tip>
+      Agent Vault supports additional configuration for SMTP email notifications, Google OAuth, domain restrictions, and more. See [Environment variables](/self-hosting/environment-variables) for the full reference.
+    </Tip>
   </Step>
 
   <Step title="Deploy">
@@ -72,19 +72,4 @@ description: "Deploy Agent Vault to Fly.io with persistent storage"
   Use a consistent master password across deploys. Changing it makes existing encrypted credentials unreadable. If you need to rotate, export your data first.
 </Warning>
 
-## SMTP for email notifications
-
-To enable registration verification codes, vault invite emails, and other notifications:
-
-```bash
-fly secrets set AGENT_VAULT_SMTP_HOST=smtp.gmail.com
-fly secrets set AGENT_VAULT_SMTP_PORT=587
-fly secrets set AGENT_VAULT_SMTP_USERNAME=you@gmail.com
-fly secrets set AGENT_VAULT_SMTP_PASSWORD=app-password
-fly secrets set AGENT_VAULT_SMTP_FROM=you@gmail.com
-```
-
-<Tip>
-  To verify SMTP is working, run `agent-vault email test` -- it sends a test email to the owner's address.
-</Tip>
 

@@ -3,7 +3,20 @@
     "allow": [
       "Bash(grep -ri \"api.?key\\\\|password\\\\|secret\\\\|token\\\\|bearer\" /Users/tuandang/Desktop/Projects/agent-vault --include=*.go --include=*.js --include=*.ts --include=*.tsx --exclude-dir=node_modules --exclude-dir=.git)",
       "Bash(grep -r \"FIXME\\\\|TODO\\\\|HACK\\\\|XXX\" /Users/tuandang/Desktop/Projects/agent-vault --include=*.go --include=*.ts --include=*.tsx --include=*.md --include=*.yml --include=*.yaml)",
-      "Bash(grep -r \"http://\\\\|https://\" /Users/tuandang/Desktop/Projects/agent-vault/web/src --include=*.ts --include=*.tsx)"
+      "Bash(grep -r \"http://\\\\|https://\" /Users/tuandang/Desktop/Projects/agent-vault/web/src --include=*.ts --include=*.tsx)",
+      "Bash(grep -rn \"InsecureSkipVerify\\\\|RootCAs\\\\|CertFile\\\\|CAFile\\\\|custom.*cert\\\\|skip.*verify\" /Users/tuandang/Desktop/Projects/agent-vault --include=*.go)",
+      "Bash(grep -n \"type Session struct\\\\|UserID\\\\|VaultID\\\\|VaultRole\" /Users/tuandang/Desktop/Projects/agent-vault/internal/store/*.go)",
+      "Bash(grep -n \"^type Session struct\" /Users/tuandang/Desktop/Projects/agent-vault/internal/store/*.go)",
+      "Bash(grep -l \"email_verification\\\\|verification_code\" /Users/tuandang/Desktop/Projects/agent-vault/internal/store/migrations/*.sql)",
+      "Bash(grep -n \"func.*handleAgentList\" /Users/tuandang/Desktop/Projects/agent-vault/internal/server/*.go)",
+      "Bash(grep -n \"func.*ListAgents\" /Users/tuandang/Desktop/Projects/agent-vault/internal/store/*.go)",
+      "Bash(grep -B 2 -A 8 \"ON DELETE CASCADE\" /Users/tuandang/Desktop/Projects/agent-vault/internal/store/migrations/*.sql)",
+      "Bash(grep -l \"CREATE TABLE.*vault_grants\" /Users/tuandang/Desktop/Projects/agent-vault/internal/store/migrations/*.sql)",
+      "Bash(sqlite3 /tmp/test.db \".schema sessions\")",
+      "Bash(grep -A 10 \"agent-vault account delete\\\\|agent-vault account\\\\s\\\\|Account$\\\\|## Account\" /Users/tuandang/Desktop/Projects/agent-vault/docs/reference/cli.mdx)",
+      "Bash(ls -1 /Users/tuandang/Desktop/Projects/agent-vault/internal/store/migrations/*.sql)",
+      "Bash(python3 -c \":*)",
+      "Bash(grep -n 'jsonError.*\"\"\"\"\\)\\)$' internal/server/server.go)"
     ]
   },
   "enabledPlugins": {

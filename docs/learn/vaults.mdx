@@ -132,12 +132,24 @@ The default vault cannot be deleted. Use `--yes` to skip the confirmation prompt
 
 ## Owner-level vault management
 
-Instance [owners](/learn/permissions#instance-roles) can manage all vaults across the instance, regardless of vault membership.
+Instance [owners](/learn/permissions#instance-roles) can see and manage all vaults across the instance, regardless of vault membership.
 
 ```bash
 # List ALL vaults (owner only)
 agent-vault owner vault list
 
+# Join a vault as admin (owner only)
+agent-vault owner vault join my-vault
+
 # Delete a vault (owner only)
 agent-vault owner vault remove my-vault
 ```
+
+Owners see every vault in their vault list. Vaults they have not joined appear in a separate "Other Vaults" section with a **Join** button. Joining grants the owner admin access, letting them manage credentials, approve proposals, and configure policies.
+
+<Tip>
+  If a user is deleted and their vaults become orphaned (no remaining members),
+  an instance owner can always join those vaults to recover access. User deletion
+  only removes the user and their vault grants — vaults and their data stay
+  intact.
+</Tip>

@@ -102,10 +102,25 @@ This means:
 
 Agent Vault enforces access at two independent layers. For full details, see [Permissions](/learn/permissions).
 
-- **Instance roles** (`owner`, `member`) control who can manage users, vaults, and server settings. Owners do not get implicit vault access.
+- **Instance roles** (`owner`, `member`) control who can manage users, vaults, and server settings. Owners can see and join any vault, but must explicitly join to access vault contents.
 - **Vault roles** (`admin`, `member`) control who can approve [proposals](/learn/proposals), manage agents, and use the proxy within a specific [vault](/learn/vaults).
 - **Agents** are scoped to a single vault and cannot access other vaults or perform instance-level operations.
 - **Proposal approval** requires a valid user session. Read-only approval tokens let you view the proposal, but submitting an approval (providing credentials, clicking "Allow") requires logging in.
+- **Email domain restrictions** -- Owners can restrict signups to specific email domains (e.g., `@acme.com`). This applies to email/password registration, Google OAuth signup, and vault invite acceptance. The first user (owner) is exempt. Configure via **Manage > Settings** in the web UI or `agent-vault owner settings set --allowed-domains`.
+
+## OAuth security
+
+When [Google OAuth](/guides/oauth) is enabled, Agent Vault applies several security measures:
+
+- **No automatic account linking** -- OAuth callbacks never link to existing accounts from unauthenticated contexts. If a Google email matches an existing email/password user, sign-in is rejected with a generic error. This prevents pre-hijack attacks.
+- **Safe linking from settings** -- Authenticated users can connect OAuth providers from account settings, where identity is already proven.
+- **PKCE (S256)** -- All OAuth flows use Proof Key for Code Exchange to prevent authorization code interception.
+- **CSRF state parameter** -- 32-byte random state, SHA-256 hashed in the database, single-use, 10-minute expiry.
+- **ID token validation** -- RS256 signature verified against Google's JWKS (cached 1 hour), with issuer (`accounts.google.com`), audience (client ID), and expiry checks.
+- **No token storage** -- Google access and refresh tokens are not stored. Only ID token claims are used at login time.
+- **Generic error messages** -- OAuth errors do not reveal whether an email is registered.
+- **Timing attack prevention** -- Login attempts for OAuth-only users run a dummy KDF hash to prevent timing-based auth method detection.
+- **Owner protection** -- The first user must register with email/password. OAuth login is rejected when no users exist.
 
 ## Rate limits
 

@@ -1,22 +1,46 @@
 # Agent Vault
 
-Open-source credential broker for AI agents. Agents access services without ever seeing the underlying credentials.
+**Secure Credential Access for AI Agents**
 
-## Why
+An open-source credential broker by [Infisical](https://infisical.com) that sits between your agents and the APIs they call.
+No credential exposure, no prompt injection risk — just brokered access out of the box.
+
+> **Beta software.** Agent Vault is under active development and may have breaking changes. Use at your own risk. Please review the [security documentation](https://docs.agent-vault.dev/learn/security) before deploying.
+
+[Documentation](https://docs.agent-vault.dev) — [Installation](https://docs.agent-vault.dev/installation) — [CLI Reference](https://docs.agent-vault.dev/reference/cli) — [Slack](https://infisical.com/slack)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Infisical/agent-vault/main/install.sh | sh
+```
+
+### Example: Agent-led access with zero pre-configuration
+
+Give your agent a task that requires an external API. Agent Vault handles the rest.
+
+```
+You:    "Fetch my recent Stripe charges"
+
+Agent:  calls /discover — Stripe isn't configured yet
+        raises a proposal requesting access
+        presents you with an approval link
+
+You:    click the link, paste your API key, click Allow
+
+Agent:  retries through the proxy — request succeeds
+        "Here are your 10 most recent charges..."
+```
+
+The agent never saw your Stripe key. Agent Vault attached it on the wire.
+
+## Why Agent Vault
 
 Traditional secret managers return credentials directly to the caller. This breaks down with AI agents, which are non-deterministic and vulnerable to prompt injection. An attacker can craft a malicious prompt and exfiltrate credentials from the agent.
 
-Agent Vault takes a different approach: agents never receive credentials. They route requests through Agent Vault, and Agent Vault attaches credentials on their behalf.
-
-```
-Agent ────▶ Agent Vault Proxy ────▶ api.stripe.com
-(no creds)    (attaches              (receives real
-               credentials)           Authorization header)
-```
-
-- **Brokered access, not retrieval.** Agents route requests through a proxy. There is nothing to leak because agents never have credentials.
-- **Self-onboarding.** Paste an invite prompt into any agent's chat and it connects itself. No env setup, no config files.
-- **Agent-led access.** The agent discovers what it needs at runtime and raises a proposal. You approve in your browser.
+- **Brokered access, not retrieval** — Agents route requests through a proxy. There is nothing to leak because agents never have credentials.
+- **Self-onboarding** — Paste an invite prompt into any agent's chat and it connects itself. No env setup, no config files. Works with Claude Code, Cursor, and any HTTP-capable agent.
+- **Agent-led access** — The agent discovers what it needs at runtime and raises a proposal. You review and approve in your browser with one click.
+- **Encrypted at rest** — Credentials are encrypted with AES-256-GCM using an Argon2id-derived key. The master password never touches disk.
+- **Multi-user, multi-vault** — Role-based access control with instance-level and vault-level permissions. Invite teammates, scope agents to specific vaults, and audit everything.
 
 ## Install
 
@@ -79,16 +103,6 @@ agent-vault vault run -- claude
 ```
 
 Ask the agent to call an external API. It discovers available services, proposes access for anything missing, and presents you with a browser link to approve.
-
-## Documentation
-
-Full documentation at **[docs.agent-vault.dev](https://docs.agent-vault.dev)**
-
-- [Quickstart: Claude Code](https://docs.agent-vault.dev/quickstart/claude-code)
-- [Quickstart: Cursor](https://docs.agent-vault.dev/quickstart/cursor)
-- [Self-Hosting](https://docs.agent-vault.dev/self-hosting/local) (Local, Docker, Fly.io)
-- [Agent Protocol](https://docs.agent-vault.dev/agents/protocol)
-- [CLI Reference](https://docs.agent-vault.dev/reference/cli)
 
 ## Development
 

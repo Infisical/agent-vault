@@ -1,0 +1,53 @@
+---
+title: "Your First Proposal"
+description: "Go from a fresh install to an approved proposal in under 2 minutes."
+---
+
+When an agent needs access to a service that isn't configured yet, it creates a [**proposal**](/learn/proposals), a request for you to review and approve before any credentials are granted. This walkthrough takes you through that flow end-to-end.
+
+## Prerequisites
+
+- A running Agent Vault server with an account ([see installation guide](/installation))
+
+## 1. Create an agent invite
+
+<Tabs>
+  <Tab title="CLI">
+    ```bash
+    agent-vault vault agent invite create
+    ```
+
+    This generates a one-time onboarding prompt and copies it to your clipboard.
+  </Tab>
+  <Tab title="Web UI">
+    Go to **Agents** in your vault and click **Create invite**. Copy the generated prompt.
+  </Tab>
+</Tabs>
+
+## 2. Paste the prompt into your agent
+
+Open your agent (Claude Code, Cursor, or any supported agent) and paste the invite prompt. The agent redeems the invite automatically and receives a session token scoped to your vault.
+
+## 3. Give the agent a task
+
+Ask the agent to do something that requires an external API:
+
+> "Fetch my recent Stripe charges"
+
+> "List my open GitHub issues"
+
+> "Check my Cloudflare DNS records"
+
+## 4. Approve the proposal
+
+Here's what happens — with zero pre-configuration:
+
+1. The agent routes the request through Agent Vault
+2. Agent Vault returns a **403** — the service isn't configured yet
+3. The agent reads the `proposal_hint`, creates a **proposal** requesting access, and presents you with an approval link
+4. You click the link, paste your API key, and click **Allow**
+5. The agent retries — Agent Vault reconstructs the request with the real credentials and the request succeeds
+
+<Note>
+  No pre-configuration was needed. The agent discovered what it needed, raised a proposal for approval, and handled the rest.
+</Note>

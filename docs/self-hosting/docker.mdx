@@ -3,19 +3,7 @@ title: "Docker"
 description: "Run Agent Vault in a Docker container"
 ---
 
-## Quick start
-
-```bash
-docker run -it -p 14321:14321 -v agent-vault-data:/data infisical/agent-vault
-```
-
-The server starts and prompts for a master password interactively. Data is persisted in the `agent-vault-data` volume at `/data/.agent-vault/agent-vault.db`.
-
-Register the owner account (first user gets full admin privileges):
-
-```bash
-agent-vault register --address http://localhost:14321
-```
+For the basic `docker run` command and first-time setup, see [Installation](/installation). This page covers Docker-specific configuration, Compose, and image details.
 
 ## Build from source
 
@@ -29,29 +17,11 @@ This runs a multi-stage build:
 2. **`golang:1.25-alpine`** -- compiles the Go binary with the embedded frontend
 3. **`alpine:3.21`** -- minimal runtime image
 
-The final image runs as non-root user `agent-vault` (UID 65532) and includes a built-in health check at `GET /health`.
+The final image runs as non-root user `agentvault` (UID 65532) and includes a built-in health check at `GET /health`.
 
 ## Configuration
 
-Pass the master password and optional SMTP config via environment variables to skip interactive prompts:
-
-```bash
-docker run -it -p 14321:14321 \
-  -v agent-vault-data:/data \
-  -e AGENT_VAULT_MASTER_PASSWORD=your-password \
-  -e AGENT_VAULT_SMTP_HOST=smtp.gmail.com \
-  -e AGENT_VAULT_SMTP_PORT=587 \
-  -e AGENT_VAULT_SMTP_USERNAME=you@gmail.com \
-  -e AGENT_VAULT_SMTP_PASSWORD=app-password \
-  -e AGENT_VAULT_SMTP_FROM=you@gmail.com \
-  infisical/agent-vault
-```
-
-<Warning>
-  Never put `AGENT_VAULT_MASTER_PASSWORD` in your Dockerfile or a committed `.env` file. Use Docker secrets or your orchestrator's secret management instead.
-</Warning>
-
-Set `AGENT_VAULT_ADDR` if the server is reachable at a URL different from `http://localhost:14321` (used for generating links in emails, invites, and discovery):
+Pass the master password via environment variable to skip the interactive prompt:
 
 ```bash
 docker run -it -p 14321:14321 \
@@ -61,19 +31,18 @@ docker run -it -p 14321:14321 \
   infisical/agent-vault
 ```
 
-## Register the owner
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `AGENT_VAULT_MASTER_PASSWORD` | **Yes** | Master key for encrypting credentials at rest. |
+| `AGENT_VAULT_ADDR` | Recommended | Externally-reachable base URL. Defaults to `http://localhost:14321`. Used for generating links in emails, invites, and discovery responses. |
 
-After the container starts, register the first user. This account becomes the instance owner with full admin privileges and is auto-granted admin on the default vault.
+<Warning>
+  Never put `AGENT_VAULT_MASTER_PASSWORD` in your Dockerfile or a committed `.env` file. Use Docker secrets or your orchestrator's secret management instead.
+</Warning>
 
-<CodeGroup>
-```bash CLI
-agent-vault register --address http://localhost:14321
-```
-
-```bash Browser
-# Open http://localhost:14321/register in your browser
-```
-</CodeGroup>
+<Tip>
+  Agent Vault supports additional configuration for SMTP email notifications, Google OAuth, domain restrictions, and more. See [Environment variables](/self-hosting/environment-variables) for the full reference.
+</Tip>
 
 ## Docker Compose
 

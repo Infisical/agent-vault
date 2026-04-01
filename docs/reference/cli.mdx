@@ -476,6 +476,14 @@ description: "Complete reference for all Agent Vault CLI commands."
     List all vaults on the instance. Owner only.
   </Accordion>
 
+  <Accordion title="agent-vault owner vault join">
+    ```bash
+    agent-vault owner vault join <name>
+    ```
+
+    Join a vault as admin. Useful for recovering orphaned vaults. Owner only. Returns 409 if already a member.
+  </Accordion>
+
   <Accordion title="agent-vault owner vault remove">
     ```bash
     agent-vault owner vault remove <name>

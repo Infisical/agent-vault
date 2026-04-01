@@ -18,9 +18,6 @@ Agent Vault ships as a single binary that acts as both the server and the CLI cl
 
     Supports macOS (Intel + Apple Silicon) and Linux (x86\_64 + ARM64).
 
-    <Tip>
-      If upgrading, the script automatically stops a running server, backs up your database, and installs the new version. Run `agent-vault server` afterward to start it again — any pending database migrations will run automatically.
-    </Tip>
   </Tab>
   <Tab title="Docker">
     No build tools required. Pull the image and run:
@@ -49,13 +46,52 @@ Verify the installation:
 agent-vault --help
 ```
 
+## Upgrade
+
+<Tabs>
+  <Tab title="Script">
+    Re-run the same install command — the script detects your existing installation, stops the running server, backs up your database, and installs the latest version:
+
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/Infisical/agent-vault/main/install.sh | sh
+    ```
+
+    Restart the server afterward:
+
+    ```bash
+    agent-vault server
+    ```
+  </Tab>
+  <Tab title="Docker">
+    Pull the latest image and recreate the container. Your data is preserved on the named volume:
+
+    ```bash
+    docker pull infisical/agent-vault:latest
+    docker stop agent-vault && docker rm agent-vault
+    docker run -it -p 14321:14321 -v agent-vault-data:/data infisical/agent-vault
+    ```
+  </Tab>
+  <Tab title="From source">
+    Pull the latest changes and rebuild:
+
+    ```bash
+    cd agent-vault
+    git pull
+    make build
+    sudo mv agent-vault /usr/local/bin/
+    ```
+  </Tab>
+</Tabs>
+
+Database migrations run automatically on server startup — no manual steps required.
+
 ## Start a server
 
 ```bash
 agent-vault server
 ```
 
-Agent Vault prompts for a **master password** on first run. This password encrypts all [credentials](/learn/credentials) at rest using AES-256-GCM with an Argon2id-derived key. It is never stored on disk.
+Agent Vault prompts for a **master password** on first run. This password encrypts all [credentials](/learn/credentials) at rest using AES-256-GCM with an Argon2id-derived key. It is never stored on disk. For non-interactive or automated environments, you can set the `AGENT_VAULT_MASTER_PASSWORD` environment variable or pass `--password-stdin` instead. See [environment variables](/self-hosting/environment-variables) for all options.
 
 To run in the background:
 
@@ -69,30 +105,33 @@ To stop a background server:
 agent-vault server stop
 ```
 
-<Tip>
-  For non-interactive or automated environments, set the `AGENT_VAULT_MASTER_PASSWORD`
-  environment variable or pass `--password-stdin`. See
-  [environment variables](/self-hosting/environment-variables) for all options.
-</Tip>
-
 ## Register and log in
 
 The first user to register becomes the instance [owner](/learn/permissions#instance-roles) with full admin privileges and is automatically granted [admin](/learn/permissions#vault-roles) on the default [vault](/learn/vaults).
 
-```bash
-agent-vault register
-agent-vault login
-```
+<Tabs>
+  <Tab title="CLI">
+    ```bash
+    agent-vault register
+    agent-vault login
+    ```
+  </Tab>
+  <Tab title="Web UI">
+    Open [http://localhost:14321/register](http://localhost:14321/register) (or the address you configured with `AGENT_VAULT_ADDR`) and create your account from the browser.
+  </Tab>
+</Tabs>
 
-Subsequent users can self-register via `agent-vault register` or be [invited to a vault](/learn/vaults#invite-users-to-a-vault) by a vault admin.
+Subsequent users can self-register via `agent-vault register`, the web registration page, or be [invited to a vault](/learn/vaults#invite-users-to-a-vault) by a vault admin.
+
+Once registered, you can manage Agent Vault through either the **web dashboard** or entirely via the **[CLI](/reference/cli)**. Both give you full access to [policies](/learn/policies), [credentials](/learn/credentials), [agents](/agents/overview), and [proposal](/learn/proposals) approvals.
 
 ## Next steps
 
 <CardGroup cols={2}>
-  <Card title="How it works" icon="lightbulb" href="/how-it-works">
-    Walk through a full request lifecycle end-to-end.
+  <Card title="Your first proposal" icon="sparkles" href="/first-proposal">
+    Invite an agent and approve your first request.
   </Card>
   <Card title="Connect an agent" icon="robot" href="/quickstart/claude-code">
-    Get Claude Code proxying requests in under 5 minutes.
+    Agent-specific setup guides for Claude Code, Cursor, and more.
   </Card>
 </CardGroup>

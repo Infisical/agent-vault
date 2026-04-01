@@ -26,8 +26,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 21 {
-		t.Fatalf("expected migration version 21, got %d", version)
+	if version != 28 {
+		t.Fatalf("expected migration version 28, got %d", version)
 	}
 }
 
@@ -974,7 +974,7 @@ func TestCountPendingInvites(t *testing.T) {
 	ctx := context.Background()
 	ns, _ := s.CreateVault(ctx, "inv-count")
 
-	s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute))
+	inv1, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute))
 	s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute))
 
 	count, err := s.CountPendingInvites(ctx, ns.ID)
@@ -986,8 +986,7 @@ func TestCountPendingInvites(t *testing.T) {
 	}
 
 	// Revoke one — count should drop.
-	invites, _ := s.ListInvites(ctx, ns.ID, "pending")
-	s.RevokeInvite(ctx, invites[0].Token)
+	s.RevokeInvite(ctx, inv1.Token)
 
 	count, _ = s.CountPendingInvites(ctx, ns.ID)
 	if count != 1 {
@@ -1383,10 +1382,10 @@ func TestListAgents(t *testing.T) {
 	s.CreateAgent(ctx, "a2", ns.ID, []byte("h"), []byte("s"), "prefix0000000002", "consumer", "c")
 	s.CreateAgent(ctx, "a3", ns2.ID, []byte("h"), []byte("s"), "prefix0000000003", "consumer", "c")
 
-	// All agents
-	all, err := s.ListAgents(ctx, "")
+	// All agents (cross-vault)
+	all, err := s.ListAllAgents(ctx)
 	if err != nil {
-		t.Fatalf("ListAgents all: %v", err)
+		t.Fatalf("ListAllAgents: %v", err)
 	}
 	if len(all) != 3 {
 		t.Fatalf("expected 3, got %d", len(all))
@@ -1656,5 +1655,120 @@ func TestDeleteAgentSessions(t *testing.T) {
 	count, _ = s.CountAgentSessions(ctx, ag.ID)
 	if count != 0 {
 		t.Fatalf("expected 0 sessions after delete, got %d", count)
+	}
+}
+
+func TestCreatePasswordReset(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	pr, err := s.CreatePasswordReset(ctx, "user@test.com", "123456", time.Now().Add(15*time.Minute))
+	if err != nil {
+		t.Fatalf("CreatePasswordReset: %v", err)
+	}
+	if pr.Email != "user@test.com" || pr.Status != "pending" {
+		t.Fatalf("unexpected password reset: %+v", pr)
+	}
+}
+
+func TestGetPendingPasswordReset(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	_, _ = s.CreatePasswordReset(ctx, "user@test.com", "123456", time.Now().Add(15*time.Minute))
+
+	pr, err := s.GetPendingPasswordReset(ctx, "user@test.com", "123456")
+	if err != nil {
+		t.Fatalf("GetPendingPasswordReset: %v", err)
+	}
+	if pr.Email != "user@test.com" {
+		t.Fatalf("unexpected email: %s", pr.Email)
+	}
+
+	// Wrong code should not match.
+	pr2, err := s.GetPendingPasswordReset(ctx, "user@test.com", "999999")
+	if err != sql.ErrNoRows {
+		t.Fatalf("expected ErrNoRows for wrong code, got err=%v pr=%+v", err, pr2)
+	}
+}
+
+func TestGetPendingPasswordReset_Expired(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	_, _ = s.CreatePasswordReset(ctx, "user@test.com", "123456", time.Now().Add(-1*time.Minute))
+
+	pr, err := s.GetPendingPasswordReset(ctx, "user@test.com", "123456")
+	if err != sql.ErrNoRows {
+		t.Fatalf("expected ErrNoRows for expired code, got err=%v pr=%+v", err, pr)
+	}
+}
+
+func TestMarkPasswordResetUsed(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	pr, _ := s.CreatePasswordReset(ctx, "user@test.com", "123456", time.Now().Add(15*time.Minute))
+
+	err := s.MarkPasswordResetUsed(ctx, pr.ID)
+	if err != nil {
+		t.Fatalf("MarkPasswordResetUsed: %v", err)
+	}
+
+	// Should no longer be findable as pending.
+	pr2, err := s.GetPendingPasswordReset(ctx, "user@test.com", "123456")
+	if err != sql.ErrNoRows {
+		t.Fatalf("expected ErrNoRows after marking used, got err=%v pr=%+v", err, pr2)
+	}
+
+	// Double-mark should fail.
+	err = s.MarkPasswordResetUsed(ctx, pr.ID)
+	if err != sql.ErrNoRows {
+		t.Fatalf("expected ErrNoRows on double-mark, got %v", err)
+	}
+}
+
+func TestCountPendingPasswordResets(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	count, _ := s.CountPendingPasswordResets(ctx, "user@test.com")
+	if count != 0 {
+		t.Fatalf("expected 0 pending, got %d", count)
+	}
+
+	s.CreatePasswordReset(ctx, "user@test.com", "111111", time.Now().Add(15*time.Minute))
+	s.CreatePasswordReset(ctx, "user@test.com", "222222", time.Now().Add(15*time.Minute))
+
+	count, _ = s.CountPendingPasswordResets(ctx, "user@test.com")
+	if count != 2 {
+		t.Fatalf("expected 2 pending, got %d", count)
+	}
+
+	// Other email should be 0.
+	count, _ = s.CountPendingPasswordResets(ctx, "other@test.com")
+	if count != 0 {
+		t.Fatalf("expected 0 pending for other email, got %d", count)
+	}
+}
+
+func TestExpirePendingPasswordResets(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	s.CreatePasswordReset(ctx, "user@test.com", "111111", time.Now().Add(-1*time.Minute))
+	s.CreatePasswordReset(ctx, "user@test.com", "222222", time.Now().Add(15*time.Minute))
+
+	n, err := s.ExpirePendingPasswordResets(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("ExpirePendingPasswordResets: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 expired, got %d", n)
+	}
+
+	count, _ := s.CountPendingPasswordResets(ctx, "user@test.com")
+	if count != 1 {
+		t.Fatalf("expected 1 pending after expiry, got %d", count)
 	}
 }

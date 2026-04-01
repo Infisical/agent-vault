@@ -4,10 +4,13 @@ import { apiFetch } from "../lib/api";
 import Navbar from "../components/Navbar";
 import Button from "../components/Button";
 import { ErrorBanner } from "../components/shared";
+import { OAuthSection } from "../components/GoogleButton";
+import { DomainNotice } from "../components/DomainNotice";
 
 export default function Register() {
-  const data = useLoaderData({ from: "/register" }) as { needs_first_user?: boolean } | undefined;
+  const data = useLoaderData({ from: "/register" }) as { needs_first_user?: boolean; invite_only?: boolean } | undefined;
   const isFirstUser = data?.needs_first_user ?? false;
+  const isInviteOnly = !isFirstUser && (data?.invite_only ?? false);
 
   return (
     <div className="min-h-screen w-full flex flex-col bg-bg">
@@ -15,17 +18,46 @@ export default function Register() {
       <div className="flex-1 flex items-center justify-center p-6">
         <div className="flex flex-col items-center w-full">
           <div className="bg-surface rounded-2xl w-full max-w-[480px] p-10 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_8px_24px_rgba(0,0,0,0.04)]">
-            <RegisterForm isFirstUser={isFirstUser} />
+            {isInviteOnly ? <InviteOnlyNotice /> : <RegisterForm isFirstUser={isFirstUser} />}
           </div>
 
-          <p className="text-sm text-text-muted mt-6 text-center">
-            Already have an account?{" "}
-            <Link to="/login" className="text-primary font-medium hover:underline">
-              Log in
-            </Link>
-          </p>
+          {!isFirstUser && (
+            <p className="text-sm text-text-muted mt-6 text-center">
+              Already have an account?{" "}
+              <Link to="/login" className="text-primary font-medium hover:underline">
+                Log in
+              </Link>
+            </p>
+          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function InviteOnlyNotice() {
+  return (
+    <div className="flex flex-col items-center text-center">
+      <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-6">
+        <svg className="w-8 h-8 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+        </svg>
+      </div>
+      <h2 className="text-2xl font-semibold text-text mb-2">Invite Only</h2>
+      <p className="text-text-muted text-[15px] mb-8">
+        This instance is invite-only. To create an account, ask an administrator for an invite.
+      </p>
+      <Link
+        to="/login"
+        className="w-full py-3.5 px-4 bg-primary text-primary-text rounded-lg text-[15px] font-semibold transition-colors flex items-center justify-center gap-2 hover:bg-primary-hover no-underline"
+      >
+        Log In
+        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="5" y1="12" x2="19" y2="12" />
+          <polyline points="12 5 19 12 12 19" />
+        </svg>
+      </Link>
     </div>
   );
 }
@@ -227,6 +259,10 @@ function RegisterForm({ isFirstUser }: { isFirstUser: boolean }) {
           : "Sign up for an account to access your team's Agent Vault instance."}
       </p>
 
+      {!isFirstUser && <DomainNotice className="mb-6" />}
+
+      {!isFirstUser && <OAuthSection />}
+
       <form onSubmit={handleRegister} autoComplete="off">
         <div className="mb-6">
           <label htmlFor="email" className="block text-xs font-semibold mb-2 text-text-muted uppercase tracking-wider">
@@ -332,3 +368,4 @@ function RegisterForm({ isFirstUser }: { isFirstUser: boolean }) {
     </>
   );
 }
+

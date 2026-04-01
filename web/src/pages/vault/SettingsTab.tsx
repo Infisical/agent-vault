@@ -4,7 +4,7 @@ import { useVaultParams, ErrorBanner } from "./shared";
 import Button from "../../components/Button";
 import Input from "../../components/Input";
 import FormField from "../../components/FormField";
-import Modal from "../../components/Modal";
+import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
 import { apiFetch } from "../../lib/api";
 
 export default function SettingsTab() {
@@ -21,9 +21,6 @@ export default function SettingsTab() {
 
   // Delete state
   const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [deleteConfirm, setDeleteConfirm] = useState("");
-  const [deleting, setDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState("");
 
   async function handleRename(e: React.FormEvent) {
     e.preventDefault();
@@ -62,25 +59,15 @@ export default function SettingsTab() {
   }
 
   async function handleDelete() {
-    setDeleting(true);
-    setDeleteError("");
-
-    try {
-      const resp = await apiFetch(
-        `/v1/vaults/${encodeURIComponent(vaultName)}`,
-        { method: "DELETE" }
-      );
-      if (!resp.ok) {
-        const data = await resp.json().catch(() => ({}));
-        setDeleteError(data.error || "Failed to delete vault");
-        return;
-      }
-      navigate({ to: "/vaults" });
-    } catch {
-      setDeleteError("Network error");
-    } finally {
-      setDeleting(false);
+    const resp = await apiFetch(
+      `/v1/vaults/${encodeURIComponent(vaultName)}`,
+      { method: "DELETE" }
+    );
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(data.error || "Failed to delete vault");
     }
+    navigate({ to: "/vaults" });
   }
 
   return (
@@ -151,43 +138,16 @@ export default function SettingsTab() {
       </section>
 
       {/* Delete confirmation modal */}
-      <Modal
+      <ConfirmDeleteModal
         open={showDeleteModal}
-        onClose={() => {
-          setShowDeleteModal(false);
-          setDeleteConfirm("");
-          setDeleteError("");
-        }}
+        onClose={() => setShowDeleteModal(false)}
+        onConfirm={handleDelete}
         title="Delete vault"
         description={`This will permanently delete "${vaultName}" and all associated data. Type the vault name to confirm.`}
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setShowDeleteModal(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleDelete}
-              disabled={deleteConfirm !== vaultName}
-              loading={deleting}
-              className="!bg-danger !text-white hover:!bg-danger/90"
-            >
-              Delete permanently
-            </Button>
-          </>
-        }
-      >
-        <FormField label="Vault name">
-          <Input
-            value={deleteConfirm}
-            onChange={(e) => {
-              setDeleteConfirm(e.target.value);
-              setDeleteError("");
-            }}
-            placeholder={vaultName}
-          />
-        </FormField>
-        {deleteError && <ErrorBanner message={deleteError} className="mt-3" />}
-      </Modal>
+        confirmLabel="Delete permanently"
+        confirmValue={vaultName}
+        inputLabel="Vault name"
+      />
     </div>
   );
 }

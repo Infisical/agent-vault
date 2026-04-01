@@ -19,12 +19,15 @@ build: web
 	go build -trimpath -ldflags '$(LDFLAGS)' -o agent-vault .
 
 # Hot-reload dev: Go backend (air) + React frontend (Vite HMR)
+# Env vars can come from .env file OR `infisical run -- make dev`.
 # Open http://localhost:5173/app/ in browser
 dev: web
 	@echo ""
 	@echo "  ➜ Open http://localhost:5173 in your browser (not 14321)"
 	@echo ""
-	@trap 'kill 0' EXIT; $(AIR) & (cd web && npm run dev) & wait
+	@trap 'kill 0' EXIT; \
+	if [ -f .env ]; then set -a; . ./.env; set +a; echo "  ✓ Loaded .env"; fi; \
+	$(AIR) & (cd web && npm run dev) & wait
 
 test:
 	go test ./...
@@ -34,4 +37,8 @@ clean:
 	rm -rf internal/server/webdist
 
 docker:
-	docker build -t infisical/agent-vault .
+	docker build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg BUILD_DATE=$(DATE) \
+		-t infisical/agent-vault .

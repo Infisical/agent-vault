@@ -1,0 +1,291 @@
+---
+title: "SMTP configuration"
+description: "Configure SMTP to enable email verification, vault invites, and notifications."
+---
+
+Agent Vault uses SMTP to send registration verification codes, vault invite emails, and test emails. If `AGENT_VAULT_SMTP_HOST` is unset, email notifications are silently disabled.
+
+See [environment variables](/self-hosting/environment-variables#smtp-configuration) for the full list of SMTP variables.
+
+## Provider guides
+
+<Accordion title="Generic SMTP">
+
+Set the following environment variables for any SMTP provider:
+
+<ParamField query="AGENT_VAULT_SMTP_HOST" type="string" default="none" optional>
+  Hostname of the SMTP server to connect to.
+</ParamField>
+
+<ParamField query="AGENT_VAULT_SMTP_PORT" type="string" default="587" optional>
+  Port of the SMTP server. Use `465` for implicit TLS, `587` for STARTTLS.
+</ParamField>
+
+<ParamField query="AGENT_VAULT_SMTP_USERNAME" type="string" default="none" optional>
+  SMTP authentication username.
+</ParamField>
+
+<ParamField query="AGENT_VAULT_SMTP_PASSWORD" type="string" default="none" optional>
+  SMTP authentication password.
+</ParamField>
+
+<ParamField query="AGENT_VAULT_SMTP_FROM" type="string" default="none" optional>
+  Sender email address (e.g. `team@example.com`).
+</ParamField>
+
+<ParamField query="AGENT_VAULT_SMTP_FROM_NAME" type="string" default="Agent Vault" optional>
+  Display name used in the From header of outgoing emails.
+</ParamField>
+
+<ParamField query="AGENT_VAULT_SMTP_TLS_MODE" type="string" default="opportunistic" optional>
+  TLS behavior for non-465 ports: `opportunistic` (try STARTTLS, fall back to plain), `required` (STARTTLS must succeed), `none` (skip STARTTLS). Port 465 always uses implicit TLS.
+</ParamField>
+
+<ParamField query="AGENT_VAULT_SMTP_TLS_SKIP_VERIFY" type="bool" default="false" optional>
+  Skip TLS certificate verification. Useful for self-signed certificates in development, not recommended for production.
+</ParamField>
+
+</Accordion>
+
+<Accordion title="Twilio SendGrid">
+
+1. Create an account and configure [SendGrid](https://sendgrid.com) to send emails.
+2. Create a SendGrid API Key under Settings > [API Keys](https://app.sendgrid.com/settings/api_keys).
+3. Set a name for your API Key and select the "Restricted Key" option. Enable the "Mail Send" permission:
+
+![creating SendGrid API key](/images/guides/email/email-sendgrid-create-key.png)
+
+![setting SendGrid API key restriction](/images/guides/email/email-sendgrid-restrictions.png)
+
+4. With the API Key, set your SMTP environment variables:
+
+```
+AGENT_VAULT_SMTP_HOST=smtp.sendgrid.net
+AGENT_VAULT_SMTP_USERNAME=apikey
+AGENT_VAULT_SMTP_PASSWORD=SG.xxxxx # your SendGrid API Key
+AGENT_VAULT_SMTP_PORT=587
+AGENT_VAULT_SMTP_FROM=hey@example.com
+AGENT_VAULT_SMTP_FROM_NAME=Agent Vault
+```
+
+<Info>
+  Remember to restart Agent Vault after changing environment variables.
+</Info>
+
+</Accordion>
+
+<Accordion title="Mailgun">
+
+1. Create an account and configure [Mailgun](https://www.mailgun.com) to send emails.
+2. Obtain your Mailgun credentials in Sending > Overview > SMTP.
+
+![obtaining Mailgun credentials](/images/guides/email/email-mailhog-credentials.png)
+
+3. With your Mailgun credentials, set your SMTP environment variables:
+
+```
+AGENT_VAULT_SMTP_HOST=smtp.mailgun.org
+AGENT_VAULT_SMTP_USERNAME=postmaster@example.mailgun.org
+AGENT_VAULT_SMTP_PASSWORD=password # from credentials page
+AGENT_VAULT_SMTP_PORT=587
+AGENT_VAULT_SMTP_FROM=hey@example.com
+AGENT_VAULT_SMTP_FROM_NAME=Agent Vault
+```
+
+</Accordion>
+
+<Accordion title="AWS SES">
+
+<Steps>
+  <Step title="Create a verified identity">
+    This will be used to verify the email you are sending from.
+
+    ![Create SES identity](/images/guides/email/ses-create-identity.png)
+
+    <Info>
+      If your AWS SES is in sandbox mode, you will only be able to send emails to verified identities.
+    </Info>
+  </Step>
+  <Step title="Create SMTP credentials">
+    Create an IAM user for SMTP authentication and obtain SMTP credentials in SMTP settings > Create SMTP credentials.
+
+    ![opening AWS SES console](/images/guides/email/email-aws-ses-console.png)
+
+    ![creating AWS IAM SES user](/images/guides/email/email-aws-ses-user.png)
+  </Step>
+  <Step title="Set environment variables">
+    With your AWS SES SMTP credentials, set your environment variables:
+
+    ```
+    AGENT_VAULT_SMTP_HOST=email-smtp.ap-northeast-1.amazonaws.com # your SMTP endpoint
+    AGENT_VAULT_SMTP_USERNAME=xxx # your SMTP username
+    AGENT_VAULT_SMTP_PASSWORD=xxx # your SMTP password
+    AGENT_VAULT_SMTP_PORT=465
+    AGENT_VAULT_SMTP_FROM=hey@example.com
+    AGENT_VAULT_SMTP_FROM_NAME=Agent Vault
+    ```
+  </Step>
+</Steps>
+
+<Info>
+  Remember to restart Agent Vault after changing environment variables.
+</Info>
+
+</Accordion>
+
+<Accordion title="SocketLabs">
+
+1. Create an account and configure [SocketLabs](https://www.socketlabs.com/) to send emails.
+2. From the dashboard, navigate to SMTP Credentials > SMTP & APIs > SMTP Credentials to obtain your credentials.
+
+![opening SocketLabs dashboard](/images/guides/email/email-socketlabs-dashboard.png)
+
+![obtaining SocketLabs credentials](/images/guides/email/email-socketlabs-credentials.png)
+
+3. With your SocketLabs SMTP credentials, set your environment variables:
+
+```
+AGENT_VAULT_SMTP_HOST=smtp.socketlabs.com
+AGENT_VAULT_SMTP_USERNAME=username # from your credentials
+AGENT_VAULT_SMTP_PASSWORD=password # from your credentials
+AGENT_VAULT_SMTP_PORT=587
+AGENT_VAULT_SMTP_FROM=hey@example.com
+AGENT_VAULT_SMTP_FROM_NAME=Agent Vault
+```
+
+<Note>
+  The `AGENT_VAULT_SMTP_FROM` should be an email for an authenticated domain under Configuration > Domain Management in SocketLabs. For example, if you're using SocketLabs in sandbox mode, you may use an email like `team@sandbox.socketlabs.dev`.
+</Note>
+
+![SocketLabs domain management](/images/guides/email/email-socketlabs-domains.png)
+
+<Info>
+  Remember to restart Agent Vault after changing environment variables.
+</Info>
+
+</Accordion>
+
+<Accordion title="Resend">
+
+1. Create an account on [Resend](https://resend.com).
+2. Add a [Domain](https://resend.com/domains).
+
+![adding Resend domain](/images/guides/email/email-resend-create-domain.png)
+
+3. Create an [API Key](https://resend.com/api-keys).
+
+![creating Resend API key](/images/guides/email/email-resend-create-key.png)
+
+4. Go to the [SMTP page](https://resend.com/settings/smtp) and copy the values.
+
+![Resend SMTP settings](/images/guides/email/email-resend-smtp-settings.png)
+
+5. With the API Key, set your SMTP environment variables:
+
+```
+AGENT_VAULT_SMTP_HOST=smtp.resend.com
+AGENT_VAULT_SMTP_USERNAME=resend
+AGENT_VAULT_SMTP_PASSWORD=YOUR_API_KEY
+AGENT_VAULT_SMTP_PORT=587
+AGENT_VAULT_SMTP_FROM=hey@example.com
+AGENT_VAULT_SMTP_FROM_NAME=Agent Vault
+```
+
+<Info>
+  Remember to restart Agent Vault after changing environment variables.
+</Info>
+
+</Accordion>
+
+<Accordion title="Gmail">
+
+Create an account and enable "less secure app access" in Gmail Account Settings > Security. This allows applications like Agent Vault to authenticate via your username and password.
+
+![Gmail secure app access](/images/guides/email/email-gmail-app-access.png)
+
+With your Gmail credentials, set your SMTP environment variables:
+
+```
+AGENT_VAULT_SMTP_HOST=smtp.gmail.com
+AGENT_VAULT_SMTP_USERNAME=hey@gmail.com
+AGENT_VAULT_SMTP_PASSWORD=your-app-password
+AGENT_VAULT_SMTP_PORT=587
+AGENT_VAULT_SMTP_FROM=hey@gmail.com
+AGENT_VAULT_SMTP_FROM_NAME=Agent Vault
+```
+
+<Warning>
+  As per the [notice](https://support.google.com/accounts/answer/6010255?hl=en) by Google, using Gmail credentials for SMTP only works for Google Workspace or Google Cloud Identity customers as of May 30, 2022. The SMTP configuration is only possible with business (not personal) Gmail credentials.
+</Warning>
+
+</Accordion>
+
+<Accordion title="Office365">
+
+1. Create an account and configure [Office365](https://www.office.com/) to send emails.
+2. With your login credentials, set your SMTP environment variables:
+
+```
+AGENT_VAULT_SMTP_HOST=smtp.office365.com
+AGENT_VAULT_SMTP_USERNAME=username@yourdomain.com
+AGENT_VAULT_SMTP_PASSWORD=password
+AGENT_VAULT_SMTP_PORT=587
+AGENT_VAULT_SMTP_FROM=username@yourdomain.com
+AGENT_VAULT_SMTP_FROM_NAME=Agent Vault
+```
+
+</Accordion>
+
+<Accordion title="Zoho Mail">
+
+1. Create an account and configure [Zoho Mail](https://www.zoho.com/mail/) to send emails.
+2. With your email credentials, set your SMTP environment variables:
+
+```
+AGENT_VAULT_SMTP_HOST=smtp.zoho.com
+AGENT_VAULT_SMTP_USERNAME=you@zohomail.com
+AGENT_VAULT_SMTP_PASSWORD=password
+AGENT_VAULT_SMTP_PORT=587
+AGENT_VAULT_SMTP_FROM=you@zohomail.com
+AGENT_VAULT_SMTP_FROM_NAME=Agent Vault
+```
+
+<Note>
+  You can use either your personal Zoho email address like `you@zohomail.com` or a domain-based email address like `you@yourdomain.com`. If using a domain-based address, make sure you've configured and verified it with Zoho Mail.
+</Note>
+
+<Info>
+  Remember to restart Agent Vault after changing environment variables.
+</Info>
+
+</Accordion>
+
+<Accordion title="SMTP2Go">
+
+1. Create an account and configure [SMTP2Go](https://www.smtp2go.com/) to send emails.
+2. Turn on SMTP authentication and set your environment variables:
+
+```
+AGENT_VAULT_SMTP_HOST=mail.smtp2go.com
+AGENT_VAULT_SMTP_PORT=587 # also supports 2525, 80, 25, 8025
+AGENT_VAULT_SMTP_USERNAME=username
+AGENT_VAULT_SMTP_PASSWORD=password
+AGENT_VAULT_SMTP_FROM=hey@example.com
+AGENT_VAULT_SMTP_FROM_NAME=Agent Vault
+```
+
+<Note>
+  TLS is available on ports 2525, 80, 25, 8025, and 587. SSL is available on ports 465, 8465, and 443.
+</Note>
+
+</Accordion>
+
+## Verifying your configuration
+
+After setting your SMTP environment variables and restarting Agent Vault, run:
+
+```bash
+agent-vault email test
+```
+
+This command requires an active login session as the instance **owner**. It sends a test email to the owner's address. If it arrives, your SMTP configuration is working correctly.

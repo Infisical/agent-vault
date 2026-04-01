@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -103,6 +104,170 @@ func TestLoadSMTPConfig_Full(t *testing.T) {
 	}
 }
 
+func TestLoadSMTPConfig_FromNameDefault(t *testing.T) {
+	t.Setenv("AGENT_VAULT_SMTP_HOST", "smtp.example.com")
+	t.Setenv("AGENT_VAULT_SMTP_FROM", "test@example.com")
+	t.Setenv("AGENT_VAULT_SMTP_FROM_NAME", "")
+
+	cfg := LoadSMTPConfig()
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
+	}
+	if cfg.FromName != "Agent Vault" {
+		t.Fatalf("expected default FromName 'Agent Vault', got %q", cfg.FromName)
+	}
+}
+
+func TestLoadSMTPConfig_FromNameCustom(t *testing.T) {
+	t.Setenv("AGENT_VAULT_SMTP_HOST", "smtp.example.com")
+	t.Setenv("AGENT_VAULT_SMTP_FROM", "test@example.com")
+	t.Setenv("AGENT_VAULT_SMTP_FROM_NAME", "My App")
+
+	cfg := LoadSMTPConfig()
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
+	}
+	if cfg.FromName != "My App" {
+		t.Fatalf("expected FromName 'My App', got %q", cfg.FromName)
+	}
+}
+
+func TestLoadSMTPConfig_TLSModeDefaults(t *testing.T) {
+	t.Setenv("AGENT_VAULT_SMTP_HOST", "smtp.example.com")
+	t.Setenv("AGENT_VAULT_SMTP_FROM", "test@example.com")
+	t.Setenv("AGENT_VAULT_SMTP_TLS_MODE", "")
+
+	cfg := LoadSMTPConfig()
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
+	}
+	if cfg.TLSMode != "opportunistic" {
+		t.Fatalf("expected default TLSMode 'opportunistic', got %q", cfg.TLSMode)
+	}
+}
+
+func TestLoadSMTPConfig_TLSModeValid(t *testing.T) {
+	for _, mode := range []string{"opportunistic", "required", "none"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("AGENT_VAULT_SMTP_HOST", "smtp.example.com")
+			t.Setenv("AGENT_VAULT_SMTP_FROM", "test@example.com")
+			t.Setenv("AGENT_VAULT_SMTP_TLS_MODE", mode)
+
+			cfg := LoadSMTPConfig()
+			if cfg == nil {
+				t.Fatal("expected non-nil config")
+			}
+			if cfg.TLSMode != mode {
+				t.Fatalf("expected TLSMode %q, got %q", mode, cfg.TLSMode)
+			}
+		})
+	}
+}
+
+func TestLoadSMTPConfig_TLSModeInvalidFallback(t *testing.T) {
+	t.Setenv("AGENT_VAULT_SMTP_HOST", "smtp.example.com")
+	t.Setenv("AGENT_VAULT_SMTP_FROM", "test@example.com")
+	t.Setenv("AGENT_VAULT_SMTP_TLS_MODE", "bogus")
+
+	cfg := LoadSMTPConfig()
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
+	}
+	if cfg.TLSMode != "opportunistic" {
+		t.Fatalf("expected fallback TLSMode 'opportunistic', got %q", cfg.TLSMode)
+	}
+}
+
+func TestLoadSMTPConfig_TLSSkipVerify(t *testing.T) {
+	tests := []struct {
+		env  string
+		want bool
+	}{
+		{"", false},
+		{"false", false},
+		{"yes", false},
+		{"true", true},
+		{"1", true},
+	}
+	for _, tt := range tests {
+		t.Run("val="+tt.env, func(t *testing.T) {
+			t.Setenv("AGENT_VAULT_SMTP_HOST", "smtp.example.com")
+			t.Setenv("AGENT_VAULT_SMTP_FROM", "test@example.com")
+			t.Setenv("AGENT_VAULT_SMTP_TLS_SKIP_VERIFY", tt.env)
+
+			cfg := LoadSMTPConfig()
+			if cfg == nil {
+				t.Fatal("expected non-nil config")
+			}
+			if cfg.TLSSkipVerify != tt.want {
+				t.Fatalf("TLSSkipVerify for %q: expected %v, got %v", tt.env, tt.want, cfg.TLSSkipVerify)
+			}
+		})
+	}
+}
+
+func TestSendSTARTTLS_RequiredMode_NoSTARTTLS(t *testing.T) {
+	// Mock SMTP server that does NOT advertise STARTTLS.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	addr := ln.Addr().(*net.TCPAddr)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		write := func(s string) { conn.Write([]byte(s + "\r\n")) }
+		reader := bufio.NewReader(conn)
+		readLine := func() string {
+			line, _ := reader.ReadString('\n')
+			return strings.TrimSpace(line)
+		}
+
+		write("220 localhost ESMTP")
+		cmd := readLine() // EHLO
+		if !strings.HasPrefix(cmd, "EHLO") {
+			write("500 expected EHLO")
+			return
+		}
+		// No STARTTLS advertised
+		write("250-localhost")
+		write("250 OK")
+
+		// The client should disconnect after the STARTTLS error.
+		readLine() // QUIT or EOF
+		write("221 Bye")
+	}()
+
+	cfg := &SMTPConfig{
+		Host:     "127.0.0.1",
+		Port:     addr.Port,
+		From:     "test@example.com",
+		FromName: "Agent Vault",
+		TLSMode:  "required",
+	}
+	smtpAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(addr.Port))
+	msg := buildMessage(cfg.FromName, cfg.From, []string{"to@example.com"}, "Test", "body")
+
+	err = sendSTARTTLS(cfg, smtpAddr, []string{"to@example.com"}, msg)
+	if err == nil {
+		t.Fatal("expected error when STARTTLS required but not available")
+	}
+	if !strings.Contains(err.Error(), "tls_mode=required") {
+		t.Fatalf("expected error to mention tls_mode=required, got: %v", err)
+	}
+
+	<-done
+}
+
 func TestNotifier_Enabled(t *testing.T) {
 	var nilNotifier *Notifier
 	if nilNotifier.Enabled() {
@@ -135,10 +300,10 @@ func TestNotifier_SendMail_EmptyRecipients(t *testing.T) {
 }
 
 func TestBuildMessage(t *testing.T) {
-	msg := string(buildMessage("from@example.com", []string{"to@example.com"}, "Test Subject", "Hello world"))
+	msg := string(buildMessage("Agent Vault", "from@example.com", []string{"to@example.com"}, "Test Subject", "Hello world"))
 
-	if !strings.Contains(msg, "From: Agent Vault <from@example.com>") {
-		t.Error("missing From header")
+	if !strings.Contains(msg, "From: \"Agent Vault\" <from@example.com>") {
+		t.Errorf("missing or malformed From header, got: %s", msg)
 	}
 	if !strings.Contains(msg, "To: to@example.com") {
 		t.Error("missing To header")
@@ -151,6 +316,20 @@ func TestBuildMessage(t *testing.T) {
 	}
 	if !strings.Contains(msg, "\r\n\r\nHello world") {
 		t.Error("missing body separator or body")
+	}
+}
+
+func TestBuildMessage_CustomFromName(t *testing.T) {
+	msg := string(buildMessage("My Company", "noreply@co.com", []string{"to@example.com"}, "Hi", "body"))
+	if !strings.Contains(msg, "From: \"My Company\" <noreply@co.com>") {
+		t.Errorf("expected custom from name in From header, got: %s", msg)
+	}
+}
+
+func TestBuildHTMLMessage_FromName(t *testing.T) {
+	msg := string(buildHTMLMessage("Custom Name", "from@example.com", []string{"to@example.com"}, "Sub", "<p>hi</p>"))
+	if !strings.Contains(msg, "From: \"Custom Name\" <from@example.com>") {
+		t.Errorf("expected custom from name in HTML From header, got: %s", msg)
 	}
 }
 
