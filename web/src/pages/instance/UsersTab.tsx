@@ -30,11 +30,16 @@ function RowActions({
 
   async function handleToggleRole() {
     const newRole = isOwner ? "member" : "owner";
-    await fetch(`/v1/admin/users/${encodeURIComponent(user.email)}/role`, {
+    const resp = await fetch(`/v1/admin/users/${encodeURIComponent(user.email)}/role`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ role: newRole }),
     });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      alert(data.error || "Failed to change role");
+      return;
+    }
     onDone();
   }
 

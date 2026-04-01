@@ -172,6 +172,7 @@ function ChangePasswordForm({ hasPassword }: { hasPassword: boolean }) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [formError, setFormError] = useState("");
   const [fieldError, setFieldError] = useState("");
+  const [errorField, setErrorField] = useState<"new" | "confirm" | "">("");
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
 
@@ -194,11 +195,13 @@ function ChangePasswordForm({ hasPassword }: { hasPassword: boolean }) {
     }
     if (newPassword.length < 8) {
       setFieldError("Password must be at least 8 characters.");
+      setErrorField("new");
       newRef.current?.focus();
       return;
     }
     if (newPassword !== confirmPassword) {
       setFieldError("Passwords do not match.");
+      setErrorField("confirm");
       confirmRef.current?.focus();
       return;
     }
@@ -267,27 +270,27 @@ function ChangePasswordForm({ hasPassword }: { hasPassword: boolean }) {
           </FormField>
         )}
 
-        <FormField label="New password" error={fieldError && !confirmPassword ? fieldError : undefined}>
+        <FormField label="New password" error={errorField === "new" ? fieldError : undefined}>
           <Input
             ref={newRef}
             type="password"
             placeholder="At least 8 characters"
             autoComplete="new-password"
-            error={!!fieldError}
+            error={errorField === "new"}
             value={newPassword}
-            onChange={(e) => { setNewPassword(e.target.value); setFieldError(""); }}
+            onChange={(e) => { setNewPassword(e.target.value); setFieldError(""); setErrorField(""); }}
           />
         </FormField>
 
-        <FormField label="Confirm new password" error={fieldError && confirmPassword ? fieldError : undefined}>
+        <FormField label="Confirm new password" error={errorField === "confirm" ? fieldError : undefined}>
           <Input
             ref={confirmRef}
             type="password"
             placeholder="Re-enter new password"
             autoComplete="new-password"
-            error={!!fieldError && !!confirmPassword}
+            error={errorField === "confirm"}
             value={confirmPassword}
-            onChange={(e) => { setConfirmPassword(e.target.value); setFieldError(""); }}
+            onChange={(e) => { setConfirmPassword(e.target.value); setFieldError(""); setErrorField(""); }}
           />
         </FormField>
 

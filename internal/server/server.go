@@ -1075,11 +1075,6 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.MarkPasswordResetUsed(ctx, pr.ID); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to process reset")
-		return
-	}
-
 	// Hash new password.
 	hash, salt, newKDFParams, err := auth.HashUserPassword([]byte(req.NewPassword))
 	if err != nil {
@@ -1089,6 +1084,12 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.store.UpdateUserPassword(ctx, user.ID, hash, salt, newKDFParams.Time, newKDFParams.Memory, newKDFParams.Threads); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to update password")
+		return
+	}
+
+	// Mark reset code as used only after password is successfully updated.
+	if err := s.store.MarkPasswordResetUsed(ctx, pr.ID); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to process reset")
 		return
 	}
 
@@ -3407,7 +3408,10 @@ func (s *Server) handleVaultInviteAccept(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		// Activate immediately — invite is the verification.
-		_ = s.store.ActivateUser(ctx, newUser.ID)
+		if err := s.store.ActivateUser(ctx, newUser.ID); err != nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to activate user")
+			return
+		}
 		user = newUser
 	}
 

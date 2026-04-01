@@ -39,8 +39,9 @@ function RowActions({
   const newRole = user.role === "admin" ? "member" : "admin";
 
   async function handleChangeRole() {
+    let resp: Response;
     if (user.status === "pending" && user.invite_token) {
-      await apiFetch(
+      resp = await apiFetch(
         `/v1/vaults/${encodeURIComponent(vaultName)}/invites/${encodeURIComponent(user.invite_token)}`,
         {
           method: "PATCH",
@@ -48,7 +49,7 @@ function RowActions({
         }
       );
     } else {
-      await apiFetch(
+      resp = await apiFetch(
         `/v1/vaults/${encodeURIComponent(vaultName)}/users/${encodeURIComponent(user.email)}/role`,
         {
           method: "POST",
@@ -56,20 +57,31 @@ function RowActions({
         }
       );
     }
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      alert(data.error || "Failed to change role");
+      return;
+    }
     onDone();
   }
 
   async function handleRemove() {
+    let resp: Response;
     if (user.status === "pending" && user.invite_token) {
-      await fetch(
+      resp = await fetch(
         `/v1/vaults/${encodeURIComponent(vaultName)}/invites/${encodeURIComponent(user.invite_token)}`,
         { method: "DELETE" }
       );
     } else {
-      await fetch(
+      resp = await fetch(
         `/v1/vaults/${encodeURIComponent(vaultName)}/users/${encodeURIComponent(user.email)}`,
         { method: "DELETE" }
       );
+    }
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      alert(data.error || "Failed to remove user");
+      return;
     }
     onDone();
   }
