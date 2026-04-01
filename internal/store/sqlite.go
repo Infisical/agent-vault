@@ -96,7 +96,7 @@ func (s *SQLiteStore) GetAllSettings(ctx context.Context) (map[string]string, er
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	settings := make(map[string]string)
 	for rows.Next() {
 		var k, v string
@@ -1810,7 +1810,7 @@ func (s *SQLiteStore) CreateOAuthUserAndAccount(ctx context.Context, email, role
 	if err != nil {
 		return nil, nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	userID := newUUID()
 	oauthAccID := newUUID()

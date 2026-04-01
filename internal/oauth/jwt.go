@@ -74,7 +74,7 @@ func (j *JWKS) refresh() error {
 	if err != nil {
 		return fmt.Errorf("fetching JWKS: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("JWKS endpoint returned %d", resp.StatusCode)
@@ -83,7 +83,7 @@ func (j *JWKS) refresh() error {
 	// Limit response body to 128 KB to prevent memory exhaustion from a
 	// compromised or malicious JWKS endpoint.
 	limited := http.MaxBytesReader(nil, resp.Body, 128*1024)
-	defer limited.Close()
+	defer func() { _ = limited.Close() }()
 
 	var jwks struct {
 		Keys []jwkEntry `json:"keys"`

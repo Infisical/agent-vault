@@ -124,7 +124,7 @@ func sendSTARTTLS(cfg *SMTPConfig, addr string, to []string, msg []byte) error {
 
 	tlsEstablished := false
 	if cfg.TLSMode != "none" {
-		tlsCfg := &tls.Config{ServerName: cfg.Host, InsecureSkipVerify: cfg.TLSSkipVerify}
+		tlsCfg := &tls.Config{ServerName: cfg.Host, InsecureSkipVerify: cfg.TLSSkipVerify} //nolint:gosec // user-configurable TLS skip verify for SMTP
 		if ok, _ := c.Extension("STARTTLS"); ok {
 			if err := c.StartTLS(tlsCfg); err != nil {
 				return fmt.Errorf("starttls: %w", err)
@@ -142,7 +142,7 @@ func sendSTARTTLS(cfg *SMTPConfig, addr string, to []string, msg []byte) error {
 
 // sendImplicitTLS connects over TLS directly (port 465).
 func sendImplicitTLS(cfg *SMTPConfig, addr string, to []string, msg []byte) error {
-	tlsCfg := &tls.Config{ServerName: cfg.Host, InsecureSkipVerify: cfg.TLSSkipVerify}
+	tlsCfg := &tls.Config{ServerName: cfg.Host, InsecureSkipVerify: cfg.TLSSkipVerify} //nolint:gosec // user-configurable TLS skip verify for SMTP
 	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, tlsCfg)
 	if err != nil {
 		return fmt.Errorf("smtp tls dial: %w", err)
