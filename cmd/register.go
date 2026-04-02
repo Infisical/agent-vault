@@ -113,7 +113,9 @@ var registerCmd = &cobra.Command{
 			return nil
 		}
 
-		if result.EmailSent {
+		if result.Message != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", successText("✓"), result.Message)
+		} else if result.EmailSent {
 			fmt.Fprintf(cmd.OutOrStdout(), "%s Account created. Check your email for a verification code.\n", successText("✓"))
 		} else {
 			fmt.Fprintf(cmd.OutOrStdout(), "%s Account created. Ask your Agent Vault instance owner for the verification code.\n", successText("✓"))

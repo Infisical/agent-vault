@@ -34,6 +34,7 @@ export interface ProposalData {
   rules?: Rule[];
   credentials?: CredentialSlot[];
   created_at?: string;
+  agent_name?: string;
 }
 
 /** Parse rules from a JSON string (as stored on proposal rows). */
@@ -126,6 +127,23 @@ export default function ProposalPreview({ data }: { data: ProposalData }) {
               ? (setRules.length > 0 ? "Connect to " : "") + titleParts.join(" & ")
               : "Policy change"}
           </h1>
+          {(data.vault || data.agent_name) && (
+            <div className="flex items-center gap-2 mt-1.5 text-xs text-text-muted">
+              {data.vault && (
+                <span className="inline-flex items-center gap-1">
+                  <span className="font-medium">Vault:</span>
+                  <span className="font-mono">{data.vault}</span>
+                </span>
+              )}
+              {data.vault && data.agent_name && <span>&middot;</span>}
+              {data.agent_name && (
+                <span className="inline-flex items-center gap-1">
+                  <span className="font-medium">Agent:</span>
+                  <span className="font-mono">{data.agent_name}</span>
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

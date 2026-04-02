@@ -55,7 +55,7 @@ sudo mv agent-vault /usr/local/bin/
 ## Quickstart
 
 ```bash
-# Start the server (runs on localhost:14321 by default)
+# Start the server (runs on localhost:14321 by default; use --host and --port to change)
 agent-vault server -d
 agent-vault register
 agent-vault login

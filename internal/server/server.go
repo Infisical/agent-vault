@@ -51,6 +51,18 @@ var webDistFS embed.FS
 //go:embed invite_email.html
 var userInviteEmailHTML string
 
+//go:embed proposal_notification_email.html
+var proposalNotificationEmailHTML string
+
+//go:embed verification_code_email.html
+var verificationCodeEmailHTML string
+
+//go:embed password_reset_email.html
+var passwordResetEmailHTML string
+
+//go:embed test_email.html
+var testEmailHTML string
+
 // Server is the Agent Vault HTTP server.
 type Server struct {
 	httpServer  *http.Server
@@ -587,9 +599,9 @@ func (s *Server) Start() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		fmt.Printf("Agent Vault server listening on %s\n", s.httpServer.Addr)
+		fmt.Printf("Agent Vault server listening on %s\n", s.baseURL)
 		if !s.initialized {
-			fmt.Printf("  → Visit %s/register to create the owner account\n", s.baseURL)
+			fmt.Printf("Run `agent-vault register` or visit %s to create the owner account\n", s.baseURL)
 		}
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
@@ -755,8 +767,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 		emailSent := false
 		if s.notifier.Enabled() {
-			body := fmt.Sprintf("Your Agent Vault verification code is: %s\n\nThis code expires in 15 minutes.", code)
-			if err := s.notifier.SendMail([]string{req.Email}, "Agent Vault verification code", body); err != nil {
+			body := strings.Replace(verificationCodeEmailHTML, "{{CODE}}", html.EscapeString(code), 1)
+			if err := s.notifier.SendHTMLMail([]string{req.Email}, "Agent Vault verification code", body); err != nil {
 				fmt.Fprintf(os.Stderr, "[agent-vault] Failed to send verification email to %s: %v\n", req.Email, err)
 				fmt.Fprintf(os.Stderr, "[agent-vault] Email verification code for %s: %s\n", req.Email, code)
 			} else {
@@ -851,8 +863,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// Send verification code via email or log to stderr.
 	emailSent := false
 	if s.notifier.Enabled() {
-		body := fmt.Sprintf("Your Agent Vault verification code is: %s\n\nThis code expires in 15 minutes.", code)
-		if err := s.notifier.SendMail([]string{req.Email}, "Agent Vault verification code", body); err != nil {
+		body := strings.Replace(verificationCodeEmailHTML, "{{CODE}}", html.EscapeString(code), 1)
+		if err := s.notifier.SendHTMLMail([]string{req.Email}, "Agent Vault verification code", body); err != nil {
 			fmt.Fprintf(os.Stderr, "[agent-vault] Failed to send verification email to %s: %v\n", req.Email, err)
 			fmt.Fprintf(os.Stderr, "[agent-vault] Email verification code for %s: %s\n", req.Email, code)
 		} else {
@@ -1016,8 +1028,8 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	// Send code via email or log to stderr.
 	emailSent := false
 	if s.notifier.Enabled() {
-		body := fmt.Sprintf("Your Agent Vault password reset code is: %s\n\nThis code expires in 15 minutes.\n\nIf you didn't request this, you can safely ignore this email.", code)
-		if err := s.notifier.SendMail([]string{req.Email}, "Agent Vault password reset code", body); err != nil {
+		body := strings.Replace(passwordResetEmailHTML, "{{CODE}}", html.EscapeString(code), 1)
+		if err := s.notifier.SendHTMLMail([]string{req.Email}, "Agent Vault password reset code", body); err != nil {
 			fmt.Fprintf(os.Stderr, "[agent-vault] Failed to send password reset email to %s: %v\n", req.Email, err)
 			fmt.Fprintf(os.Stderr, "[agent-vault] Password reset code for %s: %s\n", req.Email, code)
 		} else {
@@ -1323,6 +1335,14 @@ func (s *Server) handleProposalApproveDetails(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Resolve agent name via session -> agent chain.
+	agentName := ""
+	if sess, err := s.store.GetSession(ctx, cs.SessionID); err == nil && sess != nil && sess.AgentID != "" {
+		if agent, err := s.store.GetAgentByID(ctx, sess.AgentID); err == nil && agent != nil {
+			agentName = agent.Name
+		}
+	}
+
 	authenticated := false
 	canApprove := false
 	userEmail := ""
@@ -1351,6 +1371,7 @@ func (s *Server) handleProposalApproveDetails(w http.ResponseWriter, r *http.Req
 		"rules":         json.RawMessage(cs.RulesJSON),
 		"credentials":       json.RawMessage(cs.CredentialsJSON),
 		"created_at":    cs.CreatedAt.Format(time.RFC3339),
+		"agent_name":    agentName,
 		"authenticated": authenticated,
 		"can_approve":   canApprove,
 		"user_email":    userEmail,
@@ -2105,6 +2126,20 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 
 	approvalURL := fmt.Sprintf("%s/approve/%d?token=%s", s.baseURL, cs.ID, cs.ApprovalToken)
 
+	// Resolve agent name for the notification email.
+	proposalAgentName := ""
+	if sess.AgentID != "" {
+		if agent, err := s.store.GetAgentByID(ctx, sess.AgentID); err == nil && agent != nil {
+			proposalAgentName = agent.Name
+		}
+	}
+
+	// Notify vault members about the new proposal (fire-and-forget).
+	// The goroutine intentionally outlives the request, so we use a detached context.
+	if s.notifier.Enabled() {
+		go s.notifyProposalCreated(sess.VaultID, nsName, cs.ID, req.Message, approvalURL, proposalAgentName) //nolint:gosec // G118: intentional fire-and-forget goroutine
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -2114,6 +2149,45 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 		"approval_url": approvalURL,
 		"message":      fmt.Sprintf("Proposal created. Approve here: %s", approvalURL),
 	})
+}
+
+// notifyProposalCreated sends an email notification to all vault members
+// when a new proposal is created. Intended to be called in a goroutine.
+func (s *Server) notifyProposalCreated(vaultID, vaultName string, proposalID int, message, approvalURL, agentName string) {
+	ctx := context.Background()
+
+	grants, err := s.store.ListVaultUsers(ctx, vaultID)
+	if err != nil || len(grants) == 0 {
+		return
+	}
+
+	var emails []string
+	for _, g := range grants {
+		if u, err := s.store.GetUserByID(ctx, g.UserID); err == nil && u != nil {
+			emails = append(emails, u.Email)
+		}
+	}
+	if len(emails) == 0 {
+		return
+	}
+
+	// Truncate message for the email body.
+	msg := message
+	if len(msg) > 200 {
+		msg = msg[:200] + "..."
+	}
+
+	subject := fmt.Sprintf("New proposal (#%d) in vault %q", proposalID, vaultName)
+	body := proposalNotificationEmailHTML
+	body = strings.ReplaceAll(body, "{{VAULT_NAME}}", html.EscapeString(vaultName))
+	body = strings.ReplaceAll(body, "{{PROPOSAL_ID}}", strconv.Itoa(proposalID))
+	body = strings.ReplaceAll(body, "{{MESSAGE}}", html.EscapeString(msg))
+	body = strings.ReplaceAll(body, "{{AGENT_NAME}}", html.EscapeString(agentName))
+	body = strings.ReplaceAll(body, "{{APPROVAL_URL}}", html.EscapeString(approvalURL))
+
+	if err := s.notifier.SendHTMLMail(emails, subject, body); err != nil {
+		fmt.Fprintf(os.Stderr, "[agent-vault] Failed to send proposal notification: %v\n", err)
+	}
 }
 
 func (s *Server) handleProposalGet(w http.ResponseWriter, r *http.Request) {
@@ -3155,10 +3229,10 @@ func (s *Server) handleEmailTest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.notifier.SendMail(
+	if err := s.notifier.SendHTMLMail(
 		[]string{to},
 		"Agent Vault \u2014 Test Email",
-		"This is a test email from Agent Vault.\nIf you received this, your SMTP configuration is working correctly.",
+		testEmailHTML,
 	); err != nil {
 		jsonError(w, http.StatusBadGateway, fmt.Sprintf("Failed to send test email: %v", err))
 		return
