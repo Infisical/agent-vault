@@ -647,33 +647,38 @@ func (s *SQLiteStore) CreateSession(ctx context.Context, userID string, expiresA
 	return &Session{ID: rawToken, UserID: userID, ExpiresAt: expiresAt.UTC(), CreatedAt: now}, nil
 }
 
-func (s *SQLiteStore) CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt time.Time) (*Session, error) {
+func (s *SQLiteStore) CreateScopedSession(ctx context.Context, vaultID, vaultRole, label string, expiresAt time.Time) (*Session, error) {
 	rawToken := newSessionToken()
 	tokenHash := hashSessionToken(rawToken)
 	now := time.Now().UTC()
 
+	var labelVal interface{}
+	if label != "" {
+		labelVal = label
+	}
+
 	_, err := s.db.ExecContext(ctx,
-		"INSERT INTO sessions (id, vault_id, vault_role, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
-		tokenHash, vaultID, vaultRole, expiresAt.UTC().Format(time.DateTime), now.Format(time.DateTime),
+		"INSERT INTO sessions (id, vault_id, vault_role, label, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		tokenHash, vaultID, vaultRole, labelVal, expiresAt.UTC().Format(time.DateTime), now.Format(time.DateTime),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating scoped session: %w", err)
 	}
 
-	return &Session{ID: rawToken, VaultID: vaultID, VaultRole: vaultRole, ExpiresAt: expiresAt.UTC(), CreatedAt: now}, nil
+	return &Session{ID: rawToken, VaultID: vaultID, VaultRole: vaultRole, Label: label, ExpiresAt: expiresAt.UTC(), CreatedAt: now}, nil
 }
 
 func (s *SQLiteStore) GetSession(ctx context.Context, rawToken string) (*Session, error) {
 	tokenHash := hashSessionToken(rawToken)
 	row := s.db.QueryRowContext(ctx,
-		"SELECT id, user_id, vault_id, agent_id, vault_role, expires_at, created_at FROM sessions WHERE id = ?", tokenHash,
+		"SELECT id, user_id, vault_id, agent_id, vault_role, label, expires_at, created_at FROM sessions WHERE id = ?", tokenHash,
 	)
 
 	var sess Session
 	var storedID string
-	var userID, vaultID, agentID, vaultRole sql.NullString
+	var userID, vaultID, agentID, vaultRole, label sql.NullString
 	var expiresAt, createdAt string
-	if err := row.Scan(&storedID, &userID, &vaultID, &agentID, &vaultRole, &expiresAt, &createdAt); err != nil {
+	if err := row.Scan(&storedID, &userID, &vaultID, &agentID, &vaultRole, &label, &expiresAt, &createdAt); err != nil {
 		return nil, err
 	}
 	// Return the raw token as ID (not the hash) so callers can reference it.
@@ -682,6 +687,7 @@ func (s *SQLiteStore) GetSession(ctx context.Context, rawToken string) (*Session
 	sess.VaultID = vaultID.String
 	sess.AgentID = agentID.String
 	sess.VaultRole = vaultRole.String
+	sess.Label = label.String
 	sess.ExpiresAt, _ = time.Parse(time.DateTime, expiresAt)
 	sess.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
 	return &sess, nil

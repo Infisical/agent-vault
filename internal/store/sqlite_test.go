@@ -26,8 +26,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 28 {
-		t.Fatalf("expected migration version 28, got %d", version)
+	if version != 29 {
+		t.Fatalf("expected migration version 29, got %d", version)
 	}
 }
 
@@ -335,7 +335,7 @@ func TestScopedSessionCRUD(t *testing.T) {
 
 	expires := time.Now().Add(1 * time.Hour).UTC().Truncate(time.Second)
 
-	sess, err := s.CreateScopedSession(ctx, ns.ID, "consumer", expires)
+	sess, err := s.CreateScopedSession(ctx, ns.ID, "consumer", "", expires)
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -1553,7 +1553,7 @@ func TestGetSessionBackwardCompat(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	sess, _ := s.CreateScopedSession(ctx, ns.ID, "consumer", time.Now().Add(24*time.Hour))
+	sess, _ := s.CreateScopedSession(ctx, ns.ID, "consumer", "", time.Now().Add(24*time.Hour))
 
 	fetched, err := s.GetSession(ctx, sess.ID)
 	if err != nil {

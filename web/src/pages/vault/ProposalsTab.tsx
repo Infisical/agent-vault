@@ -163,7 +163,7 @@ export default function ProposalsTab() {
           data={proposals}
           rowKey={(cs) => cs.id}
           onRowClick={(cs) => setSelected(cs)}
-          emptyTitle={totalCount === 0 ? "No requests yet" : "Nothing needs your attention"}
+          emptyTitle={totalCount === 0 ? "No proposals yet" : "Nothing needs your attention"}
           emptyDescription={
             totalCount === 0 ? (
               <div className="flex flex-col items-center">

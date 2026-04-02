@@ -401,3 +401,55 @@ func TestInviteCreatePersistentFlags(t *testing.T) {
 		t.Errorf("expected --name default to be empty, got %q", f.DefValue)
 	}
 }
+
+func TestInviteCreateDirectFlags(t *testing.T) {
+	// Find vault > agent > invite > create command.
+	vCmd := findSubcommand(rootCmd, "vault")
+	if vCmd == nil {
+		t.Fatal("vault command not found")
+	}
+	agCmd := findSubcommand(vCmd, "agent")
+	if agCmd == nil {
+		t.Fatal("agent command not found under vault")
+	}
+
+	var invCmd *cobra.Command
+	for _, c := range agCmd.Commands() {
+		if c.Name() == "invite" {
+			invCmd = c
+			break
+		}
+	}
+	if invCmd == nil {
+		t.Fatal("invite command not found under agent")
+	}
+
+	var createCmd *cobra.Command
+	for _, c := range invCmd.Commands() {
+		if c.Name() == "create" {
+			createCmd = c
+			break
+		}
+	}
+	if createCmd == nil {
+		t.Fatal("create command not found under invite")
+	}
+
+	// Verify --direct flag exists.
+	f := createCmd.Flags().Lookup("direct")
+	if f == nil {
+		t.Fatal("expected --direct flag on invite create command")
+	}
+	if f.DefValue != "false" {
+		t.Errorf("expected --direct default to be false, got %q", f.DefValue)
+	}
+
+	// Verify --label flag exists.
+	f = createCmd.Flags().Lookup("label")
+	if f == nil {
+		t.Fatal("expected --label flag on invite create command")
+	}
+	if f.DefValue != "" {
+		t.Errorf("expected --label default to be empty, got %q", f.DefValue)
+	}
+}

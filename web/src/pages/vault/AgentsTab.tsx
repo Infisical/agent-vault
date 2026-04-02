@@ -224,7 +224,7 @@ export default function AgentsTab() {
   );
 }
 
-type InviteType = "temporary" | "persistent";
+type InviteType = "temporary" | "persistent" | "direct";
 type InviteStep = "select" | "configure" | "done";
 
 type VaultRoleOption = "consumer" | "member" | "admin";
@@ -308,6 +308,15 @@ function InviteAgentButton({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [inviteToken, setInviteToken] = useState("");
+  const [directTTL, setDirectTTL] = useState(86400);
+  const [directLabel, setDirectLabel] = useState("");
+  const [directResult, setDirectResult] = useState<{
+    av_addr: string;
+    av_session_token: string;
+    av_vault: string;
+    vault_role: string;
+    expires_at: string;
+  } | null>(null);
 
   // Members can only invite consumers
   const canSelectRole = vaultRole === "admin";
@@ -320,6 +329,9 @@ function InviteAgentButton({
     setSelectedRole("consumer");
     setError("");
     setInviteToken("");
+    setDirectTTL(86400);
+    setDirectLabel("");
+    setDirectResult(null);
   }
 
   async function handleCreate() {
@@ -351,12 +363,47 @@ function InviteAgentButton({
     }
   }
 
+  async function handleDirectConnect() {
+    setSubmitting(true);
+    setError("");
+    try {
+      const resp = await apiFetch("/v1/sessions/direct", {
+        method: "POST",
+        body: JSON.stringify({
+          vault: vaultName,
+          vault_role: canSelectRole ? selectedRole : "consumer",
+          ttl_seconds: directTTL,
+          ...(directLabel.trim() ? { label: directLabel.trim() } : {}),
+        }),
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        setDirectResult(data);
+        setStep("done");
+      } else {
+        setError(data.error || "Failed to create session.");
+      }
+    } catch {
+      setError("Network error.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   function handleNext() {
     if (inviteType === "temporary") {
       handleCreate();
+    } else if (inviteType === "direct") {
+      handleDirectConnect();
     } else {
       setStep("configure");
     }
+  }
+
+  function buildEnvBlock(): string {
+    if (!directResult) return "";
+    const q = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+    return `export AGENT_VAULT_ADDR=${q(directResult.av_addr)}\nexport AGENT_VAULT_SESSION_TOKEN=${q(directResult.av_session_token)}\nexport AGENT_VAULT_VAULT=${q(directResult.av_vault)}`;
   }
 
   function buildPrompt(): string {
@@ -402,14 +449,18 @@ function InviteAgentButton({
 
   const title =
     step === "done"
-      ? "Invite Created"
+      ? inviteType === "direct"
+        ? "Session Created"
+        : "Invite Created"
       : step === "configure"
         ? "Agent Details"
         : "Invite Agent";
 
   const description =
     step === "done"
-      ? "Share this prompt to connect the agent."
+      ? inviteType === "direct"
+        ? "Copy these credentials into your agent's environment."
+        : "Share this prompt to connect the agent."
       : step === "configure"
         ? "Configure the agent identity before creating the invite."
         : "Connect an AI agent to this vault.";
@@ -430,7 +481,7 @@ function InviteAgentButton({
       <>
         <Button variant="secondary" onClick={close}>Cancel</Button>
         <Button onClick={handleNext} loading={submitting}>
-          {inviteType === "temporary" ? "Create invite" : "Next"}
+          {inviteType === "persistent" ? "Next" : inviteType === "direct" ? "Create session" : "Create invite"}
         </Button>
       </>
     );
@@ -463,6 +514,29 @@ function InviteAgentButton({
 
       <Modal open={open} onClose={close} title={title} description={description} footer={footer}>
         {step === "done" ? (
+          inviteType === "direct" && directResult ? (
+          <div className="space-y-4">
+            <p className="text-sm text-text-muted">
+              Set these environment variables in your agent's shell or config.
+            </p>
+            <div className="relative">
+              <textarea
+                readOnly
+                value={buildEnvBlock()}
+                rows={5}
+                className="w-full px-4 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono outline-none select-all resize-none leading-relaxed"
+                onFocus={(e) => e.target.select()}
+              />
+              <CopyButton
+                value={buildEnvBlock()}
+                className="absolute top-2 right-2 px-3 py-1.5 bg-primary text-primary-text rounded-md text-xs font-semibold hover:bg-primary-hover transition-colors"
+              />
+            </div>
+            <p className="text-xs text-text-dim">
+              Role: {directResult.vault_role} &middot; Expires: {new Date(directResult.expires_at).toLocaleString()}
+            </p>
+          </div>
+          ) : (
           <div className="space-y-4">
             <p className="text-sm text-text-muted">
               Paste this prompt into your agent's chat to connect it.
@@ -481,6 +555,7 @@ function InviteAgentButton({
               />
             </div>
           </div>
+          )
         ) : step === "configure" ? (
           <div className="space-y-4">
             <FormField
@@ -502,7 +577,7 @@ function InviteAgentButton({
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               <button
                 onClick={() => setInviteType("temporary")}
                 className={`relative text-left p-4 rounded-xl border-2 transition-all ${
@@ -560,7 +635,78 @@ function InviteAgentButton({
                   </div>
                 </div>
               </button>
+
+              <button
+                onClick={() => setInviteType("direct")}
+                className={`relative text-left p-4 rounded-xl border-2 transition-all ${
+                  inviteType === "direct"
+                    ? "border-primary bg-primary/[0.04]"
+                    : "border-border hover:border-border-focus bg-surface"
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <div
+                    className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
+                      inviteType === "direct"
+                        ? "border-primary"
+                        : "border-text-dim"
+                    }`}
+                  >
+                    {inviteType === "direct" && (
+                      <div className="w-2 h-2 rounded-full bg-primary" />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-text mb-1">Direct connect</div>
+                    <p className="text-xs text-text-muted leading-relaxed">
+                      Mint credentials now. Copy env vars into your agent's sandbox.
+                    </p>
+                  </div>
+                </div>
+              </button>
             </div>
+
+            {inviteType === "direct" && (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-text-muted uppercase tracking-wider mb-2">
+                    Session duration
+                  </label>
+                  <div className="flex gap-2">
+                    {([
+                      { label: "1h", value: 3600 },
+                      { label: "8h", value: 28800 },
+                      { label: "24h", value: 86400 },
+                      { label: "7d", value: 604800 },
+                    ] as const).map((opt) => (
+                      <button
+                        key={opt.value}
+                        onClick={() => setDirectTTL(opt.value)}
+                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                          directTTL === opt.value
+                            ? "bg-primary text-primary-text"
+                            : "bg-bg border border-border text-text-muted hover:border-border-focus"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <FormField
+                  label="Label"
+                  helperText="Optional. Helps identify this session later."
+                >
+                  <Input
+                    type="text"
+                    placeholder="e.g. testing stripe"
+                    value={directLabel}
+                    onChange={(e) => setDirectLabel(e.target.value)}
+                    maxLength={128}
+                  />
+                </FormField>
+              </div>
+            )}
 
             <RoleSelector
               value={selectedRole}

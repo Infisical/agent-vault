@@ -63,6 +63,7 @@ type Session struct {
 	VaultID   string // empty = global (admin), non-empty = scoped to vault
 	AgentID   string // non-empty for sessions minted by a persistent agent
 	VaultRole string // "consumer", "member", or "admin" — set for scoped sessions (temp invite + agent)
+	Label     string // optional label for direct-connect sessions
 	ExpiresAt time.Time
 	CreatedAt time.Time
 }
@@ -259,7 +260,7 @@ type Store interface {
 
 	// Sessions
 	CreateSession(ctx context.Context, userID string, expiresAt time.Time) (*Session, error)
-	CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt time.Time) (*Session, error)
+	CreateScopedSession(ctx context.Context, vaultID, vaultRole, label string, expiresAt time.Time) (*Session, error)
 	GetSession(ctx context.Context, id string) (*Session, error)
 	DeleteSession(ctx context.Context, id string) error
 

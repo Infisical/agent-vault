@@ -14,14 +14,14 @@ description: "Deploy Agent Vault to Fly.io with persistent storage"
     ```
   </Step>
 
-  <Step title="Clone the repo and launch">
+  <Step title="Clone the repo and create the app">
     ```bash
     git clone https://github.com/infisical/agent-vault.git
     cd agent-vault
-    fly launch
+    fly launch --no-deploy
     ```
 
-    The included `fly.toml` configures port 14321, HTTPS, health checks, and a persistent volume automatically. Fly will prompt you to create the volume on first deploy.
+    When prompted, keep the existing `fly.toml` configuration. The `--no-deploy` flag prevents deploying before secrets are set.
   </Step>
 
   <Step title="Set secrets">
@@ -42,6 +42,13 @@ description: "Deploy Agent Vault to Fly.io with persistent storage"
 
   <Step title="Deploy">
     ```bash
+    fly deploy
+    ```
+
+    On first deploy, Fly will prompt you to create the persistent volume. If it doesn't, create one manually:
+
+    ```bash
+    fly volumes create agent_vault_data --region sjc --size 1
     fly deploy
     ```
   </Step>
@@ -67,9 +74,8 @@ description: "Deploy Agent Vault to Fly.io with persistent storage"
 - **Config**: `fly.toml` sets port 14321, forces HTTPS, and enables auto-stop/auto-start machines
 - **Entrypoint**: `scripts/docker-entrypoint.sh` forwards arguments to the `agent-vault` binary, which natively reads `AGENT_VAULT_MASTER_PASSWORD` from the environment
 - **Storage**: Persistent volume `agent_vault_data` mounted at `/data` -- all state is in a single SQLite file
+- **Cold starts**: `min_machines_running` defaults to `0`, so the app scales to zero when idle. The first request after sleep incurs a few seconds of cold-start latency. Set it to `1` in `fly.toml` if you need always-on availability.
 
 <Warning>
   Use a consistent master password across deploys. Changing it makes existing encrypted credentials unreadable. If you need to rotate, export your data first.
 </Warning>
-
-

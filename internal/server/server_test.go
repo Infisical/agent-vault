@@ -117,11 +117,12 @@ func (m *mockStore) CreateSession(_ context.Context, userID string, expiresAt ti
 	return s, nil
 }
 
-func (m *mockStore) CreateScopedSession(_ context.Context, vaultID, vaultRole string, expiresAt time.Time) (*store.Session, error) {
+func (m *mockStore) CreateScopedSession(_ context.Context, vaultID, vaultRole, label string, expiresAt time.Time) (*store.Session, error) {
 	s := &store.Session{
 		ID:        "scoped-session-id",
 		VaultID:   vaultID,
 		VaultRole: vaultRole,
+		Label:     label,
 		ExpiresAt: expiresAt,
 		CreatedAt: time.Now(),
 	}
@@ -1416,7 +1417,7 @@ func setupMockStoreWithScopedSessionRole(t *testing.T, vaultName, vaultID, role 
 		ms.vaults[vaultName] = &store.Vault{ID: vaultID, Name: vaultName}
 	}
 	// Create a scoped session locked to the given vault
-	sess, err := ms.CreateScopedSession(context.Background(), vaultID, role, time.Now().Add(time.Hour))
+	sess, err := ms.CreateScopedSession(context.Background(), vaultID, role, "", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -1589,7 +1590,7 @@ func setupProxyTest(t *testing.T, rulesJSON string) (*mockStore, string, []byte)
 	encKey := make([]byte, 32)
 
 	// Create a scoped session for root vault.
-	sess, err := ms.CreateScopedSession(context.Background(), "root-ns-id", "consumer", time.Now().Add(time.Hour))
+	sess, err := ms.CreateScopedSession(context.Background(), "root-ns-id", "consumer", "", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -1954,7 +1955,7 @@ func TestDiscoverEmptyRules(t *testing.T) {
 
 func TestDiscoverNoCredentials(t *testing.T) {
 	ms := newMockStore()
-	sess, err := ms.CreateScopedSession(context.Background(), "root-ns-id", "consumer", time.Now().Add(time.Hour))
+	sess, err := ms.CreateScopedSession(context.Background(), "root-ns-id", "consumer", "", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -3703,6 +3704,35 @@ func TestSettingsGetIncludesInviteOnly(t *testing.T) {
 	if resp["invite_only"] != true {
 		t.Fatalf("expected invite_only=true in settings, got %v", resp["invite_only"])
 	}
+	if resp["smtp_configured"] != false {
+		t.Fatalf("expected smtp_configured=false (nil notifier), got %v", resp["smtp_configured"])
+	}
+}
+
+func TestSettingsGetIncludesSMTPConfigured(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	n := notify.New(nil) // disabled notifier
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), n, true, "http://127.0.0.1:14321", nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/settings", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+
+	smtpVal, ok := resp["smtp_configured"]
+	if !ok {
+		t.Fatal("expected smtp_configured field in settings response")
+	}
+	if smtpVal != false {
+		t.Fatalf("expected smtp_configured=false (nil config), got %v", smtpVal)
+	}
 }
 
 func TestSettingsSetInviteOnly(t *testing.T) {
@@ -3934,5 +3964,204 @@ func TestVaultInviteCreateNoDomainRestrictions(t *testing.T) {
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201 with no domain restrictions, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- Direct Session Tests ---
+
+func TestDirectSessionSuccess(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{"vault":"default","vault_role":"consumer","ttl_seconds":3600}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/direct", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp directSessionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.AVSessionToken == "" {
+		t.Fatal("expected non-empty session token")
+	}
+	if resp.AVAddr != "http://127.0.0.1:14321" {
+		t.Fatalf("expected av_addr http://127.0.0.1:14321, got %q", resp.AVAddr)
+	}
+	if resp.AVVault != "default" {
+		t.Fatalf("expected av_vault default, got %q", resp.AVVault)
+	}
+	if resp.VaultRole != "consumer" {
+		t.Fatalf("expected vault_role consumer, got %q", resp.VaultRole)
+	}
+	if resp.ProxyURL != "http://127.0.0.1:14321/proxy" {
+		t.Fatalf("expected proxy_url with /proxy, got %q", resp.ProxyURL)
+	}
+	if resp.ExpiresAt == "" {
+		t.Fatal("expected non-empty expires_at")
+	}
+}
+
+func TestDirectSessionDefaultsVaultAndRole(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/direct", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp directSessionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.AVVault != "default" {
+		t.Fatalf("expected default vault, got %q", resp.AVVault)
+	}
+	if resp.VaultRole != "consumer" {
+		t.Fatalf("expected consumer role, got %q", resp.VaultRole)
+	}
+}
+
+func TestDirectSessionRoleCapping(t *testing.T) {
+	// Create a member user (non-admin) with vault access
+	ms := newMockStore()
+	ms.users["member@test.com"] = &store.User{
+		ID: "member-user-id", Email: "member@test.com",
+		Role: "member", IsActive: true,
+	}
+	ms.GrantVaultRole(context.Background(), "member-user-id", "root-ns-id", "member")
+	sess, err := ms.CreateSession(context.Background(), "member-user-id", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	// Request admin role — should be capped to consumer
+	body := `{"vault":"default","vault_role":"admin"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/direct", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+sess.ID)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp directSessionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.VaultRole != "consumer" {
+		t.Fatalf("expected role capped to consumer, got %q", resp.VaultRole)
+	}
+}
+
+func TestDirectSessionTTLBounds(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	// TTL too short
+	body := `{"vault":"default","ttl_seconds":60}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/direct", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for short TTL, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// TTL too long (8 days)
+	body = `{"vault":"default","ttl_seconds":691200}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/direct", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for long TTL, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDirectSessionInvalidRole(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{"vault":"default","vault_role":"superadmin"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/direct", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid role, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDirectSessionUnauthenticated(t *testing.T) {
+	ms := newMockStore()
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{"vault":"default"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/direct", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDirectSessionVaultNotFound(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{"vault":"nonexistent"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/direct", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDirectSessionWithLabel(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{"vault":"default","label":"testing stripe"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/direct", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp directSessionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Verify label was stored on the session
+	storedSess := ms.sessions[resp.AVSessionToken]
+	if storedSess == nil {
+		t.Fatal("session not found in store")
+	}
+	if storedSess.Label != "testing stripe" {
+		t.Fatalf("expected label 'testing stripe', got %q", storedSess.Label)
 	}
 }

@@ -24,11 +24,22 @@ var inviteCreateCmd = &cobra.Command{
 		vault := resolveVault(cmd)
 		ttl, _ := cmd.Flags().GetDuration("ttl")
 		persistent, _ := cmd.Flags().GetBool("persistent")
+		direct, _ := cmd.Flags().GetBool("direct")
 		agentName, _ := cmd.Flags().GetString("name")
 		vaultRole, _ := cmd.Flags().GetString("role")
+		label, _ := cmd.Flags().GetString("label")
 
 		if agentName != "" && !persistent {
 			return fmt.Errorf("--name requires --persistent")
+		}
+		if direct && persistent {
+			return fmt.Errorf("--direct and --persistent are mutually exclusive")
+		}
+		if direct && agentName != "" {
+			return fmt.Errorf("--direct and --name are mutually exclusive")
+		}
+		if label != "" && !direct {
+			return fmt.Errorf("--label requires --direct")
 		}
 		if vaultRole != "" && vaultRole != "consumer" && vaultRole != "member" && vaultRole != "admin" {
 			return fmt.Errorf("--role must be one of: consumer, member, admin")
@@ -42,6 +53,51 @@ var inviteCreateCmd = &cobra.Command{
 		addr := sess.Address
 		if flagAddr, _ := cmd.Flags().GetString("address"); flagAddr != "" {
 			addr = flagAddr
+		}
+
+		// Direct connect: mint credentials immediately.
+		if direct {
+			reqBody := map[string]interface{}{
+				"vault":       vault,
+				"ttl_seconds": int(ttl.Seconds()),
+			}
+			if vaultRole != "" {
+				reqBody["vault_role"] = vaultRole
+			}
+			if label != "" {
+				reqBody["label"] = label
+			}
+			body, err := json.Marshal(reqBody)
+			if err != nil {
+				return err
+			}
+
+			url := fmt.Sprintf("%s/v1/sessions/direct", addr)
+			respBody, err := doAdminRequestWithBody("POST", url, sess.Token, body)
+			if err != nil {
+				return err
+			}
+
+			var resp struct {
+				AVAddr         string `json:"av_addr"`
+				AVSessionToken string `json:"av_session_token"`
+				AVVault        string `json:"av_vault"`
+				VaultRole      string `json:"vault_role"`
+				ExpiresAt      string `json:"expires_at"`
+			}
+			if err := json.Unmarshal(respBody, &resp); err != nil {
+				return fmt.Errorf("parsing response: %w", err)
+			}
+
+			envBlock := fmt.Sprintf("export AGENT_VAULT_ADDR=%q\nexport AGENT_VAULT_SESSION_TOKEN=%q\nexport AGENT_VAULT_VAULT=%q",
+				resp.AVAddr, resp.AVSessionToken, resp.AVVault)
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Direct connect session created (role: %s, expires in %s).\n\n", resp.VaultRole, formatDuration(ttl))
+			fmt.Fprintf(cmd.OutOrStdout(), "---\n\n%s\n\n---\n", envBlock)
+			if err := copyToClipboard(envBlock); err == nil {
+				fmt.Fprintf(cmd.OutOrStdout(), "\n(Copied to clipboard)\n")
+			}
+			return nil
 		}
 
 		reqBody := map[string]interface{}{
@@ -290,6 +346,8 @@ func init() {
 	inviteCreateCmd.Flags().Bool("persistent", false, "create a persistent agent invite")
 	inviteCreateCmd.Flags().String("name", "", "pre-set the agent name (requires --persistent)")
 	inviteCreateCmd.Flags().String("role", "", "vault role for the invited agent (consumer, member, admin; default: consumer)")
+	inviteCreateCmd.Flags().Bool("direct", false, "mint credentials immediately (skip invite ceremony)")
+	inviteCreateCmd.Flags().String("label", "", "optional label for the session (direct connect only)")
 	inviteListCmd.Flags().String("status", "", "filter by status (pending, redeemed, expired, revoked)")
 
 	inviteCmd.AddCommand(inviteCreateCmd)

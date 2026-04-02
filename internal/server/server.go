@@ -88,7 +88,7 @@ type Store interface {
 	CountOwners(ctx context.Context) (int, error)
 	RegisterFirstUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, defaultVaultID string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*store.User, error)
 	CreateSession(ctx context.Context, userID string, expiresAt time.Time) (*store.Session, error)
-	CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt time.Time) (*store.Session, error)
+	CreateScopedSession(ctx context.Context, vaultID, vaultRole, label string, expiresAt time.Time) (*store.Session, error)
 	GetSession(ctx context.Context, id string) (*store.Session, error)
 	DeleteSession(ctx context.Context, id string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
@@ -464,6 +464,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("POST /v1/auth/change-password", s.requireInitialized(s.requireAuth(limitBody(s.handleChangePassword))))
 	mux.HandleFunc("DELETE /v1/auth/account", s.requireInitialized(s.requireAuth(s.handleDeleteAccount)))
 	mux.HandleFunc("POST /v1/sessions/scoped", s.requireInitialized(s.requireAuth(limitBody(s.handleScopedSession))))
+	mux.HandleFunc("POST /v1/sessions/direct", s.requireInitialized(s.requireAuth(limitBody(s.handleDirectSession))))
 	mux.HandleFunc("GET /v1/credentials", s.requireInitialized(s.requireAuth(s.handleCredentialsList)))
 	mux.HandleFunc("POST /v1/credentials", s.requireInitialized(s.requireAuth(limitBody(s.handleCredentialsSet))))
 	mux.HandleFunc("DELETE /v1/credentials", s.requireInitialized(s.requireAuth(limitBody(s.handleCredentialsDelete))))
@@ -1804,7 +1805,7 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := s.store.CreateScopedSession(ctx, ns.ID, "", time.Now().Add(sessionTTL))
+	sess, err := s.store.CreateScopedSession(ctx, ns.ID, "", "", time.Now().Add(sessionTTL))
 	if err != nil {
 		http.Error(w, `{"error":"Failed to create scoped session"}`, http.StatusInternalServerError)
 		return
@@ -1814,6 +1815,145 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(scopedSessionResponse{
 		Token:     sess.ID,
 		ExpiresAt: sess.ExpiresAt.Format(time.RFC3339),
+	})
+}
+
+// capRequestedRole enforces role-capping rules: consumers cannot mint sessions,
+// members can only mint consumer sessions, admins can mint any role.
+// Returns the (possibly capped) role, or an error string if the caller lacks permission.
+func (s *Server) capRequestedRole(ctx context.Context, sess *store.Session, vaultID, requestedRole string) (string, string) {
+	if requestedRole == "" {
+		requestedRole = "consumer"
+	}
+
+	if sess.VaultID != "" {
+		// Scoped session (agent or temp invite).
+		if sess.VaultID != vaultID {
+			return "", "Session not authorized for this vault"
+		}
+		if !agentRoleSatisfies(sess.VaultRole, "member") {
+			return "", "Member role required"
+		}
+		// Members can only mint consumer sessions.
+		if sess.VaultRole == "member" && requestedRole != "consumer" {
+			requestedRole = "consumer"
+		}
+		return requestedRole, ""
+	}
+
+	// User session: require vault access.
+	user, err := s.userFromSession(ctx, sess)
+	if err != nil || user == nil {
+		return "", "Invalid session"
+	}
+	has, err := s.store.HasVaultAccess(ctx, user.ID, vaultID)
+	if err != nil || !has {
+		return "", "No access to this vault"
+	}
+	// User vault members can only mint consumer sessions.
+	role, err2 := s.store.GetVaultRole(ctx, user.ID, vaultID)
+	if err2 != nil {
+		return "", "Failed to check vault role"
+	}
+	if role != "admin" && requestedRole != "consumer" {
+		requestedRole = "consumer"
+	}
+	return requestedRole, ""
+}
+
+type directSessionRequest struct {
+	Vault      string `json:"vault"`
+	VaultRole  string `json:"vault_role"`
+	TTLSeconds int    `json:"ttl_seconds"`
+	Label      string `json:"label"`
+}
+
+type directSessionResponse struct {
+	AVAddr         string            `json:"av_addr"`
+	AVSessionToken string            `json:"av_session_token"`
+	AVVault        string            `json:"av_vault"`
+	VaultRole      string            `json:"vault_role"`
+	ProxyURL       string            `json:"proxy_url"`
+	Services       []discoverService `json:"services"`
+	Instructions   string            `json:"instructions"`
+	ExpiresAt      string            `json:"expires_at"`
+}
+
+const (
+	directSessionMinTTL = 5 * 60        // 5 minutes
+	directSessionMaxTTL = 7 * 24 * 3600 // 7 days
+	directSessionDefTTL = 24 * 3600     // 24 hours
+	maxLabelLength      = 128
+)
+
+func (s *Server) handleDirectSession(w http.ResponseWriter, r *http.Request) {
+	var req directSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if req.Vault == "" {
+		req.Vault = "default"
+	}
+	if req.VaultRole == "" {
+		req.VaultRole = "consumer"
+	}
+	if req.VaultRole != "consumer" && req.VaultRole != "member" && req.VaultRole != "admin" {
+		jsonError(w, http.StatusBadRequest, "vault_role must be one of: consumer, member, admin")
+		return
+	}
+	if req.TTLSeconds == 0 {
+		req.TTLSeconds = directSessionDefTTL
+	}
+	if req.TTLSeconds < directSessionMinTTL || req.TTLSeconds > directSessionMaxTTL {
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("ttl_seconds must be between %d and %d", directSessionMinTTL, directSessionMaxTTL))
+		return
+	}
+	if len(req.Label) > maxLabelLength {
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("label must be at most %d characters", maxLabelLength))
+		return
+	}
+
+	ctx := r.Context()
+
+	ns, err := s.store.GetVault(ctx, req.Vault)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", req.Vault))
+		return
+	}
+
+	sess := sessionFromContext(ctx)
+	if sess == nil {
+		jsonError(w, http.StatusForbidden, "Authentication required")
+		return
+	}
+
+	cappedRole, errMsg := s.capRequestedRole(ctx, sess, ns.ID, req.VaultRole)
+	if errMsg != "" {
+		jsonError(w, http.StatusForbidden, errMsg)
+		return
+	}
+
+	expiresAt := time.Now().Add(time.Duration(req.TTLSeconds) * time.Second)
+	newSess, err := s.store.CreateScopedSession(ctx, ns.ID, cappedRole, req.Label, expiresAt)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to create session")
+		return
+	}
+
+	services := s.buildServiceList(ctx, ns.ID)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(directSessionResponse{
+		AVAddr:         s.baseURL,
+		AVSessionToken: newSess.ID,
+		AVVault:        ns.Name,
+		VaultRole:      cappedRole,
+		ProxyURL:       s.baseURL + "/proxy",
+		Services:       services,
+		Instructions:   instructionsForRole(cappedRole),
+		ExpiresAt:      newSess.ExpiresAt.Format(time.RFC3339),
 	})
 }
 
@@ -2793,7 +2933,7 @@ func (s *Server) handleInviteRedeem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a vault-scoped session for the agent with the invite's role.
-	sess, err := s.store.CreateScopedSession(ctx, inv.VaultID, inv.VaultRole, time.Now().Add(sessionTTL))
+	sess, err := s.store.CreateScopedSession(ctx, inv.VaultID, inv.VaultRole, "", time.Now().Add(sessionTTL))
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
@@ -5022,38 +5162,12 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if sess.VaultID != "" {
-		// Scoped session (agent or temp invite).
-		if sess.VaultID != ns.ID {
-			jsonError(w, http.StatusForbidden, "Session not authorized for this vault")
-			return
-		}
-		if !agentRoleSatisfies(sess.VaultRole, "member") {
-			jsonError(w, http.StatusForbidden, "Member role required to create agent invites")
-			return
-		}
-		// Members can only invite consumers.
-		if sess.VaultRole == "member" && req.VaultRole != "consumer" {
-			req.VaultRole = "consumer"
-		}
-	} else {
-		// User session: require vault access.
-		user, err := s.userFromSession(ctx, sess)
-		if err != nil || user == nil {
-			jsonError(w, http.StatusForbidden, "Invalid session")
-			return
-		}
-		has, err := s.store.HasVaultAccess(ctx, user.ID, ns.ID)
-		if err != nil || !has {
-			jsonError(w, http.StatusForbidden, "No access to this vault")
-			return
-		}
-		// User vault members can only invite consumers.
-		role, _ := s.store.GetVaultRole(ctx, user.ID, ns.ID)
-		if role != "admin" && req.VaultRole != "consumer" {
-			req.VaultRole = "consumer"
-		}
+	cappedRole, errMsg := s.capRequestedRole(ctx, sess, ns.ID, req.VaultRole)
+	if errMsg != "" {
+		jsonError(w, http.StatusForbidden, errMsg)
+		return
 	}
+	req.VaultRole = cappedRole
 
 	// Check pending invite limit.
 	count, err := s.store.CountPendingInvites(ctx, ns.ID)
@@ -5673,6 +5787,7 @@ func (s *Server) writeSettingsResponse(w http.ResponseWriter, ctx context.Contex
 	resp := map[string]interface{}{
 		"allowed_email_domains": []string{},
 		"invite_only":          false,
+		"smtp_configured":      s.notifier.Enabled(),
 	}
 	if raw, ok := settings[settingAllowedDomains]; ok {
 		var domains []string

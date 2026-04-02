@@ -1,9 +1,13 @@
 import { useState, useEffect, type FormEvent } from "react";
+import { useRouteContext } from "@tanstack/react-router";
 import { apiFetch } from "../../lib/api";
 import Button from "../../components/Button";
 import Input from "../../components/Input";
+import type { AuthContext } from "../../router";
 
 export default function InstanceSettingsTab() {
+  const { auth } = useRouteContext({ from: "/_auth" }) as { auth: AuthContext };
+
   const [inviteOnly, setInviteOnly] = useState(false);
   const [domains, setDomains] = useState<string[]>([]);
   const [inputValue, setInputValue] = useState("");
@@ -12,12 +16,19 @@ export default function InstanceSettingsTab() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
+  const [smtpConfigured, setSmtpConfigured] = useState(false);
+  const [testEmailTo, setTestEmailTo] = useState("");
+  const [testEmailSending, setTestEmailSending] = useState(false);
+  const [testEmailError, setTestEmailError] = useState("");
+  const [testEmailSuccess, setTestEmailSuccess] = useState("");
+
   useEffect(() => {
     apiFetch("/v1/admin/settings")
       .then((r) => r.json())
       .then((data) => {
         setInviteOnly(data.invite_only ?? false);
         setDomains(data.allowed_email_domains || []);
+        setSmtpConfigured(data.smtp_configured ?? false);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -44,6 +55,29 @@ export default function InstanceSettingsTab() {
   function removeDomain(domain: string) {
     setDomains(domains.filter((d) => d !== domain));
     setSuccess("");
+  }
+
+  async function handleSendTestEmail() {
+    setTestEmailSending(true);
+    setTestEmailError("");
+    setTestEmailSuccess("");
+    try {
+      const to = testEmailTo.trim();
+      const resp = await apiFetch("/v1/admin/email/test", {
+        method: "POST",
+        ...(to ? { body: JSON.stringify({ to }) } : {}),
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        setTestEmailSuccess(`Test email sent to ${data.to}`);
+      } else {
+        setTestEmailError(data.error || "Failed to send test email.");
+      }
+    } catch {
+      setTestEmailError("Network error.");
+    } finally {
+      setTestEmailSending(false);
+    }
   }
 
   async function handleSave() {
@@ -199,6 +233,58 @@ export default function InstanceSettingsTab() {
           <Button onClick={handleSave} loading={saving}>
             Save Changes
           </Button>
+        </div>
+      </section>
+
+      <section className="mb-8">
+        <div className="border border-border rounded-xl bg-surface p-5">
+          <h3 className="text-sm font-semibold text-text mb-1">
+            Test Email
+          </h3>
+          <p className="text-sm text-text-muted mb-4">
+            Send a test email to verify your SMTP configuration is working.
+          </p>
+
+          {!smtpConfigured ? (
+            <p className="text-sm text-text-dim">
+              SMTP is not configured. Set the <code className="text-text-muted">AGENT_VAULT_SMTP_*</code> environment variables to enable email sending.
+            </p>
+          ) : (
+            <>
+              <div className="flex gap-2 mb-4 max-w-md">
+                <div className="flex-1">
+                  <Input
+                    type="email"
+                    placeholder={auth.email}
+                    value={testEmailTo}
+                    onChange={(e) => {
+                      setTestEmailTo(e.target.value);
+                      setTestEmailError("");
+                      setTestEmailSuccess("");
+                    }}
+                  />
+                </div>
+                <Button
+                  onClick={handleSendTestEmail}
+                  loading={testEmailSending}
+                  variant="secondary"
+                >
+                  Send
+                </Button>
+              </div>
+
+              {testEmailError && (
+                <div className="bg-danger-bg border border-danger/20 rounded-lg p-3 text-sm text-danger">
+                  {testEmailError}
+                </div>
+              )}
+              {testEmailSuccess && (
+                <div className="bg-success-bg border border-success/20 rounded-lg p-3 text-sm text-success">
+                  {testEmailSuccess}
+                </div>
+              )}
+            </>
+          )}
         </div>
       </section>
     </div>
