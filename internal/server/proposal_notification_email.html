@@ -19,9 +19,9 @@
 
   <!-- Body -->
   <tr><td style="padding:28px 32px;">
-    <h1 style="margin:0 0 8px 0;font-size:20px;font-weight:600;color:#e6edf3;letter-spacing:-0.3px;">You've been invited</h1>
+    <h1 style="margin:0 0 8px 0;font-size:20px;font-weight:600;color:#e6edf3;letter-spacing:-0.3px;">New Proposal Awaiting Review</h1>
     <p style="margin:0 0 24px 0;font-size:14px;color:#8b949e;line-height:1.5;">
-      You've been invited to join Agent Vault. Click the button below to set a password and create your account.
+      A new proposal has been created in vault <strong style="color:#e6edf3;">{{VAULT_NAME}}</strong> and is waiting for your review.
     </p>
 
     <!-- Meta -->
@@ -29,18 +29,23 @@
       <tr><td style="padding:14px 16px;">
         <table width="100%" cellpadding="0" cellspacing="0">
           <tr>
-            <td style="font-family:'Anonymous Pro',Consolas,monospace;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#8b949e;">Invited By</td>
-            <td align="right" style="font-family:'Anonymous Pro',Consolas,monospace;font-size:13px;color:#e6edf3;">{{INVITER_EMAIL}}</td>
-          </tr>
-          <tr><td colspan="2" style="height:10px;"></td></tr>
-          <tr>
             <td style="font-family:'Anonymous Pro',Consolas,monospace;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#8b949e;">Vault</td>
-            <td align="right" style="font-family:'Anonymous Pro',Consolas,monospace;font-size:13px;color:#E7F256;">{{VAULTS}}</td>
+            <td align="right" style="font-family:'Anonymous Pro',Consolas,monospace;font-size:13px;color:#E7F256;">{{VAULT_NAME}}</td>
           </tr>
           <tr><td colspan="2" style="height:10px;"></td></tr>
           <tr>
-            <td style="font-family:'Anonymous Pro',Consolas,monospace;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#8b949e;">Expires</td>
-            <td align="right" style="font-family:'Anonymous Pro',Consolas,monospace;font-size:13px;color:#8b949e;">48 hours</td>
+            <td style="font-family:'Anonymous Pro',Consolas,monospace;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#8b949e;">Agent</td>
+            <td align="right" style="font-family:'Anonymous Pro',Consolas,monospace;font-size:13px;color:#e6edf3;">{{AGENT_NAME}}</td>
+          </tr>
+          <tr><td colspan="2" style="height:10px;"></td></tr>
+          <tr>
+            <td style="font-family:'Anonymous Pro',Consolas,monospace;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#8b949e;">Proposal</td>
+            <td align="right" style="font-family:'Anonymous Pro',Consolas,monospace;font-size:13px;color:#e6edf3;">#{{PROPOSAL_ID}}</td>
+          </tr>
+          <tr><td colspan="2" style="height:10px;"></td></tr>
+          <tr>
+            <td style="font-family:'Anonymous Pro',Consolas,monospace;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#8b949e;">Message</td>
+            <td align="right" style="font-family:'Anonymous Pro',Consolas,monospace;font-size:13px;color:#8b949e;">{{MESSAGE}}</td>
           </tr>
         </table>
       </td></tr>
@@ -49,8 +54,8 @@
     <!-- CTA Button -->
     <table width="100%" cellpadding="0" cellspacing="0">
       <tr><td align="center">
-        <a href="{{INVITE_LINK}}" target="_blank" style="display:inline-block;padding:12px 32px;background:#E7F256;color:#0b0d10;text-decoration:none;border-radius:8px;font-size:14px;font-weight:600;">
-          Accept Invitation
+        <a href="{{APPROVAL_URL}}" target="_blank" style="display:inline-block;padding:12px 32px;background:#E7F256;color:#0b0d10;text-decoration:none;border-radius:8px;font-size:14px;font-weight:600;">
+          Review Proposal
         </a>
       </td></tr>
     </table>
@@ -58,14 +63,14 @@
     <!-- Fallback link -->
     <p style="margin:20px 0 0 0;font-size:12px;color:#8b949e;line-height:1.5;word-break:break-all;">
       If the button doesn't work, copy and paste this link into your browser:<br><br>
-      <a href="{{INVITE_LINK}}" style="color:#E7F256;text-decoration:none;">{{INVITE_LINK}}</a>
+      <a href="{{APPROVAL_URL}}" style="color:#E7F256;text-decoration:none;">{{APPROVAL_URL}}</a>
     </p>
   </td></tr>
 
   <!-- Footer -->
   <tr><td style="padding:0 32px 28px 32px;border-top:1px solid rgba(68,69,71,0.6);">
     <p style="margin:20px 0 0 0;font-size:11px;color:#8b949e;line-height:1.5;text-align:center;">
-      This invitation was sent by Agent Vault. If you didn't expect this email, you can safely ignore it.
+      This notification was sent by Agent Vault. If you didn't expect this email, you can safely ignore it.
     </p>
   </td></tr>
 </table>
