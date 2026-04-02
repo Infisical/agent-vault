@@ -39,7 +39,7 @@ export interface ProposalData {
 /** Parse rules from a JSON string (as stored on proposal rows). */
 export function parseRules(rulesJson?: string): Rule[] {
   try {
-    if (rulesJson) return JSON.parse(rulesJson);
+    if (rulesJson) return JSON.parse(rulesJson) ?? [];
   } catch {
     // ignore
   }
@@ -49,7 +49,7 @@ export function parseRules(rulesJson?: string): Rule[] {
 /** Parse credential slots from a JSON string. */
 export function parseCredentials(credentialsJson?: string): CredentialSlot[] {
   try {
-    if (credentialsJson) return JSON.parse(credentialsJson);
+    if (credentialsJson) return JSON.parse(credentialsJson) ?? [];
   } catch {
     // ignore
   }

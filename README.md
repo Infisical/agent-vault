@@ -4,7 +4,7 @@
 
 <p align="center">
 An open-source credential broker project by <a href="https://infisical.com">Infisical</a> that sits between your agents and the APIs they call.<br>
-Eliminate credential exfiltration risk - just brokered access out of the box.
+Agent Vault eliminates credential exfiltration risk - just brokered access out of the box.
 </p>
 
 <p align="center">
@@ -21,7 +21,7 @@ Traditional secret managers return credentials directly to the caller. This brea
 - **Encrypted at rest** - Credentials are encrypted with AES-256-GCM using an Argon2id-derived key. The master password never touches disk. [Learn more](https://docs.agent-vault.dev/learn/credentials)
 - **Multi-user, multi-vault** - Role-based access control with instance-level and vault-level [permissions](https://docs.agent-vault.dev/learn/permissions). Invite teammates, scope agents to specific [vaults](https://docs.agent-vault.dev/learn/vaults), and audit everything.
 
-## Install
+## Installation
 
 See the [installation guide](https://docs.agent-vault.dev/installation) for full details.
 
@@ -55,7 +55,7 @@ sudo mv agent-vault /usr/local/bin/
 ## Quickstart
 
 ```bash
-# Start the server and create your account
+# Start the server (runs on localhost:14321 by default)
 agent-vault server -d
 agent-vault register
 agent-vault login

@@ -2792,9 +2792,9 @@ func (s *Server) handleInviteList(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]inviteItem, len(invites))
 	for i, inv := range invites {
-		token := inv.Token[len(inv.Token)-8:]
-		if isAdmin {
-			token = inv.Token
+		token := inv.Token
+		if !isAdmin && len(token) > 8 {
+			token = token[len(token)-8:]
 		}
 		items[i] = inviteItem{
 			ID:         inv.ID,
@@ -2813,8 +2813,8 @@ func (s *Server) handleInviteList(w http.ResponseWriter, r *http.Request) {
 		}
 		// For redeemed invites, look up session expiry.
 		if inv.Status == "redeemed" && inv.SessionID != "" {
-			if s, err := s.store.GetSession(ctx, inv.SessionID); err == nil && s != nil {
-				e := s.ExpiresAt.Format(time.RFC3339)
+			if session, err := s.store.GetSession(ctx, inv.SessionID); err == nil && session != nil {
+				e := session.ExpiresAt.Format(time.RFC3339)
 				items[i].SessionExpiresAt = &e
 			}
 		}
