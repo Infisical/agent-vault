@@ -28,6 +28,7 @@ var inviteCreateCmd = &cobra.Command{
 		agentName, _ := cmd.Flags().GetString("name")
 		vaultRole, _ := cmd.Flags().GetString("role")
 		label, _ := cmd.Flags().GetString("label")
+		sessionTTL, _ := cmd.Flags().GetDuration("session-ttl")
 
 		if agentName != "" && !persistent {
 			return fmt.Errorf("--name requires --persistent")
@@ -38,11 +39,20 @@ var inviteCreateCmd = &cobra.Command{
 		if direct && agentName != "" {
 			return fmt.Errorf("--direct and --name are mutually exclusive")
 		}
-		if label != "" && !direct {
-			return fmt.Errorf("--label requires --direct")
+		if label != "" && persistent {
+			return fmt.Errorf("--label cannot be used with --persistent")
 		}
 		if vaultRole != "" && vaultRole != "consumer" && vaultRole != "member" && vaultRole != "admin" {
 			return fmt.Errorf("--role must be one of: consumer, member, admin")
+		}
+		if sessionTTL > 0 && persistent {
+			return fmt.Errorf("--session-ttl cannot be used with --persistent")
+		}
+		if sessionTTL > 7*24*time.Hour {
+			return fmt.Errorf("--session-ttl cannot exceed 7 days")
+		}
+		if sessionTTL > 0 && sessionTTL < 5*time.Minute {
+			return fmt.Errorf("--session-ttl must be at least 5 minutes")
 		}
 
 		sess, err := loadSession()
@@ -57,9 +67,15 @@ var inviteCreateCmd = &cobra.Command{
 
 		// Direct connect: mint credentials immediately.
 		if direct {
+			directTTL := 0 // let server apply its default (24h)
+			if sessionTTL > 0 {
+				directTTL = int(sessionTTL.Seconds())
+			} else if cmd.Flags().Changed("ttl") {
+				directTTL = int(ttl.Seconds())
+			}
 			reqBody := map[string]interface{}{
 				"vault":       vault,
-				"ttl_seconds": int(ttl.Seconds()),
+				"ttl_seconds": directTTL,
 			}
 			if vaultRole != "" {
 				reqBody["vault_role"] = vaultRole
@@ -92,7 +108,11 @@ var inviteCreateCmd = &cobra.Command{
 			envBlock := fmt.Sprintf("export AGENT_VAULT_ADDR=%q\nexport AGENT_VAULT_SESSION_TOKEN=%q\nexport AGENT_VAULT_VAULT=%q",
 				resp.AVAddr, resp.AVSessionToken, resp.AVVault)
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Direct connect session created (role: %s, expires in %s).\n\n", resp.VaultRole, formatDuration(ttl))
+			displayTTL := 24 * time.Hour
+			if directTTL > 0 {
+				displayTTL = time.Duration(directTTL) * time.Second
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Direct connect session created (role: %s, expires in %s).\n\n", resp.VaultRole, formatDuration(displayTTL))
 			fmt.Fprintf(cmd.OutOrStdout(), "---\n\n%s\n\n---\n", envBlock)
 			if err := copyToClipboard(envBlock); err == nil {
 				fmt.Fprintf(cmd.OutOrStdout(), "\n(Copied to clipboard)\n")
@@ -108,6 +128,14 @@ var inviteCreateCmd = &cobra.Command{
 		}
 		if vaultRole != "" {
 			reqBody["vault_role"] = vaultRole
+		}
+		if !persistent {
+			if sessionTTL > 0 {
+				reqBody["session_ttl_seconds"] = int(sessionTTL.Seconds())
+			}
+			if label != "" {
+				reqBody["session_label"] = label
+			}
 		}
 		body, err := json.Marshal(reqBody)
 		if err != nil {
@@ -347,7 +375,8 @@ func init() {
 	inviteCreateCmd.Flags().String("name", "", "pre-set the agent name (requires --persistent)")
 	inviteCreateCmd.Flags().String("role", "", "vault role for the invited agent (consumer, member, admin; default: consumer)")
 	inviteCreateCmd.Flags().Bool("direct", false, "mint credentials immediately (skip invite ceremony)")
-	inviteCreateCmd.Flags().String("label", "", "optional label for the session (direct connect only)")
+	inviteCreateCmd.Flags().String("label", "", "optional label for the session (direct connect and temporary invites)")
+	inviteCreateCmd.Flags().Duration("session-ttl", 0, "session lifetime when invite is redeemed (default: 24h; temporary invites only)")
 	inviteListCmd.Flags().String("status", "", "filter by status (pending, redeemed, expired, revoked)")
 
 	inviteCmd.AddCommand(inviteCreateCmd)

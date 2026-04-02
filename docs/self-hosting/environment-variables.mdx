@@ -36,7 +36,7 @@ Configure SMTP to enable Agent Vault to send emails for verification codes, vaul
 | `AGENT_VAULT_SMTP_TLS_SKIP_VERIFY` | `false` | Skip TLS certificate verification. Set to `true` or `1` to enable. Useful for self-signed certificates in development. |
 
 <Tip>
-  To verify SMTP is working, run `agent-vault email test`. It sends a test email to the owner's address. See the [SMTP configuration guide](/guides/smtp) for step-by-step setup instructions for popular providers like SendGrid, AWS SES, Resend, and more.
+  To verify SMTP is working, run `agent-vault email test`. It sends a test email to the owner's address. See the [Configure Email SMTP](/guides/smtp) guide for step-by-step setup instructions for popular providers like SendGrid, AWS SES, Resend, and more.
 </Tip>
 
 ## OAuth configuration
@@ -51,7 +51,7 @@ When both variables for a provider are set, the corresponding "Continue with ...
 The callback URL configured in Google Cloud Console must be `{AGENT_VAULT_ADDR}/v1/auth/oauth/google/callback`.
 
 <Tip>
-  See the [Login with Google](/guides/oauth) guide for step-by-step setup instructions.
+  See the [Configure Google SSO](/guides/oauth) guide for step-by-step setup instructions.
 </Tip>
 
 ## Agent runtime variables

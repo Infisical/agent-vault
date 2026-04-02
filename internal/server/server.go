@@ -135,7 +135,7 @@ type Store interface {
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
 
 	// Invites
-	CreateInvite(ctx context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time) (*store.Invite, error)
+	CreateInvite(ctx context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time, sessionTTLSeconds int, sessionLabel string) (*store.Invite, error)
 	GetInviteByToken(ctx context.Context, token string) (*store.Invite, error)
 	ListInvites(ctx context.Context, vaultID, status string) ([]store.Invite, error)
 	RedeemInvite(ctx context.Context, token, sessionID string) error
@@ -2933,7 +2933,11 @@ func (s *Server) handleInviteRedeem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a vault-scoped session for the agent with the invite's role.
-	sess, err := s.store.CreateScopedSession(ctx, inv.VaultID, inv.VaultRole, "", time.Now().Add(sessionTTL))
+	sessDuration := sessionTTL
+	if inv.SessionTTLSeconds > 0 {
+		sessDuration = time.Duration(inv.SessionTTLSeconds) * time.Second
+	}
+	sess, err := s.store.CreateScopedSession(ctx, inv.VaultID, inv.VaultRole, inv.SessionLabel, time.Now().Add(sessDuration))
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
@@ -5109,11 +5113,13 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var req struct {
-		Vault      string `json:"vault"`
-		Persistent bool   `json:"persistent"`
-		TTLSeconds int    `json:"ttl_seconds"`
-		AgentName  string `json:"agent_name"`
-		VaultRole  string `json:"vault_role"`
+		Vault             string `json:"vault"`
+		Persistent        bool   `json:"persistent"`
+		TTLSeconds        int    `json:"ttl_seconds"`
+		AgentName         string `json:"agent_name"`
+		VaultRole         string `json:"vault_role"`
+		SessionTTLSeconds int    `json:"session_ttl_seconds"`
+		SessionLabel      string `json:"session_label"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
@@ -5132,6 +5138,18 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.TTLSeconds > maxTTL {
 		req.TTLSeconds = maxTTL
+	}
+	// Cap session TTL using the same bounds as direct connect sessions.
+	if req.SessionTTLSeconds > 0 {
+		if req.SessionTTLSeconds < directSessionMinTTL {
+			req.SessionTTLSeconds = directSessionMinTTL
+		} else if req.SessionTTLSeconds > directSessionMaxTTL {
+			req.SessionTTLSeconds = directSessionMaxTTL
+		}
+	}
+	if len(req.SessionLabel) > maxLabelLength {
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("session_label must be at most %d characters", maxLabelLength))
+		return
 	}
 	if req.VaultRole == "" {
 		req.VaultRole = "consumer"
@@ -5215,7 +5233,7 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inv, err := s.store.CreateInvite(ctx, ns.ID, req.VaultRole, createdBy, expiresAt)
+	inv, err := s.store.CreateInvite(ctx, ns.ID, req.VaultRole, createdBy, expiresAt, req.SessionTTLSeconds, req.SessionLabel)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create invite")
 		return

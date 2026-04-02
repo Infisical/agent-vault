@@ -37,7 +37,7 @@ Agent Vault requires two things before it becomes operational: a **master passwo
 - **Login**: Uses email + password or Google OAuth (owner or member account), not the master password. The master password is only used at server startup for encryption. Login rejects inactive (unverified) accounts.
 - **OAuth (Google)**: When `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_ID` and `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET` env vars are set, "Continue with Google" appears on login/register pages. OAuth uses PKCE (S256), CSRF state, and validates Google ID tokens via JWKS. No automatic account linking from unauthenticated contexts (security: prevents pre-hijack attacks). Users can connect/disconnect Google from account settings. First user must register with email/password. OAuth-only users can set a password from settings for CLI access.
 - **Auth methods**: Users can have password, OAuth (Google), or both. The `oauth_accounts` table tracks OAuth identities. The `handleAuthMe` response includes `has_password` (bool) and `oauth_providers` (string array).
-- **Roles**: Two independent axes, instance-level (`owner` vs `member`) and vault-level (`admin` vs `member`). See Multi-User Permission Model for details.
+- **Roles**: Two independent axes, instance-level (`owner` vs `member`) and vault-level (`admin` vs `member` vs `consumer`). See Multi-User Permission Model for details.
 
 ## CLI Commands
 
@@ -92,8 +92,9 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault proposal reject <number> [--reason "..."]` -- reject a pending proposal (requires active login session)
   - `agent-vault proposal review` -- interactively walk through all pending proposals (approve, reject, skip, or quit each; requires active login session)
 - `agent-vault vault agent [invite|list|info|revoke|rotate|rename]` -- manage agents and invite links
-  - `agent-vault vault agent invite create [--ttl 15m]` -- create a one-time invite and print the onboarding prompt (copies to clipboard)
-  - `agent-vault vault agent invite create --persistent [--name agent-name]` -- create a persistent agent invite (agent gets a long-lived service token)
+  - `agent-vault vault agent invite create [--ttl 15m] [--role consumer|member|admin]` -- create a one-time invite and print the onboarding prompt (copies to clipboard; default role: consumer)
+  - `agent-vault vault agent invite create --persistent [--name agent-name] [--role consumer|member|admin]` -- create a persistent agent invite (agent gets a long-lived service token)
+  - `agent-vault vault agent invite create --direct [--role consumer|member|admin] [--ttl 24h] [--label "my agent"]` -- mint a scoped session token immediately, skipping the invite ceremony; outputs env vars to paste into the agent's environment
   - `agent-vault vault agent invite list [--status pending]` -- list invites for vault
   - `agent-vault vault agent invite revoke <token_suffix>` -- revoke a pending invite by last 8+ chars of token
   - `agent-vault vault agent list [--vault default]` -- list registered agents
@@ -220,6 +221,19 @@ Invites let a human onboard any agent (including cloud-hosted agents like Devin 
 
 Invite states: `pending`, `redeemed`, `expired`, or `revoked`. Token format: `av_inv_` + 64 hex chars. Max 10 pending invites per vault. Default TTL: 15 minutes.
 
+## Direct Connect Sessions
+
+Direct connect skips the invite ceremony entirely. Instead of creating an invite link for an agent to redeem, it uses the caller's login session to mint a scoped session token immediately. The output is a set of env vars (`AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, `AGENT_VAULT_VAULT`) that can be pasted directly into any agent's environment.
+
+- `POST /v1/sessions/direct` -- mint a scoped session token (requires user or agent session with at least member role on the vault)
+  - Request: `{"vault": "default", "vault_role": "consumer", "ttl_seconds": 86400, "label": "my agent"}`
+  - Defaults: vault=`"default"`, vault_role=`"consumer"`, ttl_seconds=`86400` (24h)
+  - TTL bounds: min 5 minutes (300s), max 7 days (604800s)
+  - Label: optional, max 128 characters
+  - Response: `{"av_addr", "av_session_token", "av_vault", "vault_role", "proxy_url", "services", "instructions", "expires_at"}`
+
+**Role capping**: The minted session's role is capped to the caller's own vault role. Members can only mint `consumer` sessions; admins can mint any role (`consumer`, `member`, `admin`). Consumers cannot mint sessions at all.
+
 ## Persistent Agent API
 
 Persistent agents have named identities with long-lived service tokens that can mint short-lived session tokens. This is for agents that need ongoing access without human intervention.
@@ -242,7 +256,11 @@ Persistent agents have named identities with long-lived service tokens that can 
 Agent Vault uses two independent permission axes:
 
 - **Instance-level role** -- `owner` (can manage users, list/delete all vaults, all admin settings) vs `member` (regular user). Owners can see all vaults and join any vault as admin (`POST /v1/vaults/{name}/join`), but are not automatic members — they must explicitly join to access vault contents.
-- **Vault-level role** -- `admin` (can invite members, manage vault settings, approve/reject proposals) vs `member` (can view credentials, use proxy). All vault memberships require invite acceptance (or owner self-join).
+- **Vault-level role** -- three-tier hierarchy: `consumer` < `member` < `admin`.
+  - `consumer` -- proxy requests and discover services, raise proposals; cannot manage credentials, policy, or invites
+  - `member` -- all consumer capabilities + set/delete credentials, approve/reject proposals, manage vault policy, invite agents (as consumer only)
+  - `admin` -- all member capabilities + invite agents with any role, invite human users to the vault
+  All vault memberships require invite acceptance (or owner self-join).
 
 The first user to register is always an instance owner and is automatically invited as vault admin on the default vault. User deletion removes the user and their vault grants but leaves vaults intact. Orphaned vaults (no remaining members) can be recovered by an instance owner joining them.
 

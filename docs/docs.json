@@ -25,14 +25,28 @@
         ]
       },
       {
-        "group": "Self-Hosting",
+        "group": "Guides",
         "pages": [
-          "self-hosting/docker",
-          "self-hosting/fly-io",
-          "self-hosting/environment-variables",
-          "guides/instance-settings",
-          "guides/smtp",
-          "guides/oauth"
+          {
+            "group": "Connect Agents",
+            "pages": [
+              "guides/connect-coding-agent",
+              "guides/connect-custom-agent"
+            ]
+          },
+          {
+            "group": "Self-Hosting",
+            "pages": [
+              "self-hosting/overview",
+              "self-hosting/local",
+              "self-hosting/docker",
+              "self-hosting/fly-io",
+              "self-hosting/environment-variables",
+              "guides/instance-settings",
+              "guides/smtp",
+              "guides/oauth"
+            ]
+          }
         ]
       },
       {
@@ -71,8 +85,8 @@
     { "source": "/configuration/secrets", "destination": "/learn/credentials" },
     { "source": "/configuration/policies", "destination": "/learn/policies" },
     { "source": "/agents/persistent-agents", "destination": "/agents/overview" },
-    { "source": "/self-hosting/local", "destination": "/installation" },
     { "source": "/learn/oauth", "destination": "/guides/oauth" },
-    { "source": "/how-it-works", "destination": "/" }
+    { "source": "/how-it-works", "destination": "/" },
+    { "source": "/learn/connect-custom-agent", "destination": "/guides/connect-custom-agent" }
   ]
 }

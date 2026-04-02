@@ -1,0 +1,200 @@
+---
+title: "Connect a custom agent"
+description: "Wire up a custom agent or script to Agent Vault using environment variables and the HTTP protocol."
+---
+
+This guide walks through connecting a custom agent to Agent Vault. Use this when you're building your own sandboxed agent, a CI pipeline, or any process that needs to make authenticated API calls through Agent Vault.
+
+<Note>
+If you're using Claude Code, Cursor, or another supported agent, see the [Quickstart](/quickstart/claude-code) guides instead. Those agents handle the connection protocol automatically.
+</Note>
+
+## Prerequisites
+
+- A running Agent Vault server
+- A user account with vault access ([member or admin](/learn/permissions#vault-roles))
+
+## Get connection credentials
+
+<Tabs>
+  <Tab title="Web UI">
+    <Steps>
+      <Step title="Open the Agents tab">
+        Navigate to your vault and click the **Agents** tab.
+      </Step>
+      <Step title="Create an invite">
+        Click **Invite agent**, choose **Session**, and configure the role and TTL.
+      </Step>
+      <Step title="Switch to Manual setup">
+        After creating the invite, click the **Manual setup** tab. This shows the environment variables your agent needs.
+      </Step>
+      <Step title="Copy the values">
+        Copy `AGENT_VAULT_ADDR` and `AGENT_VAULT_SESSION_TOKEN` into your agent's environment.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="CLI">
+    ```bash
+    agent-vault vault agent invite create --direct --vault my-vault
+    ```
+
+    This prints an `export` block you can paste directly into a shell or `.env` file:
+
+    ```bash
+    export AGENT_VAULT_ADDR="http://127.0.0.1:14321"
+    export AGENT_VAULT_SESSION_TOKEN="..."
+    export AGENT_VAULT_VAULT="my-vault"
+    ```
+
+    Use `--ttl` and `--role` to control session lifetime and permissions:
+
+    ```bash
+    # 4-hour session with member permissions
+    agent-vault vault agent invite create --direct --ttl 4h --role member
+    ```
+  </Tab>
+</Tabs>
+
+## Environment variables
+
+Your agent needs two values to operate. A third is optional but recommended.
+
+| Variable | Required | Description |
+|---|---|---|
+| `AGENT_VAULT_ADDR` | Yes | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
+| `AGENT_VAULT_SESSION_TOKEN` | Yes | Bearer token for authenticating all requests to Agent Vault |
+| `AGENT_VAULT_VAULT` | No | Vault name the session is scoped to (useful for logging/display) |
+
+## Make proxied requests
+
+The core of Agent Vault is the proxy. Your agent makes HTTP requests to Agent Vault, which injects the real credentials and forwards to the target service over HTTPS. Your agent never sees or handles the actual API keys.
+
+The proxy URL format is:
+
+```
+{AGENT_VAULT_ADDR}/proxy/{target_host}/{path}[?query]
+```
+
+Every request to the proxy must include your session token in the `Authorization` header. Agent Vault strips it before forwarding and replaces it with the real credentials from the vault's policy.
+
+<CodeGroup>
+
+```python Python
+import os, requests
+
+ADDR = os.environ["AGENT_VAULT_ADDR"]
+TOKEN = os.environ["AGENT_VAULT_SESSION_TOKEN"]
+
+headers = {"Authorization": f"Bearer {TOKEN}"}
+
+# GET request through the proxy
+charges = requests.get(
+    f"{ADDR}/proxy/api.stripe.com/v1/charges",
+    params={"limit": 10},
+    headers=headers,
+)
+print(charges.json())
+
+# POST request through the proxy
+new_charge = requests.post(
+    f"{ADDR}/proxy/api.stripe.com/v1/charges",
+    headers={**headers, "Content-Type": "application/x-www-form-urlencoded"},
+    data="amount=2000&currency=usd",
+)
+print(new_charge.json())
+```
+
+```typescript TypeScript
+const ADDR = process.env.AGENT_VAULT_ADDR;
+const TOKEN = process.env.AGENT_VAULT_SESSION_TOKEN;
+
+const headers = { Authorization: `Bearer ${TOKEN}` };
+
+// GET request through the proxy
+const charges = await fetch(
+  `${ADDR}/proxy/api.stripe.com/v1/charges?limit=10`,
+  { headers },
+);
+console.log(await charges.json());
+
+// POST request through the proxy
+const newCharge = await fetch(
+  `${ADDR}/proxy/api.stripe.com/v1/charges`,
+  {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded" },
+    body: "amount=2000&currency=usd",
+  },
+);
+console.log(await newCharge.json());
+```
+
+```bash curl
+# GET
+curl "${AGENT_VAULT_ADDR}/proxy/api.stripe.com/v1/charges?limit=10" \
+  -H "Authorization: Bearer ${AGENT_VAULT_SESSION_TOKEN}"
+
+# POST
+curl -X POST "${AGENT_VAULT_ADDR}/proxy/api.stripe.com/v1/charges" \
+  -H "Authorization: Bearer ${AGENT_VAULT_SESSION_TOKEN}" \
+  -d "amount=2000&currency=usd"
+```
+
+</CodeGroup>
+
+Any HTTP method works (GET, POST, PUT, DELETE, PATCH). Query parameters, request bodies, and headers (other than `Authorization`) are forwarded as-is.
+
+## Discover available services
+
+Your agent can call `/discover` to check which hosts have credentials configured before making proxy requests.
+
+```bash
+curl ${AGENT_VAULT_ADDR}/discover \
+  -H "Authorization: Bearer ${AGENT_VAULT_SESSION_TOKEN}"
+```
+
+```json Response
+{
+  "vault": "default",
+  "proxy_url": "http://127.0.0.1:14321/proxy",
+  "services": [
+    { "host": "api.stripe.com", "description": "Stripe API" },
+    { "host": "api.github.com", "description": "GitHub API" }
+  ],
+  "available_credentials": ["STRIPE_KEY", "GITHUB_TOKEN"]
+}
+```
+
+- **`services`** lists the hosts your agent can route through the proxy.
+- **`available_credentials`** lists credential key names in the vault (values are never exposed).
+- Requests to hosts **not** in this list should go direct, not through the proxy.
+
+<Tip>
+Discovery is optional. If your agent already knows which hosts are configured, it can skip straight to proxying. If it hits a host that isn't configured, Agent Vault returns a 403 with a `proposal_hint`.
+</Tip>
+
+## Handle errors
+
+| Status | Meaning | What to do |
+|---|---|---|
+| 401 | Invalid or expired session token | Re-authenticate. For persistent agents, mint a new session with the service token. |
+| 403 | Host not allowed | The service isn't configured in the vault. Create a [proposal](/learn/proposals) to request access, or ask the vault admin to add it. The response body includes a `proposal_hint`. |
+| 429 | Too many pending proposals | Wait for existing proposals to be reviewed before creating new ones. |
+| 502 | Missing credential or upstream error | A credential may need to be added to the vault. Inform the user. |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Agent protocol" icon="code" href="/agents/protocol">
+    Full HTTP reference for sessions, discovery, proxy, and proposals.
+  </Card>
+  <Card title="Proposals" icon="file-circle-check" href="/learn/proposals">
+    Request access to new services via the proposal API.
+  </Card>
+  <Card title="Credentials" icon="key" href="/learn/credentials">
+    Managing secrets in Agent Vault.
+  </Card>
+  <Card title="Persistent agents" icon="rotate" href="/agents/overview#persistent-agents">
+    Long-lived agents that survive session expiry.
+  </Card>
+</CardGroup>

@@ -5,6 +5,7 @@ import Modal from "../../components/Modal";
 import DropdownMenu from "../../components/DropdownMenu";
 import Button from "../../components/Button";
 import Input from "../../components/Input";
+import Select from "../../components/Select";
 import FormField from "../../components/FormField";
 import CopyButton from "../../components/CopyButton";
 import { apiFetch } from "../../lib/api";
@@ -224,8 +225,9 @@ export default function AgentsTab() {
   );
 }
 
-type InviteType = "temporary" | "persistent" | "direct";
+type InviteType = "temporary" | "persistent";
 type InviteStep = "select" | "configure" | "done";
+type DeliveryTab = "prompt" | "envvars";
 
 type VaultRoleOption = "consumer" | "member" | "admin";
 
@@ -244,50 +246,21 @@ function RoleSelector({
   onChange: (role: VaultRoleOption) => void;
   disabled: boolean;
 }) {
-  const roles: VaultRoleOption[] = ["consumer", "member", "admin"];
-
-  if (disabled) {
-    return (
-      <div>
-        <label className="block text-xs font-semibold text-text-muted uppercase tracking-wider mb-2">
-          Role
-        </label>
-        <div className="px-4 py-3 bg-bg border border-border rounded-lg text-sm text-text-muted">
-          Consumer
-          <span className="ml-2 text-xs text-text-dim">(members can only invite consumers)</span>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div>
-      <label className="block text-xs font-semibold text-text-muted uppercase tracking-wider mb-2">
-        Role
-      </label>
-      <div className="space-y-2">
-        {roles.map((role) => (
-          <button
-            key={role}
-            type="button"
-            onClick={() => onChange(role)}
-            className={`w-full text-left px-4 py-3 rounded-lg border-2 transition-all ${
-              value === role
-                ? "border-primary bg-primary/[0.04]"
-                : "border-border hover:border-border-focus bg-surface"
-            }`}
-          >
-            <div className="text-sm font-medium text-text capitalize">
-              {role}
-              {role === "consumer" && (
-                <span className="ml-1.5 text-xs font-normal text-text-muted">(Default)</span>
-              )}
-            </div>
-            <p className="text-xs text-text-muted mt-0.5">{roleDescriptions[role]}</p>
-          </button>
-        ))}
-      </div>
-    </div>
+    <FormField
+      label="Role"
+      helperText={<>{disabled ? "Members can only invite consumers." : roleDescriptions[value]} <a href="https://docs.agent-vault.dev/learn/permissions#vault-roles" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Learn more</a></>}
+    >
+      <Select
+        value={value}
+        onChange={(e) => onChange(e.target.value as VaultRoleOption)}
+        disabled={disabled}
+      >
+        <option value="consumer">Consumer</option>
+        <option value="member">Member</option>
+        <option value="admin">Admin</option>
+      </Select>
+    </FormField>
   );
 }
 
@@ -308,15 +281,18 @@ function InviteAgentButton({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [inviteToken, setInviteToken] = useState("");
-  const [directTTL, setDirectTTL] = useState(86400);
-  const [directLabel, setDirectLabel] = useState("");
-  const [directResult, setDirectResult] = useState<{
+  const [sessionTTL, setSessionTTL] = useState(86400);
+  const [sessionLabel, setSessionLabel] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [deliveryTab, setDeliveryTab] = useState<DeliveryTab>("prompt");
+  const [directConnectResult, setDirectConnectResult] = useState<{
     av_addr: string;
     av_session_token: string;
     av_vault: string;
     vault_role: string;
     expires_at: string;
   } | null>(null);
+  const [loadingEnvVars, setLoadingEnvVars] = useState(false);
 
   // Members can only invite consumers
   const canSelectRole = vaultRole === "admin";
@@ -329,9 +305,12 @@ function InviteAgentButton({
     setSelectedRole("consumer");
     setError("");
     setInviteToken("");
-    setDirectTTL(86400);
-    setDirectLabel("");
-    setDirectResult(null);
+    setSessionTTL(86400);
+    setSessionLabel("");
+    setShowAdvanced(false);
+    setDeliveryTab("prompt");
+    setDirectConnectResult(null);
+    setLoadingEnvVars(false);
   }
 
   async function handleCreate() {
@@ -346,6 +325,8 @@ function InviteAgentButton({
           persistent,
           vault_role: canSelectRole ? selectedRole : "consumer",
           ...(persistent && name.trim() ? { agent_name: name.trim() } : {}),
+          ...(!persistent ? { session_ttl_seconds: sessionTTL } : {}),
+          ...(!persistent && sessionLabel.trim() ? { session_label: sessionLabel.trim() } : {}),
         }),
       });
       const data = await resp.json();
@@ -363,47 +344,38 @@ function InviteAgentButton({
     }
   }
 
-  async function handleDirectConnect() {
-    setSubmitting(true);
-    setError("");
+  async function fetchEnvVars() {
+    if (directConnectResult) return;
+    setLoadingEnvVars(true);
     try {
       const resp = await apiFetch("/v1/sessions/direct", {
         method: "POST",
         body: JSON.stringify({
           vault: vaultName,
           vault_role: canSelectRole ? selectedRole : "consumer",
-          ttl_seconds: directTTL,
-          ...(directLabel.trim() ? { label: directLabel.trim() } : {}),
+          ttl_seconds: sessionTTL,
+          ...(sessionLabel.trim() ? { label: sessionLabel.trim() } : {}),
         }),
       });
       const data = await resp.json();
       if (resp.ok) {
-        setDirectResult(data);
-        setStep("done");
+        setDirectConnectResult(data);
       } else {
         setError(data.error || "Failed to create session.");
       }
     } catch {
       setError("Network error.");
     } finally {
-      setSubmitting(false);
+      setLoadingEnvVars(false);
     }
   }
 
   function handleNext() {
     if (inviteType === "temporary") {
       handleCreate();
-    } else if (inviteType === "direct") {
-      handleDirectConnect();
     } else {
       setStep("configure");
     }
-  }
-
-  function buildEnvBlock(): string {
-    if (!directResult) return "";
-    const q = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-    return `export AGENT_VAULT_ADDR=${q(directResult.av_addr)}\nexport AGENT_VAULT_SESSION_TOKEN=${q(directResult.av_session_token)}\nexport AGENT_VAULT_VAULT=${q(directResult.av_vault)}`;
   }
 
   function buildPrompt(): string {
@@ -449,18 +421,14 @@ function InviteAgentButton({
 
   const title =
     step === "done"
-      ? inviteType === "direct"
-        ? "Session Created"
-        : "Invite Created"
+      ? "Connect Your Agent"
       : step === "configure"
         ? "Agent Details"
         : "Invite Agent";
 
   const description =
     step === "done"
-      ? inviteType === "direct"
-        ? "Copy these credentials into your agent's environment."
-        : "Share this prompt to connect the agent."
+      ? "Choose how you'd like to connect."
       : step === "configure"
         ? "Configure the agent identity before creating the invite."
         : "Connect an AI agent to this vault.";
@@ -481,7 +449,7 @@ function InviteAgentButton({
       <>
         <Button variant="secondary" onClick={close}>Cancel</Button>
         <Button onClick={handleNext} loading={submitting}>
-          {inviteType === "persistent" ? "Next" : inviteType === "direct" ? "Create session" : "Create invite"}
+          {inviteType === "persistent" ? "Next" : "Create invite"}
         </Button>
       </>
     );
@@ -514,48 +482,97 @@ function InviteAgentButton({
 
       <Modal open={open} onClose={close} title={title} description={description} footer={footer}>
         {step === "done" ? (
-          inviteType === "direct" && directResult ? (
           <div className="space-y-4">
-            <p className="text-sm text-text-muted">
-              Set these environment variables in your agent's shell or config.
-            </p>
-            <div className="relative">
-              <textarea
-                readOnly
-                value={buildEnvBlock()}
-                rows={5}
-                className="w-full px-4 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono outline-none select-all resize-none leading-relaxed"
-                onFocus={(e) => e.target.select()}
-              />
-              <CopyButton
-                value={buildEnvBlock()}
-                className="absolute top-2 right-2 px-3 py-1.5 bg-primary text-primary-text rounded-md text-xs font-semibold hover:bg-primary-hover transition-colors"
-              />
-            </div>
-            <p className="text-xs text-text-dim">
-              Role: {directResult.vault_role} &middot; Expires: {new Date(directResult.expires_at).toLocaleString()}
-            </p>
+            {inviteType === "temporary" && (
+              <div className="flex border-b border-border">
+                <button
+                  onClick={() => setDeliveryTab("prompt")}
+                  className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+                    deliveryTab === "prompt"
+                      ? "text-primary"
+                      : "text-text-muted hover:text-text"
+                  }`}
+                >
+                  Paste into chat
+                  {deliveryTab === "prompt" && (
+                    <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
+                  )}
+                </button>
+                <button
+                  onClick={() => {
+                    setDeliveryTab("envvars");
+                    fetchEnvVars();
+                  }}
+                  className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+                    deliveryTab === "envvars"
+                      ? "text-primary"
+                      : "text-text-muted hover:text-text"
+                  }`}
+                >
+                  Manual setup
+                  {deliveryTab === "envvars" && (
+                    <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
+                  )}
+                </button>
+              </div>
+            )}
+
+            {deliveryTab === "prompt" || inviteType === "persistent" ? (
+              <>
+                <p className="text-sm text-text-muted">
+                  Paste this into your agent's chat and it will connect automatically to Agent Vault.
+                </p>
+                <div className="relative">
+                  <textarea
+                    readOnly
+                    value={buildPrompt()}
+                    rows={10}
+                    className="w-full px-4 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono outline-none select-all resize-none leading-relaxed"
+                    onFocus={(e) => e.target.select()}
+                  />
+                  <CopyButton
+                    value={buildPrompt()}
+                    className="absolute top-2 right-2 px-3 py-1.5 bg-primary text-primary-text rounded-md text-xs font-semibold hover:bg-primary-hover transition-colors"
+                  />
+                </div>
+                <p className="text-xs text-text-dim">
+                  Works with Claude Code, Cursor, ChatGPT, and other chat-based agents.
+                </p>
+              </>
+            ) : loadingEnvVars ? (
+              <div className="py-8 flex justify-center">
+                <LoadingSpinner />
+              </div>
+            ) : directConnectResult ? (
+              <>
+                <p className="text-sm text-text-muted">
+                  Your agent needs these values to connect to Agent Vault. <a href="https://docs.agent-vault.dev/guides/connect-custom-agent" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Learn more</a>
+                </p>
+                <div className="space-y-2">
+                  {([
+                    { label: "AGENT_VAULT_ADDR", value: directConnectResult.av_addr },
+                    { label: "AGENT_VAULT_SESSION_TOKEN", value: directConnectResult.av_session_token },
+                  ] as const).map((env) => (
+                    <div key={env.label}>
+                      <label className="block text-xs font-medium text-text-muted mb-1">{env.label}</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          readOnly
+                          value={env.value}
+                          className="flex-1 px-3 py-2 bg-bg border border-border rounded-lg text-text text-sm font-mono outline-none select-all"
+                          onFocus={(e) => e.target.select()}
+                        />
+                        <CopyButton value={env.value} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-text-dim">
+                  Role: {directConnectResult.vault_role} &middot; Expires: {new Date(directConnectResult.expires_at).toLocaleString()}
+                </p>
+              </>
+            ) : null}
           </div>
-          ) : (
-          <div className="space-y-4">
-            <p className="text-sm text-text-muted">
-              Paste this prompt into your agent's chat to connect it.
-            </p>
-            <div className="relative">
-              <textarea
-                readOnly
-                value={buildPrompt()}
-                rows={10}
-                className="w-full px-4 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono outline-none select-all resize-none leading-relaxed"
-                onFocus={(e) => e.target.select()}
-              />
-              <CopyButton
-                value={buildPrompt()}
-                className="absolute top-2 right-2 px-3 py-1.5 bg-primary text-primary-text rounded-md text-xs font-semibold hover:bg-primary-hover transition-colors"
-              />
-            </div>
-          </div>
-          )
         ) : step === "configure" ? (
           <div className="space-y-4">
             <FormField
@@ -577,7 +594,7 @@ function InviteAgentButton({
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               <button
                 onClick={() => setInviteType("temporary")}
                 className={`relative text-left p-4 rounded-xl border-2 transition-all ${
@@ -601,7 +618,7 @@ function InviteAgentButton({
                   <div className="min-w-0">
                     <div className="text-sm font-semibold text-text mb-1">Session</div>
                     <p className="text-xs text-text-muted leading-relaxed">
-                      Single-use token for a one-off coding session. Best for tools like Claude Code or Cursor.
+                      Temporary access for a coding session. Best for Claude Code, Cursor, etc.
                     </p>
                   </div>
                 </div>
@@ -630,89 +647,83 @@ function InviteAgentButton({
                   <div className="min-w-0">
                     <div className="text-sm font-semibold text-text mb-1">Persistent</div>
                     <p className="text-xs text-text-muted leading-relaxed">
-                      Long-lived service token for always-on agents. Best for tools like OpenClaw or Devin.
-                    </p>
-                  </div>
-                </div>
-              </button>
-
-              <button
-                onClick={() => setInviteType("direct")}
-                className={`relative text-left p-4 rounded-xl border-2 transition-all ${
-                  inviteType === "direct"
-                    ? "border-primary bg-primary/[0.04]"
-                    : "border-border hover:border-border-focus bg-surface"
-                }`}
-              >
-                <div className="flex items-start gap-3">
-                  <div
-                    className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
-                      inviteType === "direct"
-                        ? "border-primary"
-                        : "border-text-dim"
-                    }`}
-                  >
-                    {inviteType === "direct" && (
-                      <div className="w-2 h-2 rounded-full bg-primary" />
-                    )}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold text-text mb-1">Direct connect</div>
-                    <p className="text-xs text-text-muted leading-relaxed">
-                      Mint credentials now. Copy env vars into your agent's sandbox.
+                      Long-lived access for always-on agents like Devin or custom services.
                     </p>
                   </div>
                 </div>
               </button>
             </div>
 
-            {inviteType === "direct" && (
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-xs font-semibold text-text-muted uppercase tracking-wider mb-2">
-                    Session duration
-                  </label>
-                  <div className="flex gap-2">
-                    {([
-                      { label: "1h", value: 3600 },
-                      { label: "8h", value: 28800 },
-                      { label: "24h", value: 86400 },
-                      { label: "7d", value: 604800 },
-                    ] as const).map((opt) => (
-                      <button
-                        key={opt.value}
-                        onClick={() => setDirectTTL(opt.value)}
-                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                          directTTL === opt.value
-                            ? "bg-primary text-primary-text"
-                            : "bg-bg border border-border text-text-muted hover:border-border-focus"
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <FormField
-                  label="Label"
-                  helperText="Optional. Helps identify this session later."
-                >
-                  <Input
-                    type="text"
-                    placeholder="e.g. testing stripe"
-                    value={directLabel}
-                    onChange={(e) => setDirectLabel(e.target.value)}
-                    maxLength={128}
-                  />
-                </FormField>
-              </div>
-            )}
-
             <RoleSelector
               value={selectedRole}
               onChange={setSelectedRole}
               disabled={!canSelectRole}
             />
+
+            {inviteType !== "persistent" && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setShowAdvanced((v) => !v)}
+                  className="flex items-center gap-1.5 text-xs font-medium text-text-muted hover:text-text transition-colors"
+                >
+                  <svg
+                    className={`w-3 h-3 transition-transform ${showAdvanced ? "rotate-90" : ""}`}
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                  Advanced options
+                </button>
+                {showAdvanced && (
+                  <div className="mt-3 space-y-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-text-muted uppercase tracking-wider mb-2">
+                        Session duration
+                      </label>
+                      <div className="flex gap-2">
+                        {([
+                          { label: "1h", value: 3600 },
+                          { label: "8h", value: 28800 },
+                          { label: "24h", value: 86400 },
+                          { label: "7d", value: 604800 },
+                        ] as const).map((opt) => (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => setSessionTTL(opt.value)}
+                            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                              sessionTTL === opt.value
+                                ? "bg-primary text-primary-text"
+                                : "bg-bg border border-border text-text-muted hover:border-border-focus"
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <FormField
+                      label="Label"
+                      helperText="Optional. Helps identify this session later."
+                    >
+                      <Input
+                        type="text"
+                        placeholder="e.g. testing stripe"
+                        value={sessionLabel}
+                        onChange={(e) => setSessionLabel(e.target.value)}
+                        maxLength={128}
+                      />
+                    </FormField>
+                  </div>
+                )}
+              </div>
+            )}
 
             {error && <ErrorBanner message={error} />}
           </div>

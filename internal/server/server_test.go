@@ -293,10 +293,11 @@ func (m *mockStore) ExpirePendingProposals(_ context.Context, before time.Time) 
 
 // --- Invite mocks ---
 
-func (m *mockStore) CreateInvite(_ context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time) (*store.Invite, error) {
+func (m *mockStore) CreateInvite(_ context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time, sessionTTLSeconds int, sessionLabel string) (*store.Invite, error) {
 	inv := &store.Invite{
 		ID: len(m.invites) + 1, Token: "av_inv_test" + fmt.Sprintf("%d", len(m.invites)),
 		VaultID: vaultID, VaultRole: vaultRole, Status: "pending", CreatedBy: createdBy,
+		SessionTTLSeconds: sessionTTLSeconds, SessionLabel: sessionLabel,
 		CreatedAt: time.Now(), ExpiresAt: expiresAt,
 	}
 	m.invites[inv.Token] = inv

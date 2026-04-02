@@ -1,0 +1,105 @@
+---
+title: "Linux & macOS"
+description: "Install and run Agent Vault on Linux or macOS using the install script"
+---
+
+## Install
+
+Auto-detects your OS and architecture, downloads the latest release, and installs. Works for both fresh installs and upgrades.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Infisical/agent-vault/main/install.sh | sh
+```
+
+Supports macOS (Intel + Apple Silicon) and Linux (x86\_64 + ARM64).
+
+Verify the installation:
+
+```bash
+agent-vault --help
+```
+
+### Build from source
+
+**Prerequisites**: [Go 1.25+](https://go.dev/dl/), [Node.js 22+](https://nodejs.org/)
+
+```bash
+git clone https://github.com/Infisical/agent-vault.git
+cd agent-vault
+make build
+sudo mv agent-vault /usr/local/bin/
+```
+
+## Start the server
+
+```bash
+agent-vault server
+```
+
+Agent Vault prompts for a **master password** on first run. This password encrypts all [credentials](/learn/credentials) at rest using AES-256-GCM with an Argon2id-derived key. It is never stored on disk.
+
+For non-interactive or automated environments, set the `AGENT_VAULT_MASTER_PASSWORD` environment variable or pass `--password-stdin` instead. See [environment variables](/self-hosting/environment-variables) for all options.
+
+To run in the background:
+
+```bash
+agent-vault server -d
+```
+
+To stop a background server:
+
+```bash
+agent-vault server stop
+```
+
+## Register and log in
+
+The first user to register becomes the instance [owner](/learn/permissions#instance-roles) with full admin privileges and is automatically granted [admin](/learn/permissions#vault-roles) on the default [vault](/learn/vaults).
+
+<Tabs>
+  <Tab title="CLI">
+    ```bash
+    agent-vault register
+    agent-vault login
+    ```
+  </Tab>
+  <Tab title="Web UI">
+    Open [http://localhost:14321/register](http://localhost:14321/register) (or the address you configured with `AGENT_VAULT_ADDR`) and create your account from the browser.
+  </Tab>
+</Tabs>
+
+Subsequent users can self-register via `agent-vault register`, the web registration page, or be [invited to a vault](/learn/vaults#invite-users-to-a-vault) by a vault admin.
+
+## Upgrade
+
+Re-run the same install command — the script detects your existing installation, stops the running server, backs up your database, and installs the latest version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Infisical/agent-vault/main/install.sh | sh
+```
+
+Restart the server afterward:
+
+```bash
+agent-vault server
+```
+
+Database migrations run automatically on server startup — no manual steps required.
+
+## Verify a release (optional)
+
+Every release includes SHA-256 checksums and a [cosign](https://github.com/sigstore/cosign) signature for supply-chain security. No keys to manage — verification uses GitHub's OIDC identity.
+
+```bash
+# Download the checksums and signature bundle from the release page, then:
+
+# 1. Verify the binary hasn't been tampered with
+sha256sum --check checksums.txt
+
+# 2. Verify the checksums were signed by the Infisical/agent-vault GitHub Actions workflow
+cosign verify-blob \
+  --bundle checksums.txt.bundle \
+  --certificate-identity-regexp "github.com/Infisical/agent-vault" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  checksums.txt
+```

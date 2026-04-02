@@ -29,6 +29,22 @@ func hashToken(token string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// nullableString returns nil for empty strings, enabling SQL NULL inserts.
+func nullableString(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// nullableInt returns nil for zero/negative ints, enabling SQL NULL inserts.
+func nullableInt(n int) interface{} {
+	if n <= 0 {
+		return nil
+	}
+	return n
+}
+
 // SQLiteStore implements Store backed by a SQLite database.
 type SQLiteStore struct {
 	db *sql.DB
@@ -652,14 +668,9 @@ func (s *SQLiteStore) CreateScopedSession(ctx context.Context, vaultID, vaultRol
 	tokenHash := hashSessionToken(rawToken)
 	now := time.Now().UTC()
 
-	var labelVal interface{}
-	if label != "" {
-		labelVal = label
-	}
-
 	_, err := s.db.ExecContext(ctx,
 		"INSERT INTO sessions (id, vault_id, vault_role, label, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-		tokenHash, vaultID, vaultRole, labelVal, expiresAt.UTC().Format(time.DateTime), now.Format(time.DateTime),
+		tokenHash, vaultID, vaultRole, nullableString(label), expiresAt.UTC().Format(time.DateTime), now.Format(time.DateTime),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating scoped session: %w", err)
@@ -1105,27 +1116,29 @@ func newInviteToken() string {
 	return "av_inv_" + hex.EncodeToString(b[:])
 }
 
-func (s *SQLiteStore) CreateInvite(ctx context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time) (*Invite, error) {
+func (s *SQLiteStore) CreateInvite(ctx context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time, sessionTTLSeconds int, sessionLabel string) (*Invite, error) {
 	now := time.Now().UTC()
 	token := newInviteToken()
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO invites (token_hash, vault_id, vault_role, status, created_by, created_at, expires_at)
-		 VALUES (?, ?, ?, 'pending', ?, ?, ?)`,
-		hashToken(token), vaultID, vaultRole, createdBy, now.Format(time.DateTime), expiresAt.UTC().Format(time.DateTime),
+		`INSERT INTO invites (token_hash, vault_id, vault_role, status, created_by, created_at, expires_at, session_ttl_seconds, session_label)
+		 VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
+		hashToken(token), vaultID, vaultRole, createdBy, now.Format(time.DateTime), expiresAt.UTC().Format(time.DateTime), nullableInt(sessionTTLSeconds), nullableString(sessionLabel),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("inserting invite: %w", err)
 	}
 
 	return &Invite{
-		Token:     token,
-		VaultID:   vaultID,
-		VaultRole: vaultRole,
-		Status:    "pending",
-		CreatedBy: createdBy,
-		CreatedAt: now,
-		ExpiresAt: expiresAt.UTC(),
+		Token:             token,
+		VaultID:           vaultID,
+		VaultRole:         vaultRole,
+		Status:            "pending",
+		CreatedBy:         createdBy,
+		SessionTTLSeconds: sessionTTLSeconds,
+		SessionLabel:      sessionLabel,
+		CreatedAt:         now,
+		ExpiresAt:         expiresAt.UTC(),
 	}, nil
 }
 
@@ -1133,7 +1146,8 @@ func (s *SQLiteStore) GetInviteByToken(ctx context.Context, token string) (*Invi
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, '' as token, vault_id, vault_role, status, session_id, created_by,
 		        persistent, agent_name, agent_id,
-		        created_at, expires_at, redeemed_at, revoked_at
+		        created_at, expires_at, redeemed_at, revoked_at,
+		        session_ttl_seconds, session_label
 		 FROM invites WHERE token_hash = ?`, hashToken(token),
 	)
 	return scanInvite(row)
@@ -1153,7 +1167,8 @@ func (s *SQLiteStore) ListInvites(ctx context.Context, vaultID, status string) (
 		rows, err = s.db.QueryContext(ctx,
 			`SELECT id, '' as token, vault_id, vault_role, status, session_id, created_by,
 			        persistent, agent_name, agent_id,
-			        created_at, expires_at, redeemed_at, revoked_at
+			        created_at, expires_at, redeemed_at, revoked_at,
+			        session_ttl_seconds, session_label
 			 FROM invites WHERE vault_id = ? AND status = ? ORDER BY created_at DESC`,
 			vaultID, status,
 		)
@@ -1161,7 +1176,8 @@ func (s *SQLiteStore) ListInvites(ctx context.Context, vaultID, status string) (
 		rows, err = s.db.QueryContext(ctx,
 			`SELECT id, '' as token, vault_id, vault_role, status, session_id, created_by,
 			        persistent, agent_name, agent_id,
-			        created_at, expires_at, redeemed_at, revoked_at
+			        created_at, expires_at, redeemed_at, revoked_at,
+			        session_ttl_seconds, session_label
 			 FROM invites WHERE vault_id = ? ORDER BY created_at DESC`,
 			vaultID,
 		)
@@ -1241,7 +1257,7 @@ func (s *SQLiteStore) ExpirePendingInvites(ctx context.Context, before time.Time
 }
 
 // scanInviteFields populates an Invite from pre-scanned fields.
-func scanInviteFields(inv *Invite, sessionID, agentName, agentID sql.NullString, persistent int, createdAt, expiresAt string, redeemedAt, revokedAt sql.NullString) {
+func scanInviteFields(inv *Invite, sessionID, agentName, agentID sql.NullString, persistent int, createdAt, expiresAt string, redeemedAt, revokedAt sql.NullString, sessionTTL sql.NullInt64, sessionLabel sql.NullString) {
 	inv.SessionID = sessionID.String
 	inv.Persistent = persistent != 0
 	inv.AgentName = agentName.String
@@ -1256,6 +1272,10 @@ func scanInviteFields(inv *Invite, sessionID, agentName, agentID sql.NullString,
 		t, _ := time.Parse(time.DateTime, revokedAt.String)
 		inv.RevokedAt = &t
 	}
+	if sessionTTL.Valid {
+		inv.SessionTTLSeconds = int(sessionTTL.Int64)
+	}
+	inv.SessionLabel = sessionLabel.String
 }
 
 // scanInvite scans a single invite row from a *sql.Row.
@@ -1265,14 +1285,17 @@ func scanInvite(row *sql.Row) (*Invite, error) {
 	var persistent int
 	var createdAt, expiresAt string
 	var redeemedAt, revokedAt sql.NullString
+	var sessionTTL sql.NullInt64
+	var sessionLabel sql.NullString
 
 	if err := row.Scan(&inv.ID, &inv.Token, &inv.VaultID, &inv.VaultRole, &inv.Status,
 		&sessionID, &inv.CreatedBy, &persistent, &agentName, &agentID,
-		&createdAt, &expiresAt, &redeemedAt, &revokedAt); err != nil {
+		&createdAt, &expiresAt, &redeemedAt, &revokedAt,
+		&sessionTTL, &sessionLabel); err != nil {
 		return nil, err
 	}
 
-	scanInviteFields(&inv, sessionID, agentName, agentID, persistent, createdAt, expiresAt, redeemedAt, revokedAt)
+	scanInviteFields(&inv, sessionID, agentName, agentID, persistent, createdAt, expiresAt, redeemedAt, revokedAt, sessionTTL, sessionLabel)
 	return &inv, nil
 }
 
@@ -1283,14 +1306,17 @@ func scanInviteRow(rows *sql.Rows) (*Invite, error) {
 	var persistent int
 	var createdAt, expiresAt string
 	var redeemedAt, revokedAt sql.NullString
+	var sessionTTL sql.NullInt64
+	var sessionLabel sql.NullString
 
 	if err := rows.Scan(&inv.ID, &inv.Token, &inv.VaultID, &inv.VaultRole, &inv.Status,
 		&sessionID, &inv.CreatedBy, &persistent, &agentName, &agentID,
-		&createdAt, &expiresAt, &redeemedAt, &revokedAt); err != nil {
+		&createdAt, &expiresAt, &redeemedAt, &revokedAt,
+		&sessionTTL, &sessionLabel); err != nil {
 		return nil, err
 	}
 
-	scanInviteFields(&inv, sessionID, agentName, agentID, persistent, createdAt, expiresAt, redeemedAt, revokedAt)
+	scanInviteFields(&inv, sessionID, agentName, agentID, persistent, createdAt, expiresAt, redeemedAt, revokedAt, sessionTTL, sessionLabel)
 	return &inv, nil
 }
 

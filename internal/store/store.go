@@ -120,20 +120,22 @@ type EncryptedCredential struct {
 // Invite represents a one-time-use, time-limited token that an agent
 // can redeem to receive a vault-scoped session.
 type Invite struct {
-	ID         int
-	Token      string
-	VaultID    string
-	VaultRole  string // "consumer", "member", or "admin" — role granted to the agent on redemption
-	Status     string // pending, redeemed, expired, revoked
-	SessionID  string // populated after redemption
-	CreatedBy  string // session ID of the creator
-	Persistent bool   // true for persistent agent invites (redeemed via POST)
-	AgentName  string // pre-set agent name (persistent invites only)
-	AgentID    string // set for rotation invites (references existing agent)
-	CreatedAt  time.Time
-	ExpiresAt  time.Time
-	RedeemedAt *time.Time
-	RevokedAt  *time.Time
+	ID                int
+	Token             string
+	VaultID           string
+	VaultRole         string     // "consumer", "member", or "admin"
+	Status            string     // pending, redeemed, expired, revoked
+	SessionID         string     // populated after redemption
+	CreatedBy         string     // session ID of the creator
+	Persistent        bool       // true for persistent agent invites (redeemed via POST)
+	AgentName         string     // pre-set agent name (persistent invites only)
+	AgentID           string     // set for rotation invites (references existing agent)
+	SessionTTLSeconds int        // desired session lifetime when redeemed (0 = use default)
+	SessionLabel      string     // label to attach to the session created on redemption
+	CreatedAt         time.Time
+	ExpiresAt         time.Time
+	RedeemedAt        *time.Time
+	RevokedAt         *time.Time
 }
 
 // Agent represents a named, persistent agent with a long-lived service token.
@@ -284,7 +286,7 @@ type Store interface {
 	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedRulesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string) error
 
 	// Invites
-	CreateInvite(ctx context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time) (*Invite, error)
+	CreateInvite(ctx context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time, sessionTTLSeconds int, sessionLabel string) (*Invite, error)
 	GetInviteByToken(ctx context.Context, token string) (*Invite, error)
 	ListInvites(ctx context.Context, vaultID, status string) ([]Invite, error)
 	RedeemInvite(ctx context.Context, token, sessionID string) error

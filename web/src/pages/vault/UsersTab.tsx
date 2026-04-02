@@ -10,6 +10,7 @@ import Modal from "../../components/Modal";
 import DropdownMenu, { type DropdownMenuItem } from "../../components/DropdownMenu";
 import Button from "../../components/Button";
 import Input from "../../components/Input";
+import Select from "../../components/Select";
 import FormField from "../../components/FormField";
 import CopyButton from "../../components/CopyButton";
 import { apiFetch } from "../../lib/api";
@@ -403,37 +404,20 @@ function InviteUserButton({
                 autoFocus
               />
             </FormField>
-            <div>
-              <label className="block text-xs font-semibold text-text-muted uppercase tracking-wider mb-2">
-                Role
-              </label>
-              <div className="space-y-2">
-                {(["member", "admin"] as const).map((r) => (
-                  <button
-                    key={r}
-                    type="button"
-                    onClick={() => setRole(r)}
-                    className={`w-full text-left px-4 py-3 rounded-lg border-2 transition-all ${
-                      role === r
-                        ? "border-primary bg-primary/[0.04]"
-                        : "border-border hover:border-border-focus bg-surface"
-                    }`}
-                  >
-                    <div className="text-sm font-medium text-text capitalize">
-                      {r}
-                      {r === "member" && (
-                        <span className="ml-1.5 text-xs font-normal text-text-muted">(Default)</span>
-                      )}
-                    </div>
-                    <p className="text-xs text-text-muted mt-0.5">
-                      {r === "member"
-                        ? "View credentials, use proxy, and raise proposals."
-                        : "All member permissions, plus invite users, manage vault settings, and approve proposals."}
-                    </p>
-                  </button>
-                ))}
-              </div>
-            </div>
+            <FormField
+              label="Role"
+              helperText={<>{role === "member"
+                ? "Manage credentials, use proxy, approve proposals, and manage policy."
+                : "All member permissions, plus invite users and agents with any role."} <a href="https://docs.agent-vault.dev/learn/permissions#vault-roles" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Learn more</a></>}
+            >
+              <Select
+                value={role}
+                onChange={(e) => setRole(e.target.value as "member" | "admin")}
+              >
+                <option value="member">Member</option>
+                <option value="admin">Admin</option>
+              </Select>
+            </FormField>
             {error && <ErrorBanner message={error} />}
           </div>
         )}

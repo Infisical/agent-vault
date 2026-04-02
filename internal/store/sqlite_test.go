@@ -26,8 +26,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 29 {
-		t.Fatalf("expected migration version 29, got %d", version)
+	if version != 30 {
+		t.Fatalf("expected migration version 30, got %d", version)
 	}
 }
 
@@ -883,7 +883,7 @@ func TestCreateInvite(t *testing.T) {
 	ctx := context.Background()
 	ns, _ := s.CreateVault(ctx, "inv-test")
 
-	inv, err := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute))
+	inv, err := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
 	if err != nil {
 		t.Fatalf("CreateInvite: %v", err)
 	}
@@ -900,7 +900,7 @@ func TestRedeemInvite(t *testing.T) {
 	ctx := context.Background()
 	ns, _ := s.CreateVault(ctx, "inv-redeem")
 
-	inv, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute))
+	inv, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
 
 	err := s.RedeemInvite(ctx, inv.Token, "sess-123")
 	if err != nil {
@@ -927,7 +927,7 @@ func TestRedeemInvite_Expired(t *testing.T) {
 	ctx := context.Background()
 	ns, _ := s.CreateVault(ctx, "inv-expired")
 
-	inv, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(-1*time.Minute))
+	inv, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(-1*time.Minute), 0, "")
 
 	err := s.RedeemInvite(ctx, inv.Token, "sess-456")
 	if err != sql.ErrNoRows {
@@ -940,7 +940,7 @@ func TestRedeemInvite_AlreadyRedeemed(t *testing.T) {
 	ctx := context.Background()
 	ns, _ := s.CreateVault(ctx, "inv-double")
 
-	inv, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute))
+	inv, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
 	s.RedeemInvite(ctx, inv.Token, "sess-1")
 
 	err := s.RedeemInvite(ctx, inv.Token, "sess-2")
@@ -954,7 +954,7 @@ func TestRevokeInvite(t *testing.T) {
 	ctx := context.Background()
 	ns, _ := s.CreateVault(ctx, "inv-revoke")
 
-	inv, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute))
+	inv, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
 
 	if err := s.RevokeInvite(ctx, inv.Token); err != nil {
 		t.Fatalf("RevokeInvite: %v", err)
@@ -974,8 +974,8 @@ func TestCountPendingInvites(t *testing.T) {
 	ctx := context.Background()
 	ns, _ := s.CreateVault(ctx, "inv-count")
 
-	inv1, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute))
-	s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute))
+	inv1, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
+	s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
 
 	count, err := s.CountPendingInvites(ctx, ns.ID)
 	if err != nil {
@@ -1000,8 +1000,8 @@ func TestExpirePendingInvites(t *testing.T) {
 	ns, _ := s.CreateVault(ctx, "inv-expire")
 
 	// Create two invites: one already expired, one still valid.
-	s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(-1*time.Minute))
-	s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute))
+	s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(-1*time.Minute), 0, "")
+	s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
 
 	n, err := s.ExpirePendingInvites(ctx, time.Now())
 	if err != nil {
@@ -1022,8 +1022,8 @@ func TestListInvites(t *testing.T) {
 	ctx := context.Background()
 	ns, _ := s.CreateVault(ctx, "inv-list")
 
-	s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute))
-	inv2, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute))
+	s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
+	inv2, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
 	s.RevokeInvite(ctx, inv2.Token)
 
 	// All invites.
@@ -1049,7 +1049,7 @@ func TestInviteCascadeDelete(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 	ns, _ := s.CreateVault(ctx, "inv-cascade")
-	s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute))
+	s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
 
 	if err := s.DeleteVault(ctx, "inv-cascade"); err != nil {
 		t.Fatal(err)
