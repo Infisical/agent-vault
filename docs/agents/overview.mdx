@@ -3,7 +3,7 @@ title: "Agents"
 description: "Understand the two types of agents in Agent Vault and how to connect them."
 ---
 
-An `Agent` is any AI-powered process that connects to a [vault](/learn/vaults) to proxy requests and raise [proposals](/learn/proposals) through Agent Vault. Agent Vault recognizes two types of agents: **temporary** and **persistent**.
+An `Agent` is any AI-powered process that connects to a [vault](/learn/vaults) to proxy requests and raise [proposals](/learn/proposals) through Agent Vault. Agent Vault supports three ways to connect agents: **temporary**, **direct connect**, and **persistent**.
 
 ## Temporary agents
 
@@ -29,6 +29,36 @@ agent-vault vault agent invite create --vault my-vault
 ```
 
 Outputs a prompt with the invite URL. Paste it into the agent's chat. The token is burned on redemption and the agent receives a single session token.
+
+## Direct connect
+
+Direct connect skips the invite ceremony entirely. Instead of creating an invite link for the agent to redeem, it mints a scoped session token immediately and outputs the environment variables you can paste into any agent.
+
+```bash
+agent-vault vault agent invite create --direct --vault my-vault
+```
+
+This prints an `export` block with `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT` (and copies it to your clipboard). Paste these into the agent's environment or chat.
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--role` | `consumer` | Vault role: `consumer`, `member`, or `admin` |
+| `--ttl` | `24h` | Session lifetime (min 5m, max 7d) |
+| `--label` | | Optional label to identify the session |
+
+```bash
+# Create a 1-hour consumer session
+agent-vault vault agent invite create --direct --ttl 1h
+
+# Create an admin session with a label
+agent-vault vault agent invite create --direct --role admin --label "ci-pipeline" --ttl 4h
+```
+
+<Note>
+Direct connect sessions have a maximum TTL of 7 days. For agents that need indefinite access, use [persistent agents](#persistent-agents) instead.
+</Note>
 
 ## Persistent agents
 
@@ -74,6 +104,7 @@ This creates a rotation invite. Paste the prompt into the agent's chat. The agen
 |---|---|---|
 | Local dev with Claude Code or Cursor | Temporary (`agent-vault vault run`) | Simplest setup, no tokens to manage |
 | Paste into a cloud agent for a task | Temporary (one-time invite) | Session expires when the task is done |
+| Quick scripted access, CI jobs | Direct connect | Instant token, no invite ceremony |
 | CI/CD pipeline on every push | Persistent | Reconnects without human intervention |
 | Always-on assistant (e.g. OpenClaw) | Persistent | Survives process restarts |
 

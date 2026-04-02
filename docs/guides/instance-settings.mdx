@@ -74,6 +74,10 @@ Both settings stack — invite-only controls *whether* someone can register, and
 | Domain restrictions only | Anyone with a matching email domain can self-register. |
 | Both | No self-registration. Only [vault invites](/learn/vaults#invite-users-to-a-vault) with a matching email domain. |
 
+## SMTP status
+
+The settings response includes an `smtp_configured` field (boolean) indicating whether [SMTP](/guides/smtp) is configured on the instance. This is visible in the web UI settings page and in the API response from `GET /v1/admin/settings`.
+
 ## View current settings
 
 ```bash

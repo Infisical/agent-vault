@@ -379,16 +379,20 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault agent invite create [flags]
     ```
 
-    Create an agent invite and print the onboarding prompt (copies to clipboard). By default creates a one-time invite. Use `--persistent` for agents that need ongoing access with a long-lived service token.
+    Create an agent invite and print the onboarding prompt (copies to clipboard). By default creates a one-time invite. Use `--persistent` for agents that need ongoing access with a long-lived service token. Use `--direct` to skip the invite ceremony and mint a session token immediately.
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
-    | `--ttl` | `15m` | Invite expiration time |
+    | `--ttl` | `15m` | Invite expiration time (direct connect: session lifetime, min 5m, max 7d) |
     | `--persistent` | `false` | Create a persistent agent invite |
+    | `--direct` | `false` | Mint a session token immediately (skip invite ceremony) |
     | `--name` | | Agent name (persistent invites only) |
+    | `--label` | | Optional session label (direct connect only) |
     | `--address` | | Server address override (default: from session) |
     | `--role` | `consumer` | Vault role for the invited agent: `consumer`, `member`, or `admin` |
+
+    `--direct` and `--persistent` are mutually exclusive. `--label` requires `--direct`.
   </Accordion>
 
   <Accordion title="agent-vault vault agent invite list">

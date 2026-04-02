@@ -17,6 +17,7 @@ Every request an agent makes to Agent Vault requires a session token. How the ag
 |---|---|
 | `agent-vault vault run` | Agent Vault sets `AGENT_VAULT_SESSION_TOKEN` on the child process automatically |
 | One-time invite | Agent calls `GET {invite_url}` and receives a token in the response |
+| Direct connect | A human runs `agent-vault vault agent invite create --direct` and pastes the resulting env vars into the agent |
 | Persistent invite | Agent calls `POST {invite_url}` and receives both a `av_agent_token` (service token) and an initial session token |
 
 All three methods deliver the same set of connection details:
@@ -26,6 +27,47 @@ All three methods deliver the same set of connection details:
 | `AGENT_VAULT_ADDR` | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
 | `AGENT_VAULT_SESSION_TOKEN` | Bearer token for all Agent Vault requests |
 | `AGENT_VAULT_VAULT` | Vault the session is scoped to |
+
+### Direct session API
+
+The direct connect flow uses `POST /v1/sessions/direct` to mint a scoped session without an invite. This is called by the CLI on behalf of the human, not by the agent itself.
+
+```json
+POST {AGENT_VAULT_ADDR}/v1/sessions/direct
+Authorization: Bearer {user_or_agent_session_token}
+Content-Type: application/json
+
+{
+  "vault": "default",
+  "vault_role": "consumer",
+  "ttl_seconds": 3600,
+  "label": "ci-pipeline"
+}
+```
+
+```json Response
+{
+  "av_addr": "http://127.0.0.1:14321",
+  "av_session_token": "...",
+  "av_vault": "default",
+  "vault_role": "consumer",
+  "proxy_url": "http://127.0.0.1:14321/proxy",
+  "services": [{ "host": "api.stripe.com", "description": "Stripe API" }],
+  "instructions": "...",
+  "expires_at": "2025-01-02T03:04:05Z"
+}
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `vault` | `default` | Target vault |
+| `vault_role` | `consumer` | Role for the new session (`consumer`, `member`, or `admin`). Capped based on the caller's own role. |
+| `ttl_seconds` | `86400` (24h) | Session lifetime in seconds (min 300, max 604800) |
+| `label` | | Optional label for identifying the session (max 128 chars) |
+
+Role capping: vault members can only mint `consumer` sessions. Vault admins can mint any role. The requested role is silently downgraded if needed.
+
+### Persistent agent sessions
 
 Persistent agents also receive a `av_agent_token` (no expiry, revocable). When the session token expires after 24 hours, the agent mints a new one:
 
