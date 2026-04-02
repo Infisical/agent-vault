@@ -2135,8 +2135,9 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Notify vault members about the new proposal (fire-and-forget).
+	// The goroutine intentionally outlives the request, so we use a detached context.
 	if s.notifier.Enabled() {
-		go s.notifyProposalCreated(sess.VaultID, nsName, cs.ID, req.Message, approvalURL, proposalAgentName)
+		go s.notifyProposalCreated(sess.VaultID, nsName, cs.ID, req.Message, approvalURL, proposalAgentName) //nolint:gosec // G118: intentional fire-and-forget goroutine
 	}
 
 	w.Header().Set("Content-Type", "application/json")
