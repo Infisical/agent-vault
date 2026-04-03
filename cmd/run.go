@@ -138,11 +138,11 @@ func maybeInstallSkill(agentName, relPath string) {
 	}
 
 	dir := filepath.Dir(skillPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not create skill directory: %v\n", err)
 		return
 	}
-	if err := os.WriteFile(skillPath, []byte(skillClaudeCode), 0o644); err != nil {
+	if err := os.WriteFile(skillPath, []byte(skillClaudeCode), 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not write skill file: %v\n", err)
 		return
 	}
