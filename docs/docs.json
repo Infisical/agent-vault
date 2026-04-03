@@ -20,8 +20,10 @@
         "pages": [
           "quickstart/claude-code",
           "quickstart/cursor",
+          "quickstart/codex",
           "quickstart/openclaw",
-          "quickstart/nanoclaw"
+          "quickstart/nanoclaw",
+          "quickstart/hermes-agent"
         ]
       },
       {

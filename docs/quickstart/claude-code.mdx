@@ -5,30 +5,36 @@ description: "Learn how to connect Claude Code to Agent Vault so it can make aut
 
 ## Prerequisites
 
-To get the most out of this guide, you'll need to:
+- A running Agent Vault instance ([see installation guide](/installation))
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) installed
 
-- A deployed Agent Vault instance ([see installation guide](/installation))
-- Have [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) installed
+## Quick start
 
-## 1. Log in
+Log in to your Agent Vault instance:
 
 ```bash
 agent-vault login
 ```
 
-## 2. Create an agent invite
+Then launch Claude Code with `vault run`. It wraps Claude Code with a vault-scoped session and installs the Agent Vault skill so Claude knows how to proxy requests and raise proposals automatically.
 
 ```bash
-agent-vault vault agent invite create
+agent-vault vault run -- claude
 ```
 
-This generates a one-time onboarding prompt and copies it to your clipboard.
+That's it. Claude Code launches with Agent Vault access — no invite, no token pasting.
 
-## 3. Paste the prompt into Claude Code
+<Tip>
+`vault run` also installs a [Claude Code skill](https://docs.anthropic.com/en/docs/claude-code/skills) at `~/.claude/skills/agent-vault/SKILL.md`. This teaches Claude Code how to discover services, proxy requests, and raise proposals through Agent Vault. The skill persists across sessions.
+</Tip>
 
-Open Claude Code and paste the invite prompt. Claude Code redeems the invite automatically and receives a session token scoped to your vault.
+### Target a specific vault
 
-## 4. Start using it
+```bash
+agent-vault vault run --vault myproject -- claude
+```
+
+## Try it out
 
 Ask Claude Code to do something that requires an external API:
 
@@ -38,14 +44,24 @@ Here's what happens — with zero pre-configuration:
 
 1. Claude Code routes a request to `api.stripe.com` through Agent Vault
 2. Agent Vault returns a **403** — Stripe isn't configured yet
-3. Claude Code reads the `proposal_hint` and creates a proposal proposing Stripe access
+3. Claude Code reads the `proposal_hint` and creates a proposal requesting Stripe access
 4. Claude Code presents you with an approval link
 5. You click the link, paste your Stripe key, and click **Allow**
-6. Claude Code retries — Agent Vault reconstructs the request with your Stripe credentials and the request succeeds
+6. Claude Code retries — Agent Vault injects your Stripe credentials and the request succeeds
 
 <Note>
 You didn't pre-configure anything. The agent discovered what it needed, asked for approval, and handled the rest.
 </Note>
+
+## Alternative: invite-based setup
+
+If you can't use `vault run` (e.g. you're connecting a remote or cloud-hosted Claude Code instance), use the invite flow instead:
+
+```bash
+agent-vault vault agent invite create
+```
+
+This generates a one-time onboarding prompt and copies it to your clipboard. Paste it into Claude Code — it redeems the invite automatically and receives a session token plus usage instructions inline.
 
 ## Next steps
 

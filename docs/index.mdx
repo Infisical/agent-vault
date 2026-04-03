@@ -7,15 +7,9 @@ Agent Vault is an agent-first, open source proxy and secrets management vault by
 
 Agents like [Claude Code](https://code.claude.com/docs/en/overview) or [OpenClaw](https://openclaw.ai) route HTTP requests through an Agent Vault server, which reconstructs each request with the right set of authentication credentials, before forwarding it to the target service.
 
-<Mermaid
-  chart={`
-    flowchart LR
-      A[Agent] -->|HTTP request + session token| B[Agent Vault]
-      B -->|Reconstructed request + real credentials| C[Target API]
-      C -->|Response| B
-      B -->|Response| A
-  `}
-/>
+<Frame>
+  <img src="/images/architecture.png" alt="Agent Vault architecture diagram" />
+</Frame>
 
 ## Why Agent Vault
 

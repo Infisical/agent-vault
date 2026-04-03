@@ -19,8 +19,9 @@ For agents that don't have a chat interface or need raw environment variables, s
 The simplest approach for local development. Wraps your agent process with the environment variables it needs — no invite, no token management.
 
 ```bash
-agent-vault vault run -- claude
-agent-vault vault run -- cursor
+agent-vault vault run -- claude    # Claude Code
+agent-vault vault run -- agent     # Cursor
+agent-vault vault run -- codex     # Codex
 ```
 
 The agent can immediately make proxied requests and raise [proposals](/learn/proposals).

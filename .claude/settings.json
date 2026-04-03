@@ -17,7 +17,8 @@
       "Bash(ls -1 /Users/tuandang/Desktop/Projects/agent-vault/internal/store/migrations/*.sql)",
       "Bash(python3 -c \":*)",
       "Bash(grep -n 'jsonError.*\"\"\"\"\\)\\)$' internal/server/server.go)",
-      "Bash(grep -r direct /Users/tuandang/Desktop/Projects/agent-vault/docs --include=*.mdx)"
+      "Bash(grep -r direct /Users/tuandang/Desktop/Projects/agent-vault/docs --include=*.mdx)",
+      "Bash(find /Users/tuandang/Desktop/Projects/agent-vault -name CLAUDE.md -o -name quickstart* -type f)"
     ]
   },
   "enabledPlugins": {

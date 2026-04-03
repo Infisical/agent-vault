@@ -1,0 +1,75 @@
+---
+title: "Codex"
+description: "Learn how to connect Codex to Agent Vault so it can make authenticated API requests without ever seeing your credentials."
+---
+
+## Prerequisites
+
+- A running Agent Vault instance ([see installation guide](/installation))
+- [Codex](https://github.com/openai/codex) installed
+
+## Quick start
+
+Log in to your Agent Vault instance:
+
+```bash
+agent-vault login
+```
+
+Then launch Codex with `vault run`. It wraps Codex with a vault-scoped session and installs the Agent Vault skill so Codex knows how to proxy requests and raise proposals automatically.
+
+```bash
+agent-vault vault run -- codex
+```
+
+That's it. Codex launches with Agent Vault access — no invite, no token pasting.
+
+<Tip>
+`vault run` also installs an Agent Vault skill at `~/.agents/skills/agent-vault/SKILL.md`. This teaches Codex how to discover services, proxy requests, and raise proposals through Agent Vault. The skill persists across sessions.
+</Tip>
+
+### Target a specific vault
+
+```bash
+agent-vault vault run --vault myproject -- codex
+```
+
+## Try it out
+
+Ask Codex to do something that requires an external API:
+
+> "Fetch my recent Stripe charges"
+
+Here's what happens — with zero pre-configuration:
+
+1. Codex routes a request to `api.stripe.com` through Agent Vault
+2. Agent Vault returns a **403** — Stripe isn't configured yet
+3. Codex reads the `proposal_hint` and creates a proposal requesting Stripe access
+4. Codex presents you with an approval link
+5. You click the link, paste your Stripe key, and click **Allow**
+6. Codex retries — Agent Vault injects your Stripe credentials and the request succeeds
+
+<Note>
+You didn't pre-configure anything. The agent discovered what it needed, asked for approval, and handled the rest.
+</Note>
+
+## Alternative: invite-based setup
+
+If you can't use `vault run` (e.g. you're connecting a remote or cloud-hosted Codex instance), use the invite flow instead:
+
+```bash
+agent-vault vault agent invite create
+```
+
+This generates a one-time onboarding prompt and copies it to your clipboard. Paste it into Codex — it redeems the invite automatically and receives a session token plus usage instructions inline.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="How it works" icon="lightbulb" href="/how-it-works">
+    Full request lifecycle end-to-end.
+  </Card>
+  <Card title="Policies" icon="shield" href="/configuration/policies">
+    Pre-configure services you know the agent will need.
+  </Card>
+</CardGroup>

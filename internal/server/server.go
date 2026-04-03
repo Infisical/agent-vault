@@ -1805,7 +1805,7 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := s.store.CreateScopedSession(ctx, ns.ID, "", "", time.Now().Add(sessionTTL))
+	sess, err := s.store.CreateScopedSession(ctx, ns.ID, "consumer", "", time.Now().Add(sessionTTL))
 	if err != nil {
 		http.Error(w, `{"error":"Failed to create scoped session"}`, http.StatusInternalServerError)
 		return
