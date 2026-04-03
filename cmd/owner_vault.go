@@ -19,7 +19,7 @@ var ownerVaultListCmd = &cobra.Command{
 	Short: "List all vaults across the instance (owner only)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -67,7 +67,7 @@ var ownerVaultRemoveCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -89,7 +89,7 @@ var ownerVaultJoinCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}

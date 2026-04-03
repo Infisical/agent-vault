@@ -20,7 +20,7 @@ var credentialsListCmd = &cobra.Command{
 	Short: "List credential keys in a vault",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -60,7 +60,7 @@ var credentialsSetCmd = &cobra.Command{
 	Short: "Set one or more credentials",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -109,7 +109,7 @@ var credentialsDeleteCmd = &cobra.Command{
 	Short: "Delete one or more credentials",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}

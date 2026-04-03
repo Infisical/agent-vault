@@ -10,13 +10,7 @@ description: "Learn how to connect Cursor to Agent Vault so it can make authenti
 
 ## Quick start
 
-Log in to your Agent Vault instance:
-
-```bash
-agent-vault login
-```
-
-Then launch Cursor with `vault run`. It wraps Cursor with a vault-scoped session and installs the Agent Vault skill so Cursor knows how to proxy requests and raise proposals automatically.
+Launch Cursor with `vault run`. It wraps Cursor with a vault-scoped session and installs the Agent Vault skill so Cursor knows how to proxy requests and raise proposals automatically. If you haven't logged in yet, you'll be guided through setup automatically.
 
 ```bash
 agent-vault vault run -- agent

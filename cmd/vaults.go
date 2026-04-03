@@ -26,7 +26,7 @@ var vaultCreateCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -60,7 +60,7 @@ var vaultListCmd = &cobra.Command{
 	Short: "List vaults",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -149,7 +149,7 @@ var vaultUserInviteCmd = &cobra.Command{
 		vaultName := resolveVault(cmd)
 		role, _ := cmd.Flags().GetString("role")
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -190,7 +190,7 @@ var vaultUserListCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vaultName := resolveVault(cmd)
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -234,7 +234,7 @@ var vaultUserRemoveCmd = &cobra.Command{
 		email := args[0]
 		vaultName := resolveVault(cmd)
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -261,7 +261,7 @@ var vaultUserSetRoleCmd = &cobra.Command{
 			return fmt.Errorf("--role is required (admin or member)")
 		}
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -284,7 +284,7 @@ var vaultRenameCmd = &cobra.Command{
 		oldName := args[0]
 		newName := args[1]
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -331,7 +331,7 @@ var vaultDeleteCmd = &cobra.Command{
 			}
 		}
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}

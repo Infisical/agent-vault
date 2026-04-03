@@ -19,7 +19,7 @@ var userListCmd = &cobra.Command{
 	Short: "List all users (owner only)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -66,7 +66,7 @@ var userInfoCmd = &cobra.Command{
 	Short: "View user info (owner or self)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -108,7 +108,7 @@ var userRemoveCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		email := args[0]
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -134,7 +134,7 @@ var userSetRoleCmd = &cobra.Command{
 			return fmt.Errorf("--role is required (owner or member)")
 		}
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}

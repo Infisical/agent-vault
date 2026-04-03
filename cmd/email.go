@@ -18,7 +18,7 @@ var emailTestCmd = &cobra.Command{
 	Long:  `Send a test email to verify that SMTP is configured correctly on the server. Only owners can use this command.`,
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}

@@ -76,36 +76,9 @@ var registerCmd = &cobra.Command{
 			return fmt.Errorf("password must be at least 8 characters")
 		}
 
-		// Send register request.
-		body, err := json.Marshal(map[string]string{
-			"email":    email,
-			"password": password,
-		})
+		result, err := doRegister(address, email, password)
 		if err != nil {
 			return err
-		}
-
-		resp, err := http.Post(address+"/v1/auth/register", "application/json", bytes.NewReader(body))
-		if err != nil {
-			return fmt.Errorf("could not reach server at %s: %w", address, err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-
-		var result struct {
-			Email                string `json:"email"`
-			Role                 string `json:"role"`
-			RequiresVerification bool   `json:"requires_verification"`
-			EmailSent            bool   `json:"email_sent"`
-			Message              string `json:"message"`
-			Error                string `json:"error"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&result)
-
-		if resp.StatusCode >= 400 {
-			if result.Error != "" {
-				return fmt.Errorf("%s", result.Error)
-			}
-			return fmt.Errorf("registration failed with status %d", resp.StatusCode)
 		}
 
 		if !result.RequiresVerification {

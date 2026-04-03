@@ -63,8 +63,6 @@ sudo mv agent-vault /usr/local/bin/
 ```bash
 # Start the server (runs on localhost:14321 by default; use --host and --port to change)
 agent-vault server -d
-agent-vault register
-agent-vault login
 
 # Run with your agent
 agent-vault vault run -- claude    # Claude Code
@@ -75,7 +73,7 @@ agent-vault vault run -- codex     # Codex
 agent-vault vault agent invite create
 ```
 
-`agent-vault vault run` wraps your agent process with a scoped session — no tokens to manage. Alternatively, `agent-vault vault agent invite create` prints an invite prompt you can paste into any agent's chat to connect it.
+Any command that needs authentication will walk you through setup automatically — just run it and follow the prompts. `agent-vault vault run` wraps your agent process with a scoped session — no tokens to manage. Alternatively, `agent-vault vault agent invite create` prints an invite prompt you can paste into any agent's chat to connect it.
 
 Once connected, ask the agent to call any external API. It will discover available services, [propose access](https://docs.agent-vault.dev/first-proposal) for anything missing, and give you a browser link to approve.
 

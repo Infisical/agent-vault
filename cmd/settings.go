@@ -18,7 +18,7 @@ var settingsGetCmd = &cobra.Command{
 	Short: "Show instance settings",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -58,7 +58,7 @@ var settingsSetCmd = &cobra.Command{
 	Short: "Update instance settings",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}

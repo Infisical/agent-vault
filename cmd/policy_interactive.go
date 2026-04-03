@@ -30,7 +30,7 @@ func runInteractivePolicySet(cmd *cobra.Command) error {
 		return err
 	}
 
-	sess, err := loadSession()
+	sess, err := ensureSession()
 	if err != nil {
 		return err
 	}

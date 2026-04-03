@@ -2,67 +2,13 @@ package cmd
 
 import (
 	"bufio"
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/huh"
-	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
-
-const (
-	hostingLocal       = "local"
-	hostingSelfHosting = "self-hosting"
-	defaultAddress     = DefaultAddress
-)
-
-// selectAddress prompts the user to pick a hosting option interactively.
-// Returns the server address to use.
-func selectAddress() (string, error) {
-	var choice string
-	err := huh.NewSelect[string]().
-		Title("Select your hosting option:").
-		Options(
-			huh.NewOption(fmt.Sprintf("Agent Vault (%s:%d)", DefaultHost, DefaultPort), hostingLocal),
-			huh.NewOption("Self-Hosting or Dedicated Instance", hostingSelfHosting),
-		).
-		Value(&choice).
-		Run()
-	if err != nil {
-		return "", fmt.Errorf("hosting selection: %w", err)
-	}
-
-	if choice == hostingLocal {
-		return defaultAddress, nil
-	}
-
-	var address string
-	err = huh.NewInput().
-		Title("Enter your server address:").
-		Placeholder("https://my-agent-vault.example.com").
-		Value(&address).
-		Validate(func(s string) error {
-			s = strings.TrimSpace(s)
-			if s == "" {
-				return fmt.Errorf("address cannot be empty")
-			}
-			if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
-				return fmt.Errorf("address must start with http:// or https://")
-			}
-			return nil
-		}).
-		Run()
-	if err != nil {
-		return "", fmt.Errorf("address input: %w", err)
-	}
-
-	return strings.TrimRight(strings.TrimSpace(address), "/"), nil
-}
 
 // readLoginEmail reads the email either from --email flag or by prompting interactively.
 func readLoginEmail(cmd *cobra.Command) (string, error) {
@@ -125,7 +71,7 @@ var loginCmd = &cobra.Command{
 			address, _ = cmd.Flags().GetString("address")
 		} else if fromStdin {
 			// Non-interactive mode: use the default address.
-			address = defaultAddress
+			address = DefaultAddress
 		} else {
 			// Interactive mode: show hosting selection.
 			addr, err := selectAddress()
@@ -145,45 +91,8 @@ var loginCmd = &cobra.Command{
 			return err
 		}
 
-		body, err := json.Marshal(map[string]string{"email": email, "password": password})
-		if err != nil {
+		if _, err := doLogin(address, email, password); err != nil {
 			return err
-		}
-
-		resp, err := http.Post(address+"/v1/auth/login", "application/json", bytes.NewReader(body))
-		if err != nil {
-			return fmt.Errorf("could not reach server at %s: %w", address, err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-
-		if resp.StatusCode == http.StatusUnauthorized {
-			return fmt.Errorf("invalid email or password")
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			var errResp struct {
-				Error string `json:"error"`
-			}
-			_ = json.NewDecoder(resp.Body).Decode(&errResp)
-			if errResp.Error != "" {
-				return fmt.Errorf("login failed: %s", errResp.Error)
-			}
-			return fmt.Errorf("login failed with status %d", resp.StatusCode)
-		}
-
-		var result struct {
-			Token     string `json:"token"`
-			ExpiresAt string `json:"expires_at"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
-		}
-
-		if err := session.Save(&session.ClientSession{
-			Token:   result.Token,
-			Address: address,
-		}); err != nil {
-			return fmt.Errorf("saving session: %w", err)
 		}
 
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), successText("✓")+" Login successful.")

@@ -55,7 +55,7 @@ var inviteCreateCmd = &cobra.Command{
 			return fmt.Errorf("--session-ttl must be at least 5 minutes")
 		}
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -189,7 +189,7 @@ var inviteListCmd = &cobra.Command{
 		vault := resolveVault(cmd)
 		status, _ := cmd.Flags().GetString("status")
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -255,7 +255,7 @@ var inviteRevokeCmd = &cobra.Command{
 		vault := resolveVault(cmd)
 		suffix := args[0]
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}

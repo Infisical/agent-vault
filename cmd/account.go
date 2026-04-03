@@ -17,7 +17,7 @@ var accountDeleteCmd = &cobra.Command{
 	Short: "Permanently delete your account",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}

@@ -17,7 +17,7 @@ var changePasswordCmd = &cobra.Command{
 	Short: "Change your account password",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}

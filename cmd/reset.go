@@ -26,7 +26,7 @@ it will be stopped automatically before the reset.`,
 		yes, _ := cmd.Flags().GetBool("yes")
 
 		// 1. Load session
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}

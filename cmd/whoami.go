@@ -13,7 +13,7 @@ var whoamiCmd = &cobra.Command{
 	Short: "Show current user and session info",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}

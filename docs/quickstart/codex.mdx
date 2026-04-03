@@ -10,13 +10,7 @@ description: "Learn how to connect Codex to Agent Vault so it can make authentic
 
 ## Quick start
 
-Log in to your Agent Vault instance:
-
-```bash
-agent-vault login
-```
-
-Then launch Codex with `vault run`. It wraps Codex with a vault-scoped session and installs the Agent Vault skill so Codex knows how to proxy requests and raise proposals automatically.
+Launch Codex with `vault run`. It wraps Codex with a vault-scoped session and installs the Agent Vault skill so Codex knows how to proxy requests and raise proposals automatically. If you haven't logged in yet, you'll be guided through setup automatically.
 
 ```bash
 agent-vault vault run -- codex

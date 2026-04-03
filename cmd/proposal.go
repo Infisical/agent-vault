@@ -146,12 +146,7 @@ func collectCredentialValues(cmd *cobra.Command, cs *store.Proposal, credentialO
 }
 
 // sendApproveRequest sends a proposal approval to the running server via HTTP.
-func sendApproveRequest(vault string, id int, credentials map[string]string) error {
-	sess, err := loadSession()
-	if err != nil {
-		return err
-	}
-
+func sendApproveRequest(sess *session.ClientSession, vault string, id int, credentials map[string]string) error {
 	body, err := json.Marshal(map[string]interface{}{
 		"vault":       vault,
 		"credentials": credentials,
@@ -165,12 +160,7 @@ func sendApproveRequest(vault string, id int, credentials map[string]string) err
 }
 
 // sendRejectRequest sends a proposal rejection to the running server via HTTP.
-func sendRejectRequest(vault string, id int, reason string) error {
-	sess, err := loadSession()
-	if err != nil {
-		return err
-	}
-
+func sendRejectRequest(sess *session.ClientSession, vault string, id int, reason string) error {
 	body, err := json.Marshal(map[string]interface{}{
 		"vault": vault,
 		"reason":    reason,
@@ -255,7 +245,7 @@ var proposalListCmd = &cobra.Command{
 		vault := resolveVault(cmd)
 		status, _ := cmd.Flags().GetString("status")
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -313,7 +303,7 @@ var proposalShowCmd = &cobra.Command{
 			return fmt.Errorf("invalid proposal number: %s", args[0])
 		}
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -351,7 +341,7 @@ var proposalApproveCmd = &cobra.Command{
 			credentialOverrides[arg[:idx]] = arg[idx+1:]
 		}
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -391,7 +381,7 @@ var proposalApproveCmd = &cobra.Command{
 		}
 
 		// Send approval to the running server.
-		if err := sendApproveRequest(vault, id, credentials); err != nil {
+		if err := sendApproveRequest(sess, vault, id, credentials); err != nil {
 			return err
 		}
 
@@ -413,7 +403,12 @@ var proposalRejectCmd = &cobra.Command{
 			return fmt.Errorf("invalid proposal number: %s", args[0])
 		}
 
-		if err := sendRejectRequest(vault, id, reason); err != nil {
+		sess, err := ensureSession()
+		if err != nil {
+			return err
+		}
+
+		if err := sendRejectRequest(sess, vault, id, reason); err != nil {
 			return err
 		}
 
@@ -433,7 +428,7 @@ var proposalReviewCmd = &cobra.Command{
 
 		vault := resolveVault(cmd)
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -512,7 +507,7 @@ var proposalReviewCmd = &cobra.Command{
 					continue
 				}
 
-				if err := sendApproveRequest(vault, fresh.ID, credentials); err != nil {
+				if err := sendApproveRequest(sess, vault, fresh.ID, credentials); err != nil {
 					fmt.Fprintf(cmd.OutOrStderr(), "Error approving proposal #%d: %v\n", fresh.ID, err)
 					skipped = append(skipped, fresh.ID)
 				} else {
@@ -530,7 +525,7 @@ var proposalReviewCmd = &cobra.Command{
 					return err
 				}
 
-				if err := sendRejectRequest(vault, fresh.ID, reason); err != nil {
+				if err := sendRejectRequest(sess, vault, fresh.ID, reason); err != nil {
 					fmt.Fprintf(cmd.OutOrStderr(), "Error rejecting proposal #%d: %v\n", fresh.ID, err)
 					skipped = append(skipped, fresh.ID)
 				} else {

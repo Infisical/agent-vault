@@ -24,7 +24,7 @@ var policyGetCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vault := resolveVault(cmd)
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -97,7 +97,7 @@ var policySetCmd = &cobra.Command{
 			return fmt.Errorf("invalid policy: %w", err)
 		}
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
@@ -144,7 +144,7 @@ var policyClearCmd = &cobra.Command{
 			}
 		}
 
-		sess, err := loadSession()
+		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
