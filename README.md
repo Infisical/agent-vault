@@ -1,5 +1,9 @@
 <h1 align="center">Agent Vault</h1>
 
+<p align="center">
+  <img src="assets/banner.png" alt="Agent Vault" />
+</p>
+
 <p align="center"><strong>Secure Credential Access for AI Agents</strong></p>
 
 <p align="center">
