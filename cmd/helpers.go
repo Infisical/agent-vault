@@ -20,18 +20,6 @@ import (
 	"golang.org/x/term"
 )
 
-// loadSession loads the client session or returns an error prompting login.
-func loadSession() (*session.ClientSession, error) {
-	sess, err := session.Load()
-	if err != nil {
-		return nil, fmt.Errorf("loading session: %w", err)
-	}
-	if sess == nil {
-		return nil, fmt.Errorf("not logged in, run 'agent-vault login' first")
-	}
-	return sess, nil
-}
-
 const (
 	hostingLocal       = "local"
 	hostingSelfHosting = "self-hosting"
