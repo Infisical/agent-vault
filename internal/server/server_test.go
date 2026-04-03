@@ -4166,3 +4166,123 @@ func TestDirectSessionWithLabel(t *testing.T) {
 		t.Fatalf("expected label 'testing stripe', got %q", storedSess.Label)
 	}
 }
+
+// setupMockStoreWithInactiveUser creates a mock store with an inactive (unverified) user.
+func setupMockStoreWithInactiveUser(t *testing.T, email, password string) *mockStore {
+	t.Helper()
+	ms := setupMockStoreWithUser(t, email, password)
+	// Demote the user to inactive member; add a separate owner so count > 1.
+	ms.users[email].IsActive = false
+	ms.users[email].Role = "member"
+	ms.users["owner@test.com"] = &store.User{
+		ID: "owner-id", Email: "owner@test.com",
+		Role: "owner", IsActive: true,
+	}
+	return ms
+}
+
+func TestResendVerificationSuccess(t *testing.T) {
+	ms := setupMockStoreWithInactiveUser(t, "test@example.com", "password123")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{"email":"test@example.com"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/resend-verification", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["message"] == nil {
+		t.Fatal("expected message in response")
+	}
+
+	// Verify a new verification code was created.
+	if len(ms.emailVerifications) != 1 {
+		t.Fatalf("expected 1 email verification, got %d", len(ms.emailVerifications))
+	}
+}
+
+func TestResendVerificationUnknownEmail(t *testing.T) {
+	ms := setupMockStoreWithInactiveUser(t, "test@example.com", "password123")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	// Unknown email — should return 200 (uniform response, no enumeration).
+	body := `{"email":"unknown@example.com"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/resend-verification", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// No verification code should have been created.
+	if len(ms.emailVerifications) != 0 {
+		t.Fatalf("expected 0 email verifications, got %d", len(ms.emailVerifications))
+	}
+}
+
+func TestResendVerificationActiveUser(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "admin@test.com", "password123")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	// Active user — should return 200 (uniform response, no enumeration).
+	body := `{"email":"admin@test.com"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/resend-verification", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// No verification code should have been created.
+	if len(ms.emailVerifications) != 0 {
+		t.Fatalf("expected 0 email verifications, got %d", len(ms.emailVerifications))
+	}
+}
+
+func TestResendVerificationEmptyEmail(t *testing.T) {
+	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	body := `{"email":""}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/resend-verification", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestResendVerificationTooManyPending(t *testing.T) {
+	ms := setupMockStoreWithInactiveUser(t, "test@example.com", "password123")
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	// Pre-fill 3 pending verifications to hit the limit.
+	for i := 0; i < 3; i++ {
+		ms.emailVerifications = append(ms.emailVerifications, &store.EmailVerification{
+			ID: i + 1, Email: "test@example.com", Code: fmt.Sprintf("%06d", i),
+			Status: "pending", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(15 * time.Minute),
+		})
+	}
+
+	body := `{"email":"test@example.com"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/resend-verification", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	// Too many pending codes — uniform 200 (don't reveal account exists).
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// No new verification should have been created.
+	if len(ms.emailVerifications) != 3 {
+		t.Fatalf("expected 3 email verifications, got %d", len(ms.emailVerifications))
+	}
+}
