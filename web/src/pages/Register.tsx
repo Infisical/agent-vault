@@ -1,4 +1,4 @@
-import { useState, useRef, type FormEvent } from "react";
+import { useState, useRef, useEffect, type FormEvent } from "react";
 import { Link, useLoaderData, useNavigate } from "@tanstack/react-router";
 import { apiFetch } from "../lib/api";
 import Navbar from "../components/Navbar";
@@ -75,6 +75,7 @@ function RegisterForm({ isFirstUser }: { isFirstUser: boolean }) {
   const [submitting, setSubmitting] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
   const [emailSent, setEmailSent] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
 
   const emailRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
@@ -175,6 +176,34 @@ function RegisterForm({ isFirstUser }: { isFirstUser: boolean }) {
     }
   }
 
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = setTimeout(() => setResendCooldown((c) => c - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [resendCooldown]);
+
+  async function handleResend() {
+    if (resendCooldown > 0) return;
+    setFormError("");
+
+    try {
+      const resp = await apiFetch("/v1/auth/resend-verification", {
+        method: "POST",
+        body: JSON.stringify({ email: email.trim() }),
+      });
+      const data = await resp.json();
+
+      if (!resp.ok) {
+        setFormError(data.error || "Failed to resend code.");
+        return;
+      }
+
+      setResendCooldown(60);
+    } catch {
+      setFormError("Network error. Please try again.");
+    }
+  }
+
   if (step === "done") {
     return (
       <div className="flex flex-col items-center text-center">
@@ -244,6 +273,23 @@ function RegisterForm({ isFirstUser }: { isFirstUser: boolean }) {
             {submitting === "verify" ? "Verifying\u2026" : "Verify & Activate"}
           </Button>
         </form>
+
+        <p className="text-center text-sm text-text-muted mt-4">
+          {resendCooldown > 0 ? (
+            <span className="text-text-dim">Code sent. Resend in {resendCooldown}s</span>
+          ) : (
+            <>
+              Didn't receive a code?{" "}
+              <button
+                type="button"
+                onClick={handleResend}
+                className="text-primary font-medium hover:underline bg-transparent border-none cursor-pointer p-0 text-sm"
+              >
+                Resend code
+              </button>
+            </>
+          )}
+        </p>
       </>
     );
   }

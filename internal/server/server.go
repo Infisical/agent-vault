@@ -455,6 +455,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("POST /v1/auth/register", limitBody(s.handleRegister))
 	mux.HandleFunc("POST /v1/auth/verify", limitBody(s.handleVerify))
+	mux.HandleFunc("POST /v1/auth/resend-verification", limitBody(s.handleResendVerification))
 	mux.HandleFunc("POST /v1/auth/forgot-password", limitBody(s.handleForgotPassword))
 	mux.HandleFunc("POST /v1/auth/reset-password", limitBody(s.handleResetPassword))
 
@@ -680,6 +681,46 @@ func (l *verifyRateLimiter) reset(email string) {
 	delete(l.attempts, email)
 }
 
+var errTooManyPendingCodes = errors.New("too many pending verification codes")
+
+// generateAndSendVerificationCode creates a new 6-digit verification code for
+// the given email and sends it via email (or logs to stderr if SMTP is not configured).
+func (s *Server) generateAndSendVerificationCode(ctx context.Context, email string) (bool, error) {
+	// Rate limit verification codes per email.
+	pendingCount, err := s.store.CountPendingEmailVerifications(ctx, email)
+	if err != nil {
+		return false, fmt.Errorf("failed to count pending verifications: %w", err)
+	}
+	if pendingCount >= maxPendingVerifications {
+		return false, errTooManyPendingCodes
+	}
+
+	// Generate 6-digit verification code (uniform distribution via rejection sampling).
+	codeInt, _ := crand.Int(crand.Reader, big.NewInt(1_000_000))
+	code := fmt.Sprintf("%06d", codeInt.Int64())
+
+	_, err = s.store.CreateEmailVerification(ctx, email, code, time.Now().Add(emailVerificationTTL))
+	if err != nil {
+		return false, fmt.Errorf("failed to create verification: %w", err)
+	}
+
+	// Send verification code via email or log to stderr.
+	emailSent := false
+	if s.notifier.Enabled() {
+		body := strings.Replace(verificationCodeEmailHTML, "{{CODE}}", html.EscapeString(code), 1)
+		if err := s.notifier.SendHTMLMail([]string{email}, "Agent Vault verification code", body); err != nil {
+			fmt.Fprintf(os.Stderr, "[agent-vault] Failed to send verification email to %s: %v\n", email, err)
+			fmt.Fprintf(os.Stderr, "[agent-vault] Email verification code for %s: %s\n", email, code)
+		} else {
+			emailSent = true
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "[agent-vault] Email verification code for %s: %s\n", email, code)
+	}
+
+	return emailSent, nil
+}
+
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Email    string `json:"email"`
@@ -749,34 +790,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Rate limit verification codes.
-		pendingCount, _ := s.store.CountPendingEmailVerifications(ctx, req.Email)
-		if pendingCount >= maxPendingVerifications {
+		emailSent, err := s.generateAndSendVerificationCode(ctx, req.Email)
+		if errors.Is(err, errTooManyPendingCodes) {
 			jsonError(w, http.StatusTooManyRequests, "Too many pending verification codes")
 			return
 		}
-
-		// Generate 6-digit verification code.
-		codeInt, _ := crand.Int(crand.Reader, big.NewInt(1_000_000))
-		code := fmt.Sprintf("%06d", codeInt.Int64())
-
-		_, err = s.store.CreateEmailVerification(ctx, req.Email, code, time.Now().Add(emailVerificationTTL))
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "Failed to create verification")
 			return
-		}
-
-		emailSent := false
-		if s.notifier.Enabled() {
-			body := strings.Replace(verificationCodeEmailHTML, "{{CODE}}", html.EscapeString(code), 1)
-			if err := s.notifier.SendHTMLMail([]string{req.Email}, "Agent Vault verification code", body); err != nil {
-				fmt.Fprintf(os.Stderr, "[agent-vault] Failed to send verification email to %s: %v\n", req.Email, err)
-				fmt.Fprintf(os.Stderr, "[agent-vault] Email verification code for %s: %s\n", req.Email, code)
-			} else {
-				emailSent = true
-			}
-		} else {
-			fmt.Fprintf(os.Stderr, "[agent-vault] Email verification code for %s: %s\n", req.Email, code)
 		}
 
 		msg := "Account updated. Ask your Agent Vault instance owner for the verification code."
@@ -844,35 +865,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rate limit verification codes.
-	pendingCount, _ := s.store.CountPendingEmailVerifications(ctx, req.Email)
-	if pendingCount >= maxPendingVerifications {
+	emailSent, err := s.generateAndSendVerificationCode(ctx, req.Email)
+	if errors.Is(err, errTooManyPendingCodes) {
 		jsonError(w, http.StatusTooManyRequests, "Too many pending verification codes")
 		return
 	}
-
-	// Generate 6-digit verification code (uniform distribution via rejection sampling).
-	codeInt, _ := crand.Int(crand.Reader, big.NewInt(1_000_000))
-	code := fmt.Sprintf("%06d", codeInt.Int64())
-
-	_, err = s.store.CreateEmailVerification(ctx, req.Email, code, time.Now().Add(emailVerificationTTL))
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create verification")
 		return
-	}
-
-	// Send verification code via email or log to stderr.
-	emailSent := false
-	if s.notifier.Enabled() {
-		body := strings.Replace(verificationCodeEmailHTML, "{{CODE}}", html.EscapeString(code), 1)
-		if err := s.notifier.SendHTMLMail([]string{req.Email}, "Agent Vault verification code", body); err != nil {
-			fmt.Fprintf(os.Stderr, "[agent-vault] Failed to send verification email to %s: %v\n", req.Email, err)
-			fmt.Fprintf(os.Stderr, "[agent-vault] Email verification code for %s: %s\n", req.Email, code)
-		} else {
-			emailSent = true
-		}
-	} else {
-		fmt.Fprintf(os.Stderr, "[agent-vault] Email verification code for %s: %s\n", req.Email, code)
 	}
 
 	msg := "Account created. Ask your Agent Vault instance owner for the verification code."
@@ -957,6 +957,49 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		"authenticated": true,
 		"message":       "Account verified.",
 	})
+}
+
+func (s *Server) handleResendVerification(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" {
+		jsonError(w, http.StatusBadRequest, "Email is required")
+		return
+	}
+
+	// Rate limit by IP.
+	ip := clientIP(r)
+	if !resendVerifyLimiter.allow(ip) {
+		jsonError(w, http.StatusTooManyRequests, "Too many requests, try again later")
+		return
+	}
+
+	ctx := r.Context()
+
+	// Uniform response to prevent email enumeration.
+	uniformResponse := func(emailSent bool) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"message":    "If an unverified account exists for this email, a new verification code has been sent.",
+			"email_sent": emailSent,
+		})
+	}
+
+	user, err := s.store.GetUserByEmail(ctx, req.Email)
+	if err != nil || user == nil || user.IsActive {
+		uniformResponse(false)
+		return
+	}
+
+	emailSent, err := s.generateAndSendVerificationCode(ctx, req.Email)
+	if err != nil {
+		// Don't reveal whether the email exists — return uniform response.
+		uniformResponse(false)
+		return
+	}
+
+	uniformResponse(emailSent)
 }
 
 const passwordResetTTL = 15 * time.Minute
@@ -1542,6 +1585,7 @@ var (
 	loginEmailLimiter = newSlidingWindowLimiter(loginRateWindow, loginRateMax, 10000)
 	registerLimiter          = newSlidingWindowLimiter(loginRateWindow, 5, 10000) // 5 registrations per IP per 5 min
 	forgotPasswordLimiter    = newSlidingWindowLimiter(loginRateWindow, 5, 10000) // 5 forgot-password requests per IP per 5 min
+	resendVerifyLimiter      = newSlidingWindowLimiter(loginRateWindow, 5, 10000) // 5 resend-verification requests per IP per 5 min
 	vaultInviteAcceptLimiter = newSlidingWindowLimiter(loginRateWindow, 10, 10000) // 10 invite accepts per IP per 5 min
 	resetVerifyLimiter    = &verifyRateLimiter{attempts: make(map[string]int), maxKeys: maxVerifyKeys}
 )
