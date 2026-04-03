@@ -23,7 +23,8 @@
           "quickstart/codex",
           "quickstart/openclaw",
           "quickstart/nanoclaw",
-          "quickstart/hermes-agent"
+          "quickstart/hermes-agent",
+          "quickstart/custom-agent"
         ]
       },
       {

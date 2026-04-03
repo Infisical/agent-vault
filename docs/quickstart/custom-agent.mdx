@@ -1,0 +1,116 @@
+---
+title: "Custom Agent"
+description: "Connect any HTTP-capable agent or script to Agent Vault using environment variables and the proxy API."
+---
+
+## Prerequisites
+
+- A running Agent Vault instance ([see installation guide](/installation))
+- An agent or script that can make HTTP requests
+
+## Quick start
+
+Log in to your Agent Vault instance:
+
+```bash
+agent-vault login
+```
+
+Create a direct-connect session to get the environment variables your agent needs:
+
+```bash
+agent-vault vault agent invite create --direct
+```
+
+This prints an `export` block:
+
+```bash
+export AGENT_VAULT_ADDR="http://127.0.0.1:14321"
+export AGENT_VAULT_SESSION_TOKEN="..."
+export AGENT_VAULT_VAULT="default"
+```
+
+Paste these into your agent's environment, then start your agent.
+
+### Target a specific vault
+
+```bash
+agent-vault vault agent invite create --direct --vault myproject
+```
+
+## Try it out
+
+Have your agent make a request through the proxy. The proxy URL format is:
+
+```
+{AGENT_VAULT_ADDR}/proxy/{target_host}/{path}
+```
+
+For example, to call Stripe:
+
+<CodeGroup>
+
+```bash curl
+curl "${AGENT_VAULT_ADDR}/proxy/api.stripe.com/v1/charges?limit=10" \
+  -H "Authorization: Bearer ${AGENT_VAULT_SESSION_TOKEN}"
+```
+
+```python Python
+import os, requests
+
+resp = requests.get(
+    f"{os.environ['AGENT_VAULT_ADDR']}/proxy/api.stripe.com/v1/charges",
+    params={"limit": 10},
+    headers={"Authorization": f"Bearer {os.environ['AGENT_VAULT_SESSION_TOKEN']}"},
+)
+print(resp.json())
+```
+
+```typescript TypeScript
+const resp = await fetch(
+  `${process.env.AGENT_VAULT_ADDR}/proxy/api.stripe.com/v1/charges?limit=10`,
+  { headers: { Authorization: `Bearer ${process.env.AGENT_VAULT_SESSION_TOKEN}` } },
+);
+console.log(await resp.json());
+```
+
+</CodeGroup>
+
+If the service isn't configured yet, Agent Vault returns a **403** with a `proposal_hint`. Your agent can use this to create a [proposal](/learn/proposals) requesting access.
+
+<Note>
+Your agent never sees or handles credentials. Agent Vault strips the session token and injects the real API key before forwarding to the target service.
+</Note>
+
+## Discover available services
+
+Call `/discover` to check which hosts have credentials configured:
+
+```bash
+curl ${AGENT_VAULT_ADDR}/discover \
+  -H "Authorization: Bearer ${AGENT_VAULT_SESSION_TOKEN}"
+```
+
+```json Response
+{
+  "vault": "default",
+  "proxy_url": "http://127.0.0.1:14321/proxy",
+  "services": [
+    { "host": "api.stripe.com", "description": "Stripe API" }
+  ],
+  "available_credentials": ["STRIPE_KEY"]
+}
+```
+
+Requests to hosts not in this list should go direct, not through the proxy.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Connect a custom agent" icon="plug" href="/guides/connect-custom-agent">
+    Full guide with error handling, proposals, and persistent agents.
+  </Card>
+  <Card title="Agent protocol" icon="code" href="/agents/protocol">
+    HTTP reference for sessions, discovery, proxy, and proposals.
+  </Card>
+</CardGroup>
