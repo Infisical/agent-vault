@@ -124,7 +124,7 @@ export default function SettingsTab() {
           <p className="text-sm text-text-muted mb-4">
             {isDefault
               ? "The default vault cannot be deleted."
-              : "Permanently delete this vault, including its policy, credentials, and proposals. This action cannot be undone."}
+              : "Permanently delete this vault, including its services, credentials, and proposals. This action cannot be undone."}
           </p>
           <Button
             variant="secondary"

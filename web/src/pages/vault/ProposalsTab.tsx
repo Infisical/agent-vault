@@ -5,7 +5,7 @@ import Modal from "../../components/Modal";
 import Button from "../../components/Button";
 import Input from "../../components/Input";
 import FormField from "../../components/FormField";
-import ProposalPreview, { parseRules, parseCredentials, type CredentialSlot } from "../../components/ProposalPreview";
+import ProposalPreview, { parseServices, parseCredentials, type CredentialSlot } from "../../components/ProposalPreview";
 import { apiFetch } from "../../lib/api";
 
 interface Proposal {
@@ -13,7 +13,7 @@ interface Proposal {
   status: string;
   message: string;
   user_message?: string;
-  rules_json?: string;
+  services_json?: string;
   credentials_json?: string;
   review_note?: string;
   reviewed_at?: string;
@@ -213,7 +213,7 @@ function ProposalModal({
   onClose: () => void;
   onAction: () => void;
 }) {
-  const rules = parseRules(proposal.rules_json);
+  const services = parseServices(proposal.services_json);
   const credentials = parseCredentials(proposal.credentials_json);
   const isPending = proposal.status === "pending";
 
@@ -223,7 +223,7 @@ function ProposalModal({
     status: proposal.status,
     message: proposal.message,
     user_message: proposal.user_message,
-    rules,
+    services,
     credentials,
     created_at: proposal.created_at,
   };
@@ -393,16 +393,16 @@ function deriveProposalTitle(cs: Proposal): {
   title: string;
   description: string;
 } {
-  let rules: { action: string; host: string; description?: string }[] = [];
+  let services: { action: string; host: string; description?: string }[] = [];
   try {
-    if (cs.rules_json) rules = JSON.parse(cs.rules_json);
+    if (cs.services_json) services = JSON.parse(cs.services_json);
   } catch {
     // ignore
   }
 
-  const setRules = rules.filter((r) => r.action === "set");
-  if (setRules.length === 1) {
-    const r = setRules[0];
+  const setServices = services.filter((r) => r.action === "set");
+  if (setServices.length === 1) {
+    const r = setServices[0];
     return {
       title: r.description
         ? `Connect to ${r.description}`
@@ -410,15 +410,15 @@ function deriveProposalTitle(cs: Proposal): {
       description: cs.user_message || cs.message || "",
     };
   }
-  if (setRules.length > 1) {
+  if (setServices.length > 1) {
     return {
-      title: `Connect to ${setRules.length} services`,
+      title: `Connect to ${setServices.length} services`,
       description: cs.user_message || cs.message || "",
     };
   }
 
   return {
-    title: cs.message || "Policy change",
+    title: cs.message || "Service change",
     description: cs.user_message || "",
   };
 }

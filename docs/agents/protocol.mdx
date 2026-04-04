@@ -99,7 +99,7 @@ Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
 }
 ```
 
-- **`services`** lists the hosts the agent can proxy through Agent Vault (defined by the vault's [policy](/learn/policies)). Requests to any other host go direct.
+- **`services`** lists the hosts the agent can proxy through Agent Vault (defined by the vault's [services](/learn/services)). Requests to any other host go direct.
 - **`available_credentials`** lists [credential](/learn/credentials) key names in the vault (values are never exposed). Agents use these to avoid creating duplicate slots in [proposals](/learn/proposals).
 
 ## Proxy requests
@@ -111,7 +111,7 @@ For hosts returned by `/discover`, the agent routes requests through the Agent V
 Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
 ```
 
-Agent Vault strips the agent's auth header, attaches the real credentials from the vault's policy, and forwards the request over HTTPS.
+Agent Vault strips the agent's auth header, attaches the real credentials from the vault's services, and forwards the request over HTTPS.
 
 <CodeGroup>
 
@@ -132,7 +132,7 @@ amount=2000&currency=usd
 
 ## Propose changes
 
-When an agent needs access to a service that is not in the vault's policy, it creates a [proposal](/learn/proposals). Each proposal bundles rules (host access) and credential slots (credentials the human provides at approval time).
+When an agent needs access to a service that is not in the vault's services, it creates a [proposal](/learn/proposals). Each proposal bundles services (host access) and credential slots (credentials the human provides at approval time).
 
 ```json
 POST {AGENT_VAULT_ADDR}/v1/proposals
@@ -140,7 +140,7 @@ Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
 Content-Type: application/json
 
 {
-  "rules": [
+  "services": [
     {
       "action": "set",
       "host": "api.stripe.com",
@@ -177,7 +177,7 @@ The response includes an `approval_url` that the agent presents to the user:
 The agent then polls `GET /v1/proposals/{id}` until the status changes from `pending` (every 3s for the first 30s, then every 10s). Once `applied`, the agent retries its original request.
 
 <Tip>
-Every credential key referenced in a rule's `auth` config must resolve to either a credential slot in the same proposal or an existing credential in `available_credentials`. Otherwise the request returns 400.
+Every credential key referenced in a service's `auth` config must resolve to either a credential slot in the same proposal or an existing credential in `available_credentials`. Otherwise the request returns 400.
 </Tip>
 
 See [Proposals](/learn/proposals) for the full proposal lifecycle, including storing credentials back and removing access.

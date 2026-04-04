@@ -233,7 +233,7 @@ type VaultRoleOption = "consumer" | "member" | "admin";
 
 const roleDescriptions: Record<VaultRoleOption, string> = {
   consumer: "Proxy requests, discover services, and raise proposals. Recommended for most use cases.",
-  member: "All consumer permissions, plus set/delete credentials, approve proposals, and manage policy.",
+  member: "All consumer permissions, plus set/delete credentials, approve proposals, and manage services.",
   admin: "All member permissions, plus invite users and agents with any role.",
 };
 

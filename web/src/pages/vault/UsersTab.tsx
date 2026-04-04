@@ -407,7 +407,7 @@ function InviteUserButton({
             <FormField
               label="Role"
               helperText={<>{role === "member"
-                ? "Manage credentials, use proxy, approve proposals, and manage policy."
+                ? "Manage credentials, use proxy, approve proposals, and manage services."
                 : "All member permissions, plus invite users and agents with any role."} <a href="https://docs.agent-vault.dev/learn/permissions#vault-roles" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Learn more</a></>}
             >
               <Select

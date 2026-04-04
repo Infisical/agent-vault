@@ -83,23 +83,23 @@ type User struct {
 	UpdatedAt    time.Time
 }
 
-// BrokerConfig holds the brokering rules for a vault.
+// BrokerConfig holds the brokering services for a vault.
 type BrokerConfig struct {
-	ID        string
-	VaultID   string
-	RulesJSON string // JSON-encoded []broker.Rule
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID          string
+	VaultID     string
+	ServicesJSON string // JSON-encoded []broker.Service
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
-// Proposal represents a proposed set of changes (rules + credential slots)
+// Proposal represents a proposed set of changes (services + credential slots)
 // created by an agent, pending human approval.
 type Proposal struct {
 	ID                     int // sequential per vault (1, 2, 3, ...)
 	VaultID                string
 	SessionID              string
 	Status                 string
-	RulesJSON              string
+	ServicesJSON           string
 	CredentialsJSON        string
 	Message                string
 	UserMessage            string // human-facing explanation shown on the browser approval page
@@ -267,7 +267,7 @@ type Store interface {
 	DeleteSession(ctx context.Context, id string) error
 
 	// Broker configs
-	SetBrokerConfig(ctx context.Context, vaultID string, rulesJSON string) (*BrokerConfig, error)
+	SetBrokerConfig(ctx context.Context, vaultID string, servicesJSON string) (*BrokerConfig, error)
 	GetBrokerConfig(ctx context.Context, vaultID string) (*BrokerConfig, error)
 
 	// Master key
@@ -275,7 +275,7 @@ type Store interface {
 	SetMasterKeyRecord(ctx context.Context, record *MasterKeyRecord) error
 
 	// Proposals
-	CreateProposal(ctx context.Context, vaultID, sessionID, rulesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error)
+	CreateProposal(ctx context.Context, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error)
 	GetProposal(ctx context.Context, vaultID string, id int) (*Proposal, error)
 	GetProposalByApprovalToken(ctx context.Context, token string) (*Proposal, error)
 	ListProposals(ctx context.Context, vaultID, status string) ([]Proposal, error)
@@ -283,7 +283,7 @@ type Store interface {
 	CountPendingProposals(ctx context.Context, vaultID string) (int, error)
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
 	GetProposalCredentials(ctx context.Context, vaultID string, proposalID int) (map[string]EncryptedCredential, error)
-	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedRulesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string) error
+	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string) error
 
 	// Invites
 	CreateInvite(ctx context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time, sessionTTLSeconds int, sessionLabel string) (*Invite, error)

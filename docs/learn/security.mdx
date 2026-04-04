@@ -91,7 +91,7 @@ Agent Vault resolves hostnames to IP addresses, validates every resolved IP agai
 
 ## Transport security
 
-All proxied requests are forwarded over **HTTPS**, regardless of how the agent connects to Agent Vault locally. The agent's `Authorization` header (containing its Agent Vault session token) is stripped before forwarding; real credentials are injected server-side based on the vault's [policy](/learn/policies).
+All proxied requests are forwarded over **HTTPS**, regardless of how the agent connects to Agent Vault locally. The agent's `Authorization` header (containing its Agent Vault session token) is stripped before forwarding; real credentials are injected server-side based on the vault's [services](/learn/services).
 
 This means:
 - Agents authenticate to Agent Vault with a session token that grants no direct access to credentials.

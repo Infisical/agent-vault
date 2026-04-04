@@ -1,11 +1,11 @@
 ---
-title: "Policies"
+title: "Services"
 description: "Define which services your agents can access and how credentials are attached."
 ---
 
-A `Policy` is a per-[vault](/learn/vaults) set of rules that defines which hosts [agents](/agents/overview) can reach through the proxy and how Agent Vault authenticates to each one. When an agent makes a proxied request, Agent Vault matches the target host against the policy, attaches the configured [credentials](/learn/credentials), and forwards the request. If no rule matches, Agent Vault returns `403`.
+A `Service` is a per-[vault](/learn/vaults) configuration that defines which hosts [agents](/agents/overview) can reach through the proxy and how Agent Vault authenticates to each one. When an agent makes a proxied request, Agent Vault matches the target host against the vault's services, attaches the configured [credentials](/learn/credentials), and forwards the request. If no service matches, Agent Vault returns `403`.
 
-Each policy rule contains:
+Each service contains:
 
 - **Host**: The target hostname. Supports exact match (e.g. `api.stripe.com`) or wildcard patterns (e.g. `*.github.com`).
 - **Auth config**: How Agent Vault authenticates to the host. Four types are supported: `bearer`, `basic`, `api-key`, and `custom`.
@@ -13,21 +13,21 @@ Each policy rule contains:
 
 <Tip>
   The `/discover` endpoint returns the list of hosts and descriptions from the
-  vault's policy. Agents use this to know which services are already available
+  vault's services. Agents use this to know which services are already available
   before raising a [proposal](/learn/proposals).
 </Tip>
 
-Similar to [credentials](/learn/credentials), a policy can be configured in two ways:
+Similar to [credentials](/learn/credentials), services can be configured in two ways:
 
-- **Automatically**: As agents do their work, they can raise [proposals](/learn/proposals) to add or modify policy rules. You review each proposal, provide any required [credentials](/learn/credentials), and approve. This is the recommended workflow for working with Agent Vault.
-- **Manually**: You can set the policy directly via the CLI by applying a YAML file or by using the interactive builder. This can be useful for pre-configuring a vault before inviting agents.
+- **Automatically**: As agents do their work, they can raise [proposals](/learn/proposals) to add or modify services. You review each proposal, provide any required [credentials](/learn/credentials), and approve. This is the recommended workflow for working with Agent Vault.
+- **Manually**: You can set services directly via the CLI by applying a YAML file or by using the interactive builder. This can be useful for pre-configuring a vault before inviting agents.
 
-## Policy structure
+## Service structure
 
-A policy is a YAML file with a list of rules. Here's what a single rule looks like:
+Services are defined in a YAML file. Here's what a single service looks like:
 
-```yaml stripe-policy.yaml
-rules:
+```yaml stripe-services.yaml
+services:
   - host: api.stripe.com
     description: Stripe API
     auth:
@@ -36,21 +36,21 @@ rules:
 ```
 
 ```bash
-agent-vault policy set -f stripe-policy.yaml --vault my-vault
+agent-vault service set -f stripe-services.yaml --vault my-vault
 ```
 
-The `host` tells Agent Vault which requests this rule applies to. The `auth` block tells Agent Vault how to authenticate, referencing [credential](/learn/credentials) keys by name (not the actual credential values). The following section covers all four auth types.
+The `host` tells Agent Vault which requests this service applies to. The `auth` block tells Agent Vault how to authenticate, referencing [credential](/learn/credentials) keys by name (not the actual credential values). The following section covers all four auth types.
 
 ## Auth types
 
-Every rule must include an `auth` config that tells Agent Vault how to authenticate to the target host. The `auth` config references [credential](/learn/credentials) key names (not the actual credential values) stored in the vault.
+Every service must include an `auth` config that tells Agent Vault how to authenticate to the target host. The `auth` config references [credential](/learn/credentials) key names (not the actual credential values) stored in the vault.
 
 ### Bearer
 
 Attaches an `Authorization: Bearer <token>` header. The `token` field references a credential key.
 
 ```yaml
-rules:
+services:
   - host: api.stripe.com
     description: Stripe API
     auth:
@@ -65,7 +65,7 @@ Common services: Stripe, GitHub, OpenAI.
 Attaches an `Authorization: Basic <base64>` header using HTTP Basic authentication. The `username` field is required; `password` is optional (defaults to empty).
 
 ```yaml
-rules:
+services:
   - host: api.ashbyhq.com
     description: Ashby ATS API
     auth:
@@ -76,7 +76,7 @@ rules:
 With a password:
 
 ```yaml
-rules:
+services:
   - host: yoursite.atlassian.net
     description: Jira API
     auth:
@@ -90,7 +90,7 @@ rules:
 Attaches a credential value to a named header with an optional prefix. The `header` field defaults to `Authorization` if omitted.
 
 ```yaml
-rules:
+services:
   - host: api.anthropic.com
     description: Anthropic API
     auth:
@@ -102,7 +102,7 @@ rules:
 With a prefix:
 
 ```yaml
-rules:
+services:
   - host: api.example.com
     auth:
       type: api-key
@@ -116,7 +116,7 @@ rules:
 Freeform header templates with `{{ SECRET }}` placeholders. Each placeholder is resolved to the corresponding credential at proxy time. Use this when none of the typed auth methods fit.
 
 ```yaml
-rules:
+services:
   - host: api.acme.internal
     description: Internal ACME service
     auth:
@@ -142,10 +142,10 @@ Agent Vault supports two host matching modes:
 
 ## Example
 
-A policy can define access to multiple services with different auth types:
+A vault can define multiple services with different auth types:
 
-```yaml policy.yaml
-rules:
+```yaml services.yaml
+services:
   - host: api.stripe.com
     description: Stripe API
     auth:
@@ -174,66 +174,66 @@ rules:
 ```
 
 ```bash
-agent-vault policy set -f policy.yaml --vault my-vault
+agent-vault service set -f services.yaml --vault my-vault
 ```
 
 Any [agent](/agents/overview) scoped to the [vault](/learn/vaults) named `my-vault` can now proxy requests to these hosts, and Agent Vault attaches the real [credentials](/learn/credentials) at request time.
 
-## Managing policies
+## Managing services
 
 ### Set from a file
 
 ```bash
-agent-vault policy set -f policy.yaml --vault my-vault
+agent-vault service set -f services.yaml --vault my-vault
 ```
 
-Replaces the entire policy with the contents of the file. This is idempotent, running it twice with the same file produces the same result.
+Replaces the entire service configuration with the contents of the file. This is idempotent, running it twice with the same file produces the same result.
 
 ### Set interactively
 
 ```bash
-agent-vault policy set --vault my-vault
+agent-vault service set --vault my-vault
 ```
 
-Walks you through adding rules, auth configs, and credential references one at a time. Requires a TTY (won't work in scripts).
+Walks you through adding services, auth configs, and credential references one at a time. Requires a TTY (won't work in scripts).
 
-### View the current policy
+### View current services
 
 ```bash
-agent-vault policy get --vault my-vault
+agent-vault service list --vault my-vault
 ```
 
-Prints the active policy as YAML. If no policy is set, the output is empty.
+Prints the active services as YAML. If no services are configured, the output is empty.
 
-### Clear the policy
+### Clear all services
 
 ```bash
-agent-vault policy clear --vault my-vault
+agent-vault service clear --vault my-vault
 ```
 
-Removes all rules. Agents scoped to this [vault](/learn/vaults) will get `403` on every proxy request until a new policy is set. Prompts for confirmation unless you pass `--yes`.
+Removes all services. Agents scoped to this [vault](/learn/vaults) will get `403` on every proxy request until new services are configured. Prompts for confirmation unless you pass `--yes`.
 
 <Tip>
-  The `--vault` flag defaults to `default` on all policy commands. You only need
+  The `--vault` flag defaults to `default` on all service commands. You only need
   to specify it when working with additional vaults.
 </Tip>
 
 <AccordionGroup>
-  <Accordion title="How proposals modify policies">
-    Agents don't edit policy files directly. Instead, they propose changes
-    through [proposals](/learn/proposals), bundles of rule and [credential](/learn/credentials)
+  <Accordion title="How proposals modify services">
+    Agents don't edit service configurations directly. Instead, they propose changes
+    through [proposals](/learn/proposals), bundles of service and [credential](/learn/credentials)
     modifications that a human reviews and approves.
 
-    Each rule in a proposal has an `action` field:
+    Each service in a proposal has an `action` field:
 
-    - **`set`**: Idempotent upsert. Adds the rule if the host doesn't exist, or
-      replaces the existing rule for that host. Requires `host` and `auth`.
-    - **`delete`**: Removes the rule matching the given host. Only requires
+    - **`set`**: Idempotent upsert. Adds the service if the host doesn't exist, or
+      replaces the existing service for that host. Requires `host` and `auth`.
+    - **`delete`**: Removes the service matching the given host. Only requires
       `host`.
 
-    When you approve a proposal, Agent Vault atomically merges all rule changes into
-    the vault's policy in a single transaction. Set rules are upserted by host,
-    delete rules remove matching entries.
+    When you approve a proposal, Agent Vault atomically merges all service changes into
+    the vault's configuration in a single transaction. Set services are upserted by host,
+    delete services remove matching entries.
 
     This means agents can request access to new services without you manually
     editing YAML files. You just review and click "Allow" in the browser
@@ -242,7 +242,7 @@ Removes all rules. Agents scoped to this [vault](/learn/vaults) will get `403` o
   </Accordion>
 
   <Accordion title="What happens when an agent hits an unknown host">
-    When a proxy request targets a host not in the policy, Agent Vault returns `403`
+    When a proxy request targets a host not covered by any service, Agent Vault returns `403`
     with a `proposal_hint` in the response body. The hint includes the denied
     host and the endpoint to create a proposal.
 

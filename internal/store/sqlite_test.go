@@ -26,8 +26,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 30 {
-		t.Fatalf("expected migration version 30, got %d", version)
+	if version != 31 {
+		t.Fatalf("expected migration version 31, got %d", version)
 	}
 }
 
@@ -466,21 +466,21 @@ func TestBrokerConfigCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetBrokerConfig: %v", err)
 	}
-	if bc.RulesJSON != "[]" {
-		t.Fatalf("expected empty rules '[]', got %q", bc.RulesJSON)
+	if bc.ServicesJSON != "[]" {
+		t.Fatalf("expected empty services '[]', got %q", bc.ServicesJSON)
 	}
 	if bc.VaultID != ns.ID {
 		t.Fatalf("expected vault ID %s, got %s", ns.ID, bc.VaultID)
 	}
 
-	// Set rules.
-	rulesJSON := `[{"host":"*.github.com","auth":{"type":"bearer","token":"token"}}]`
-	updated, err := s.SetBrokerConfig(ctx, ns.ID, rulesJSON)
+	// Set services.
+	servicesJSON := `[{"host":"*.github.com","auth":{"type":"bearer","token":"token"}}]`
+	updated, err := s.SetBrokerConfig(ctx, ns.ID, servicesJSON)
 	if err != nil {
 		t.Fatalf("SetBrokerConfig: %v", err)
 	}
-	if updated.RulesJSON != rulesJSON {
-		t.Fatalf("expected rules %q, got %q", rulesJSON, updated.RulesJSON)
+	if updated.ServicesJSON != servicesJSON {
+		t.Fatalf("expected services %q, got %q", servicesJSON, updated.ServicesJSON)
 	}
 
 	// Get updated config.
@@ -488,8 +488,8 @@ func TestBrokerConfigCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetBrokerConfig after set: %v", err)
 	}
-	if got.RulesJSON != rulesJSON {
-		t.Fatalf("expected rules %q, got %q", rulesJSON, got.RulesJSON)
+	if got.ServicesJSON != servicesJSON {
+		t.Fatalf("expected services %q, got %q", servicesJSON, got.ServicesJSON)
 	}
 
 	// Clear (set back to empty).
@@ -497,8 +497,8 @@ func TestBrokerConfigCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetBrokerConfig (clear): %v", err)
 	}
-	if cleared.RulesJSON != "[]" {
-		t.Fatalf("expected cleared rules '[]', got %q", cleared.RulesJSON)
+	if cleared.ServicesJSON != "[]" {
+		t.Fatalf("expected cleared services '[]', got %q", cleared.ServicesJSON)
 	}
 }
 
@@ -507,8 +507,8 @@ func TestBrokerConfigCascadeDelete(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.CreateVault(ctx, "cascade-broker")
-	rulesJSON := `[{"host":"api.example.com","auth":{"type":"custom","headers":{"X-Key":"{{ key }}"}}}]`
-	s.SetBrokerConfig(ctx, ns.ID, rulesJSON)
+	servicesJSON := `[{"host":"api.example.com","auth":{"type":"custom","headers":{"X-Key":"{{ key }}"}}}]`
+	s.SetBrokerConfig(ctx, ns.ID, servicesJSON)
 
 	// Delete the vault — broker config should be cascade-deleted.
 	if err := s.DeleteVault(ctx, "cascade-broker"); err != nil {
@@ -536,8 +536,8 @@ func TestRootVaultHasBrokerConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetBrokerConfig for root: %v", err)
 	}
-	if bc.RulesJSON != "[]" {
-		t.Fatalf("expected empty rules for root, got %q", bc.RulesJSON)
+	if bc.ServicesJSON != "[]" {
+		t.Fatalf("expected empty services for root, got %q", bc.ServicesJSON)
 	}
 }
 
@@ -552,10 +552,10 @@ func TestProposalCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rulesJSON := `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
+	servicesJSON := `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
 	credentialsJSON := `[{"key":"STRIPE_KEY","description":"Stripe credential key"}]`
 
-	cs, err := s.CreateProposal(ctx, ns.ID, "session-1", rulesJSON, credentialsJSON, "need stripe", "", nil)
+	cs, err := s.CreateProposal(ctx, ns.ID, "session-1", servicesJSON, credentialsJSON, "need stripe", "", nil)
 	if err != nil {
 		t.Fatalf("CreateProposal: %v", err)
 	}
@@ -776,12 +776,12 @@ func TestApplyProposal(t *testing.T) {
 		`[{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`,
 		`[{"key":"STRIPE_KEY"}]`, "apply me", "", nil)
 
-	mergedRules := `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
+	mergedServices := `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
 	creds := map[string]EncryptedCredential{
 		"STRIPE_KEY": {Ciphertext: []byte("real-enc"), Nonce: []byte("real-nonce")},
 	}
 
-	err := s.ApplyProposal(ctx, ns.ID, 1, mergedRules, creds, nil)
+	err := s.ApplyProposal(ctx, ns.ID, 1, mergedServices, creds, nil)
 	if err != nil {
 		t.Fatalf("ApplyProposal: %v", err)
 	}
@@ -797,8 +797,8 @@ func TestApplyProposal(t *testing.T) {
 
 	// Verify broker config updated.
 	bc, _ := s.GetBrokerConfig(ctx, ns.ID)
-	if bc.RulesJSON != mergedRules {
-		t.Fatalf("expected rules %q, got %q", mergedRules, bc.RulesJSON)
+	if bc.ServicesJSON != mergedServices {
+		t.Fatalf("expected services %q, got %q", mergedServices, bc.ServicesJSON)
 	}
 
 	// Verify credential stored.
@@ -825,12 +825,12 @@ func TestApplyProposalWithCredentialDeletion(t *testing.T) {
 		`[{"action":"set","host":"example.com","auth":{"type":"custom","headers":{"X":"v"}}}]`,
 		`[{"action":"set","key":"new_key"}]`, "add and delete", "", nil)
 
-	mergedRules := `[{"host":"example.com","auth":{"type":"custom","headers":{"X":"v"}}}]`
+	mergedServices := `[{"host":"example.com","auth":{"type":"custom","headers":{"X":"v"}}}]`
 	creds := map[string]EncryptedCredential{
 		"new_key": {Ciphertext: []byte("new-enc"), Nonce: []byte("new-nonce")},
 	}
 
-	err := s.ApplyProposal(ctx, ns.ID, 1, mergedRules, creds, []string{"old_key"})
+	err := s.ApplyProposal(ctx, ns.ID, 1, mergedServices, creds, []string{"old_key"})
 	if err != nil {
 		t.Fatalf("ApplyProposal with delete: %v", err)
 	}

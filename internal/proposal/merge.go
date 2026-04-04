@@ -6,17 +6,17 @@ import (
 	"github.com/Infisical/agent-vault/internal/broker"
 )
 
-// MergeRules applies proposed rule changes to existing rules.
-// Set-action rules upsert (add or replace); delete-action rules remove.
+// MergeServices applies proposed service changes to existing services.
+// Set-action services upsert (add or replace); delete-action services remove.
 // Returns the merged slice and a list of warnings for no-op operations.
-func MergeRules(existing []broker.Rule, proposed []Rule) ([]broker.Rule, []string) {
-	// Index existing rules by host for O(1) lookup.
+func MergeServices(existing []broker.Service, proposed []Service) ([]broker.Service, []string) {
+	// Index existing services by host for O(1) lookup.
 	hostIndex := make(map[string]int, len(existing))
-	for i, r := range existing {
-		hostIndex[r.Host] = i
+	for i, s := range existing {
+		hostIndex[s.Host] = i
 	}
 
-	merged := make([]broker.Rule, len(existing))
+	merged := make([]broker.Service, len(existing))
 	copy(merged, existing)
 
 	// Track which indices to remove (from delete actions).
@@ -35,24 +35,24 @@ func MergeRules(existing []broker.Rule, proposed []Rule) ([]broker.Rule, []strin
 			delete(hostIndex, p.Host)
 
 		default: // ActionSet: upsert
-			toBrokerRule := toBrokerRule(p)
+			svc := toBrokerService(p)
 			if idx, exists := hostIndex[p.Host]; exists {
-				// Replace existing rule in place.
-				merged[idx] = toBrokerRule
+				// Replace existing service in place.
+				merged[idx] = svc
 			} else {
-				// Append new rule.
+				// Append new service.
 				hostIndex[p.Host] = len(merged)
-				merged = append(merged, toBrokerRule)
+				merged = append(merged, svc)
 			}
 		}
 	}
 
-	// Remove deleted rules (iterate in reverse-stable order).
+	// Remove deleted services (iterate in reverse-stable order).
 	if len(removeSet) > 0 {
-		result := make([]broker.Rule, 0, len(merged)-len(removeSet))
-		for i, r := range merged {
+		result := make([]broker.Service, 0, len(merged)-len(removeSet))
+		for i, s := range merged {
 			if !removeSet[i] {
-				result = append(result, r)
+				result = append(result, s)
 			}
 		}
 		merged = result
@@ -61,18 +61,18 @@ func MergeRules(existing []broker.Rule, proposed []Rule) ([]broker.Rule, []strin
 	return merged, warnings
 }
 
-func toBrokerRule(p Rule) broker.Rule {
+func toBrokerService(p Service) broker.Service {
 	var desc *string
 	if p.Description != "" {
 		d := p.Description
 		desc = &d
 	}
-	rule := broker.Rule{
+	svc := broker.Service{
 		Host:        p.Host,
 		Description: desc,
 	}
 	if p.Auth != nil {
-		rule.Auth = *p.Auth
+		svc.Auth = *p.Auth
 	}
-	return rule
+	return svc
 }

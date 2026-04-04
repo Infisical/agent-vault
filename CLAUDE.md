@@ -19,8 +19,8 @@ For frontend-only development with hot reload: `make web-dev` (Vite dev server o
   - `web/src/pages/` -- page components (e.g. `UserInvite.tsx`, `ProposalApprove.tsx`)
   - `web/src/styles/` -- shared CSS (theme variables)
 - `internal/` -- business logic
-  - `internal/broker/` -- broker configuration types (Rule, Auth), validation, host matching, auth resolution
-  - `internal/proposal/` -- proposal types, validation, rule merge logic
+  - `internal/broker/` -- broker configuration types (Service, Auth), validation, host matching, auth resolution
+  - `internal/proposal/` -- proposal types, validation, service merge logic
   - `internal/notify/` -- SMTP email notification support (config loading, Notifier, SendMail)
   - `internal/pidfile/` -- PID file management for detached server mode
   - `internal/oauth/` -- OAuth/OIDC provider interface and implementations (Google); JWT/JWKS validation
@@ -79,13 +79,13 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault owner vault list` -- list all vaults
   - `agent-vault owner vault join <name>` -- join a vault as admin (for recovering orphaned vaults)
   - `agent-vault owner vault remove <name>` -- remove a vault
-- `agent-vault policy [--vault] [get|set|clear]` -- manage policies per vault
-  - `agent-vault policy get` -- print policy as YAML
-  - `agent-vault policy set` -- interactive policy builder (prompts for rules, auth config, credentials; requires TTY)
-  - `agent-vault policy set -f <file>` -- replace policy from YAML file
-  - `agent-vault policy clear` -- remove policy (prompts for confirmation; use `--yes` to skip)
+- `agent-vault service [--vault] [list|set|clear]` -- manage services per vault
+  - `agent-vault service list` -- list configured services as YAML
+  - `agent-vault service set` -- interactive service builder (prompts for services, auth config, credentials; requires TTY)
+  - `agent-vault service set -f <file>` -- replace services from YAML file
+  - `agent-vault service clear` -- remove all services (prompts for confirmation; use `--yes` to skip)
 - `agent-vault vault credentials [list|set|delete]` -- manage credentials (alias: `creds`)
-- `agent-vault proposal [--vault] [list|show|approve|reject|review]` -- manage proposals (proposed policy/credential changes)
+- `agent-vault proposal [--vault] [list|show|approve|reject|review]` -- manage proposals (proposed service/credential changes)
   - `agent-vault proposal list [--status pending]` -- list proposals for vault
   - `agent-vault proposal show <number>` -- show proposal details
   - `agent-vault proposal approve <number> [KEY=VALUE ...]` -- approve and apply (requires active login session; prompts for missing credentials)
@@ -111,7 +111,7 @@ Agent Vault requires two things before it becomes operational: a **master passwo
 The server exposes a generic HTTP proxy at `/proxy/{target_host}/{path}[?query]`.
 
 - Agents authenticate with `Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}` (scoped sessions only)
-- Agent Vault validates the session, matches the target host against broker rules, resolves auth config into headers, strips the agent's auth header, injects credentials, and forwards to `https://{target_host}/{path}`
+- Agent Vault validates the session, matches the target host against broker services, resolves auth config into headers, strips the agent's auth header, injects credentials, and forwards to `https://{target_host}/{path}`
 - Environment variables injected by `agent-vault vault run`: `AGENT_VAULT_ADDR` (server base URL), `AGENT_VAULT_SESSION_TOKEN`, `AGENT_VAULT_VAULT`
 
 ## Discovery Endpoint
@@ -120,16 +120,16 @@ The server exposes a generic HTTP proxy at `/proxy/{target_host}/{path}[?query]`
 
 ## Proposal API
 
-Proposals let agents propose policy and credential changes via HTTP. A proposal bundles proposed rules and credential slots; a human reviews and approves via CLI or browser. Proposals use sequential integer IDs scoped per vault (like GitHub PR numbers).
+Proposals let agents propose service and credential changes via HTTP. A proposal bundles proposed services and credential slots; a human reviews and approves via CLI or browser. Proposals use sequential integer IDs scoped per vault (like GitHub PR numbers).
 
-Each rule and credential slot has an `action` field: `"set"` (idempotent upsert, add or replace) or `"delete"` (remove existing). Delete-action rules only need a `host`; delete-action credentials only need a `key`.
+Each service and credential slot has an `action` field: `"set"` (idempotent upsert, add or replace) or `"delete"` (remove existing). Delete-action services only need a `host`; delete-action credentials only need a `key`.
 
-### Broker Rule Structure
+### Broker Service Structure
 
-Each broker rule specifies a host and an `auth` configuration that defines how Agent Vault authenticates to that host:
+Each broker service specifies a host and an `auth` configuration that defines how Agent Vault authenticates to that host:
 
 ```go
-type Rule struct {
+type Service struct {
     Host        string  `yaml:"host" json:"host"`
     Description *string `yaml:"description,omitempty" json:"description"`
     Auth        Auth    `yaml:"auth" json:"auth"`
@@ -149,12 +149,12 @@ type Auth struct {
 
 Auth types: `bearer` (Token field references a credential), `basic` (Username + optional Password credential keys), `api-key` (Key field references a credential, injected into Header with optional Prefix), `custom` (freeform header templates with `{{ SECRET }}` placeholders).
 
-### Proposal Rule Structure
+### Proposal Service Structure
 
-Proposal rules use the same auth config with an action field:
+Proposal services use the same auth config with an action field:
 
 ```go
-type Rule struct {
+type Service struct {
     Action      Action       `json:"action"`       // "set" or "delete"
     Host        string       `json:"host"`
     Description string       `json:"description,omitempty"`
@@ -162,14 +162,16 @@ type Rule struct {
 }
 ```
 
-- `POST /v1/proposals` -- create a proposal (scoped session only, max 20 pending per vault); every credential key referenced in set-action rule auth configs must resolve to either a set-action credential slot or an existing credential in the vault (400 otherwise). Accepts optional `user_message` (human-facing explanation for the browser approval page) and `obtain_instructions` on credential slots (step-by-step text for obtaining the credential). Response includes `approval_url`, a browser link the agent presents to the user for one-click approval.
+- `POST /v1/proposals` -- create a proposal (scoped session only, max 20 pending per vault); every credential key referenced in set-action service auth configs must resolve to either a set-action credential slot or an existing credential in the vault (400 otherwise). Accepts optional `user_message` (human-facing explanation for the browser approval page) and `obtain_instructions` on credential slots (step-by-step text for obtaining the credential). Response includes `approval_url`, a browser link the agent presents to the user for one-click approval.
 - `GET /v1/proposals/{id}` -- get proposal status (scoped session, own vault only)
 - `GET /v1/proposals?status=pending` -- list proposals (scoped session)
 - `POST /v1/admin/proposals/{id}/approve` -- approve and apply a proposal (requires vault access); accepts `{ "vault": "default", "credentials": {"key": "value"} }` with human-provided credential values
 - `POST /v1/admin/proposals/{id}/reject` -- reject a proposal (requires vault access); accepts `{ "vault": "default", "reason": "..." }`
 - Proxy 403 responses include a `proposal_hint` field with the denied host and endpoint to create a proposal
 
-Proposal states: `pending`, `applied`, `rejected`, or `expired` (7-day TTL). Approval atomically merges rules into the broker config, upserts/deletes credentials in one transaction. CLI proposal commands (`approve`, `reject`, `review`) communicate with the running server via these admin endpoints, they require an active login session (`agent-vault login`).
+Proposal states: `pending`, `applied`, `rejected`, or `expired` (7-day TTL). Approval atomically merges services into the broker config, upserts/deletes credentials in one transaction. CLI proposal commands (`approve`, `reject`, `review`) communicate with the running server via these admin endpoints, they require an active login session (`agent-vault login`).
+
+- `GET /v1/service-catalog` -- returns list of built-in service templates (no auth required)
 
 ### Browser-Based Approval
 
@@ -257,8 +259,8 @@ Agent Vault uses two independent permission axes:
 
 - **Instance-level role** -- `owner` (can manage users, list/delete all vaults, all admin settings) vs `member` (regular user). Owners can see all vaults and join any vault as admin (`POST /v1/vaults/{name}/join`), but are not automatic members — they must explicitly join to access vault contents.
 - **Vault-level role** -- three-tier hierarchy: `consumer` < `member` < `admin`.
-  - `consumer` -- proxy requests and discover services, raise proposals; cannot manage credentials, policy, or invites
-  - `member` -- all consumer capabilities + set/delete credentials, approve/reject proposals, manage vault policy, invite agents (as consumer only)
+  - `consumer` -- proxy requests and discover services, raise proposals; cannot manage credentials, services, or invites
+  - `member` -- all consumer capabilities + set/delete credentials, approve/reject proposals, manage vault services, invite agents (as consumer only)
   - `admin` -- all member capabilities + invite agents with any role, invite human users to the vault
   All vault memberships require invite acceptance (or owner self-join).
 

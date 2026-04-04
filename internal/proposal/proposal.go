@@ -14,7 +14,7 @@ const (
 	StatusExpired  Status = "expired"
 )
 
-// Action represents the operation a proposed rule or credential slot performs.
+// Action represents the operation a proposed service or credential slot performs.
 type Action string
 
 const (
@@ -22,8 +22,8 @@ const (
 	ActionDelete Action = "delete" // remove existing
 )
 
-// Rule is a proposed broker rule change.
-type Rule struct {
+// Service is a proposed broker service change.
+type Service struct {
 	Action      Action       `json:"action"`
 	Host        string       `json:"host"`
 	Description string       `json:"description,omitempty"`

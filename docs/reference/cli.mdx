@@ -137,7 +137,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault delete <name> [flags]
     ```
 
-    Delete a vault and all its credentials, policies, and proposals. Requires vault admin or instance owner role. The default vault cannot be deleted.
+    Delete a vault and all its credentials, services, and proposals. Requires vault admin or instance owner role. The default vault cannot be deleted.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -223,40 +223,40 @@ description: "Complete reference for all Agent Vault CLI commands."
   </Accordion>
 </AccordionGroup>
 
-## Policies
+## Services
 
 <AccordionGroup>
-  <Accordion title="agent-vault vault policy get">
+  <Accordion title="agent-vault service list">
     ```bash
-    agent-vault vault policy get [flags]
+    agent-vault service list [flags]
     ```
 
-    Print the current vault policy as YAML.
+    Print the current vault services as YAML.
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
   </Accordion>
 
-  <Accordion title="agent-vault vault policy set">
+  <Accordion title="agent-vault service set">
     ```bash
-    agent-vault vault policy set [flags]
+    agent-vault service set [flags]
     ```
 
-    Set the vault policy. Without `-f`, launches an interactive builder that prompts for rules, headers, and credentials (requires TTY). With `-f`, replaces the policy from a YAML file.
+    Set the vault services. Without `-f`, launches an interactive builder that prompts for services, auth configs, and credentials (requires TTY). With `-f`, replaces the services from a YAML file.
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
-    | `-f` | | Path to a YAML policy file |
+    | `-f` | | Path to a YAML services file |
   </Accordion>
 
-  <Accordion title="agent-vault vault policy clear">
+  <Accordion title="agent-vault service clear">
     ```bash
-    agent-vault vault policy clear [flags]
+    agent-vault service clear [flags]
     ```
 
-    Remove the vault policy. Prompts for confirmation unless `--yes` is passed.
+    Remove all vault services. Prompts for confirmation unless `--yes` is passed.
 
     | Flag | Default | Description |
     |------|---------|-------------|

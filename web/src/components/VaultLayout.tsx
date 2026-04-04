@@ -3,7 +3,7 @@ import { Link, Outlet, useLocation, useNavigate, useRouteContext } from "@tansta
 import type { AuthContext, VaultContext } from "../router";
 import Navbar from "./Navbar";
 
-type VaultTab = "proposals" | "policy" | "credentials" | "users" | "agents" | "settings";
+type VaultTab = "proposals" | "services" | "credentials" | "users" | "agents" | "settings";
 
 interface NavItem {
   id: VaultTab;
@@ -43,11 +43,20 @@ export default function VaultLayout() {
   // Derive active tab from current URL path
   const pathSegments = location.pathname.split("/");
   const lastSegment = pathSegments[pathSegments.length - 1] as VaultTab;
-  const activeTab: VaultTab = ["proposals", "policy", "credentials", "users", "agents", "settings"].includes(lastSegment)
+  const activeTab: VaultTab = ["proposals", "services", "credentials", "users", "agents", "settings"].includes(lastSegment)
     ? lastSegment
-    : "proposals";
+    : "services";
 
   const mainNav: NavItem[] = [
+    {
+      id: "services",
+      label: "Services",
+      icon: (
+        <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+        </svg>
+      ),
+    },
     {
       id: "proposals",
       label: "Proposals",
@@ -55,15 +64,6 @@ export default function VaultLayout() {
       icon: (
         <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-        </svg>
-      ),
-    },
-    {
-      id: "policy",
-      label: "Policy",
-      icon: (
-        <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
         </svg>
       ),
     },

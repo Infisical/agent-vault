@@ -9,7 +9,7 @@ export interface Auth {
   headers?: Record<string, string>;
 }
 
-export interface Rule {
+export interface Service {
   action: string;
   host: string;
   description?: string;
@@ -31,16 +31,16 @@ export interface ProposalData {
   status?: string;
   user_message?: string;
   message?: string;
-  rules?: Rule[];
+  services?: Service[];
   credentials?: CredentialSlot[];
   created_at?: string;
   agent_name?: string;
 }
 
-/** Parse rules from a JSON string (as stored on proposal rows). */
-export function parseRules(rulesJson?: string): Rule[] {
+/** Parse services from a JSON string (as stored on proposal rows). */
+export function parseServices(servicesJson?: string): Service[] {
   try {
-    if (rulesJson) return JSON.parse(rulesJson) ?? [];
+    if (servicesJson) return JSON.parse(servicesJson) ?? [];
   } catch {
     // ignore
   }
@@ -93,8 +93,8 @@ function AuthDisplay({ auth }: { auth: Auth }) {
 }
 
 export default function ProposalPreview({ data }: { data: ProposalData }) {
-  const setRules = (data.rules ?? []).filter((r) => r.action === "set");
-  const deleteRules = (data.rules ?? []).filter((r) => r.action === "delete");
+  const setServices = (data.services ?? []).filter((r) => r.action === "set");
+  const deleteServices = (data.services ?? []).filter((r) => r.action === "delete");
   const credentials = (data.credentials ?? []).filter(
     (s) => s.action === "set" && !s.has_value
   );
@@ -103,14 +103,14 @@ export default function ProposalPreview({ data }: { data: ProposalData }) {
   );
 
   const titleParts: string[] = [];
-  if (setRules.length > 0)
+  if (setServices.length > 0)
     titleParts.push(
-      setRules.length === 1
-        ? setRules[0].description || setRules[0].host
-        : `${setRules.length} services`
+      setServices.length === 1
+        ? setServices[0].description || setServices[0].host
+        : `${setServices.length} services`
     );
-  if (deleteRules.length > 0)
-    titleParts.push(`remove ${deleteRules.length === 1 ? deleteRules[0].host : `${deleteRules.length} services`}`);
+  if (deleteServices.length > 0)
+    titleParts.push(`remove ${deleteServices.length === 1 ? deleteServices[0].host : `${deleteServices.length} services`}`);
 
   return (
     <div>
@@ -124,8 +124,8 @@ export default function ProposalPreview({ data }: { data: ProposalData }) {
         <div>
           <h1 className="text-xl font-semibold text-text leading-tight">
             {titleParts.length > 0
-              ? (setRules.length > 0 ? "Connect to " : "") + titleParts.join(" & ")
-              : "Policy change"}
+              ? (setServices.length > 0 ? "Connect to " : "") + titleParts.join(" & ")
+              : "Service change"}
           </h1>
           {(data.vault || data.agent_name) && (
             <div className="flex items-center gap-2 mt-1.5 text-xs text-text-muted">
@@ -153,45 +153,45 @@ export default function ProposalPreview({ data }: { data: ProposalData }) {
         </p>
       )}
 
-      {setRules.length > 0 && (
+      {setServices.length > 0 && (
         <div className="mb-4">
           <div className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">
             Services requested
           </div>
           <div className="space-y-3">
-            {setRules.map((rule, i) => (
+            {setServices.map((service, i) => (
               <div key={i} className="bg-bg border border-border rounded-lg p-3">
                 <div>
                   <div className="text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-1.5">
                     Host
                   </div>
                   <span className="text-sm text-text font-mono">
-                    {rule.host}
+                    {service.host}
                   </span>
-                  {rule.description && (
-                    <p className="text-xs text-text-muted mt-1">{rule.description}</p>
+                  {service.description && (
+                    <p className="text-xs text-text-muted mt-1">{service.description}</p>
                   )}
                 </div>
-                {rule.auth && <AuthDisplay auth={rule.auth} />}
+                {service.auth && <AuthDisplay auth={service.auth} />}
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {deleteRules.length > 0 && (
+      {deleteServices.length > 0 && (
         <div className="bg-bg rounded-lg border border-danger/20 p-4 mb-4">
           <div className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-2">
             Services to remove
           </div>
           <div className="space-y-1.5">
-            {deleteRules.map((rule, i) => (
+            {deleteServices.map((service, i) => (
               <div key={i} className="flex items-center gap-2 text-sm text-text font-mono">
                 <svg className="w-3.5 h-3.5 text-danger flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="18" y1="6" x2="6" y2="18" />
                   <line x1="6" y1="6" x2="18" y2="18" />
                 </svg>
-                {rule.host}
+                {service.host}
               </div>
             ))}
           </div>

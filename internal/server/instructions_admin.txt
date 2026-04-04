@@ -2,7 +2,7 @@ You have access to Agent Vault, an HTTP proxy that attaches credentials to your 
 
 IMPORTANT: Whenever your task involves ANY external service or API (Linear, GitHub, Stripe, Jira, Slack, Asana, GitLab, or any other authenticated service), you MUST check Agent Vault BEFORE telling the user you lack access. Call /discover to see what's available, then route requests through the proxy. If the service isn't listed, raise a proposal — never just say "I can't access that."
 
-Your vault role is **admin**. You have full vault access: proxy, discover, proposals, direct credential management, proposal approval/rejection, vault policy management, and the ability to invite agents with any role and invite users to the vault.
+Your vault role is **admin**. You have full vault access: proxy, discover, proposals, direct credential management, proposal approval/rejection, vault service management, and the ability to invite agents with any role and invite users to the vault.
 
 ## Quick Start
 
@@ -62,26 +62,26 @@ Provide values for any credentials the proposal requires.
 
   {"vault": "default", "reason": "Not needed"}
 
-## Vault Policy Management
+## Vault Service Management
 
-You can view, set, and clear the vault's brokering policy.
+You can view, set, and clear the vault's brokered services.
 
-### Get Policy
+### List Services
 
-  GET {AGENT_VAULT_ADDR}/v1/vaults/{name}/policy
+  GET {AGENT_VAULT_ADDR}/v1/vaults/{name}/services
   Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
 
-### Set Policy
+### Set Services
 
-  PUT {AGENT_VAULT_ADDR}/v1/vaults/{name}/policy
+  PUT {AGENT_VAULT_ADDR}/v1/vaults/{name}/services
   Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
   Content-Type: application/json
 
-  {"rules": [{"host": "api.stripe.com", "description": "Stripe API", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}]}
+  {"services": [{"host": "api.stripe.com", "description": "Stripe API", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}]}
 
-### Clear Policy
+### Clear Services
 
-  DELETE {AGENT_VAULT_ADDR}/v1/vaults/{name}/policy
+  DELETE {AGENT_VAULT_ADDR}/v1/vaults/{name}/services
   Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
 
 ## Inviting Agents
@@ -96,7 +96,7 @@ As an admin, you can invite agents with any role: consumer, member, or admin.
 
 For persistent agents: {"vault": "default", "persistent": true, "agent_name": "my-bot", "vault_role": "member"}
 
-Roles: consumer (proxy + proposals only), member (+ credentials, approval, policy), admin (+ invite users and agents with any role).
+Roles: consumer (proxy + proposals only), member (+ credentials, approval, services), admin (+ invite users and agents with any role).
 
 ## Inviting Users
 
@@ -132,14 +132,14 @@ Common services: Stripe (bearer), GitHub (bearer), OpenAI (bearer), Ashby (basic
   Content-Type: application/json
 
   {
-    "rules": [{"action": "set", "host": "api.stripe.com", "description": "Stripe API", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
+    "services": [{"action": "set", "host": "api.stripe.com", "description": "Stripe API", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
     "credentials": [{"action": "set", "key": "STRIPE_KEY", "description": "Stripe credential key", "obtain": "https://dashboard.stripe.com/apikeys", "obtain_instructions": "Developers → API Keys → Reveal test key"}],
     "message": "Need Stripe API key for billing feature",
     "user_message": "I need access to your Stripe account to build the checkout page."
   }
 
 Key fields:
-- rules[].action: "set" (upsert, needs host + auth) or "delete" (needs host only)
+- services[].action: "set" (upsert, needs host + auth) or "delete" (needs host only)
 - credentials[].action: "set" (omit value for human to supply; include value to store back) or "delete"
 - credentials: only declare credentials not already in available_credentials from /discover
 - message: developer-facing explanation; user_message: shown on approval page

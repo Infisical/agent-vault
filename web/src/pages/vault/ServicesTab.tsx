@@ -13,7 +13,7 @@ import FormField from "../../components/FormField";
 import { type Auth, AUTH_TYPE_LABELS } from "../../components/ProposalPreview";
 import { apiFetch } from "../../lib/api";
 
-interface Rule {
+interface Service {
   host: string;
   description?: string;
   auth: Auth;
@@ -26,9 +26,9 @@ const AUTH_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "custom", label: "Custom headers" },
 ];
 
-export default function PolicyTab() {
+export default function ServicesTab() {
   const { vaultName, vaultRole } = useVaultParams();
-  const [rules, setRules] = useState<Rule[]>([]);
+  const [services, setServices] = useState<Service[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -41,20 +41,20 @@ export default function PolicyTab() {
   const [deleteError, setDeleteError] = useState("");
 
   useEffect(() => {
-    fetchRules();
+    fetchServices();
   }, []);
 
-  async function fetchRules() {
+  async function fetchServices() {
     try {
       const resp = await fetch(
-        `/v1/vaults/${encodeURIComponent(vaultName)}/policy`
+        `/v1/vaults/${encodeURIComponent(vaultName)}/services`
       );
       if (resp.ok) {
         const data = await resp.json();
-        setRules(data.rules ?? []);
+        setServices(data.services ?? []);
       } else {
         const data = await resp.json();
-        setError(data.error || "Failed to load rules.");
+        setError(data.error || "Failed to load services.");
       }
     } catch {
       setError("Network error.");
@@ -63,28 +63,28 @@ export default function PolicyTab() {
     }
   }
 
-  async function saveRules(updatedRules: Rule[]) {
+  async function saveServices(updatedServices: Service[]) {
     const resp = await apiFetch(
-      `/v1/vaults/${encodeURIComponent(vaultName)}/policy`,
+      `/v1/vaults/${encodeURIComponent(vaultName)}/services`,
       {
         method: "PUT",
-        body: JSON.stringify({ rules: updatedRules }),
+        body: JSON.stringify({ services: updatedServices }),
       }
     );
     if (!resp.ok) {
       const data = await resp.json();
-      throw new Error(data.error || "Failed to save rules.");
+      throw new Error(data.error || "Failed to save services.");
     }
-    setRules(updatedRules);
+    setServices(updatedServices);
   }
 
   async function handleDelete() {
     if (deleteIndex === null) return;
     setDeleting(true);
     setDeleteError("");
-    const updated = rules.filter((_, i) => i !== deleteIndex);
+    const updated = services.filter((_, i) => i !== deleteIndex);
     try {
-      await saveRules(updated);
+      await saveServices(updated);
       setDeleteIndex(null);
     } catch (err: unknown) {
       setDeleteError(err instanceof Error ? err.message : "An error occurred.");
@@ -95,16 +95,16 @@ export default function PolicyTab() {
 
   const isAdmin = vaultRole === "admin";
 
-  const columns: Column<Rule>[] = [
+  const columns: Column<Service>[] = [
     {
       key: "host",
       header: "Host",
-      render: (rule) => (
+      render: (service) => (
         <div>
-          <div className="text-sm font-semibold text-text">{rule.host}</div>
-          {rule.description && (
+          <div className="text-sm font-semibold text-text">{service.host}</div>
+          {service.description && (
             <div className="text-xs text-text-muted mt-0.5">
-              {rule.description}
+              {service.description}
             </div>
           )}
         </div>
@@ -113,8 +113,8 @@ export default function PolicyTab() {
     {
       key: "auth",
       header: "Auth",
-      render: (rule) => {
-        const label = AUTH_TYPE_LABELS[rule.auth?.type] || rule.auth?.type || "—";
+      render: (service) => {
+        const label = AUTH_TYPE_LABELS[service.auth?.type] || service.auth?.type || "\u2014";
         return (
           <div className="text-sm text-text">
             {label}
@@ -128,7 +128,7 @@ export default function PolicyTab() {
             key: "actions",
             header: "",
             align: "right" as const,
-            render: (_rule: Rule, index: number) => (
+            render: (_service: Service, index: number) => (
               <DropdownMenu
                 items={[
                   { label: "Edit", onClick: () => setEditingIndex(index) },
@@ -136,7 +136,7 @@ export default function PolicyTab() {
                 ]}
               />
             ),
-          } as Column<Rule>,
+          } as Column<Service>,
         ]
       : []),
   ];
@@ -146,7 +146,7 @@ export default function PolicyTab() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-[22px] font-semibold text-text tracking-tight mb-1">
-            Policy
+            Services
           </h2>
           <p className="text-sm text-text-muted">
             Define allowed hosts and configure authentication methods.
@@ -166,7 +166,7 @@ export default function PolicyTab() {
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
-            Add rule
+            Add service
           </Button>
         )}
       </div>
@@ -178,10 +178,10 @@ export default function PolicyTab() {
       ) : (
         <DataTable
           columns={columns}
-          data={rules}
+          data={services}
           rowKey={(_, i) => i}
-          emptyTitle="No policy rules configured"
-          emptyDescription="Add a rule to allow agents to proxy requests through this vault."
+          emptyTitle="No services configured"
+          emptyDescription="Add a service to allow agents to proxy requests through this vault."
         />
       )}
 
@@ -192,11 +192,11 @@ export default function PolicyTab() {
           setDeleteIndex(null);
           setDeleteError("");
         }}
-        title="Delete rule"
+        title="Delete service"
         description={
-          deleteIndex !== null && rules[deleteIndex]
-            ? `Permanently delete the rule for "${rules[deleteIndex].host}". Agents will no longer be able to proxy requests to this host.`
-            : "Permanently delete this rule."
+          deleteIndex !== null && services[deleteIndex]
+            ? `Permanently delete the service for "${services[deleteIndex].host}". Agents will no longer be able to proxy requests to this host.`
+            : "Permanently delete this service."
         }
         footer={
           <>
@@ -217,18 +217,18 @@ export default function PolicyTab() {
       </Modal>
 
       {editingIndex !== null && (
-        <RuleModal
-          title={editingIndex === -1 ? "Add Rule" : "Edit Rule"}
-          initial={editingIndex >= 0 ? rules[editingIndex] : undefined}
+        <ServiceModal
+          title={editingIndex === -1 ? "Add Service" : "Edit Service"}
+          initial={editingIndex >= 0 ? services[editingIndex] : undefined}
           onClose={() => setEditingIndex(null)}
-          onSave={async (rule) => {
-            const updated = [...rules];
+          onSave={async (service) => {
+            const updated = [...services];
             if (editingIndex === -1) {
-              updated.push(rule);
+              updated.push(service);
             } else {
-              updated[editingIndex] = rule;
+              updated[editingIndex] = service;
             }
-            await saveRules(updated);
+            await saveServices(updated);
             setEditingIndex(null);
           }}
         />
@@ -237,18 +237,18 @@ export default function PolicyTab() {
   );
 }
 
-/* ── Add / Edit modal ── */
+/* -- Add / Edit modal -- */
 
-function RuleModal({
+function ServiceModal({
   title,
   initial,
   onClose,
   onSave,
 }: {
   title: string;
-  initial?: Rule;
+  initial?: Service;
   onClose: () => void;
-  onSave: (rule: Rule) => Promise<void>;
+  onSave: (service: Service) => Promise<void>;
 }) {
   const [host, setHost] = useState(initial?.host ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
@@ -325,12 +325,12 @@ function RuleModal({
     setSaving(true);
     setError("");
     try {
-      const rule: Rule = {
+      const service: Service = {
         host: host.trim(),
         ...(description.trim() && { description: description.trim() }),
         auth: buildAuth(),
       };
-      await onSave(rule);
+      await onSave(service);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "An error occurred.");
     } finally {
@@ -343,7 +343,7 @@ function RuleModal({
       open
       onClose={onClose}
       title={title}
-      description="Policy rules define which hosts are proxied and how credentials are injected."
+      description="Services define which hosts are proxied and how credentials are injected."
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>
@@ -354,7 +354,7 @@ function RuleModal({
             disabled={!canSubmit}
             loading={saving}
           >
-            {initial ? "Save" : "Add rule"}
+            {initial ? "Save" : "Add service"}
           </Button>
         </>
       }

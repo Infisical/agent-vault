@@ -10,19 +10,19 @@ import (
 
 // Config represents a vault's broker configuration as stored in YAML files.
 type Config struct {
-	Vault string `yaml:"vault" json:"vault"`
-	Rules []Rule `yaml:"rules" json:"rules"`
+	Vault    string    `yaml:"vault" json:"vault"`
+	Services []Service `yaml:"services" json:"services"`
 }
 
-// Rule defines a host-matching rule with credential attachment.
-type Rule struct {
+// Service defines a host-matching service with credential attachment.
+type Service struct {
 	Host        string  `yaml:"host" json:"host"`
 	Description *string `yaml:"description,omitempty" json:"description"`
 	Auth        Auth    `yaml:"auth" json:"auth"`
 }
 
-// Auth describes how credentials are attached for a broker rule.
-// Each rule must specify a Type and the fields relevant to that type.
+// Auth describes how credentials are attached for a broker service.
+// Each service must specify a Type and the fields relevant to that type.
 type Auth struct {
 	Type string `yaml:"type" json:"type"` // "bearer", "basic", "api-key", "custom"
 
@@ -245,12 +245,12 @@ func Validate(cfg *Config) error {
 	if cfg.Vault == "" {
 		return fmt.Errorf("vault is required")
 	}
-	for i, r := range cfg.Rules {
-		if r.Host == "" {
-			return fmt.Errorf("rule %d: host is required", i)
+	for i, s := range cfg.Services {
+		if s.Host == "" {
+			return fmt.Errorf("service %d: host is required", i)
 		}
-		if err := r.Auth.Validate(); err != nil {
-			return fmt.Errorf("rule %d: %w", i, err)
+		if err := s.Auth.Validate(); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
 		}
 	}
 	return nil
@@ -259,20 +259,20 @@ func Validate(cfg *Config) error {
 // CredentialRef matches {{ credential_name }} placeholders in header values.
 var CredentialRef = regexp.MustCompile(`\{\{\s*(\w+)\s*\}\}`)
 
-// MatchHost returns the first rule whose Host pattern matches the given host,
-// or nil if no rule matches. Supports exact match and wildcard prefix (e.g.
+// MatchHost returns the first service whose Host pattern matches the given host,
+// or nil if no service matches. Supports exact match and wildcard prefix (e.g.
 // "*.github.com" matches "api.github.com"). The host parameter should already
-// have its port stripped by the caller; rule hosts are also compared port-stripped.
-func MatchHost(host string, rules []Rule) *Rule {
-	for i := range rules {
-		pattern := rules[i].Host
-		// Strip port from rule host for comparison (rules should be bare
-		// hostnames, but handle legacy rules that include a port).
+// have its port stripped by the caller; service hosts are also compared port-stripped.
+func MatchHost(host string, services []Service) *Service {
+	for i := range services {
+		pattern := services[i].Host
+		// Strip port from service host for comparison (services should be bare
+		// hostnames, but handle legacy entries that include a port).
 		if h, _, err := net.SplitHostPort(pattern); err == nil {
 			pattern = h
 		}
 		if pattern == host {
-			return &rules[i]
+			return &services[i]
 		}
 		if strings.HasPrefix(pattern, "*.") {
 			// *.github.com → match exactly one subdomain level (e.g. api.github.com but not a.b.github.com)
@@ -281,7 +281,7 @@ func MatchHost(host string, rules []Rule) *Rule {
 				// Ensure only one subdomain level: no dots in the part before the suffix.
 				prefix := strings.TrimSuffix(host, suffix)
 				if prefix != "" && !strings.Contains(prefix, ".") {
-					return &rules[i]
+					return &services[i]
 				}
 			}
 		}

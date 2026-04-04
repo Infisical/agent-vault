@@ -1,14 +1,14 @@
 ---
 title: "Proposals"
-description: "Review, approve, and manage agent-initiated credential and policy changes."
+description: "Review, approve, and manage agent-initiated credential and service changes."
 ---
 
-A `Proposal` is a request from an agent to add, update, or remove [credentials](/learn/credentials) and host rules within a specific [vault](/learn/vaults).
+A `Proposal` is a request from an agent to add, update, or remove [credentials](/learn/credentials) and services within a specific [vault](/learn/vaults).
 Each `Proposal` must be approved by a member of the [vault](/learn/vaults) with sufficient [permissions](/learn/permissions#vault-roles) in order for changes to take effect.
 
 Each `Proposal` may include:
 
-- **Rules**: Host access changes that define which services the [agent](/agents/overview) wants to reach and how Agent Vault should authenticate to them. These merge into the [vault's](/learn/vaults) [policy](/learn/policies) on approval. For example, a rule might grant access to `api.stripe.com` using a bearer token.
+- **Services**: Host access changes that define which services the [agent](/agents/overview) wants to reach and how Agent Vault should authenticate to them. These merge into the [vault's](/learn/vaults) [services](/learn/services) on approval. For example, a service entry might grant access to `api.stripe.com` using a bearer token.
 - **Credential slots**: [Credential](/learn/credentials) operations covering keys the agent needs a human to supply, values the agent wants to store back, or credentials to delete. For example, a credential slot might ask the human to provide a `STRIPE_KEY` at approval time.
 - **Messages**: A developer-facing `message` and a human-facing `user_message` shown on the browser approval page.
 
@@ -24,7 +24,7 @@ pending → rejected   (rejected by a privileged vault member)
 pending → expired    (7-day TTL elapsed)
 ```
 
-Approval atomically merges rules into the [vault's](/learn/vaults) [policy](/learn/policies) and upserts/deletes [credentials](/learn/credentials) in a single transaction.
+Approval atomically merges services into the [vault's](/learn/vaults) [service configuration](/learn/services) and upserts/deletes [credentials](/learn/credentials) in a single transaction.
 
 ## Approve proposals
 
@@ -40,7 +40,7 @@ Approval atomically merges rules into the [vault's](/learn/vaults) [policy](/lea
         Submitting the approval requires a valid Agent Vault session. If you're not logged in, the page shows an inline login form first.
       </Step>
       <Step title="Provide credentials and approve">
-        Fill in any credential values the agent requested, review the proposed rules, and click **Allow**.
+        Fill in any credential values the agent requested, review the proposed services, and click **Allow**.
       </Step>
     </Steps>
 
@@ -121,7 +121,7 @@ When an agent hits a 403 on a host not in `/discover`, the response includes a `
 ```json
 POST /v1/proposals
 {
-  "rules": [
+  "services": [
     {
       "action": "set",
       "host": "api.stripe.com",
@@ -147,10 +147,10 @@ The response includes an `approval_url` that the agent presents to the user in c
 
 ### Actions
 
-Each rule and credential slot carries an `action` field:
+Each service and credential slot carries an `action` field:
 
-- `set`: idempotent upsert (add or replace). Rules require `host` + `auth`; credential slots require `key`.
-- `delete`: remove an existing entry. Rules only need `host`; credential slots only need `key`.
+- `set`: idempotent upsert (add or replace). Services require `host` + `auth`; credential slots require `key`.
+- `delete`: remove an existing entry. Services only need `host`; credential slots only need `key`.
 
 ### Credential slots
 
@@ -162,13 +162,13 @@ A credential slot can work in three ways:
 | Agent stores a credential back  | included      | Value is encrypted at creation; human confirms at approval |
 | Delete a credential             | n/a           | `action: "delete"` removes the key                         |
 
-Every credential key referenced in a rule's `auth` config must resolve to either a credential slot in the proposal or an existing [credential](/learn/credentials) in the [vault](/learn/vaults). Credential keys use `UPPER_SNAKE_CASE` format.
+Every credential key referenced in a service's `auth` config must resolve to either a credential slot in the proposal or an existing [credential](/learn/credentials) in the [vault](/learn/vaults). Credential keys use `UPPER_SNAKE_CASE` format.
 
 ### Limits
 
 | Constraint                      | Value       |
 | ------------------------------- | ----------- |
-| Max rules per proposal          | 10          |
+| Max services per proposal       | 10          |
 | Max credential slots per proposal | 10        |
 | Max pending proposals per vault | 20          |
 | `message` length                | 2,000 chars |

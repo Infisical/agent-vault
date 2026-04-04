@@ -51,7 +51,7 @@ Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
 Content-Type: application/json
 
 {
-  "rules": [{
+  "services": [{
     "action": "set",
     "host": "api.stripe.com",
     "description": "Stripe API",

@@ -39,16 +39,16 @@ func displayProposal(w io.Writer, cs *store.Proposal) {
 		fmt.Fprintf(w, "%s %s\n", fieldLabel("Note:"), cs.ReviewNote)
 	}
 
-	printRules(w, cs.RulesJSON)
+	printServices(w, cs.ServicesJSON)
 	printCredentialSlots(w, cs.CredentialsJSON)
 }
 
-// printRules prints proposed rules with colored action markers.
-func printRules(w io.Writer, rulesJSON string) {
-	var rules []proposal.Rule
-	if err := json.Unmarshal([]byte(rulesJSON), &rules); err == nil && len(rules) > 0 {
-		fmt.Fprintf(w, "\n%s\n", sectionHeader("Proposed rules:"))
-		for _, r := range rules {
+// printServices prints proposed services with colored action markers.
+func printServices(w io.Writer, servicesJSON string) {
+	var services []proposal.Service
+	if err := json.Unmarshal([]byte(servicesJSON), &services); err == nil && len(services) > 0 {
+		fmt.Fprintf(w, "\n%s\n", sectionHeader("Proposed services:"))
+		for _, r := range services {
 			fmt.Fprintf(w, "  %s %s", actionMarker(string(r.Action)), r.Host)
 			if r.Description != "" {
 				fmt.Fprintf(w, "  %s", mutedText(fmt.Sprintf("(%s)", r.Description)))
@@ -202,7 +202,7 @@ func parseProposalJSON(data []byte) (*store.Proposal, error) {
 		Status      string  `json:"status"`
 		Message     string  `json:"message"`
 		UserMessage string  `json:"user_message"`
-		RulesJSON   string  `json:"rules_json"`
+		ServicesJSON string  `json:"services_json"`
 		CredentialsJSON string  `json:"credentials_json"`
 		ReviewNote  string  `json:"review_note"`
 		ReviewedAt  *string `json:"reviewed_at"`
@@ -219,7 +219,7 @@ func parseProposalJSON(data []byte) (*store.Proposal, error) {
 		Status:      resp.Status,
 		Message:     resp.Message,
 		UserMessage: resp.UserMessage,
-		RulesJSON:   resp.RulesJSON,
+		ServicesJSON: resp.ServicesJSON,
 		CredentialsJSON: resp.CredentialsJSON,
 		ReviewNote:  resp.ReviewNote,
 		ReviewedAt:  resp.ReviewedAt,
@@ -234,7 +234,7 @@ func parseProposalJSON(data []byte) (*store.Proposal, error) {
 
 var proposalCmd = &cobra.Command{
 	Use:   "proposal",
-	Short: "Manage proposals (proposed policy and credential changes)",
+	Short: "Manage proposals (proposed service and credential changes)",
 }
 
 var proposalListCmd = &cobra.Command{
@@ -356,7 +356,7 @@ var proposalApproveCmd = &cobra.Command{
 
 		// Show summary.
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\n\n", boldText(fmt.Sprintf("Proposal #%d: %s", id, cs.Message)))
-		printRules(cmd.OutOrStdout(), cs.RulesJSON)
+		printServices(cmd.OutOrStdout(), cs.ServicesJSON)
 		printCredentialSlots(cmd.OutOrStdout(), cs.CredentialsJSON)
 		_, _ = fmt.Fprintln(cmd.OutOrStdout())
 

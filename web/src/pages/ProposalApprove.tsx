@@ -348,7 +348,7 @@ function ApprovalForm({ data }: { data: ApprovalData }) {
 
         <p className="text-xs text-text-muted mt-4 text-left leading-relaxed">
           This gives the agent permission to make requests to{" "}
-          {(data.rules ?? [])
+          {(data.services ?? [])
             .filter((r) => r.action === "set")
             .map((r) => r.host)
             .join(", ")}{" "}

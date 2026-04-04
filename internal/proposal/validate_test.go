@@ -16,99 +16,99 @@ func customAuth(headers map[string]string) *broker.Auth {
 }
 
 func TestValidateValid(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Action: ActionSet, Host: "api.stripe.com", Auth: bearerAuth("STRIPE_KEY")},
 	}
 	creds := []CredentialSlot{
 		{Action: ActionSet, Key: "STRIPE_KEY", Description: "Stripe credential key"},
 	}
-	if err := Validate(rules, creds); err != nil {
+	if err := Validate(services, creds); err != nil {
 		t.Fatalf("expected valid, got %v", err)
 	}
 }
 
 func TestValidateNoRulesOrCredentials(t *testing.T) {
 	err := Validate(nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "at least one rule or credential") {
+	if err == nil || !strings.Contains(err.Error(), "at least one service or credential") {
 		t.Fatalf("expected error, got %v", err)
 	}
 }
 
 func TestValidateEmptyHost(t *testing.T) {
-	rules := []Rule{{Action: ActionSet, Host: "", Auth: bearerAuth("KEY")}}
-	err := Validate(rules, nil)
+	services := []Service{{Action: ActionSet, Host: "", Auth: bearerAuth("KEY")}}
+	err := Validate(services, nil)
 	if err == nil || !strings.Contains(err.Error(), "host is required") {
 		t.Fatalf("expected host required error, got %v", err)
 	}
 }
 
 func TestValidateMissingAuthForSet(t *testing.T) {
-	rules := []Rule{{Action: ActionSet, Host: "example.com"}}
-	err := Validate(rules, nil)
+	services := []Service{{Action: ActionSet, Host: "example.com"}}
+	err := Validate(services, nil)
 	if err == nil || !strings.Contains(err.Error(), "auth is required") {
 		t.Fatalf("expected auth required error, got %v", err)
 	}
 }
 
 func TestValidateTooManyRules(t *testing.T) {
-	rules := make([]Rule, MaxRules+1)
-	for i := range rules {
-		rules[i] = Rule{Action: ActionSet, Host: "example.com", Auth: bearerAuth("KEY")}
+	services := make([]Service, MaxServices+1)
+	for i := range services {
+		services[i] = Service{Action: ActionSet, Host: "example.com", Auth: bearerAuth("KEY")}
 	}
-	err := Validate(rules, nil)
-	if err == nil || !strings.Contains(err.Error(), "too many rules") {
-		t.Fatalf("expected too many rules error, got %v", err)
+	err := Validate(services, nil)
+	if err == nil || !strings.Contains(err.Error(), "too many services") {
+		t.Fatalf("expected too many services error, got %v", err)
 	}
 }
 
 func TestValidateUnreferencedCredentialSlot(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Action: ActionSet, Host: "api.stripe.com", Auth: bearerAuth("STRIPE_KEY")},
 	}
 	creds := []CredentialSlot{
 		{Action: ActionSet, Key: "STRIPE_KEY"},
 		{Action: ActionSet, Key: "ORPHAN_KEY"},
 	}
-	err := Validate(rules, creds)
+	err := Validate(services, creds)
 	if err == nil || !strings.Contains(err.Error(), "ORPHAN_KEY") {
 		t.Fatalf("expected unreferenced error, got %v", err)
 	}
 }
 
 func TestValidateDuplicateCredentialSlot(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Action: ActionSet, Host: "example.com", Auth: customAuth(map[string]string{"X": "{{ K }}"})},
 	}
 	creds := []CredentialSlot{{Action: ActionSet, Key: "K"}, {Action: ActionSet, Key: "K"}}
-	err := Validate(rules, creds)
+	err := Validate(services, creds)
 	if err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("expected duplicate error, got %v", err)
 	}
 }
 
 func TestValidateNoCredentialsAllowed(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Action: ActionSet, Host: "example.com", Auth: customAuth(map[string]string{"X-Static": "fixed-value"})},
 	}
-	if err := Validate(rules, nil); err != nil {
+	if err := Validate(services, nil); err != nil {
 		t.Fatalf("expected valid with no credentials, got %v", err)
 	}
 }
 
 func TestValidateInvalidAction(t *testing.T) {
-	rules := []Rule{{Action: "bogus", Host: "example.com"}}
-	err := Validate(rules, nil)
+	services := []Service{{Action: "bogus", Host: "example.com"}}
+	err := Validate(services, nil)
 	if err == nil || !strings.Contains(err.Error(), "invalid action") {
 		t.Fatalf("expected invalid action error, got %v", err)
 	}
 }
 
 func TestValidateDeleteRuleNoAuth(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Action: ActionDelete, Host: "api.stripe.com"},
 	}
-	if err := Validate(rules, nil); err != nil {
-		t.Fatalf("expected delete rule without auth to be valid, got %v", err)
+	if err := Validate(services, nil); err != nil {
+		t.Fatalf("expected delete service without auth to be valid, got %v", err)
 	}
 }
 
@@ -122,14 +122,14 @@ func TestValidateDeleteOnlyCredentials(t *testing.T) {
 }
 
 func TestValidateDeleteCredentialNotReferencedByRule(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Action: ActionSet, Host: "example.com", Auth: customAuth(map[string]string{"X-Static": "fixed"})},
 	}
 	creds := []CredentialSlot{
 		{Action: ActionDelete, Key: "UNUSED_KEY"},
 	}
-	if err := Validate(rules, creds); err != nil {
-		t.Fatalf("expected delete credential without rule ref to be valid, got %v", err)
+	if err := Validate(services, creds); err != nil {
+		t.Fatalf("expected delete credential without service ref to be valid, got %v", err)
 	}
 }
 
@@ -158,11 +158,11 @@ func TestValidateCredentialKeyFormat(t *testing.T) {
 		{"KEY WITH SPACE", true},
 	}
 	for _, tt := range tests {
-		rules := []Rule{
+		services := []Service{
 			{Action: ActionSet, Host: "example.com", Auth: bearerAuth(tt.key)},
 		}
 		creds := []CredentialSlot{{Action: ActionSet, Key: tt.key}}
-		err := Validate(rules, creds)
+		err := Validate(services, creds)
 		if tt.wantErr && err == nil {
 			t.Errorf("key %q: expected error, got nil", tt.key)
 		}
@@ -181,21 +181,21 @@ func TestValidateDeleteCredentialKeyFormat(t *testing.T) {
 }
 
 func TestValidateBasicAuth(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Action: ActionSet, Host: "api.ashby.com", Auth: &broker.Auth{Type: "basic", Username: "ASHBY_KEY"}},
 	}
 	creds := []CredentialSlot{{Action: ActionSet, Key: "ASHBY_KEY"}}
-	if err := Validate(rules, creds); err != nil {
+	if err := Validate(services, creds); err != nil {
 		t.Fatalf("expected valid basic auth, got %v", err)
 	}
 }
 
 func TestValidateApiKeyAuth(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Action: ActionSet, Host: "api.openai.com", Auth: &broker.Auth{Type: "api-key", Key: "OPENAI_KEY", Header: "Authorization", Prefix: "Bearer "}},
 	}
 	creds := []CredentialSlot{{Action: ActionSet, Key: "OPENAI_KEY"}}
-	if err := Validate(rules, creds); err != nil {
+	if err := Validate(services, creds); err != nil {
 		t.Fatalf("expected valid api-key auth, got %v", err)
 	}
 }
@@ -203,83 +203,83 @@ func TestValidateApiKeyAuth(t *testing.T) {
 // --- ValidateCredentialRefs tests ---
 
 func TestValidateCredentialRefsAllInSlots(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Action: ActionSet, Host: "api.stripe.com", Auth: bearerAuth("STRIPE_KEY")},
 	}
 	slots := []CredentialSlot{{Action: ActionSet, Key: "STRIPE_KEY"}}
-	if err := ValidateCredentialRefs(rules, slots, nil); err != nil {
+	if err := ValidateCredentialRefs(services, slots, nil); err != nil {
 		t.Fatalf("expected valid, got %v", err)
 	}
 }
 
 func TestValidateCredentialRefsAllInExisting(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Action: ActionSet, Host: "api.stripe.com", Auth: bearerAuth("STRIPE_KEY")},
 	}
-	if err := ValidateCredentialRefs(rules, nil, []string{"STRIPE_KEY"}); err != nil {
+	if err := ValidateCredentialRefs(services, nil, []string{"STRIPE_KEY"}); err != nil {
 		t.Fatalf("expected valid, got %v", err)
 	}
 }
 
 func TestValidateCredentialRefsMixed(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Action: ActionSet, Host: "api.stripe.com", Auth: bearerAuth("STRIPE_KEY")},
 		{Action: ActionSet, Host: "*.github.com", Auth: bearerAuth("GITHUB_TOKEN")},
 	}
 	slots := []CredentialSlot{{Action: ActionSet, Key: "STRIPE_KEY"}}
 	existing := []string{"GITHUB_TOKEN"}
-	if err := ValidateCredentialRefs(rules, slots, existing); err != nil {
+	if err := ValidateCredentialRefs(services, slots, existing); err != nil {
 		t.Fatalf("expected valid, got %v", err)
 	}
 }
 
 func TestValidateCredentialRefsMissing(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Action: ActionSet, Host: "api.stripe.com", Auth: bearerAuth("MISSING_KEY")},
 	}
-	err := ValidateCredentialRefs(rules, nil, []string{"OTHER_KEY"})
+	err := ValidateCredentialRefs(services, nil, []string{"OTHER_KEY"})
 	if err == nil || !strings.Contains(err.Error(), "MISSING_KEY") {
 		t.Fatalf("expected missing ref error, got %v", err)
 	}
 }
 
 func TestValidateCredentialRefsCustomNoTemplates(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Action: ActionSet, Host: "example.com", Auth: customAuth(map[string]string{"X-Static": "fixed-value"})},
 	}
-	if err := ValidateCredentialRefs(rules, nil, nil); err != nil {
+	if err := ValidateCredentialRefs(services, nil, nil); err != nil {
 		t.Fatalf("expected valid with no templates, got %v", err)
 	}
 }
 
 func TestValidateCredentialRefsSkipsDeleteRules(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Action: ActionDelete, Host: "api.stripe.com"},
 		{Action: ActionSet, Host: "example.com", Auth: customAuth(map[string]string{"X": "{{ K }}"})},
 	}
 	slots := []CredentialSlot{{Action: ActionSet, Key: "K"}}
-	if err := ValidateCredentialRefs(rules, slots, nil); err != nil {
-		t.Fatalf("expected valid (delete rules skipped), got %v", err)
+	if err := ValidateCredentialRefs(services, slots, nil); err != nil {
+		t.Fatalf("expected valid (delete services skipped), got %v", err)
 	}
 }
 
 func TestValidateCredentialRefsDeleteSlotsNotAvailable(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Action: ActionSet, Host: "example.com", Auth: customAuth(map[string]string{"X": "{{ K }}"})},
 	}
 	slots := []CredentialSlot{{Action: ActionDelete, Key: "K"}}
-	err := ValidateCredentialRefs(rules, slots, nil)
+	err := ValidateCredentialRefs(services, slots, nil)
 	if err == nil || !strings.Contains(err.Error(), "\"K\"") {
 		t.Fatalf("expected missing ref error for delete slot, got %v", err)
 	}
 }
 
 func TestValidateCredentialRefsBasicAuth(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Action: ActionSet, Host: "api.ashby.com", Auth: &broker.Auth{Type: "basic", Username: "USER", Password: "PASS"}},
 	}
 	slots := []CredentialSlot{{Action: ActionSet, Key: "USER"}, {Action: ActionSet, Key: "PASS"}}
-	if err := ValidateCredentialRefs(rules, slots, nil); err != nil {
+	if err := ValidateCredentialRefs(services, slots, nil); err != nil {
 		t.Fatalf("expected valid, got %v", err)
 	}
 }

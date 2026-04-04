@@ -151,7 +151,7 @@ func (s *SQLiteStore) CreateVault(ctx context.Context, name string) (*Vault, err
 	}
 
 	_, err = tx.ExecContext(ctx,
-		"INSERT INTO broker_configs (id, vault_id, rules_json, created_at, updated_at) VALUES (?, ?, '[]', ?, ?)",
+		"INSERT INTO broker_configs (id, vault_id, services_json, created_at, updated_at) VALUES (?, ?, '[]', ?, ?)",
 		bcID, nsID, nowStr, nowStr,
 	)
 	if err != nil {
@@ -750,32 +750,32 @@ func (s *SQLiteStore) SetMasterKeyRecord(ctx context.Context, record *MasterKeyR
 
 // --- Broker Configs ---
 
-func (s *SQLiteStore) SetBrokerConfig(ctx context.Context, vaultID string, rulesJSON string) (*BrokerConfig, error) {
+func (s *SQLiteStore) SetBrokerConfig(ctx context.Context, vaultID string, servicesJSON string) (*BrokerConfig, error) {
 	id := newUUID()
 	now := time.Now().UTC()
 	nowStr := now.Format(time.DateTime)
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO broker_configs (id, vault_id, rules_json, created_at, updated_at)
+		`INSERT INTO broker_configs (id, vault_id, services_json, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(vault_id) DO UPDATE SET
-		   rules_json = excluded.rules_json,
+		   services_json = excluded.services_json,
 		   updated_at = excluded.updated_at`,
-		id, vaultID, rulesJSON, nowStr, nowStr,
+		id, vaultID, servicesJSON, nowStr, nowStr,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("setting broker config: %w", err)
 	}
 
 	return &BrokerConfig{
-		ID: id, VaultID: vaultID, RulesJSON: rulesJSON,
+		ID: id, VaultID: vaultID, ServicesJSON: servicesJSON,
 		CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
 
 func (s *SQLiteStore) GetBrokerConfig(ctx context.Context, vaultID string) (*BrokerConfig, error) {
 	row := s.db.QueryRowContext(ctx,
-		"SELECT id, vault_id, rules_json, created_at, updated_at FROM broker_configs WHERE vault_id = ?",
+		"SELECT id, vault_id, services_json, created_at, updated_at FROM broker_configs WHERE vault_id = ?",
 		vaultID,
 	)
 	return scanBrokerConfig(row)
@@ -793,7 +793,7 @@ func newApprovalToken() string {
 	return "av_appr_" + hex.EncodeToString(b[:])
 }
 
-func (s *SQLiteStore) CreateProposal(ctx context.Context, vaultID, sessionID, rulesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error) {
+func (s *SQLiteStore) CreateProposal(ctx context.Context, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error) {
 	now := time.Now().UTC()
 	nowStr := now.Format(time.DateTime)
 	approvalToken := newApprovalToken()
@@ -817,9 +817,9 @@ func (s *SQLiteStore) CreateProposal(ctx context.Context, vaultID, sessionID, ru
 	}
 
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO proposals (id, vault_id, session_id, status, rules_json, credentials_json, message, user_message, approval_token_hash, approval_token_expires_at, created_at, updated_at)
+		`INSERT INTO proposals (id, vault_id, session_id, status, services_json, credentials_json, message, user_message, approval_token_hash, approval_token_expires_at, created_at, updated_at)
 		 VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`,
-		nextID, vaultID, sessionID, rulesJSON, credentialsJSON, message, userMessage, hashToken(approvalToken), tokenExpiresAtStr, nowStr, nowStr,
+		nextID, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage, hashToken(approvalToken), tokenExpiresAtStr, nowStr, nowStr,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("inserting proposal: %w", err)
@@ -843,7 +843,7 @@ func (s *SQLiteStore) CreateProposal(ctx context.Context, vaultID, sessionID, ru
 
 	return &Proposal{
 		ID: nextID, VaultID: vaultID, SessionID: sessionID,
-		Status: "pending", RulesJSON: rulesJSON, CredentialsJSON: credentialsJSON,
+		Status: "pending", ServicesJSON: servicesJSON, CredentialsJSON: credentialsJSON,
 		Message: message, UserMessage: userMessage,
 		ApprovalToken: approvalToken, ApprovalTokenExpiresAt: &tokenExpiresAt,
 		CreatedAt: now, UpdatedAt: now,
@@ -963,7 +963,7 @@ func (s *SQLiteStore) GetProposalCredentials(ctx context.Context, vaultID string
 	return creds, rows.Err()
 }
 
-func (s *SQLiteStore) ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedRulesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string) error {
+func (s *SQLiteStore) ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string) error {
 	nowStr := time.Now().UTC().Format(time.DateTime)
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -972,10 +972,10 @@ func (s *SQLiteStore) ApplyProposal(ctx context.Context, vaultID string, proposa
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// 1. Update broker config with merged rules.
+	// 1. Update broker config with merged services.
 	_, err = tx.ExecContext(ctx,
-		`UPDATE broker_configs SET rules_json = ?, updated_at = ? WHERE vault_id = ?`,
-		mergedRulesJSON, nowStr, vaultID,
+		`UPDATE broker_configs SET services_json = ?, updated_at = ? WHERE vault_id = ?`,
+		mergedServicesJSON, nowStr, vaultID,
 	)
 	if err != nil {
 		return fmt.Errorf("updating broker config: %w", err)
@@ -1029,7 +1029,7 @@ func (s *SQLiteStore) ApplyProposal(ctx context.Context, vaultID string, proposa
 // --- helpers ---
 
 // proposalColumns is the column list used by all proposal SELECT queries.
-const proposalColumns = `id, vault_id, session_id, status, rules_json, credentials_json,
+const proposalColumns = `id, vault_id, session_id, status, services_json, credentials_json,
 		message, user_message, review_note, reviewed_at,
 		approval_token_expires_at, created_at, updated_at`
 
@@ -1038,7 +1038,7 @@ func scanProposalFields(cs *Proposal, scan func(dest ...interface{}) error) erro
 	var approvalTokenExpiresAt sql.NullString
 	var createdAt, updatedAt string
 	if err := scan(&cs.ID, &cs.VaultID, &cs.SessionID, &cs.Status,
-		&cs.RulesJSON, &cs.CredentialsJSON, &cs.Message, &cs.UserMessage, &cs.ReviewNote,
+		&cs.ServicesJSON, &cs.CredentialsJSON, &cs.Message, &cs.UserMessage, &cs.ReviewNote,
 		&reviewedAt, &approvalTokenExpiresAt,
 		&createdAt, &updatedAt); err != nil {
 		return err
@@ -1096,7 +1096,7 @@ func scanCredential(row *sql.Row) (*Credential, error) {
 func scanBrokerConfig(row *sql.Row) (*BrokerConfig, error) {
 	var bc BrokerConfig
 	var createdAt, updatedAt string
-	if err := row.Scan(&bc.ID, &bc.VaultID, &bc.RulesJSON, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&bc.ID, &bc.VaultID, &bc.ServicesJSON, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	bc.CreatedAt, _ = time.Parse(time.DateTime, createdAt)

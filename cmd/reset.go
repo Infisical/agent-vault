@@ -16,7 +16,7 @@ import (
 var resetCmd = &cobra.Command{
 	Use:   "reset",
 	Short: "Reset the instance to a fresh state (owner only)",
-	Long: `Permanently deletes all data — users, credentials, policies, proposals, and
+	Long: `Permanently deletes all data — users, credentials, services, proposals, and
 vaults — and returns the instance to a freshly-installed state.
 
 Requires an active login session with owner role. If the server is running,
@@ -50,7 +50,7 @@ it will be stopped automatically before the reset.`,
 
 		// 3. Confirm
 		if !yes {
-			fmt.Fprintln(cmd.OutOrStderr(), warningText("WARNING")+": This will permanently delete all data including users, credentials, policies, proposals, and vaults.")
+			fmt.Fprintln(cmd.OutOrStderr(), warningText("WARNING")+": This will permanently delete all data including users, credentials, services, proposals, and vaults.")
 			fmt.Fprintf(cmd.OutOrStderr(), "Type %q to confirm: ", "reset")
 			reader := bufio.NewReader(os.Stdin)
 			answer, err := reader.ReadString('\n')

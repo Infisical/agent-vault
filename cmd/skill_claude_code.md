@@ -65,7 +65,7 @@ Proposals are the primary way to exchange credentials with a human operator. Use
 
 - **Need a credential supplied by a human** -- create a proposal with a credential slot and the human will provide the value at approval time.
 - **Want to store a credential back** -- include the value in a credential slot and the human confirms it at approval.
-- **Need proxy access to a new host** -- propose a rule with an `auth` config so Agent Vault can authenticate on your behalf.
+- **Need proxy access to a new host** -- propose a service with an `auth` config so Agent Vault can authenticate on your behalf.
 
 When you get a `403` for a host not in `/discover`, the response includes a `proposal_hint` with the denied host.
 
@@ -92,7 +92,7 @@ Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
 Content-Type: application/json
 
 {
-  "rules": [{"action": "set", "host": "api.stripe.com", "description": "Stripe API", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
+  "services": [{"action": "set", "host": "api.stripe.com", "description": "Stripe API", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
   "credentials": [{"action": "set", "key": "STRIPE_KEY", "description": "Stripe API key", "obtain": "https://dashboard.stripe.com/apikeys", "obtain_instructions": "Developers -> API Keys -> Reveal test key"}],
   "message": "Need Stripe API key for billing feature",
   "user_message": "I need access to your Stripe account to build the checkout page."
@@ -100,8 +100,8 @@ Content-Type: application/json
 ```
 
 Key fields:
-- `rules[].action` -- `"set"` (upsert, needs `host` + `auth`) or `"delete"` (needs `host` only)
-- `rules[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates)
+- `services[].action` -- `"set"` (upsert, needs `host` + `auth`) or `"delete"` (needs `host` only)
+- `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates)
 - `credentials[].action` -- `"set"` (omit `value` for human to supply; include `value` to store back) or `"delete"`
 - `credentials` -- only declare credentials not already in `available_credentials`. Every credential referenced in auth configs must resolve to a slot or existing credential (400 otherwise)
 - `message` -- developer-facing explanation; `user_message` -- shown on the browser approval page

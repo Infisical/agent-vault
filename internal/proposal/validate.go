@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	MaxRules   = 10
+	MaxServices    = 10
 	MaxCredentials = 10
 
 	MaxMessageLen            = 2000
@@ -110,89 +110,89 @@ func ValidateMessages(message, userMessage string) error {
 }
 
 // Validate checks that a proposal is well-formed.
-func Validate(rules []Rule, credentials []CredentialSlot) error {
-	if len(rules) == 0 && len(credentials) == 0 {
-		return fmt.Errorf("at least one rule or credential is required")
+func Validate(services []Service, credentials []CredentialSlot) error {
+	if len(services) == 0 && len(credentials) == 0 {
+		return fmt.Errorf("at least one service or credential is required")
 	}
-	if len(rules) > MaxRules {
-		return fmt.Errorf("too many rules (max %d)", MaxRules)
+	if len(services) > MaxServices {
+		return fmt.Errorf("too many services (max %d)", MaxServices)
 	}
 	if len(credentials) > MaxCredentials {
 		return fmt.Errorf("too many credential slots (max %d)", MaxCredentials)
 	}
 
-	for i, r := range rules {
-		if r.Action != ActionSet && r.Action != ActionDelete {
-			return fmt.Errorf("rule %d: invalid action %q (must be %q or %q)", i, r.Action, ActionSet, ActionDelete)
+	for i, s := range services {
+		if s.Action != ActionSet && s.Action != ActionDelete {
+			return fmt.Errorf("service %d: invalid action %q (must be %q or %q)", i, s.Action, ActionSet, ActionDelete)
 		}
-		if r.Host == "" {
-			return fmt.Errorf("rule %d: host is required", i)
+		if s.Host == "" {
+			return fmt.Errorf("service %d: host is required", i)
 		}
-		if err := ValidateHost(r.Host); err != nil {
-			return fmt.Errorf("rule %d: %w", i, err)
+		if err := ValidateHost(s.Host); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
 		}
-		if len(r.Description) > MaxDescriptionLen {
-			return fmt.Errorf("rule %d: description too long (max %d characters)", i, MaxDescriptionLen)
+		if len(s.Description) > MaxDescriptionLen {
+			return fmt.Errorf("service %d: description too long (max %d characters)", i, MaxDescriptionLen)
 		}
-		if r.Action == ActionSet {
-			if r.Auth == nil {
-				return fmt.Errorf("rule %d: auth is required for set action", i)
+		if s.Action == ActionSet {
+			if s.Auth == nil {
+				return fmt.Errorf("service %d: auth is required for set action", i)
 			}
-			if err := r.Auth.Validate(); err != nil {
-				return fmt.Errorf("rule %d: %w", i, err)
+			if err := s.Auth.Validate(); err != nil {
+				return fmt.Errorf("service %d: %w", i, err)
 			}
 		}
 	}
 
-	// Collect all credential references from set-action rules.
+	// Collect all credential references from set-action services.
 	refs := make(map[string]bool)
-	for _, r := range rules {
-		if r.Action != ActionSet || r.Auth == nil {
+	for _, s := range services {
+		if s.Action != ActionSet || s.Auth == nil {
 			continue
 		}
-		for _, key := range r.Auth.CredentialKeys() {
+		for _, key := range s.Auth.CredentialKeys() {
 			refs[key] = true
 		}
 	}
 
 	// Validate credential slots.
 	seenKeys := make(map[string]bool)
-	for _, s := range credentials {
-		if s.Action != ActionSet && s.Action != ActionDelete {
-			return fmt.Errorf("credential slot: invalid action %q (must be %q or %q)", s.Action, ActionSet, ActionDelete)
+	for _, c := range credentials {
+		if c.Action != ActionSet && c.Action != ActionDelete {
+			return fmt.Errorf("credential slot: invalid action %q (must be %q or %q)", c.Action, ActionSet, ActionDelete)
 		}
-		if s.Key == "" {
+		if c.Key == "" {
 			return fmt.Errorf("credential slot key is required")
 		}
-		if !CredentialKeyPattern.MatchString(s.Key) {
-			return fmt.Errorf("credential slot key %q must be UPPER_SNAKE_CASE (e.g. STRIPE_KEY, GITHUB_TOKEN)", s.Key)
+		if !CredentialKeyPattern.MatchString(c.Key) {
+			return fmt.Errorf("credential slot key %q must be UPPER_SNAKE_CASE (e.g. STRIPE_KEY, GITHUB_TOKEN)", c.Key)
 		}
-		if seenKeys[s.Key] {
-			return fmt.Errorf("duplicate credential slot key %q", s.Key)
+		if seenKeys[c.Key] {
+			return fmt.Errorf("duplicate credential slot key %q", c.Key)
 		}
-		seenKeys[s.Key] = true
+		seenKeys[c.Key] = true
 
 		// Validate field lengths.
-		if len(s.Description) > MaxDescriptionLen {
-			return fmt.Errorf("credential slot %q: description too long (max %d characters)", s.Key, MaxDescriptionLen)
+		if len(c.Description) > MaxDescriptionLen {
+			return fmt.Errorf("credential slot %q: description too long (max %d characters)", c.Key, MaxDescriptionLen)
 		}
-		if len(s.Obtain) > MaxObtainLen {
-			return fmt.Errorf("credential slot %q: obtain too long (max %d characters)", s.Key, MaxObtainLen)
+		if len(c.Obtain) > MaxObtainLen {
+			return fmt.Errorf("credential slot %q: obtain too long (max %d characters)", c.Key, MaxObtainLen)
 		}
-		if s.Obtain != "" {
-			u, err := url.Parse(s.Obtain)
+		if c.Obtain != "" {
+			u, err := url.Parse(c.Obtain)
 			if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-				return fmt.Errorf("credential slot %q: obtain must be a valid https:// or http:// URL", s.Key)
+				return fmt.Errorf("credential slot %q: obtain must be a valid https:// or http:// URL", c.Key)
 			}
 		}
-		if len(s.ObtainInstructions) > MaxObtainInstructionsLen {
-			return fmt.Errorf("credential slot %q: obtain_instructions too long (max %d characters)", s.Key, MaxObtainInstructionsLen)
+		if len(c.ObtainInstructions) > MaxObtainInstructionsLen {
+			return fmt.Errorf("credential slot %q: obtain_instructions too long (max %d characters)", c.Key, MaxObtainInstructionsLen)
 		}
 
-		// If rules exist, set-action slots must be referenced by a rule auth config.
-		// Credential-only proposals (no rules) are allowed for storing credentials back.
-		if len(rules) > 0 && s.Action == ActionSet && !refs[s.Key] {
-			return fmt.Errorf("credential slot %q is not referenced by any rule auth config", s.Key)
+		// If services exist, set-action slots must be referenced by a service auth config.
+		// Credential-only proposals (no services) are allowed for storing credentials back.
+		if len(services) > 0 && c.Action == ActionSet && !refs[c.Key] {
+			return fmt.Errorf("credential slot %q is not referenced by any service auth config", c.Key)
 		}
 	}
 
@@ -200,9 +200,9 @@ func Validate(rules []Rule, credentials []CredentialSlot) error {
 }
 
 // ValidateCredentialRefs checks that every credential key referenced in set-action
-// rule auth configs resolves to either a credential slot in the proposal or an
+// service auth configs resolves to either a credential slot in the proposal or an
 // existing credential key in the vault.
-func ValidateCredentialRefs(rules []Rule, slots []CredentialSlot, existingKeys []string) error {
+func ValidateCredentialRefs(services []Service, slots []CredentialSlot, existingKeys []string) error {
 	// Build set of available keys: set-action proposal slots + existing store keys.
 	available := make(map[string]bool, len(slots)+len(existingKeys))
 	for _, s := range slots {
@@ -214,14 +214,14 @@ func ValidateCredentialRefs(rules []Rule, slots []CredentialSlot, existingKeys [
 		available[k] = true
 	}
 
-	// Check every credential key ref in set-action rule auth configs resolves.
-	for _, r := range rules {
-		if r.Action != ActionSet || r.Auth == nil {
+	// Check every credential key ref in set-action service auth configs resolves.
+	for _, svc := range services {
+		if svc.Action != ActionSet || svc.Auth == nil {
 			continue
 		}
-		for _, key := range r.Auth.CredentialKeys() {
+		for _, key := range svc.Auth.CredentialKeys() {
 			if !available[key] {
-				return fmt.Errorf("credential %q referenced in rule for %q is not provided in this proposal and does not exist in the vault", key, r.Host)
+				return fmt.Errorf("credential %q referenced in service for %q is not provided in this proposal and does not exist in the vault", key, svc.Host)
 			}
 		}
 	}

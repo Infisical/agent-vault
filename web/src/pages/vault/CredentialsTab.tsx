@@ -53,11 +53,11 @@ export default function CredentialsTab() {
     setDeleteReferencing([]);
     try {
       const resp = await fetch(
-        `/v1/vaults/${encodeURIComponent(vaultName)}/policy/credential-usage?key=${encodeURIComponent(key)}`
+        `/v1/vaults/${encodeURIComponent(vaultName)}/services/credential-usage?key=${encodeURIComponent(key)}`
       );
       if (resp.ok) {
         const data = await resp.json();
-        setDeleteReferencing(data.rules ?? []);
+        setDeleteReferencing(data.services ?? []);
       }
     } catch {
       // Non-critical — proceed without dependency info.
@@ -138,7 +138,7 @@ export default function CredentialsTab() {
             Credentials
           </h2>
           <p className="text-sm text-text-muted">
-            Store and manage encrypted credentials used by broker rules.
+            Store and manage encrypted credentials used by services.
           </p>
         </div>
         {isAdmin && (
@@ -206,11 +206,11 @@ export default function CredentialsTab() {
       >
         {deleteReferencing.length > 0 && (
           <div className="bg-warning-bg border border-warning/20 rounded-lg p-4 text-sm text-warning">
-            <p className="font-medium mb-1">This credential is used by the following policy rules:</p>
+            <p className="font-medium mb-1">This credential is used by the following services:</p>
             <ul className="list-disc list-inside">
-              {deleteReferencing.map((rule) => (
-                <li key={rule.host}>
-                  {rule.host}{rule.description ? ` (${rule.description})` : ""}
+              {deleteReferencing.map((svc) => (
+                <li key={svc.host}>
+                  {svc.host}{svc.description ? ` (${svc.description})` : ""}
                 </li>
               ))}
             </ul>
@@ -360,7 +360,7 @@ function CredentialModal({
       open
       onClose={onClose}
       title={isEdit ? "Edit Credential" : "Add Credential"}
-      description="Credentials are injected into proxied requests via broker rules. Values are encrypted at rest and cannot be viewed after saving."
+      description="Credentials are injected into proxied requests via services. Values are encrypted at rest and cannot be viewed after saving."
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>

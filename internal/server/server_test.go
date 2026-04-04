@@ -202,7 +202,7 @@ func (m *mockStore) GetBrokerConfig(_ context.Context, vaultID string) (*store.B
 	return bc, nil
 }
 
-func (m *mockStore) CreateProposal(_ context.Context, vaultID, sessionID, rulesJSON, credentialsJSON, message, userMessage string, credentials map[string]store.EncryptedCredential) (*store.Proposal, error) {
+func (m *mockStore) CreateProposal(_ context.Context, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]store.EncryptedCredential) (*store.Proposal, error) {
 	if m.proposals == nil {
 		m.proposals = make(map[string][]store.Proposal)
 	}
@@ -213,7 +213,7 @@ func (m *mockStore) CreateProposal(_ context.Context, vaultID, sessionID, rulesJ
 		VaultID: vaultID,
 		SessionID:   sessionID,
 		Status:      "pending",
-		RulesJSON:   rulesJSON,
+		ServicesJSON:   servicesJSON,
 		CredentialsJSON: credentialsJSON,
 		Message:     message,
 		CreatedAt:   time.Now(),
@@ -269,7 +269,7 @@ func (m *mockStore) GetProposalCredentials(_ context.Context, vaultID string, pr
 	return map[string]store.EncryptedCredential{}, nil
 }
 
-func (m *mockStore) ApplyProposal(_ context.Context, vaultID string, proposalID int, mergedRulesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string) error {
+func (m *mockStore) ApplyProposal(_ context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string) error {
 	// Update proposal status to applied.
 	css := m.proposals[vaultID]
 	for i, cs := range css {
@@ -282,7 +282,7 @@ func (m *mockStore) ApplyProposal(_ context.Context, vaultID string, proposalID 
 	// Update broker config.
 	m.brokerConfigs[vaultID] = &store.BrokerConfig{
 		VaultID: vaultID,
-		RulesJSON:   mergedRulesJSON,
+		ServicesJSON:   mergedServicesJSON,
 	}
 	return nil
 }
@@ -469,11 +469,11 @@ func (m *mockStore) RenameVault(_ context.Context, oldName string, newName strin
 	return nil
 }
 
-func (m *mockStore) SetBrokerConfig(_ context.Context, vaultID, rulesJSON string) (*store.BrokerConfig, error) {
+func (m *mockStore) SetBrokerConfig(_ context.Context, vaultID, servicesJSON string) (*store.BrokerConfig, error) {
 	bc := &store.BrokerConfig{
 		ID:          "bc-" + vaultID,
 		VaultID: vaultID,
-		RulesJSON:   rulesJSON,
+		ServicesJSON:   servicesJSON,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
@@ -1585,7 +1585,7 @@ func TestScopedSessionEnforcesVaultOnDelete(t *testing.T) {
 
 // setupProxyTest creates a mock store with a scoped session, broker config, and
 // encrypted credential. It returns the store, scoped token, and encryption key.
-func setupProxyTest(t *testing.T, rulesJSON string) (*mockStore, string, []byte) {
+func setupProxyTest(t *testing.T, servicesJSON string) (*mockStore, string, []byte) {
 	t.Helper()
 	ms := newMockStore()
 	encKey := make([]byte, 32)
@@ -1600,7 +1600,7 @@ func setupProxyTest(t *testing.T, rulesJSON string) (*mockStore, string, []byte)
 	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
 		ID:          "bc-1",
 		VaultID: "root-ns-id",
-		RulesJSON:   rulesJSON,
+		ServicesJSON:   servicesJSON,
 	}
 
 	// Store an encrypted credential "STRIPE_KEY" = "sk_live_xxx".
@@ -1635,9 +1635,9 @@ func TestProxySuccess(t *testing.T) {
 	defer upstream.Close()
 
 	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	ruleHost, _, _ := net.SplitHostPort(upstreamHost)
-	rules := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, ruleHost)
-	ms, token, encKey := setupProxyTest(t, rules)
+	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
+	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, serviceHost)
+	ms, token, encKey := setupProxyTest(t, services)
 	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	origClient := proxyClient
@@ -1665,8 +1665,8 @@ func TestProxySuccess(t *testing.T) {
 }
 
 func TestProxyNoMatchingRule(t *testing.T) {
-	rules := `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
-	ms, token, encKey := setupProxyTest(t, rules)
+	services := `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
+	ms, token, encKey := setupProxyTest(t, services)
 	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/proxy/evil.com/exfiltrate", nil)
@@ -1697,8 +1697,8 @@ func TestProxyNoMatchingRule(t *testing.T) {
 }
 
 func TestProxyMissingCredential(t *testing.T) {
-	rules := `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"nonexistent_key"}}]`
-	ms, token, encKey := setupProxyTest(t, rules)
+	services := `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"nonexistent_key"}}]`
+	ms, token, encKey := setupProxyTest(t, services)
 	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/proxy/api.stripe.com/v1/charges", nil)
@@ -1761,9 +1761,9 @@ func TestProxyStripsAuthHeader(t *testing.T) {
 	defer upstream.Close()
 
 	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	ruleHost, _, _ := net.SplitHostPort(upstreamHost)
-	rules := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, ruleHost)
-	ms, token, encKey := setupProxyTest(t, rules)
+	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
+	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, serviceHost)
+	ms, token, encKey := setupProxyTest(t, services)
 	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	origClient := proxyClient
@@ -1790,9 +1790,9 @@ func TestProxyPreservesMethod(t *testing.T) {
 	defer upstream.Close()
 
 	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	ruleHost, _, _ := net.SplitHostPort(upstreamHost)
-	rules := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, ruleHost)
-	ms, token, encKey := setupProxyTest(t, rules)
+	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
+	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, serviceHost)
+	ms, token, encKey := setupProxyTest(t, services)
 	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	origClient := proxyClient
@@ -1826,9 +1826,9 @@ func TestProxyHeaderMerge(t *testing.T) {
 	defer upstream.Close()
 
 	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	ruleHost, _, _ := net.SplitHostPort(upstreamHost)
-	rules := fmt.Sprintf(`[{"host":"%s","auth":{"type":"custom","headers":{"Authorization":"Bearer {{ STRIPE_KEY }}","X-Custom":"injected-value"}}}]`, ruleHost)
-	ms, token, encKey := setupProxyTest(t, rules)
+	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
+	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"custom","headers":{"Authorization":"Bearer {{ STRIPE_KEY }}","X-Custom":"injected-value"}}}]`, serviceHost)
+	ms, token, encKey := setupProxyTest(t, services)
 	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
 	origClient := proxyClient
@@ -1852,8 +1852,8 @@ func TestProxyHeaderMerge(t *testing.T) {
 
 func TestDiscoverSuccess(t *testing.T) {
 	desc := "GitHub API"
-	rulesJSON := `[{"host":"*.github.com","description":"GitHub API","auth":{"type":"bearer","token":"GITHUB_TOKEN"}},{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
-	ms, token, _ := setupProxyTest(t, rulesJSON)
+	servicesJSON := `[{"host":"*.github.com","description":"GitHub API","auth":{"type":"bearer","token":"GITHUB_TOKEN"}},{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
+	ms, token, _ := setupProxyTest(t, servicesJSON)
 	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/discover", nil)
@@ -1948,7 +1948,7 @@ func TestDiscoverEmptyRules(t *testing.T) {
 	if len(resp.Services) != 0 {
 		t.Fatalf("expected 0 services, got %d", len(resp.Services))
 	}
-	// setupProxyTest seeds "STRIPE_KEY" — still available even with empty rules.
+	// setupProxyTest seeds "STRIPE_KEY" — still available even with empty services.
 	if len(resp.AvailableCredentials) != 1 || resp.AvailableCredentials[0] != "STRIPE_KEY" {
 		t.Fatalf("expected available_credentials [STRIPE_KEY], got %v", resp.AvailableCredentials)
 	}
@@ -1962,7 +1962,7 @@ func TestDiscoverNoCredentials(t *testing.T) {
 	}
 	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
 		ID: "bc-1", VaultID: "root-ns-id",
-		RulesJSON: `[{"host":"example.com","auth":{"type":"custom","headers":{"X":"static"}}}]`,
+		ServicesJSON: `[{"host":"example.com","auth":{"type":"custom","headers":{"X":"static"}}}]`,
 	}
 
 	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
@@ -2011,7 +2011,7 @@ func TestProposalCreateSuccess(t *testing.T) {
 	srv, _, token := setupProposalTest(t)
 
 	body := `{
-		"rules": [{"action": "set", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
+		"services": [{"action": "set", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
 		"credentials": [{"action": "set", "key": "STRIPE_KEY", "description": "Stripe key"}],
 		"message": "need stripe"
 	}`
@@ -2048,7 +2048,7 @@ func TestProposalCreateRequiresScopedSession(t *testing.T) {
 	}
 	ms.sessions["admin-token"] = sess
 
-	body := `{"rules": [{"action": "set", "host": "x.com", "auth": {"type": "custom", "headers": {"X": "v"}}}], "message": "test"}`
+	body := `{"services": [{"action": "set", "host": "x.com", "auth": {"type": "custom", "headers": {"X": "v"}}}], "message": "test"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/proposals", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer admin-token")
 	rec := httptest.NewRecorder()
@@ -2063,8 +2063,8 @@ func TestProposalCreateRequiresScopedSession(t *testing.T) {
 func TestProposalCreateValidation(t *testing.T) {
 	srv, _, token := setupProposalTest(t)
 
-	// No rules or credentials.
-	body := `{"rules": [], "message": "test"}`
+	// No services or credentials.
+	body := `{"services": [], "message": "test"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/proposals", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
@@ -2081,7 +2081,7 @@ func TestProposalGetSuccess(t *testing.T) {
 
 	// Create a proposal first.
 	body := `{
-		"rules": [{"action": "set", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "SK"}}],
+		"services": [{"action": "set", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "SK"}}],
 		"credentials": [{"action": "set", "key": "SK"}],
 		"message": "test get"
 	}`
@@ -2126,7 +2126,7 @@ func TestProposalListSuccess(t *testing.T) {
 	// Create two proposals.
 	for _, msg := range []string{"first", "second"} {
 		body := fmt.Sprintf(`{
-			"rules": [{"action": "set", "host": "%s.com", "auth": {"type": "custom", "headers": {"X": "v"}}}],
+			"services": [{"action": "set", "host": "%s.com", "auth": {"type": "custom", "headers": {"X": "v"}}}],
 			"message": "%s"
 		}`, msg, msg)
 		req := httptest.NewRequest(http.MethodPost, "/v1/proposals", strings.NewReader(body))
@@ -2157,7 +2157,7 @@ func TestProposalCreateWithAgentCredential(t *testing.T) {
 	srv, _, token := setupProposalTest(t)
 
 	body := `{
-		"rules": [{"action": "set", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "SK"}}],
+		"services": [{"action": "set", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "SK"}}],
 		"credentials": [{"action": "set", "key": "SK", "value": "sk_live_abc123", "description": "Stripe key"}],
 		"message": "with credential value"
 	}`
@@ -2177,7 +2177,7 @@ func TestProposalCreateUnresolvedCredentialRef(t *testing.T) {
 
 	// Rule references {{ MISSING_KEY }} but no slot or existing credential provides it.
 	body := `{
-		"rules": [{"action": "set", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "MISSING_KEY"}}],
+		"services": [{"action": "set", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "MISSING_KEY"}}],
 		"credentials": [],
 		"message": "should fail"
 	}`
@@ -2205,7 +2205,7 @@ func TestProposalCreateRefFromExistingCredential(t *testing.T) {
 	}
 
 	body := `{
-		"rules": [{"action": "set", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
+		"services": [{"action": "set", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
 		"credentials": [],
 		"message": "uses existing credential"
 	}`
@@ -2224,7 +2224,7 @@ func TestProposalCreateWithDeleteAction(t *testing.T) {
 	srv, _, token := setupProposalTest(t)
 
 	body := `{
-		"rules": [{"action": "delete", "host": "api.slack.com"}],
+		"services": [{"action": "delete", "host": "api.slack.com"}],
 		"credentials": [{"action": "delete", "key": "SLACK_TOKEN"}],
 		"message": "remove slack access"
 	}`
@@ -2243,7 +2243,7 @@ func TestProposalCreateMixedActions(t *testing.T) {
 	srv, _, token := setupProposalTest(t)
 
 	body := `{
-		"rules": [
+		"services": [
 			{"action": "set", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "SK"}},
 			{"action": "delete", "host": "api.slack.com"}
 		],
@@ -2271,7 +2271,7 @@ func setupInviteTest(t *testing.T) (*Server, *mockStore) {
 	ms := setupMockStoreWithPassword(t, "test-pass")
 	ms.vaults["default"] = &store.Vault{ID: "root-ns-id", Name: "default"}
 	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
-		RulesJSON: `[{"host":"api.stripe.com","description":"Stripe API","auth":{"type":"bearer","token":"SK"}}]`,
+		ServicesJSON: `[{"host":"api.stripe.com","description":"Stripe API","auth":{"type":"bearer","token":"SK"}}]`,
 	}
 	encKey := make([]byte, 32)
 	srv := New(":0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
@@ -2304,14 +2304,14 @@ func setupAdminProposalTest(t *testing.T) (*Server, *mockStore, string) {
 	ms.proposals = make(map[string][]store.Proposal)
 	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
 		VaultID: "root-ns-id",
-		RulesJSON:   `[]`,
+		ServicesJSON:   `[]`,
 	}
 	ms.proposals["root-ns-id"] = []store.Proposal{
 		{
 			ID:          1,
 			VaultID: "root-ns-id",
 			Status:      "pending",
-			RulesJSON:   `[{"action":"set","host":"api.example.com","auth":{"type":"bearer","token":"MY_KEY"}}]`,
+			ServicesJSON:   `[{"action":"set","host":"api.example.com","auth":{"type":"bearer","token":"MY_KEY"}}]`,
 			CredentialsJSON: `[{"action":"set","key":"MY_KEY","description":"Example key"}]`,
 			Message:     "Add example API",
 			CreatedAt:   time.Now(),
@@ -2697,11 +2697,11 @@ func TestMemberCanApproveProposalInAnyMemberVault(t *testing.T) {
 	encKey := make([]byte, 32)
 	srv := New(":0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
-	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{VaultID: "root-ns-id", RulesJSON: `[]`}
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{VaultID: "root-ns-id", ServicesJSON: `[]`}
 	ms.proposals = map[string][]store.Proposal{
 		"root-ns-id": {{
 			ID: 1, VaultID: "root-ns-id", Status: "pending",
-			RulesJSON: `[]`, CredentialsJSON: `[]`,
+			ServicesJSON: `[]`, CredentialsJSON: `[]`,
 			CreatedAt: time.Now(), UpdatedAt: time.Now(),
 		}},
 	}

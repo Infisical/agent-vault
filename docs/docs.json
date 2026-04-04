@@ -2,6 +2,7 @@
   "$schema": "https://mintlify.com/docs.json",
   "theme": "mint",
   "name": "Agent Vault",
+  "favicon": "/favicon.svg",
   "colors": {
     "primary": "#3B82F6"
   },
@@ -57,7 +58,7 @@
         "pages": [
           "learn/vaults",
           "learn/credentials",
-          "learn/policies",
+          "learn/services",
           "learn/proposals",
           "learn/permissions",
           {
@@ -86,7 +87,8 @@
     { "source": "/configuration/environment-variables", "destination": "/self-hosting/environment-variables" },
     { "source": "/team/users-and-roles", "destination": "/learn/permissions" },
     { "source": "/configuration/secrets", "destination": "/learn/credentials" },
-    { "source": "/configuration/policies", "destination": "/learn/policies" },
+    { "source": "/configuration/policies", "destination": "/learn/services" },
+    { "source": "/learn/policies", "destination": "/learn/services" },
     { "source": "/agents/persistent-agents", "destination": "/agents/overview" },
     { "source": "/learn/oauth", "destination": "/guides/oauth" },
     { "source": "/how-it-works", "destination": "/" },

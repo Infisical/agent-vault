@@ -42,14 +42,14 @@ Common services: Stripe (bearer), GitHub (bearer), OpenAI (bearer), Ashby (basic
   Content-Type: application/json
 
   {
-    "rules": [{"action": "set", "host": "api.stripe.com", "description": "Stripe API", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
+    "services": [{"action": "set", "host": "api.stripe.com", "description": "Stripe API", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
     "credentials": [{"action": "set", "key": "STRIPE_KEY", "description": "Stripe credential key", "obtain": "https://dashboard.stripe.com/apikeys", "obtain_instructions": "Developers → API Keys → Reveal test key"}],
     "message": "Need Stripe API key for billing feature",
     "user_message": "I need access to your Stripe account to build the checkout page."
   }
 
 Key fields:
-- rules[].action: "set" (upsert, needs host + auth) or "delete" (needs host only)
+- services[].action: "set" (upsert, needs host + auth) or "delete" (needs host only)
 - credentials[].action: "set" (omit value for human to supply; include value to store back) or "delete"
 - credentials: only declare credentials not already in available_credentials from /discover
 - message: developer-facing explanation; user_message: shown on approval page

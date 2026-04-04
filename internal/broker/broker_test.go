@@ -7,10 +7,10 @@ import (
 )
 
 func TestMatchHostExact(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Host: "api.stripe.com", Auth: Auth{Type: "bearer", Token: "STRIPE_KEY"}},
 	}
-	r := MatchHost("api.stripe.com", rules)
+	r := MatchHost("api.stripe.com", services)
 	if r == nil {
 		t.Fatal("expected a match")
 	}
@@ -20,41 +20,41 @@ func TestMatchHostExact(t *testing.T) {
 }
 
 func TestMatchHostWildcard(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Host: "*.github.com", Auth: Auth{Type: "bearer", Token: "GH_TOKEN"}},
 	}
 	for _, host := range []string{"api.github.com", "uploads.github.com"} {
-		r := MatchHost(host, rules)
+		r := MatchHost(host, services)
 		if r == nil {
 			t.Fatalf("expected match for %s", host)
 		}
 	}
 	// Should not match bare "github.com"
-	if r := MatchHost("github.com", rules); r != nil {
+	if r := MatchHost("github.com", services); r != nil {
 		t.Fatal("did not expect match for github.com")
 	}
 }
 
 func TestMatchHostNoMatch(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Host: "api.stripe.com", Auth: Auth{Type: "bearer", Token: "STRIPE_KEY"}},
 	}
-	if r := MatchHost("evil.com", rules); r != nil {
+	if r := MatchHost("evil.com", services); r != nil {
 		t.Fatal("expected no match")
 	}
 }
 
 func TestMatchHostFirstWins(t *testing.T) {
-	rules := []Rule{
+	services := []Service{
 		{Host: "*.example.com", Auth: Auth{Type: "custom", Headers: map[string]string{"X-First": "1"}}},
 		{Host: "api.example.com", Auth: Auth{Type: "custom", Headers: map[string]string{"X-Second": "2"}}},
 	}
-	r := MatchHost("api.example.com", rules)
+	r := MatchHost("api.example.com", services)
 	if r == nil {
 		t.Fatal("expected a match")
 	}
 	if _, ok := r.Auth.Headers["X-First"]; !ok {
-		t.Fatal("expected first rule to win")
+		t.Fatal("expected first service to win")
 	}
 }
 
@@ -329,7 +329,7 @@ func TestAuthResolveUnsupportedType(t *testing.T) {
 func TestValidateConfigWithAuth(t *testing.T) {
 	cfg := &Config{
 		Vault: "default",
-		Rules: []Rule{
+		Services: []Service{
 			{Host: "api.stripe.com", Auth: Auth{Type: "bearer", Token: "STRIPE_KEY"}},
 			{Host: "api.ashby.com", Auth: Auth{Type: "basic", Username: "ASHBY_KEY"}},
 		},
@@ -342,7 +342,7 @@ func TestValidateConfigWithAuth(t *testing.T) {
 func TestValidateConfigInvalidAuth(t *testing.T) {
 	cfg := &Config{
 		Vault: "default",
-		Rules: []Rule{
+		Services: []Service{
 			{Host: "api.stripe.com", Auth: Auth{Type: "bearer"}}, // missing token
 		},
 	}

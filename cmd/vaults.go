@@ -318,7 +318,7 @@ var vaultDeleteCmd = &cobra.Command{
 
 		yes, _ := cmd.Flags().GetBool("yes")
 		if !yes {
-			fmt.Fprintf(cmd.OutOrStderr(), "%s This will permanently delete vault %q and all its credentials, policies, and proposals.\n", warningText("WARNING"), name)
+			fmt.Fprintf(cmd.OutOrStderr(), "%s This will permanently delete vault %q and all its credentials, services, and proposals.\n", warningText("WARNING"), name)
 			fmt.Fprintf(cmd.OutOrStderr(), "Type %q to confirm: ", name)
 			reader := bufio.NewReader(os.Stdin)
 			answer, err := reader.ReadString('\n')

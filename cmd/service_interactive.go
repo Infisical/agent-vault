@@ -23,9 +23,9 @@ const (
 )
 
 
-// runInteractivePolicySet is the entry point for the interactive policy builder.
-// It is called from policySetCmd when no -f flag is provided.
-func runInteractivePolicySet(cmd *cobra.Command) error {
+// runInteractiveServiceSet is the entry point for the interactive service builder.
+// It is called from serviceSetCmd when no -f flag is provided.
+func runInteractiveServiceSet(cmd *cobra.Command) error {
 	if err := requireTTY(); err != nil {
 		return err
 	}
@@ -42,43 +42,43 @@ func runInteractivePolicySet(cmd *cobra.Command) error {
 		return handleAbort(cmd, err)
 	}
 
-	// Step 2: Check existing policy
-	existingRules, err := fetchPolicyRules(client, nsName)
+	// Step 2: Check existing services
+	existingServices, err := fetchServices(client, nsName)
 	if err != nil {
 		return err
 	}
 
-	strategy, err := chooseMergeStrategy(cmd, existingRules)
+	strategy, err := chooseMergeStrategy(cmd, existingServices)
 	if err != nil {
 		return handleAbort(cmd, err)
 	}
 
-	// Step 3: Rule builder loop
-	newRules, err := ruleBuilderLoop(client, nsName, cmd)
+	// Step 3: Service builder loop
+	newServices, err := serviceBuilderLoop(client, nsName, cmd)
 	if err != nil {
 		return handleAbort(cmd, err)
 	}
 
 	// Merge
-	finalRules := mergeRules(existingRules, newRules, strategy)
+	finalServices := mergeServices(existingServices, newServices, strategy)
 
 	// Validate
 	cfg := broker.Config{
-		Vault: nsName,
-		Rules:     finalRules,
+		Vault:    nsName,
+		Services: finalServices,
 	}
 	if err := broker.Validate(&cfg); err != nil {
-		return fmt.Errorf("invalid policy: %w", err)
+		return fmt.Errorf("invalid services: %w", err)
 	}
 
 	// Emit non-blocking warnings
 	credentialKeys := listCredentialKeys(client, nsName)
-	for _, w := range findUnresolvedCredentials(finalRules, credentialKeys) {
+	for _, w := range findUnresolvedCredentials(finalServices, credentialKeys) {
 		fmt.Fprintf(cmd.ErrOrStderr(), "%s credential %q is referenced but not found in vault\n", warningText("Warning:"), w)
 	}
 
 	// Step 5: Preview
-	preview := renderPreview(nsName, finalRules)
+	preview := renderPreview(nsName, finalServices)
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), preview)
 
 	// Step 6: Confirm
@@ -92,22 +92,22 @@ func runInteractivePolicySet(cmd *cobra.Command) error {
 	}
 
 	// Apply via API
-	rulesJSON, err := json.Marshal(finalRules)
+	servicesJSON, err := json.Marshal(finalServices)
 	if err != nil {
-		return fmt.Errorf("marshalling rules: %w", err)
+		return fmt.Errorf("marshalling services: %w", err)
 	}
 
-	body, err := json.Marshal(map[string]json.RawMessage{"rules": rulesJSON})
+	body, err := json.Marshal(map[string]json.RawMessage{"services": servicesJSON})
 	if err != nil {
 		return err
 	}
 
-	url := fmt.Sprintf("%s/v1/vaults/%s/policy", client.Address, nsName)
+	url := fmt.Sprintf("%s/v1/vaults/%s/services", client.Address, nsName)
 	if err := doAdminRequest("PUT", url, client.Token, body); err != nil {
 		return err
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "%s Policy applied to vault %q (%d rule(s)).\n", successText("✓"), nsName, len(finalRules))
+	fmt.Fprintf(cmd.OutOrStdout(), "%s Services applied to vault %q (%d service(s)).\n", successText("✓"), nsName, len(finalServices))
 	return nil
 }
 
@@ -123,31 +123,31 @@ func handleAbort(cmd *cobra.Command, err error) error {
 // requireTTY checks that stdin is a terminal.
 func requireTTY() error {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return fmt.Errorf("interactive mode requires a terminal. Use -f to apply a policy from a file")
+		return fmt.Errorf("interactive mode requires a terminal. Use -f to apply services from a file")
 	}
 	return nil
 }
 
-// fetchPolicyRules fetches the current policy rules for a vault via the API.
-func fetchPolicyRules(client *session.ClientSession, nsName string) ([]broker.Rule, error) {
-	url := fmt.Sprintf("%s/v1/vaults/%s/policy", client.Address, nsName)
+// fetchServices fetches the current services for a vault via the API.
+func fetchServices(client *session.ClientSession, nsName string) ([]broker.Service, error) {
+	url := fmt.Sprintf("%s/v1/vaults/%s/services", client.Address, nsName)
 	respBody, err := doAdminRequestWithBody("GET", url, client.Token, nil)
 	if err != nil {
-		return nil, nil // No policy or vault not found — treat as empty.
+		return nil, nil // No services or vault not found — treat as empty.
 	}
 
 	var resp struct {
-		Rules json.RawMessage `json:"rules"`
+		Services json.RawMessage `json:"services"`
 	}
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, nil
 	}
 
-	var rules []broker.Rule
-	if err := json.Unmarshal(resp.Rules, &rules); err != nil {
+	var services []broker.Service
+	if err := json.Unmarshal(resp.Services, &services); err != nil {
 		return nil, nil
 	}
-	return rules, nil
+	return services, nil
 }
 
 // selectVault prompts the user to pick a vault.
@@ -193,18 +193,18 @@ func selectVault(client *session.ClientSession) (string, error) {
 	return choice, nil
 }
 
-// chooseMergeStrategy asks the user what to do when existing rules are present.
-func chooseMergeStrategy(cmd *cobra.Command, existingRules []broker.Rule) (mergeStrategy, error) {
-	if len(existingRules) == 0 {
+// chooseMergeStrategy asks the user what to do when existing services are present.
+func chooseMergeStrategy(cmd *cobra.Command, existingServices []broker.Service) (mergeStrategy, error) {
+	if len(existingServices) == 0 {
 		return mergeReplace, nil
 	}
 
 	var choice string
 	err := huh.NewSelect[string]().
-		Title(fmt.Sprintf("Vault already has %d rule(s). What would you like to do?", len(existingRules))).
+		Title(fmt.Sprintf("Vault already has %d service(s). What would you like to do?", len(existingServices))).
 		Options(
-			huh.NewOption[string]("Add new rules (keep existing)", "append"),
-			huh.NewOption[string]("Replace all rules", "replace"),
+			huh.NewOption[string]("Add new services (keep existing)", "append"),
+			huh.NewOption[string]("Replace all services", "replace"),
 		).
 		Value(&choice).
 		Run()
@@ -218,26 +218,26 @@ func chooseMergeStrategy(cmd *cobra.Command, existingRules []broker.Rule) (merge
 	return mergeReplace, nil
 }
 
-// ruleBuilderLoop collects rules until the user declines to add more.
-func ruleBuilderLoop(client *session.ClientSession, nsName string, cmd *cobra.Command) ([]broker.Rule, error) {
-	var rules []broker.Rule
+// serviceBuilderLoop collects services until the user declines to add more.
+func serviceBuilderLoop(client *session.ClientSession, nsName string, cmd *cobra.Command) ([]broker.Service, error) {
+	var services []broker.Service
 
 	for {
-		rule, err := buildRule(client, nsName, cmd)
+		service, err := buildService(client, nsName, cmd)
 		if err != nil {
 			return nil, err
 		}
-		rules = append(rules, *rule)
+		services = append(services, *service)
 
 		// Warn on duplicate hosts
-		for _, dup := range findDuplicateHosts(rules) {
-			fmt.Fprintf(cmd.ErrOrStderr(), "%s multiple rules for host %q — the last rule wins\n", warningText("Warning:"), dup)
+		for _, dup := range findDuplicateHosts(services) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "%s multiple services for host %q — the last service wins\n", warningText("Warning:"), dup)
 		}
 
-		if len(rules) > 0 {
+		if len(services) > 0 {
 			var addMore bool
 			err = huh.NewConfirm().
-				Title("Add another rule?").
+				Title("Add another service?").
 				Affirmative("Yes").
 				Negative("No").
 				Value(&addMore).
@@ -251,11 +251,11 @@ func ruleBuilderLoop(client *session.ClientSession, nsName string, cmd *cobra.Co
 		}
 	}
 
-	return rules, nil
+	return services, nil
 }
 
-// buildRule guides the user through creating a single rule.
-func buildRule(client *session.ClientSession, nsName string, cmd *cobra.Command) (*broker.Rule, error) {
+// buildService guides the user through creating a single service.
+func buildService(client *session.ClientSession, nsName string, cmd *cobra.Command) (*broker.Service, error) {
 	host, err := promptHost(cmd)
 	if err != nil {
 		return nil, err
@@ -271,7 +271,7 @@ func buildRule(client *session.ClientSession, nsName string, cmd *cobra.Command)
 		return nil, err
 	}
 
-	return &broker.Rule{
+	return &broker.Service{
 		Host:        host,
 		Description: desc,
 		Auth:        auth,
@@ -453,7 +453,7 @@ func promptDescription() (*string, error) {
 	return &desc, nil
 }
 
-// headerBuilderLoop collects at least one header per rule.
+// headerBuilderLoop collects at least one header per service.
 func headerBuilderLoop(client *session.ClientSession, nsName string) (map[string]string, error) {
 	headers := make(map[string]string)
 
@@ -645,11 +645,11 @@ func pickAuthFormat(credentialKey string) (string, error) {
 	return strings.TrimSpace(custom), nil
 }
 
-// renderPreview returns the full policy as a formatted YAML preview.
-func renderPreview(vault string, rules []broker.Rule) string {
+// renderPreview returns the full services config as a formatted YAML preview.
+func renderPreview(vault string, services []broker.Service) string {
 	cfg := broker.Config{
-		Vault: vault,
-		Rules:     rules,
+		Vault:    vault,
+		Services: services,
 	}
 
 	out, err := yaml.Marshal(cfg)
@@ -658,17 +658,17 @@ func renderPreview(vault string, rules []broker.Rule) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(sectionHeader("--- Policy Preview ---") + "\n")
+	sb.WriteString(sectionHeader("--- Services Preview ---") + "\n")
 	sb.Write(out)
-	sb.WriteString(mutedText("----------------------"))
+	sb.WriteString(mutedText("------------------------"))
 	return sb.String()
 }
 
-// confirmApply asks the user to confirm applying the policy.
+// confirmApply asks the user to confirm applying the services.
 func confirmApply() (bool, error) {
 	var ok bool
 	err := huh.NewConfirm().
-		Title("Apply this policy?").
+		Title("Apply these services?").
 		Affirmative("Yes").
 		Negative("No").
 		Value(&ok).
@@ -706,11 +706,11 @@ func hostWarnings(host string) []string {
 	return warnings
 }
 
-// findDuplicateHosts returns host patterns that appear more than once in the rule list.
-func findDuplicateHosts(rules []broker.Rule) []string {
+// findDuplicateHosts returns host patterns that appear more than once in the service list.
+func findDuplicateHosts(services []broker.Service) []string {
 	seen := make(map[string]int)
-	for _, r := range rules {
-		seen[r.Host]++
+	for _, s := range services {
+		seen[s.Host]++
 	}
 	var dups []string
 	for host, count := range seen {
@@ -721,8 +721,8 @@ func findDuplicateHosts(rules []broker.Rule) []string {
 	return dups
 }
 
-// findUnresolvedCredentials returns credential names referenced in rules that are not in knownKeys.
-func findUnresolvedCredentials(rules []broker.Rule, knownKeys []string) []string {
+// findUnresolvedCredentials returns credential names referenced in services that are not in knownKeys.
+func findUnresolvedCredentials(services []broker.Service, knownKeys []string) []string {
 	known := make(map[string]bool, len(knownKeys))
 	for _, k := range knownKeys {
 		known[k] = true
@@ -730,8 +730,8 @@ func findUnresolvedCredentials(rules []broker.Rule, knownKeys []string) []string
 
 	seen := make(map[string]bool)
 	var unresolved []string
-	for _, r := range rules {
-		for _, key := range r.Auth.CredentialKeys() {
+	for _, s := range services {
+		for _, key := range s.Auth.CredentialKeys() {
 			if !known[key] && !seen[key] {
 				unresolved = append(unresolved, key)
 				seen[key] = true
@@ -741,10 +741,10 @@ func findUnresolvedCredentials(rules []broker.Rule, knownKeys []string) []string
 	return unresolved
 }
 
-// mergeRules combines existing and new rules based on the chosen strategy.
-func mergeRules(existing, newRules []broker.Rule, strategy mergeStrategy) []broker.Rule {
+// mergeServices combines existing and new services based on the chosen strategy.
+func mergeServices(existing, newServices []broker.Service, strategy mergeStrategy) []broker.Service {
 	if strategy == mergeAppend {
-		return append(existing, newRules...)
+		return append(existing, newServices...)
 	}
-	return newRules
+	return newServices
 }

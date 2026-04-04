@@ -41,7 +41,7 @@ Vault-level roles govern what users and [agents](/agents/overview) can do inside
 | View credential names                          | Yes   | Yes      | Yes      |
 | Set / delete credentials directly               | Yes   | Yes      | No       |
 | Approve / reject [proposals](/learn/proposals) | Yes   | Yes      | No       |
-| Manage vault [policy](/learn/policies)         | Yes   | Yes      | No       |
+| Manage vault [services](/learn/services)       | Yes   | Yes      | No       |
 | Invite agents (consumer only)                  | Yes   | Yes      | No       |
 | Invite agents (any role)                       | Yes   | No       | No       |
 | Invite users to vault                          | Yes   | No       | No       |
@@ -49,7 +49,7 @@ Vault-level roles govern what users and [agents](/agents/overview) can do inside
 | Manage agents (revoke, rotate, rename)         | Yes   | No       | No       |
 | Delete vault                                   | Yes   | No       | No       |
 
-The **consumer** role is the most restricted, ideal for agents that only need to proxy requests and raise proposals for human review. The **member** role adds the ability to manage credentials, approve proposals, and set vault policy. The **admin** role has full control, including inviting users and agents with any role.
+The **consumer** role is the most restricted, ideal for agents that only need to proxy requests and raise proposals for human review. The **member** role adds the ability to manage credentials, approve proposals, and configure vault services. The **admin** role has full control, including inviting users and agents with any role.
 
 Vault admins and members can both review agent [proposals](/learn/proposals). When an agent raises a proposal, vault members receive the approval link (via email if SMTP is configured) and can approve or reject from the browser or CLI.
 
@@ -70,7 +70,7 @@ The two permission axes are fully independent. An instance owner who has not joi
   </Step>
   <Step title="Start working">
     The owner can immediately invite agents, set
-    [credentials](/learn/credentials), and configure [policies](/learn/policies)
+    [credentials](/learn/credentials), and configure [services](/learn/services)
     on the default vault. No further setup is needed.
   </Step>
 </Steps>

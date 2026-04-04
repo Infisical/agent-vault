@@ -12,14 +12,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var policyCmd = &cobra.Command{
-	Use:   "policy",
-	Short: "Manage the policy for a vault",
+var serviceCmd = &cobra.Command{
+	Use:   "service",
+	Short: "Manage services for a vault",
 }
 
-var policyGetCmd = &cobra.Command{
-	Use:   "get",
-	Short: "Print the policy for the vault",
+var serviceListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List services for the vault",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vault := resolveVault(cmd)
@@ -29,28 +29,28 @@ var policyGetCmd = &cobra.Command{
 			return err
 		}
 
-		url := fmt.Sprintf("%s/v1/vaults/%s/policy", sess.Address, vault)
+		url := fmt.Sprintf("%s/v1/vaults/%s/services", sess.Address, vault)
 		respBody, err := doAdminRequestWithBody("GET", url, sess.Token, nil)
 		if err != nil {
 			return err
 		}
 
 		var resp struct {
-			Vault string          `json:"vault"`
-			Rules     json.RawMessage `json:"rules"`
+			Vault    string          `json:"vault"`
+			Services json.RawMessage `json:"services"`
 		}
 		if err := json.Unmarshal(respBody, &resp); err != nil {
 			return fmt.Errorf("parsing response: %w", err)
 		}
 
-		var rules []broker.Rule
-		if err := json.Unmarshal(resp.Rules, &rules); err != nil {
-			return fmt.Errorf("parsing rules: %w", err)
+		var services []broker.Service
+		if err := json.Unmarshal(resp.Services, &services); err != nil {
+			return fmt.Errorf("parsing services: %w", err)
 		}
 
 		cfg := broker.Config{
-			Vault: vault,
-			Rules:     rules,
+			Vault:    vault,
+			Services: services,
 		}
 
 		out, err := yaml.Marshal(cfg)
@@ -63,15 +63,15 @@ var policyGetCmd = &cobra.Command{
 	},
 }
 
-var policySetCmd = &cobra.Command{
+var serviceSetCmd = &cobra.Command{
 	Use:   "set",
-	Short: "Set the policy (interactive or from YAML file)",
+	Short: "Set services (interactive or from YAML file)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vault := resolveVault(cmd)
 		filePath, _ := cmd.Flags().GetString("file")
 		if filePath == "" {
-			return runInteractivePolicySet(cmd)
+			return runInteractiveServiceSet(cmd)
 		}
 
 		var data []byte
@@ -94,7 +94,7 @@ var policySetCmd = &cobra.Command{
 		cfg.Vault = vault
 
 		if err := broker.Validate(&cfg); err != nil {
-			return fmt.Errorf("invalid policy: %w", err)
+			return fmt.Errorf("invalid services: %w", err)
 		}
 
 		sess, err := ensureSession()
@@ -102,36 +102,36 @@ var policySetCmd = &cobra.Command{
 			return err
 		}
 
-		rulesJSON, err := json.Marshal(cfg.Rules)
+		servicesJSON, err := json.Marshal(cfg.Services)
 		if err != nil {
-			return fmt.Errorf("marshalling rules: %w", err)
+			return fmt.Errorf("marshalling services: %w", err)
 		}
 
-		body, err := json.Marshal(map[string]json.RawMessage{"rules": rulesJSON})
+		body, err := json.Marshal(map[string]json.RawMessage{"services": servicesJSON})
 		if err != nil {
 			return err
 		}
 
-		url := fmt.Sprintf("%s/v1/vaults/%s/policy", sess.Address, vault)
+		url := fmt.Sprintf("%s/v1/vaults/%s/services", sess.Address, vault)
 		if err := doAdminRequest("PUT", url, sess.Token, body); err != nil {
 			return err
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "%s Policy updated for vault %q\n", successText("✓"), vault)
+		fmt.Fprintf(cmd.OutOrStdout(), "%s Services updated for vault %q\n", successText("✓"), vault)
 		return nil
 	},
 }
 
-var policyClearCmd = &cobra.Command{
+var serviceClearCmd = &cobra.Command{
 	Use:   "clear",
-	Short: "Remove the policy from the vault",
+	Short: "Remove all services from the vault",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vault := resolveVault(cmd)
 		yes, _ := cmd.Flags().GetBool("yes")
 
 		if !yes {
-			fmt.Fprintf(cmd.OutOrStderr(), "Clear policy for vault %q? [y/N] ", vault)
+			fmt.Fprintf(cmd.OutOrStderr(), "Clear services for vault %q? [y/N] ", vault)
 			reader := bufio.NewReader(os.Stdin)
 			answer, err := reader.ReadString('\n')
 			if err != nil {
@@ -149,12 +149,12 @@ var policyClearCmd = &cobra.Command{
 			return err
 		}
 
-		url := fmt.Sprintf("%s/v1/vaults/%s/policy", sess.Address, vault)
+		url := fmt.Sprintf("%s/v1/vaults/%s/services", sess.Address, vault)
 		if err := doAdminRequest("DELETE", url, sess.Token, nil); err != nil {
 			return err
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "%s Policy cleared for vault %q\n", successText("✓"), vault)
+		fmt.Fprintf(cmd.OutOrStdout(), "%s Services cleared for vault %q\n", successText("✓"), vault)
 		return nil
 	},
 }
@@ -173,11 +173,11 @@ func readStdin() ([]byte, error) {
 }
 
 func init() {
-	policySetCmd.Flags().StringP("file", "f", "", "Path to policy YAML file")
-	policyClearCmd.Flags().Bool("yes", false, "Skip confirmation prompt")
+	serviceSetCmd.Flags().StringP("file", "f", "", "Path to services YAML file")
+	serviceClearCmd.Flags().Bool("yes", false, "Skip confirmation prompt")
 
-	policyCmd.AddCommand(policyGetCmd)
-	policyCmd.AddCommand(policySetCmd)
-	policyCmd.AddCommand(policyClearCmd)
-	vaultCmd.AddCommand(policyCmd)
+	serviceCmd.AddCommand(serviceListCmd)
+	serviceCmd.AddCommand(serviceSetCmd)
+	serviceCmd.AddCommand(serviceClearCmd)
+	vaultCmd.AddCommand(serviceCmd)
 }

@@ -14,7 +14,7 @@ import VaultInvite from "./pages/VaultInvite";
 import ProposalApprove from "./pages/ProposalApprove";
 import VaultLayout from "./components/VaultLayout";
 import ProposalsTab from "./pages/vault/ProposalsTab";
-import PolicyTab from "./pages/vault/PolicyTab";
+import ServicesTab from "./pages/vault/ServicesTab";
 import CredentialsTab from "./pages/vault/CredentialsTab";
 import UsersTab from "./pages/vault/UsersTab";
 import AgentsTab from "./pages/vault/AgentsTab";
@@ -272,7 +272,7 @@ const vaultIndexRoute = createRoute({
   getParentRoute: () => vaultLayoutRoute,
   path: "/",
   beforeLoad: async ({ params }) => {
-    throw redirect({ to: "/vaults/$name/proposals", params });
+    throw redirect({ to: "/vaults/$name/services", params });
   },
 });
 
@@ -282,10 +282,10 @@ const proposalsTabRoute = createRoute({
   component: ProposalsTab,
 });
 
-const policyTabRoute = createRoute({
+const servicesTabRoute = createRoute({
   getParentRoute: () => vaultLayoutRoute,
-  path: "/policy",
-  component: PolicyTab,
+  path: "/services",
+  component: ServicesTab,
 });
 
 const credentialsTabRoute = createRoute({
@@ -353,7 +353,7 @@ const routeTree = rootRoute.addChildren([
     vaultLayoutRoute.addChildren([
       vaultIndexRoute,
       proposalsTabRoute,
-      policyTabRoute,
+      servicesTabRoute,
       credentialsTabRoute,
       usersTabRoute,
       agentsTabRoute,

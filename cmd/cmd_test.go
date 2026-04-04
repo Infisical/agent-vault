@@ -78,7 +78,7 @@ func TestVaultSubcommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"create", "list", "rename", "use", "current", "user", "credentials", "policy", "proposal", "agent"}
+	expected := []string{"create", "list", "rename", "use", "current", "user", "credentials", "service", "proposal", "agent"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected vault subcommand %q to be registered, but it was not", name)
@@ -109,7 +109,7 @@ func TestOwnerVaultSubcommandsRegistered(t *testing.T) {
 	}
 }
 
-func TestPolicySubcommandsRegistered(t *testing.T) {
+func TestServiceSubcommandsRegistered(t *testing.T) {
 	var vCmd *cobra.Command
 	for _, c := range rootCmd.Commands() {
 		if c.Name() == "vault" {
@@ -121,20 +121,20 @@ func TestPolicySubcommandsRegistered(t *testing.T) {
 		t.Fatal("vault command not found")
 	}
 
-	polCmd := findSubcommand(vCmd, "policy")
-	if polCmd == nil {
-		t.Fatal("policy command not found under vault")
+	svcCmd := findSubcommand(vCmd, "service")
+	if svcCmd == nil {
+		t.Fatal("service command not found under vault")
 	}
 
 	registered := make(map[string]bool)
-	for _, c := range polCmd.Commands() {
+	for _, c := range svcCmd.Commands() {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"get", "set", "clear"}
+	expected := []string{"list", "set", "clear"}
 	for _, name := range expected {
 		if !registered[name] {
-			t.Errorf("expected policy subcommand %q to be registered, but it was not", name)
+			t.Errorf("expected service subcommand %q to be registered, but it was not", name)
 		}
 	}
 }

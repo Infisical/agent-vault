@@ -3,14 +3,14 @@ title: "Vaults"
 description: "Create vaults and manage team access with invites and roles."
 ---
 
-A `Vault` is a secure logical container for credentials with policies for how agents can proxy requests through it.
+A `Vault` is a secure logical container for credentials with services that define how agents can proxy requests through it.
 
 Each vault contains:
 
 - **[Credentials](/learn/credentials)**: API keys, database credentials, and other sensitive material that cannot be extracted from the vault.
-- **[Policies](/learn/policies)**: Rules for which hosts (e.g. `api.stripe.com`) can be accessed through the vault along with which and how credential(s) must be attached onto each proxy request.
+- **[Services](/learn/services)**: Definitions of which hosts (e.g. `api.stripe.com`) can be accessed through the vault along with which and how credential(s) must be attached onto each proxy request.
 - **Members**: Users and agents that can access the vault under specific [roles](/learn/permissions#vault-roles) (`admin`, `member`, `consumer`).
-- **[Proposals](/learn/proposals)**: Requests from agents to set credential(s) and/or add host rule(s) that use those credentials.
+- **[Proposals](/learn/proposals)**: Requests from agents to set credential(s) and/or add service(s) that use those credentials.
 
 <Tip>
   Note that a **default** vault is created automatically for the first user of
@@ -125,7 +125,7 @@ agent-vault vault delete my-vault
 The default vault cannot be deleted. Use `--yes` to skip the confirmation prompt.
 
 <Warning>
-  Deleting a vault permanently removes all its [policies](/learn/policies),
+  Deleting a vault permanently removes all its [services](/learn/services),
   [credentials](/learn/credentials), agents, and [proposals](/learn/proposals).
   This cannot be undone.
 </Warning>
@@ -145,7 +145,7 @@ agent-vault owner vault join my-vault
 agent-vault owner vault remove my-vault
 ```
 
-Owners see every vault in their vault list. Vaults they have not joined appear in a separate "Other Vaults" section with a **Join** button. Joining grants the owner admin access, letting them manage credentials, approve proposals, and configure policies.
+Owners see every vault in their vault list. Vaults they have not joined appear in a separate "Other Vaults" section with a **Join** button. Joining grants the owner admin access, letting them manage credentials, approve proposals, and configure services.
 
 <Tip>
   If a user is deleted and their vaults become orphaned (no remaining members),

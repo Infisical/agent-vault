@@ -27,6 +27,7 @@ import (
 
 	"github.com/Infisical/agent-vault/internal/auth"
 	"github.com/Infisical/agent-vault/internal/broker"
+	"github.com/Infisical/agent-vault/internal/catalog"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/netguard"
 	"github.com/Infisical/agent-vault/internal/notify"
@@ -121,17 +122,17 @@ type Store interface {
 
 	// Broker configs
 	GetBrokerConfig(ctx context.Context, vaultID string) (*store.BrokerConfig, error)
-	SetBrokerConfig(ctx context.Context, vaultID, rulesJSON string) (*store.BrokerConfig, error)
+	SetBrokerConfig(ctx context.Context, vaultID, servicesJSON string) (*store.BrokerConfig, error)
 
 	// Proposals
-	CreateProposal(ctx context.Context, vaultID, sessionID, rulesJSON, credentialsJSON, message, userMessage string, credentials map[string]store.EncryptedCredential) (*store.Proposal, error)
+	CreateProposal(ctx context.Context, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]store.EncryptedCredential) (*store.Proposal, error)
 	GetProposal(ctx context.Context, vaultID string, id int) (*store.Proposal, error)
 	GetProposalByApprovalToken(ctx context.Context, token string) (*store.Proposal, error)
 	ListProposals(ctx context.Context, vaultID, status string) ([]store.Proposal, error)
 	CountPendingProposals(ctx context.Context, vaultID string) (int, error)
 	UpdateProposalStatus(ctx context.Context, vaultID string, id int, status, reviewNote string) error
 	GetProposalCredentials(ctx context.Context, vaultID string, proposalID int) (map[string]store.EncryptedCredential, error)
-	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedRulesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string) error
+	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string) error
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
 
 	// Invites
@@ -516,10 +517,11 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 
 	// Vault admin (owner-only)
 	mux.HandleFunc("GET /v1/admin/vaults", s.requireInitialized(s.requireAuth(s.handleAdminVaultList)))
-	mux.HandleFunc("GET /v1/vaults/{name}/policy", s.requireInitialized(s.requireAuth(s.handlePolicyGet)))
-	mux.HandleFunc("PUT /v1/vaults/{name}/policy", s.requireInitialized(s.requireAuth(limitBody(s.handlePolicySet))))
-	mux.HandleFunc("DELETE /v1/vaults/{name}/policy", s.requireInitialized(s.requireAuth(s.handlePolicyClear)))
-	mux.HandleFunc("GET /v1/vaults/{name}/policy/credential-usage", s.requireInitialized(s.requireAuth(s.handlePolicyCredentialUsage)))
+	mux.HandleFunc("GET /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(s.handleServicesGet)))
+	mux.HandleFunc("PUT /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(limitBody(s.handleServicesSet))))
+	mux.HandleFunc("DELETE /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(s.handleServicesClear)))
+	mux.HandleFunc("GET /v1/vaults/{name}/services/credential-usage", s.requireInitialized(s.requireAuth(s.handleServicesCredentialUsage)))
+	mux.HandleFunc("GET /v1/service-catalog", s.requireInitialized(s.handleServiceCatalog))
 
 	// Vault invites
 	mux.HandleFunc("GET /v1/vault-invites/{token}/details", s.requireInitialized(s.handleVaultInviteDetails))
@@ -1412,7 +1414,7 @@ func (s *Server) handleProposalApproveDetails(w http.ResponseWriter, r *http.Req
 		"status":        cs.Status,
 		"user_message":  cs.UserMessage,
 		"message":       cs.Message,
-		"rules":         json.RawMessage(cs.RulesJSON),
+		"services":      json.RawMessage(cs.ServicesJSON),
 		"credentials":       json.RawMessage(cs.CredentialsJSON),
 		"created_at":    cs.CreatedAt.Format(time.RFC3339),
 		"agent_name":    agentName,
@@ -2200,17 +2202,17 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var rules []broker.Rule
-	if err := json.Unmarshal([]byte(brokerCfg.RulesJSON), &rules); err != nil {
-		proxyError(w, http.StatusInternalServerError, "internal", "Failed to parse broker rules")
+	var svcList []broker.Service
+	if err := json.Unmarshal([]byte(brokerCfg.ServicesJSON), &svcList); err != nil {
+		proxyError(w, http.StatusInternalServerError, "internal", "Failed to parse broker services")
 		return
 	}
 
-	services := make([]discoverService, len(rules))
-	for i, rule := range rules {
+	services := make([]discoverService, len(svcList))
+	for i, svc := range svcList {
 		services[i] = discoverService{
-			Host:        rule.Host,
-			Description: rule.Description,
+			Host:        svc.Host,
+			Description: svc.Description,
 		}
 	}
 
@@ -2228,7 +2230,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 const maxPendingProposals = 20
 
 type proposalCreateRequest struct {
-	Rules       []proposal.Rule       `json:"rules"`
+	Services    []proposal.Service    `json:"services"`
 	Credentials []proposal.CredentialSlot `json:"credentials"`
 	Message     string                 `json:"message"`
 	UserMessage string                 `json:"user_message"`
@@ -2251,14 +2253,14 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate the proposal.
-	if err := proposal.Validate(req.Rules, req.Credentials); err != nil {
+	if err := proposal.Validate(req.Services, req.Credentials); err != nil {
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	// Validate that all credential references resolve to existing or proposed credentials.
 	existingKeys := s.listCredentialKeys(ctx, sess.VaultID)
-	if err := proposal.ValidateCredentialRefs(req.Rules, req.Credentials, existingKeys); err != nil {
+	if err := proposal.ValidateCredentialRefs(req.Services, req.Credentials, existingKeys); err != nil {
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -2293,10 +2295,10 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rulesJSON, _ := json.Marshal(req.Rules)
+	servicesJSON, _ := json.Marshal(req.Services)
 	credentialsJSON, _ := json.Marshal(req.Credentials)
 
-	cs, err := s.store.CreateProposal(ctx, sess.VaultID, sess.ID, string(rulesJSON), string(credentialsJSON), req.Message, req.UserMessage, encCredentials)
+	cs, err := s.store.CreateProposal(ctx, sess.VaultID, sess.ID, string(servicesJSON), string(credentialsJSON), req.Message, req.UserMessage, encCredentials)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create proposal")
 		return
@@ -2400,7 +2402,7 @@ func (s *Server) handleProposalGet(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"id":          cs.ID,
 		"status":      cs.Status,
-		"rules":       json.RawMessage(cs.RulesJSON),
+		"services":    json.RawMessage(cs.ServicesJSON),
 		"credentials":     json.RawMessage(cs.CredentialsJSON),
 		"message":     cs.Message,
 		"review_note": cs.ReviewNote,
@@ -2494,10 +2496,10 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Parse proposed rules and credential slots.
-	var proposedRules []proposal.Rule
-	if err := json.Unmarshal([]byte(cs.RulesJSON), &proposedRules); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to parse proposal rules")
+	// Parse proposed services and credential slots.
+	var proposedServices []proposal.Service
+	if err := json.Unmarshal([]byte(cs.ServicesJSON), &proposedServices); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to parse proposal services")
 		return
 	}
 	var credentialSlots []proposal.CredentialSlot
@@ -2559,23 +2561,23 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		finalCredentials[slot.Key] = store.EncryptedCredential{Ciphertext: ct, Nonce: nonce}
 	}
 
-	// Merge rules.
+	// Merge services.
 	bc, err := s.store.GetBrokerConfig(ctx, ns.ID)
 	if err != nil {
 		// No existing config — start fresh.
-		bc = &store.BrokerConfig{RulesJSON: "[]"}
+		bc = &store.BrokerConfig{ServicesJSON: "[]"}
 	}
 
-	var existingRules []broker.Rule
-	if err := json.Unmarshal([]byte(bc.RulesJSON), &existingRules); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to parse existing rules")
+	var existingServices []broker.Service
+	if err := json.Unmarshal([]byte(bc.ServicesJSON), &existingServices); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to parse existing services")
 		return
 	}
 
-	merged, _ := proposal.MergeRules(existingRules, proposedRules)
+	merged, _ := proposal.MergeServices(existingServices, proposedServices)
 	mergedJSON, err := json.Marshal(merged)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to marshal merged rules")
+		jsonError(w, http.StatusInternalServerError, "Failed to marshal merged services")
 		return
 	}
 
@@ -2694,7 +2696,7 @@ func proxyForbiddenWithHint(w http.ResponseWriter, targetHost, nsName string) {
 	w.WriteHeader(http.StatusForbidden)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"error":   "forbidden",
-		"message": fmt.Sprintf("No broker rule matching host %q in vault %q", targetHost, nsName),
+		"message": fmt.Sprintf("No broker service matching host %q in vault %q", targetHost, nsName),
 		"proposal_hint": map[string]interface{}{
 			"host":                 targetHost,
 			"endpoint":             "POST /v1/proposals",
@@ -2826,25 +2828,25 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var rules []broker.Rule
-	if err := json.Unmarshal([]byte(brokerCfg.RulesJSON), &rules); err != nil {
-		proxyError(w, http.StatusInternalServerError, "internal", "Failed to parse broker rules")
+	var services []broker.Service
+	if err := json.Unmarshal([]byte(brokerCfg.ServicesJSON), &services); err != nil {
+		proxyError(w, http.StatusInternalServerError, "internal", "Failed to parse broker services")
 		return
 	}
 
-	// 5. Match host against broker rules.
-	// Strip port for rule matching (rules use bare hostnames).
+	// 5. Match host against broker services.
+	// Strip port for matching (services use bare hostnames).
 	matchHost := targetHost
 	if h, _, err := net.SplitHostPort(targetHost); err == nil {
 		matchHost = h
 	}
-	matched := broker.MatchHost(matchHost, rules)
+	matched := broker.MatchHost(matchHost, services)
 	if matched == nil {
 		proxyForbiddenWithHint(w, targetHost, ns.Name)
 		return
 	}
 
-	// 6. Resolve credentials from matched rule's auth config.
+	// 6. Resolve credentials from matched service's auth config.
 	resolved, err := matched.Auth.Resolve(func(key string) (string, error) {
 		cred, err := s.store.GetCredential(ctx, sess.VaultID, key)
 		if err != nil {
@@ -3377,16 +3379,16 @@ func (s *Server) buildServiceList(ctx context.Context, vaultID string) []discove
 		return []discoverService{}
 	}
 
-	var rules []broker.Rule
-	if err := json.Unmarshal([]byte(brokerCfg.RulesJSON), &rules); err != nil {
+	var svcList []broker.Service
+	if err := json.Unmarshal([]byte(brokerCfg.ServicesJSON), &svcList); err != nil {
 		return []discoverService{}
 	}
 
-	services := make([]discoverService, len(rules))
-	for i, rule := range rules {
+	services := make([]discoverService, len(svcList))
+	for i, svc := range svcList {
 		services[i] = discoverService{
-			Host:        rule.Host,
-			Description: rule.Description,
+			Host:        svc.Host,
+			Description: svc.Description,
 		}
 	}
 	return services
@@ -4083,9 +4085,9 @@ func capabilitiesForRole(role string) []string {
 	base := []string{"proxy", "discover", "proposals"}
 	switch role {
 	case "member":
-		return append(base, "credentials:write", "proposals:approve", "policy:manage", "agents:invite:consumer")
+		return append(base, "credentials:write", "proposals:approve", "services:manage", "agents:invite:consumer")
 	case "admin":
-		return append(base, "credentials:write", "proposals:approve", "policy:manage", "agents:invite:any", "users:invite")
+		return append(base, "credentials:write", "proposals:approve", "services:manage", "agents:invite:any", "users:invite")
 	default:
 		return base
 	}
@@ -4982,10 +4984,10 @@ func (s *Server) handleVaultJoin(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
-// Policy endpoints
+// Services endpoints
 // ---------------------------------------------------------------------------
 
-func (s *Server) handlePolicyGet(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleServicesGet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")
 
@@ -5001,23 +5003,23 @@ func (s *Server) handlePolicyGet(w http.ResponseWriter, r *http.Request) {
 
 	bc, err := s.store.GetBrokerConfig(ctx, ns.ID)
 	if err != nil || bc == nil {
-		// No policy set — return empty rules.
+		// No services set — return empty services.
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"vault": name, "rules": []interface{}{}})
+		json.NewEncoder(w).Encode(map[string]interface{}{"vault": name, "services": []interface{}{}})
 		return
 	}
 
-	var rules json.RawMessage
-	if err := json.Unmarshal([]byte(bc.RulesJSON), &rules); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to parse policy rules")
+	var services json.RawMessage
+	if err := json.Unmarshal([]byte(bc.ServicesJSON), &services); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to parse services")
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"vault": name, "rules": rules})
+	json.NewEncoder(w).Encode(map[string]interface{}{"vault": name, "services": services})
 }
 
-func (s *Server) handlePolicyCredentialUsage(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleServicesCredentialUsage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")
 
@@ -5040,27 +5042,27 @@ func (s *Server) handlePolicyCredentialUsage(w http.ResponseWriter, r *http.Requ
 	bc, err := s.store.GetBrokerConfig(ctx, ns.ID)
 	if err != nil || bc == nil {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"rules": []interface{}{}})
+		json.NewEncoder(w).Encode(map[string]interface{}{"services": []interface{}{}})
 		return
 	}
 
-	var rules []broker.Rule
-	if err := json.Unmarshal([]byte(bc.RulesJSON), &rules); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to parse policy rules")
+	var services []broker.Service
+	if err := json.Unmarshal([]byte(bc.ServicesJSON), &services); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to parse services")
 		return
 	}
 
-	type ruleRef struct {
+	type serviceRef struct {
 		Host        string `json:"host"`
 		Description string `json:"description,omitempty"`
 	}
-	var refs []ruleRef
-	for _, rule := range rules {
-		for _, sk := range rule.Auth.CredentialKeys() {
+	var refs []serviceRef
+	for _, svc := range services {
+		for _, sk := range svc.Auth.CredentialKeys() {
 			if sk == key {
-				ref := ruleRef{Host: rule.Host}
-				if rule.Description != nil {
-					ref.Description = *rule.Description
+				ref := serviceRef{Host: svc.Host}
+				if svc.Description != nil {
+					ref.Description = *svc.Description
 				}
 				refs = append(refs, ref)
 				break
@@ -5070,12 +5072,12 @@ func (s *Server) handlePolicyCredentialUsage(w http.ResponseWriter, r *http.Requ
 
 	w.Header().Set("Content-Type", "application/json")
 	if refs == nil {
-		refs = []ruleRef{}
+		refs = []serviceRef{}
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"rules": refs})
+	json.NewEncoder(w).Encode(map[string]interface{}{"services": refs})
 }
 
-func (s *Server) handlePolicySet(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleServicesSet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")
 
@@ -5085,47 +5087,47 @@ func (s *Server) handlePolicySet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Setting policy requires admin role.
+	// Setting services requires admin role.
 	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
 		return
 	}
 
 	var req struct {
-		Rules json.RawMessage `json:"rules"`
+		Services json.RawMessage `json:"services"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	// Validate rules by unmarshalling into broker.Rule slice and running broker.Validate.
-	var rules []broker.Rule
-	if err := json.Unmarshal(req.Rules, &rules); err != nil {
-		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid rules: %v", err))
+	// Validate services by unmarshalling into broker.Service slice and running broker.Validate.
+	var services []broker.Service
+	if err := json.Unmarshal(req.Services, &services); err != nil {
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid services: %v", err))
 		return
 	}
-	cfg := broker.Config{Vault: name, Rules: rules}
+	cfg := broker.Config{Vault: name, Services: services}
 	if err := broker.Validate(&cfg); err != nil {
-		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid policy: %v", err))
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid services: %v", err))
 		return
 	}
 
-	rulesJSON, err := json.Marshal(rules)
+	servicesJSON, err := json.Marshal(services)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to marshal rules")
+		jsonError(w, http.StatusInternalServerError, "Failed to marshal services")
 		return
 	}
 
-	if _, err := s.store.SetBrokerConfig(ctx, ns.ID, string(rulesJSON)); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to set policy")
+	if _, err := s.store.SetBrokerConfig(ctx, ns.ID, string(servicesJSON)); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to set services")
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"vault": name, "rules_count": len(rules)})
+	json.NewEncoder(w).Encode(map[string]interface{}{"vault": name, "services_count": len(services)})
 }
 
-func (s *Server) handlePolicyClear(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleServicesClear(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")
 
@@ -5135,18 +5137,27 @@ func (s *Server) handlePolicyClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Clearing policy requires admin role.
+	// Clearing services requires admin role.
 	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
 		return
 	}
 
 	if _, err := s.store.SetBrokerConfig(ctx, ns.ID, "[]"); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to clear policy")
+		jsonError(w, http.StatusInternalServerError, "Failed to clear services")
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"vault": name, "cleared": true})
+}
+
+// ---------------------------------------------------------------------------
+// Service catalog endpoint
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleServiceCatalog(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"services": catalog.GetAll()})
 }
 
 // ---------------------------------------------------------------------------
@@ -5336,7 +5347,7 @@ func (s *Server) handleAdminProposalList(w http.ResponseWriter, r *http.Request)
 		ID          int     `json:"id"`
 		Status      string  `json:"status"`
 		Message     string  `json:"message"`
-		RulesJSON   string  `json:"rules_json"`
+		ServicesJSON string  `json:"services_json"`
 		CredentialsJSON string  `json:"credentials_json"`
 		ReviewNote  string  `json:"review_note,omitempty"`
 		ReviewedAt  *string `json:"reviewed_at,omitempty"`
@@ -5349,7 +5360,7 @@ func (s *Server) handleAdminProposalList(w http.ResponseWriter, r *http.Request)
 			ID:          cs.ID,
 			Status:      cs.Status,
 			Message:     cs.Message,
-			RulesJSON:   cs.RulesJSON,
+			ServicesJSON: cs.ServicesJSON,
 			CredentialsJSON: cs.CredentialsJSON,
 			ReviewNote:  cs.ReviewNote,
 			CreatedAt:   cs.CreatedAt.Format(time.RFC3339),
@@ -5408,7 +5419,7 @@ func (s *Server) handleAdminProposalGet(w http.ResponseWriter, r *http.Request) 
 		"status":       cs.Status,
 		"message":      cs.Message,
 		"user_message": cs.UserMessage,
-		"rules_json":   cs.RulesJSON,
+		"services_json": cs.ServicesJSON,
 		"credentials_json": cs.CredentialsJSON,
 		"review_note":  cs.ReviewNote,
 		"created_at":   cs.CreatedAt.Format(time.RFC3339),
