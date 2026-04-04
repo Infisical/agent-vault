@@ -237,6 +237,21 @@ export default function ServicesTab() {
   );
 }
 
+/* -- Service template type -- */
+
+interface ServiceTemplate {
+  id: string;
+  name: string;
+  host: string;
+  description: string;
+  auth_type: string;
+  suggested_credential_key: string;
+  auth_header?: string;
+  auth_prefix?: string;
+  suggested_password_key?: string;
+  auth_headers?: Record<string, string>;
+}
+
 /* -- Add / Edit modal -- */
 
 function ServiceModal({
@@ -253,6 +268,25 @@ function ServiceModal({
   const [host, setHost] = useState(initial?.host ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [authType, setAuthType] = useState(initial?.auth?.type ?? "bearer");
+
+  // Template picker state (only for add mode)
+  const isAddMode = !initial;
+  const [templates, setTemplates] = useState<ServiceTemplate[]>([]);
+  const [templateSearch, setTemplateSearch] = useState("");
+
+  useEffect(() => {
+    if (!isAddMode) return;
+    fetch("/v1/service-catalog")
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => { if (data?.services) setTemplates(data.services); })
+      .catch(() => {});
+  }, [isAddMode]);
+
+  const filteredTemplates = templates.filter((t) => {
+    if (!templateSearch.trim()) return true;
+    const q = templateSearch.toLowerCase();
+    return t.name.toLowerCase().includes(q) || t.host.toLowerCase().includes(q) || t.description.toLowerCase().includes(q);
+  });
 
   // Bearer fields
   const [token, setToken] = useState(initial?.auth?.token ?? "");
@@ -338,6 +372,87 @@ function ServiceModal({
     }
   }
 
+  // In add mode, start on the template picker step; skip straight to form for edit
+  const [step, setStep] = useState<"pick" | "form">(isAddMode ? "pick" : "form");
+  const [selectedTemplate, setSelectedTemplate] = useState<ServiceTemplate | null>(null);
+
+  function applyTemplateAndContinue(t: ServiceTemplate) {
+    setHost(t.host);
+    setDescription(t.description);
+    setAuthType(t.auth_type);
+    switch (t.auth_type) {
+      case "bearer": setToken(t.suggested_credential_key); break;
+      case "basic":
+        setUsername(t.suggested_credential_key);
+        if (t.suggested_password_key) setPassword(t.suggested_password_key);
+        break;
+      case "api-key":
+        setApiKey(t.suggested_credential_key);
+        if (t.auth_header) setApiKeyHeader(t.auth_header);
+        if (t.auth_prefix) setApiKeyPrefix(t.auth_prefix);
+        break;
+      case "custom":
+        setCustomHeaders(
+          t.auth_headers && Object.keys(t.auth_headers).length > 0
+            ? Object.entries(t.auth_headers).map(([name, value]) => ({ name, value }))
+            : [{ name: "", value: "" }]
+        );
+        break;
+    }
+    setSelectedTemplate(t);
+    setStep("form");
+  }
+
+  /* -- Template picker step -- */
+  if (step === "pick") {
+    return (
+      <Modal
+        open
+        onClose={onClose}
+        title="Add Service"
+        description="Choose a service template or configure one from scratch."
+        footer={
+          <Button variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+        }
+      >
+        <div className="space-y-3">
+          <Input
+            placeholder="Search services..."
+            value={templateSearch}
+            onChange={(e) => setTemplateSearch(e.target.value)}
+            autoFocus
+          />
+          <div className="grid grid-cols-2 gap-2 max-h-[320px] overflow-y-auto">
+            {/* Custom service card — always first */}
+            <button
+              onClick={() => setStep("form")}
+              className="flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg border border-dashed border-border bg-transparent hover:border-border-focus hover:bg-surface-hover text-left transition-colors"
+            >
+              <span className="text-sm font-medium text-text">Custom service</span>
+              <span className="text-xs text-text-muted">Configure manually</span>
+            </button>
+            {filteredTemplates.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => applyTemplateAndContinue(t)}
+                className="flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg border border-border bg-surface-raised hover:border-border-focus hover:bg-surface-hover text-left transition-colors"
+              >
+                <span className="text-sm font-medium text-text">{t.name}</span>
+                <span className="text-xs text-text-muted">{t.host}</span>
+              </button>
+            ))}
+            {filteredTemplates.length === 0 && (
+              <p className="text-sm text-text-muted py-3 text-center">No templates match your search.</p>
+            )}
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
+  /* -- Form step -- */
   return (
     <Modal
       open
@@ -346,9 +461,15 @@ function ServiceModal({
       description="Services define which hosts are proxied and how credentials are injected."
       footer={
         <>
-          <Button variant="secondary" onClick={onClose}>
-            Cancel
-          </Button>
+          {isAddMode ? (
+            <Button variant="secondary" onClick={() => { setStep("pick"); setSelectedTemplate(null); }}>
+              Back
+            </Button>
+          ) : (
+            <Button variant="secondary" onClick={onClose}>
+              Cancel
+            </Button>
+          )}
           <Button
             onClick={handleSubmit}
             disabled={!canSubmit}
@@ -360,6 +481,13 @@ function ServiceModal({
       }
     >
       <div className="space-y-4">
+        {selectedTemplate && (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-hover border border-border text-sm">
+            <span className="text-text-muted">Template:</span>
+            <span className="font-medium text-text">{selectedTemplate.name}</span>
+          </div>
+        )}
+
         <FormField label="Host Pattern">
           <Input
             placeholder="e.g. api.stripe.com"
