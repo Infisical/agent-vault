@@ -8,158 +8,27 @@ Your vault role is **admin**. You have full vault access: proxy, discover, propo
 
 1. Store env vars from the redemption response: AGENT_VAULT_ADDR (server URL), AGENT_VAULT_SESSION_TOKEN (bearer token), AGENT_VAULT_VAULT (vault name)
 2. Call GET {AGENT_VAULT_ADDR}/discover with Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN} — do this FIRST before any external service interaction
-3. For hosts in the response, route through the proxy. For all others, call directly.
+3. For hosts in the response, route through the proxy: {AGENT_VAULT_ADDR}/proxy/{target_host}/{path}
 4. If a needed service isn't listed, raise a proposal — the user can approve and provide credentials.
 
-## Proxy
+## Admin Capabilities
 
-  {AGENT_VAULT_ADDR}/proxy/{target_host}/{path}[?query]
-  Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+As an admin, you can also:
+- Set credentials: POST {AGENT_VAULT_ADDR}/v1/credentials with {"vault": "...", "credentials": {"KEY": "value"}}
+- Delete credentials: DELETE {AGENT_VAULT_ADDR}/v1/credentials with {"vault": "...", "keys": ["KEY"]}
+- Approve proposals: POST {AGENT_VAULT_ADDR}/v1/admin/proposals/{id}/approve with {"vault": "...", "credentials": {"KEY": "value"}}
+- Reject proposals: POST {AGENT_VAULT_ADDR}/v1/admin/proposals/{id}/reject with {"vault": "...", "reason": "..."}
+- Invite agents with any role: POST {AGENT_VAULT_ADDR}/v1/invites with {"vault": "...", "vault_role": "member|consumer|admin"}
+- Invite users: POST {AGENT_VAULT_ADDR}/v1/vaults/{name}/invites with {"email": "...", "role": "member|admin"}
 
-Agent Vault strips your auth header, attaches real credentials, and forwards over HTTPS.
+## Full Reference
 
-Example: GET {AGENT_VAULT_ADDR}/proxy/api.stripe.com/v1/charges?limit=10
+For the complete Agent Vault reference including auth types, proposal format, error handling, and behavioral rules, fetch:
 
-## Direct Credential Management
-
-You can set and delete credentials directly without a proposal.
-
-### Set Credentials
-
-  POST {AGENT_VAULT_ADDR}/v1/credentials
-  Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-  Content-Type: application/json
-
-  {"vault": "default", "credentials": {"STRIPE_KEY": "sk_test_..."}}
-
-### Delete Credentials
-
-  DELETE {AGENT_VAULT_ADDR}/v1/credentials
-  Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-  Content-Type: application/json
-
-  {"vault": "default", "keys": ["STRIPE_KEY"]}
-
-## Proposal Approval & Rejection
-
-You can approve or reject pending proposals.
-
-### Approve
-
-  POST {AGENT_VAULT_ADDR}/v1/admin/proposals/{id}/approve
-  Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-  Content-Type: application/json
-
-  {"vault": "default", "credentials": {"KEY": "value"}}
-
-Provide values for any credentials the proposal requires.
-
-### Reject
-
-  POST {AGENT_VAULT_ADDR}/v1/admin/proposals/{id}/reject
-  Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-  Content-Type: application/json
-
-  {"vault": "default", "reason": "Not needed"}
-
-## Vault Service Management
-
-You can view, set, and clear the vault's brokered services.
-
-### List Services
-
-  GET {AGENT_VAULT_ADDR}/v1/vaults/{name}/services
-  Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-
-### Set Services
-
-  PUT {AGENT_VAULT_ADDR}/v1/vaults/{name}/services
-  Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-  Content-Type: application/json
-
-  {"services": [{"host": "api.stripe.com", "description": "Stripe API", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}]}
-
-### Clear Services
-
-  DELETE {AGENT_VAULT_ADDR}/v1/vaults/{name}/services
-  Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-
-## Inviting Agents
-
-As an admin, you can invite agents with any role: consumer, member, or admin.
-
-  POST {AGENT_VAULT_ADDR}/v1/invites
-  Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-  Content-Type: application/json
-
-  {"vault": "default", "vault_role": "member"}
-
-For persistent agents: {"vault": "default", "persistent": true, "agent_name": "my-bot", "vault_role": "member"}
-
-Roles: consumer (proxy + proposals only), member (+ credentials, approval, services), admin (+ invite users and agents with any role).
-
-## Inviting Users
-
-As an admin, you can invite human users to join the vault.
-
-  POST {AGENT_VAULT_ADDR}/v1/vaults/{name}/invites
-  Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-  Content-Type: application/json
-
-  {"email": "user@example.com", "role": "member"}
-
-Roles: admin or member. The invitee receives an email (if SMTP is configured) with a link to accept.
-
-## Proposals — Requesting Access to New Services
-
-When you need a credential or proxy access to a host not in /discover, raise a proposal. A 403 response includes a proposal_hint with the denied host.
-
-IMPORTANT: Before raising a proposal, you MUST look up how the target service authenticates API requests. Check the service's API docs to determine the correct auth type. Do not guess — wrong auth wastes the operator's time and will fail at the proxy.
-
-### Auth Types
-
-  bearer    — Authorization: Bearer <token>          {"auth": {"type": "bearer", "token": "SECRET_KEY"}}
-  basic     — HTTP Basic (user, optional password)    {"auth": {"type": "basic", "username": "API_KEY"}}
-  api-key   — key in a named header, optional prefix  {"auth": {"type": "api-key", "key": "SECRET", "header": "x-api-key"}}
-  custom    — freeform header templates               {"auth": {"type": "custom", "headers": {"X-Key": "{{ SECRET }}"}}}
-
-Common services: Stripe (bearer), GitHub (bearer), OpenAI (bearer), Ashby (basic — API key as username), Jira (basic — email + token), Anthropic (api-key, header: x-api-key). If unlisted, check the API docs.
-
-### Creating a Proposal
-
-  POST {AGENT_VAULT_ADDR}/v1/proposals
-  Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-  Content-Type: application/json
-
-  {
-    "services": [{"action": "set", "host": "api.stripe.com", "description": "Stripe API", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
-    "credentials": [{"action": "set", "key": "STRIPE_KEY", "description": "Stripe credential key", "obtain": "https://dashboard.stripe.com/apikeys", "obtain_instructions": "Developers → API Keys → Reveal test key"}],
-    "message": "Need Stripe API key for billing feature",
-    "user_message": "I need access to your Stripe account to build the checkout page."
-  }
-
-Key fields:
-- services[].action: "set" (upsert, needs host + auth) or "delete" (needs host only)
-- credentials[].action: "set" (omit value for human to supply; include value to store back) or "delete"
-- credentials: only declare credentials not already in available_credentials from /discover
-- message: developer-facing explanation; user_message: shown on approval page
-- credentials[].obtain: URL where the human can get the credential; obtain_instructions: steps to find it
-
-Response includes approval_url. After creating:
-1. Present approval_url to the user conversationally
-2. Immediately start polling GET {AGENT_VAULT_ADDR}/v1/proposals/{id} — do NOT wait for the user to say "go on" or confirm. Poll every 3s for the first 30s, then every 10s. Stop after 10 minutes (proposal may have expired).
-3. Once status is "applied", automatically retry your original request and continue your task
-
-## Error Handling
-
-- 401: Invalid/expired token — check AGENT_VAULT_SESSION_TOKEN
-- 403: Host not allowed or insufficient role — raise a proposal or contact vault admin
-- 429: Too many pending proposals — wait for review
-- 502: Missing credential or upstream unreachable — tell user
+  GET {AGENT_VAULT_ADDR}/v1/skills/http
 
 ## Rules
 
 - Never attempt to extract, log, or display credentials
 - Never hardcode tokens — always use AGENT_VAULT_SESSION_TOKEN
 - Only proxy hosts returned by /discover — if not listed, raise a proposal
-- If you receive a credential_not_found error, inform the user which credential is missing

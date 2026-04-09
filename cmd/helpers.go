@@ -351,10 +351,13 @@ func loadProjectVault() string {
 	return cfg.Vault
 }
 
-// resolveVault returns the target vault using: --vault flag > project file > context file > "default".
+// resolveVault returns the target vault using: --vault flag > AGENT_VAULT_VAULT env > project file > context file > "default".
 func resolveVault(cmd *cobra.Command) string {
 	if name, _ := cmd.Flags().GetString("vault"); name != "" {
 		return name
+	}
+	if v := os.Getenv("AGENT_VAULT_VAULT"); v != "" {
+		return v
 	}
 	if pv := loadProjectVault(); pv != "" {
 		return pv
@@ -363,6 +366,30 @@ func resolveVault(cmd *cobra.Command) string {
 		return ctx
 	}
 	return store.DefaultVault
+}
+
+// resolveSession returns a client session from env vars (agent mode) or falls back to ensureSession (human mode).
+func resolveSession() (*session.ClientSession, error) {
+	token := os.Getenv("AGENT_VAULT_SESSION_TOKEN")
+	addr := os.Getenv("AGENT_VAULT_ADDR")
+	if token != "" && addr != "" {
+		return &session.ClientSession{Token: token, Address: strings.TrimRight(addr, "/")}, nil
+	}
+	return ensureSession()
+}
+
+// resolveAddress determines the server address from flags, env vars, or session.
+func resolveAddress(cmd *cobra.Command) string {
+	if addr, _ := cmd.Flags().GetString("address"); addr != "" {
+		return addr
+	}
+	if addr := os.Getenv("AGENT_VAULT_ADDR"); addr != "" {
+		return addr
+	}
+	if sess, err := session.Load(); err == nil && sess != nil {
+		return sess.Address
+	}
+	return DefaultAddress
 }
 
 // doAdminRequestWithBody makes an authenticated HTTP request to the server and returns the response body.

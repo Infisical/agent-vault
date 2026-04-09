@@ -25,7 +25,7 @@ func TestCommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"server", "auth", "vault", "owner", "account"}
+	expected := []string{"server", "auth", "vault", "owner", "account", "catalog"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected command %q to be registered, but it was not", name)
@@ -97,7 +97,7 @@ func TestVaultSubcommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"create", "list", "rename", "use", "current", "init", "user", "credential", "service", "proposal", "agent"}
+	expected := []string{"create", "list", "rename", "use", "current", "init", "user", "credential", "service", "proposal", "agent", "discover"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected vault subcommand %q to be registered, but it was not", name)
@@ -338,7 +338,7 @@ func TestProposalSubcommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"list", "show", "approve", "reject"}
+	expected := []string{"list", "show", "approve", "reject", "create"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected proposal subcommand %q to be registered, but it was not", name)
@@ -562,4 +562,135 @@ func TestResolveVaultWithProjectFile(t *testing.T) {
 			t.Errorf("expected %q, got %q", store.DefaultVault, got)
 		}
 	})
+}
+
+func TestResolveVaultWithEnvVar(t *testing.T) {
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	t.Run("env var used when no flag", func(t *testing.T) {
+		dir := t.TempDir()
+		os.Chdir(dir)
+		t.Setenv("AGENT_VAULT_VAULT", "env-vault")
+
+		cmd := &cobra.Command{}
+		cmd.Flags().String("vault", "", "")
+		got := resolveVault(cmd)
+		if got != "env-vault" {
+			t.Errorf("expected %q, got %q", "env-vault", got)
+		}
+	})
+
+	t.Run("flag takes priority over env var", func(t *testing.T) {
+		dir := t.TempDir()
+		os.Chdir(dir)
+		t.Setenv("AGENT_VAULT_VAULT", "env-vault")
+
+		cmd := &cobra.Command{}
+		cmd.Flags().String("vault", "", "")
+		cmd.Flags().Set("vault", "flag-vault")
+		got := resolveVault(cmd)
+		if got != "flag-vault" {
+			t.Errorf("expected %q, got %q", "flag-vault", got)
+		}
+	})
+
+	t.Run("env var takes priority over project file", func(t *testing.T) {
+		dir := t.TempDir()
+		os.Chdir(dir)
+		os.WriteFile(ProjectConfigFile, []byte(`{"vault": "project-vault"}`), 0o600)
+		t.Setenv("AGENT_VAULT_VAULT", "env-vault")
+
+		cmd := &cobra.Command{}
+		cmd.Flags().String("vault", "", "")
+		got := resolveVault(cmd)
+		if got != "env-vault" {
+			t.Errorf("expected %q, got %q", "env-vault", got)
+		}
+	})
+}
+
+func TestResolveSessionFromEnvVars(t *testing.T) {
+	t.Run("returns session from env vars", func(t *testing.T) {
+		t.Setenv("AGENT_VAULT_SESSION_TOKEN", "test-token-123")
+		t.Setenv("AGENT_VAULT_ADDR", "http://localhost:9999")
+
+		sess, err := resolveSession()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if sess.Token != "test-token-123" {
+			t.Errorf("expected token %q, got %q", "test-token-123", sess.Token)
+		}
+		if sess.Address != "http://localhost:9999" {
+			t.Errorf("expected address %q, got %q", "http://localhost:9999", sess.Address)
+		}
+	})
+
+	t.Run("trims trailing slash from address", func(t *testing.T) {
+		t.Setenv("AGENT_VAULT_SESSION_TOKEN", "test-token")
+		t.Setenv("AGENT_VAULT_ADDR", "http://localhost:9999/")
+
+		sess, err := resolveSession()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if sess.Address != "http://localhost:9999" {
+			t.Errorf("expected address without trailing slash, got %q", sess.Address)
+		}
+	})
+}
+
+func TestProposalCreateFlagsRegistered(t *testing.T) {
+	vCmd := findSubcommand(rootCmd, "vault")
+	if vCmd == nil {
+		t.Fatal("vault command not found")
+	}
+	pCmd := findSubcommand(vCmd, "proposal")
+	if pCmd == nil {
+		t.Fatal("proposal command not found")
+	}
+	createCmd := findSubcommand(pCmd, "create")
+	if createCmd == nil {
+		t.Fatal("create command not found under proposal")
+	}
+
+	expectedFlags := []string{"file", "host", "auth-type", "token-key", "credential", "message", "user-message", "json", "description", "username-key", "password-key", "api-key-key", "api-key-header", "api-key-prefix"}
+	for _, name := range expectedFlags {
+		if createCmd.Flags().Lookup(name) == nil {
+			t.Errorf("expected flag --%s on proposal create command", name)
+		}
+	}
+}
+
+func TestDiscoverFlagsRegistered(t *testing.T) {
+	vCmd := findSubcommand(rootCmd, "vault")
+	if vCmd == nil {
+		t.Fatal("vault command not found")
+	}
+	dCmd := findSubcommand(vCmd, "discover")
+	if dCmd == nil {
+		t.Fatal("discover command not found under vault")
+	}
+
+	if dCmd.Flags().Lookup("json") == nil {
+		t.Error("expected --json flag on discover command")
+	}
+}
+
+func TestCatalogFlagsRegistered(t *testing.T) {
+	catCmd := findSubcommand(rootCmd, "catalog")
+	if catCmd == nil {
+		t.Fatal("catalog command not found")
+	}
+
+	if catCmd.Flags().Lookup("json") == nil {
+		t.Error("expected --json flag on catalog command")
+	}
+	if catCmd.Flags().Lookup("address") == nil {
+		t.Error("expected --address flag on catalog command")
+	}
 }

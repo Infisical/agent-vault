@@ -91,6 +91,7 @@ var serverCmd = &cobra.Command{
 		notifier := notify.New(smtpCfg)
 		oauthProviders := loadOAuthProviders(baseURL)
 		srv := server.New(addr, db, masterKey.Key(), notifier, initialized, baseURL, oauthProviders)
+		srv.SetSkills(skillCLI, skillHTTP)
 		return srv.Start()
 	},
 }
@@ -303,6 +304,7 @@ func runDetachedChild(addr string) error {
 	notifier := notify.New(smtpCfg)
 	oauthProviders := loadOAuthProviders(baseURL)
 	srv := server.New(addr, db, key, notifier, initialized, baseURL, oauthProviders)
+	srv.SetSkills(skillCLI, skillHTTP)
 	return srv.Start()
 }
 

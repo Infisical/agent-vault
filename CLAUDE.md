@@ -60,7 +60,7 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault vault list` -- list vaults the current user has access to (owners see all vaults with `membership` field: `explicit` for joined, `implicit` for visible-but-not-joined)
   - `agent-vault vault delete <name>` -- delete a vault (vault admin or instance owner; cannot delete the default vault; use `--yes` to skip confirmation)
   - `agent-vault vault rename <old-name> <new-name>` -- rename a vault (vault admin or instance owner; cannot rename the default vault)
-  - `agent-vault vault init` -- bind the current directory to a vault by writing `agent-vault.json` (interactive picker; use `--vault` to skip picker). The file is meant to be committed so the whole team shares the vault binding. Vault resolution priority: `--vault` flag > `agent-vault.json` > user context > `"default"`.
+  - `agent-vault vault init` -- bind the current directory to a vault by writing `agent-vault.json` (interactive picker; use `--vault` to skip picker). The file is meant to be committed so the whole team shares the vault binding. Vault resolution priority: `--vault` flag > `AGENT_VAULT_VAULT` env var > `agent-vault.json` > user context > `"default"`.
   - `agent-vault vault user [invite|list|remove|set-role]` -- manage vault user access
     - `agent-vault vault user invite <email> [--vault <name>] [--role admin|member]` -- invite a user to a vault
     - `agent-vault vault user list [--vault <name>]` -- list vault users
@@ -90,9 +90,14 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault vault credential get <key>` -- print the decrypted value of a single credential to stdout (pipe-friendly, requires member+ role)
   - `agent-vault vault credential set <key=value> [...]` -- set one or more credentials
   - `agent-vault vault credential delete <key> [...]` -- delete one or more credentials
-- `agent-vault proposal [--vault] [list|show|approve|reject|review]` -- manage proposals (proposed service/credential changes)
+- `agent-vault proposal [--vault] [list|show|create|approve|reject|review]` -- manage proposals (proposed service/credential changes)
   - `agent-vault proposal list [--status pending]` -- list proposals for vault
   - `agent-vault proposal show <number>` -- show proposal details
+  - `agent-vault proposal create` -- create a proposal to request services or credentials. Supports two modes:
+    - Flag-driven: `--host`, `--auth-type`, `--token-key`/`--username-key`/`--password-key`/`--api-key-key`, `--credential KEY[=description]` (repeatable), `-m/--message`, `--user-message`. Credential slots have no value — the human provides it at approval time.
+    - JSON: `-f <file>` or `-f -` (stdin) for complex/multi-service proposals. `-m` and `--user-message` override JSON fields.
+    - `--json` flag outputs machine-readable JSON response with `{id, status, vault, approval_url}`.
+    - Auth: works with scoped sessions (via `AGENT_VAULT_SESSION_TOKEN` env var or `vault run`).
   - `agent-vault proposal approve <number> [KEY=VALUE ...]` -- approve and apply (requires active login session; prompts for missing credentials)
   - `agent-vault proposal reject <number> [--reason "..."]` -- reject a pending proposal (requires active login session)
   - `agent-vault proposal review` -- interactively walk through all pending proposals (approve, reject, skip, or quit each; requires active login session)
@@ -109,7 +114,9 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault vault agent rename <name> <new-name>` -- rename an agent
 - `agent-vault email test [--to <email>]` -- send a test email to verify SMTP configuration (owner-only; defaults to sending to the owner's own email)
 - `agent-vault reset [--yes]` -- permanently delete all data and reset the instance to a fresh state (owner-only; requires running server for role verification; auto-stops server before reset)
+- `agent-vault vault discover [--json]` -- show available services and credentials for the current vault. Requires a vault-scoped session (via `agent-vault vault run` or `AGENT_VAULT_SESSION_TOKEN` + `AGENT_VAULT_ADDR` env vars). `--json` for machine-readable output.
 - `agent-vault vault run [--addr] -- <agent>` -- wrap an agent process with Agent Vault access
+- `agent-vault catalog [--json] [--address <url>]` -- browse built-in service templates. No auth required. Address resolution: `--address` flag > `AGENT_VAULT_ADDR` env > session file > default.
 
 ## Proxy Endpoint
 
@@ -122,6 +129,19 @@ The server exposes a generic HTTP proxy at `/proxy/{target_host}/{path}[?query]`
 ## Discovery Endpoint
 
 `GET /discover` -- returns the list of brokerable services and available credential key names for the session's vault. Requires a scoped session token. Response includes vault name, proxy URL, services (host + optional description), and `available_credentials` (credential key names only, values are never exposed). Agents use `available_credentials` to reference existing credentials in proposals.
+
+## Agent Skills
+
+Agent Vault provides two skill files that teach agents how to interact with it:
+
+- `cmd/skill_cli.md` (`agent-vault-cli`) -- For agents launched via `vault run` that have the `agent-vault` binary on `$PATH`. Covers CLI commands (`discover`, `catalog`, `proposal create`, `credential get`) and the proxy URL pattern.
+- `cmd/skill_http.md` (`agent-vault-http`) -- For agents without the binary (invite-redeemed, remote, persistent). Covers HTTP endpoints only, including persistent agent mode (service token management).
+
+Both skills are embedded in the Go binary. `vault run` installs both to `~/.{claude,cursor,agents}/skills/agent-vault-{cli,http}/SKILL.md`. The server serves them at public endpoints:
+- `GET /v1/skills/cli` -- returns CLI skill as text/markdown
+- `GET /v1/skills/http` -- returns HTTP skill as text/markdown
+
+Invite redemption responses (`instructions_*.txt`) include compact, role-specific boot instructions with a pointer to `GET /v1/skills/http` for the full reference.
 
 ## Proposal API
 
@@ -315,7 +335,7 @@ docker run -it -p 14321:14321 -v agent-vault-data:/data infisical/agent-vault
 
 - After important changes, update this CLAUDE.md file if the new context would help future sessions (e.g. new commands, architectural decisions, changed patterns)
 - After notable changes, update README.md to keep user-facing documentation current
-- After notable changes, update `.claude/skills/agent-vault/SKILL.md` if the change affects the agent-facing API surface (e.g. new/changed endpoints, response fields, request constraints)
+- After notable changes, update both `cmd/skill_cli.md` and `cmd/skill_http.md` if the change affects the agent-facing API surface (e.g. new/changed endpoints, response fields, request constraints). Both skill files must be updated together.
 - When introducing new environment variables, update `.env.example` and relevant docs
 - Go module: `github.com/Infisical/agent-vault`
 - CLI framework: [spf13/cobra](https://github.com/spf13/cobra)

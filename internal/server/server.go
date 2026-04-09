@@ -73,6 +73,8 @@ type Server struct {
 	initialized bool   // true when at least one owner account exists
 	baseURL        string // externally-reachable base URL (e.g. "https://sb.example.com")
 	oauthProviders map[string]oauth.Provider
+	skillCLI    []byte // embedded CLI skill content (served at GET /v1/skills/cli)
+	skillHTTP   []byte // embedded HTTP skill content (served at GET /v1/skills/http)
 }
 
 // Store is the persistence interface used by the server.
@@ -522,6 +524,8 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("DELETE /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(s.handleServicesClear)))
 	mux.HandleFunc("GET /v1/vaults/{name}/services/credential-usage", s.requireInitialized(s.requireAuth(s.handleServicesCredentialUsage)))
 	mux.HandleFunc("GET /v1/service-catalog", s.requireInitialized(s.handleServiceCatalog))
+	mux.HandleFunc("GET /v1/skills/cli", s.handleSkillCLI)
+	mux.HandleFunc("GET /v1/skills/http", s.handleSkillHTTP)
 
 	// Vault invites
 	mux.HandleFunc("GET /v1/vault-invites/{token}/details", s.requireInitialized(s.handleVaultInviteDetails))
@@ -5235,6 +5239,33 @@ func (s *Server) handleServicesClear(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleServiceCatalog(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"services": catalog.GetAll()})
+}
+
+// ---------------------------------------------------------------------------
+// Skill serving endpoint
+// ---------------------------------------------------------------------------
+
+// SetSkills sets the embedded skill content for the CLI and HTTP skills.
+func (s *Server) SetSkills(cli, httpSkill string) {
+	s.skillCLI = []byte(cli)
+	s.skillHTTP = []byte(httpSkill)
+}
+
+func (s *Server) handleSkillCLI(w http.ResponseWriter, r *http.Request) {
+	s.serveSkill(w, r, s.skillCLI)
+}
+
+func (s *Server) handleSkillHTTP(w http.ResponseWriter, r *http.Request) {
+	s.serveSkill(w, r, s.skillHTTP)
+}
+
+func (s *Server) serveSkill(w http.ResponseWriter, r *http.Request, content []byte) {
+	if len(content) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.Write(content)
 }
 
 // ---------------------------------------------------------------------------

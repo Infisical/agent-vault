@@ -19,8 +19,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-//go:embed skill_claude_code.md
-var skillClaudeCode string
+//go:embed skill_cli.md
+var skillCLI string
+
+//go:embed skill_http.md
+var skillHTTP string
 
 var runCmd = &cobra.Command{
 	Use:   "run [flags] -- <command> [args...]",
@@ -79,11 +82,11 @@ Example:
 		// 6. If the target command is a supported agent, offer to install the
 		//    Agent Vault skill (only when not already present).
 		if isClaudeCommand(args[0]) {
-			maybeInstallSkill("Claude Code", filepath.Join(".claude", "skills", "agent-vault", "SKILL.md"))
+			maybeInstallSkills("Claude Code", ".claude")
 		} else if isCursorCommand(args[0]) {
-			maybeInstallSkill("Cursor", filepath.Join(".cursor", "skills", "agent-vault", "SKILL.md"))
+			maybeInstallSkills("Cursor", ".cursor")
 		} else if isCodexCommand(args[0]) {
-			maybeInstallSkill("Codex", filepath.Join(".agents", "skills", "agent-vault", "SKILL.md"))
+			maybeInstallSkills("Codex", ".agents")
 		}
 
 		// 7. Confirm, then exec — replaces this process entirely so the child
@@ -112,22 +115,36 @@ func isCodexCommand(cmd string) bool {
 	return filepath.Base(cmd) == "codex"
 }
 
-// maybeInstallSkill installs the Agent Vault skill to ~/{relPath} if it
-// doesn't already exist, prompting the user for confirmation first.
-// agentName is used in user-facing messages (e.g. "Claude Code", "Cursor").
-func maybeInstallSkill(agentName, relPath string) {
+// maybeInstallSkills installs both Agent Vault skills (CLI and HTTP) under
+// ~/{baseDir}/skills/ if either is missing, prompting the user once for
+// confirmation. agentName is used in user-facing messages (e.g. "Claude Code").
+func maybeInstallSkills(agentName, baseDir string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return
 	}
-	skillPath := filepath.Join(home, relPath)
 
-	// Already installed — nothing to do.
-	if _, err := os.Stat(skillPath); err == nil {
+	type skillEntry struct {
+		relPath string
+		content string
+	}
+	skills := []skillEntry{
+		{filepath.Join(baseDir, "skills", "agent-vault-cli", "SKILL.md"), skillCLI},
+		{filepath.Join(baseDir, "skills", "agent-vault-http", "SKILL.md"), skillHTTP},
+	}
+
+	// Check which skills need installing.
+	var missing []skillEntry
+	for _, s := range skills {
+		if _, err := os.Stat(filepath.Join(home, s.relPath)); err != nil {
+			missing = append(missing, s)
+		}
+	}
+	if len(missing) == 0 {
 		return
 	}
 
-	fmt.Fprintf(os.Stderr, "Install Agent Vault skill for %s at %s? [Y/n] ", agentName, skillPath)
+	fmt.Fprintf(os.Stderr, "Install Agent Vault skills for %s? [Y/n] ", agentName)
 	reader := bufio.NewReader(os.Stdin)
 	answer, err := reader.ReadString('\n')
 	if err != nil {
@@ -138,16 +155,19 @@ func maybeInstallSkill(agentName, relPath string) {
 		return
 	}
 
-	dir := filepath.Dir(skillPath)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not create skill directory: %v\n", err)
-		return
+	for _, s := range missing {
+		fullPath := filepath.Join(home, s.relPath)
+		dir := filepath.Dir(fullPath)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not create skill directory: %v\n", err)
+			continue
+		}
+		if err := os.WriteFile(fullPath, []byte(s.content), 0o600); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not write skill file: %v\n", err)
+			continue
+		}
 	}
-	if err := os.WriteFile(skillPath, []byte(skillClaudeCode), 0o600); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not write skill file: %v\n", err)
-		return
-	}
-	fmt.Fprintf(os.Stderr, "%s Installed Agent Vault skill for %s.\n", successText("agent-vault:"), agentName)
+	fmt.Fprintf(os.Stderr, "%s Installed Agent Vault skills for %s.\n", successText("agent-vault:"), agentName)
 }
 
 // resolveVaultForRun picks the vault for a run session. Priority:
