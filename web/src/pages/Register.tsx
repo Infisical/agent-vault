@@ -11,6 +11,7 @@ export default function Register() {
   const data = useLoaderData({ from: "/register" }) as { needs_first_user?: boolean; invite_only?: boolean } | undefined;
   const isFirstUser = data?.needs_first_user ?? false;
   const isInviteOnly = !isFirstUser && (data?.invite_only ?? false);
+  const [showLoginLink, setShowLoginLink] = useState(true);
 
   return (
     <div className="min-h-screen w-full flex flex-col bg-bg">
@@ -18,10 +19,10 @@ export default function Register() {
       <div className="flex-1 flex items-center justify-center p-6">
         <div className="flex flex-col items-center w-full">
           <div className="bg-surface rounded-2xl w-full max-w-[480px] p-10 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_8px_24px_rgba(0,0,0,0.04)]">
-            {isInviteOnly ? <InviteOnlyNotice /> : <RegisterForm isFirstUser={isFirstUser} />}
+            {isInviteOnly ? <InviteOnlyNotice /> : <RegisterForm isFirstUser={isFirstUser} onStepChange={(step) => setShowLoginLink(step === "register")} />}
           </div>
 
-          {!isFirstUser && (
+          {!isFirstUser && showLoginLink && (
             <p className="text-sm text-text-muted mt-6 text-center">
               Already have an account?{" "}
               <Link to="/login" className="text-primary font-medium hover:underline">
@@ -62,9 +63,97 @@ function InviteOnlyNotice() {
   );
 }
 
-function RegisterForm({ isFirstUser }: { isFirstUser: boolean }) {
+const INSTALL_COMMAND = "curl -fsSL https://raw.githubusercontent.com/Infisical/agent-vault/main/install.sh | sh";
+
+function CommandBlock({ command }: { command: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // clipboard API may not be available
+    }
+  }
+
+  return (
+    <div className="w-full flex items-center gap-2 bg-bg border border-border rounded-lg px-4 py-3 mb-8">
+      <code className="flex-1 text-left text-sm font-mono text-text truncate">
+        <span className="text-text-muted select-none">$ </span>
+        {command}
+      </code>
+      <button
+        onClick={handleCopy}
+        className="shrink-0 p-1.5 text-text-muted hover:text-text transition-colors bg-transparent border-none cursor-pointer"
+        title={copied ? "Copied!" : "Copy to clipboard"}
+      >
+        {copied ? (
+          <svg className="w-4 h-4 text-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+        ) : (
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </svg>
+        )}
+      </button>
+    </div>
+  );
+}
+
+function InstallCLI({ isAuthenticated }: { isAuthenticated: boolean }) {
   const navigate = useNavigate();
-  const [step, setStep] = useState<"register" | "verify" | "done">("register");
+  const destination = isAuthenticated ? "/vaults" : "/login";
+
+  function handleContinue() {
+    navigate({ to: destination });
+  }
+
+  return (
+    <div className="flex flex-col items-center text-center">
+      <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-6">
+        <svg className="w-8 h-8 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="4 17 10 11 4 5" />
+          <line x1="12" y1="19" x2="20" y2="19" />
+        </svg>
+      </div>
+      <h2 className="text-2xl font-semibold text-text mb-2">Install the CLI</h2>
+      <p className="text-text-muted text-[15px] mb-6">
+        Run this command to install the Agent Vault CLI on your machine
+      </p>
+
+      <CommandBlock command={INSTALL_COMMAND} />
+
+      <button
+        onClick={handleContinue}
+        className="w-full py-3.5 px-4 bg-primary text-primary-text rounded-lg text-[15px] font-semibold transition-colors flex items-center justify-center gap-2 hover:bg-primary-hover border-none cursor-pointer"
+      >
+        Continue
+        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="5" y1="12" x2="19" y2="12" />
+          <polyline points="12 5 19 12 12 19" />
+        </svg>
+      </button>
+
+      <button
+        onClick={handleContinue}
+        className="text-sm text-text-muted hover:text-text mt-4 bg-transparent border-none cursor-pointer p-0 transition-colors"
+      >
+        Skip for now
+      </button>
+    </div>
+  );
+}
+
+function RegisterForm({ isFirstUser, onStepChange }: { isFirstUser: boolean; onStepChange?: (step: string) => void }) {
+  const [step, _setStep] = useState<"register" | "verify" | "install">("register");
+  function setStep(s: "register" | "verify" | "install") {
+    _setStep(s);
+    onStepChange?.(s);
+  }
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -73,7 +162,7 @@ function RegisterForm({ isFirstUser }: { isFirstUser: boolean }) {
   const [passwordError, setPasswordError] = useState("");
   const [confirmError, setConfirmError] = useState("");
   const [submitting, setSubmitting] = useState("");
-  const [successMessage, setSuccessMessage] = useState("");
+  const [authenticated, setAuthenticated] = useState(false);
   const [emailSent, setEmailSent] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
 
@@ -127,10 +216,11 @@ function RegisterForm({ isFirstUser }: { isFirstUser: boolean }) {
         setStep("verify");
         setSubmitting("");
       } else if (data.authenticated) {
-        navigate({ to: "/vaults" });
+        setAuthenticated(true);
+        setStep("install");
+        setSubmitting("");
       } else {
-        setSuccessMessage(data.message || "Account created successfully.");
-        setStep("done");
+        setStep("install");
         setSubmitting("");
       }
     } catch {
@@ -164,12 +254,10 @@ function RegisterForm({ isFirstUser }: { isFirstUser: boolean }) {
       }
 
       if (data.authenticated) {
-        navigate({ to: "/vaults" });
-      } else {
-        setSuccessMessage(data.message || "Account verified.");
-        setStep("done");
-        setSubmitting("");
+        setAuthenticated(true);
       }
+      setStep("install");
+      setSubmitting("");
     } catch {
       setFormError("Network error. Please check your connection and try again.");
       setSubmitting("");
@@ -204,31 +292,8 @@ function RegisterForm({ isFirstUser }: { isFirstUser: boolean }) {
     }
   }
 
-  if (step === "done") {
-    return (
-      <div className="flex flex-col items-center text-center">
-        <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-6">
-          <svg className="w-8 h-8 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-            <polyline points="22 4 12 14.01 9 11.01" />
-          </svg>
-        </div>
-        <h2 className="text-2xl font-semibold text-text mb-2">Account Created</h2>
-        <p className="text-text-muted text-[15px] mb-8">
-          {successMessage || "Your account is ready."} You can now log in.
-        </p>
-        <Link
-          to="/login"
-          className="w-full py-3.5 px-4 bg-primary text-primary-text rounded-lg text-[15px] font-semibold transition-colors flex items-center justify-center gap-2 hover:bg-primary-hover no-underline"
-        >
-          Log In
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="5" y1="12" x2="19" y2="12" />
-            <polyline points="12 5 19 12 12 19" />
-          </svg>
-        </Link>
-      </div>
-    );
+  if (step === "install") {
+    return <InstallCLI isAuthenticated={authenticated} />;
   }
 
   if (step === "verify") {
