@@ -39,7 +39,7 @@ Example:
 	Args:                  cobra.MinimumNArgs(1),
 	DisableFlagsInUseLine: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// 1. Load the admin session from agent-vault login.
+		// 1. Load the admin session from agent-vault auth login.
 		sess, err := ensureSession()
 		if err != nil {
 			return err

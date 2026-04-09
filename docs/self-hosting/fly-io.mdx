@@ -55,7 +55,7 @@ description: "Deploy Agent Vault to Fly.io with persistent storage"
 
   <Step title="Register the owner">
     ```bash
-    agent-vault register --address https://your-app.fly.dev
+    agent-vault auth register --address https://your-app.fly.dev
     ```
 
     The first user to register becomes the instance owner with full admin privileges, auto-granted admin on the default vault.

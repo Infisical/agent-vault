@@ -132,7 +132,7 @@ var registerCmd = &cobra.Command{
 			return fmt.Errorf("verification failed with status %d", verifyResp.StatusCode)
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "%s Account verified. You can now log in with 'agent-vault login'.\n", successText("✓"))
+		fmt.Fprintf(cmd.OutOrStdout(), "%s Account verified. You can now log in with 'agent-vault auth login'.\n", successText("✓"))
 		return nil
 	},
 }
@@ -141,5 +141,4 @@ func init() {
 	registerCmd.Flags().String("address", DefaultAddress, "address of the running Agent Vault server")
 	registerCmd.Flags().String("email", "", "email address")
 	registerCmd.Flags().Bool("password-stdin", false, "read password from stdin")
-	rootCmd.AddCommand(registerCmd)
 }

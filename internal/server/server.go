@@ -587,7 +587,7 @@ func (s *Server) requireInitialized(next http.HandlerFunc) http.HandlerFunc {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"error":   "not_initialized",
-				"message": "No owner account exists. Run 'agent-vault register' to create the first account.",
+				"message": "No owner account exists. Run 'agent-vault auth register' to create the first account.",
 			})
 			return
 		}
@@ -605,7 +605,7 @@ func (s *Server) Start() error {
 	go func() {
 		fmt.Printf("Agent Vault server listening on %s\n", s.baseURL)
 		if !s.initialized {
-			fmt.Printf("Run `agent-vault register` or visit %s to create the owner account\n", s.baseURL)
+			fmt.Printf("Run `agent-vault auth register` or visit %s to create the owner account\n", s.baseURL)
 		}
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
@@ -1290,7 +1290,7 @@ func (s *Server) handleVaultInviteDetails(w http.ResponseWriter, r *http.Request
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"error": true, "error_title": "Already Accepted",
-			"error_message": "This invitation has already been accepted. You can log in using 'agent-vault login'.",
+			"error_message": "This invitation has already been accepted. You can log in using 'agent-vault auth login'.",
 		})
 		return
 	case "revoked":
@@ -3687,7 +3687,7 @@ func (s *Server) handleVaultInviteAccept(w http.ResponseWriter, r *http.Request)
 
 	msg := "Vault access granted."
 	if existing == nil {
-		msg = "Account created and vault access granted. You can now log in using 'agent-vault login'."
+		msg = "Account created and vault access granted. You can now log in using 'agent-vault auth login'."
 	}
 
 	w.Header().Set("Content-Type", "application/json")

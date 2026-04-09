@@ -94,7 +94,7 @@ var changePasswordCmd = &cobra.Command{
 			sess.Token = result.Token
 			if err := session.Save(sess); err != nil {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: password changed but failed to save new session: %v\n", err)
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "You may need to run 'agent-vault login' again.\n")
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "You may need to run 'agent-vault auth login' again.\n")
 				return nil
 			}
 		}

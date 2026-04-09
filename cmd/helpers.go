@@ -225,7 +225,7 @@ func ensureSession() (*session.ClientSession, error) {
 	}
 
 	if !isInteractive() {
-		return nil, fmt.Errorf("not logged in, run 'agent-vault login' first")
+		return nil, fmt.Errorf("not logged in, run 'agent-vault auth login' first")
 	}
 
 	fmt.Fprintln(os.Stderr, "\nNo active session. Let's get you connected.")

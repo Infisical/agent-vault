@@ -3,7 +3,7 @@ title: "Installation"
 description: "Install Agent Vault, start a server, and log in."
 ---
 
-Agent Vault ships as a single binary that acts as both the server and the CLI client. Install it once, then use `agent-vault server` to run a server and `agent-vault login` to interact with it.
+Agent Vault ships as a single binary that acts as both the server and the CLI client. Install it once, then use `agent-vault server` to run a server and `agent-vault auth login` to interact with it.
 
 ## Install
 
@@ -132,8 +132,8 @@ Any CLI command that needs authentication will walk you through registration and
 <Tabs>
   <Tab title="CLI">
     ```bash
-    agent-vault register
-    agent-vault login
+    agent-vault auth register
+    agent-vault auth login
     ```
   </Tab>
   <Tab title="Web UI">
@@ -141,7 +141,7 @@ Any CLI command that needs authentication will walk you through registration and
   </Tab>
 </Tabs>
 
-Subsequent users can self-register via `agent-vault register`, the web registration page, or be [invited to a vault](/learn/vaults#invite-users-to-a-vault) by a vault admin.
+Subsequent users can self-register via `agent-vault auth register`, the web registration page, or be [invited to a vault](/learn/vaults#invite-users-to-a-vault) by a vault admin.
 
 Once registered, you can manage Agent Vault through either the **web dashboard** or entirely via the **[CLI](/reference/cli)**. Both give you full access to [services](/learn/services), [credentials](/learn/credentials), [agents](/agents/overview), and [proposal](/learn/proposals) approvals.
 

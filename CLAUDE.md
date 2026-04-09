@@ -31,9 +31,9 @@ For frontend-only development with hot reload: `make web-dev` (Vite dev server o
 
 Agent Vault requires two things before it becomes operational: a **master password** (encrypts credentials at rest via AES-256-GCM / Argon2id) and an **owner account** (first user with full admin privileges).
 
-- **Interactive startup**: When `agent-vault server` runs interactively on a fresh install, it prompts for master password, then daemonizes. Users self-register via `agent-vault register` or the `/register` web page.
+- **Interactive startup**: When `agent-vault server` runs interactively on a fresh install, it prompts for master password, then daemonizes. Users self-register via `agent-vault auth register` or the `/register` web page.
 - **Non-interactive startup**: When `AGENT_VAULT_MASTER_PASSWORD` env var is set (or `--password-stdin`), the server starts without prompts. All endpoints except `/health`, `POST /v1/auth/register`, and `POST /v1/auth/verify` respond normally once the server is up.
-- **Registration**: The first user to register via `agent-vault register` (or `POST /v1/auth/register`) becomes the owner, auto-active and auto-granted admin on the default vault. Subsequent users receive a 6-digit email verification code (15-min TTL) and must verify before their account is active.
+- **Registration**: The first user to register via `agent-vault auth register` (or `POST /v1/auth/register`) becomes the owner, auto-active and auto-granted admin on the default vault. Subsequent users receive a 6-digit email verification code (15-min TTL) and must verify before their account is active.
 - **Login**: Uses email + password or Google OAuth (owner or member account), not the master password. The master password is only used at server startup for encryption. Login rejects inactive (unverified) accounts.
 - **OAuth (Google)**: When `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_ID` and `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET` env vars are set, "Continue with Google" appears on login/register pages. OAuth uses PKCE (S256), CSRF state, and validates Google ID tokens via JWKS. No automatic account linking from unauthenticated contexts (security: prevents pre-hijack attacks). Users can connect/disconnect Google from account settings. First user must register with email/password. OAuth-only users can set a password from settings for CLI access.
 - **Auth methods**: Users can have password, OAuth (Google), or both. The `oauth_accounts` table tracks OAuth identities. The `handleAuthMe` response includes `has_password` (bool) and `oauth_providers` (string array).
@@ -43,14 +43,14 @@ Agent Vault requires two things before it becomes operational: a **master passwo
 
 - `agent-vault server` -- start the Agent Vault server (default port 14321; includes proxy endpoint at `/proxy/`)
   - `agent-vault server -d` -- start in detached (background) mode; prompts for master password + owner account first, then daemonizes
-  - `agent-vault server --password-stdin` -- read master password from stdin (for non-interactive/automated use); first user registers via `agent-vault register` or the `/register` web page
+  - `agent-vault server --password-stdin` -- read master password from stdin (for non-interactive/automated use); first user registers via `agent-vault auth register` or the `/register` web page
   - `agent-vault server stop` -- stop a running server (reads PID from `~/.agent-vault/agent-vault.pid`, sends SIGTERM)
   - Password resolution order: `AGENT_VAULT_MASTER_PASSWORD` env var, `--password-stdin`, interactive prompt. The env var is unset from the process immediately after reading.
   - `AGENT_VAULT_ADDR` env var: externally-reachable base URL (e.g. `https://agent-vault.example.com`). Used for generating links in emails, invites, and discovery. Falls back to `http://{host}:{port}` if unset.
   - OAuth (Google): configured via `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_ID` and `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET`. When both are set, Google OAuth is enabled. Callback URL: `{AGENT_VAULT_ADDR}/v1/auth/oauth/google/callback`.
   - SMTP notifications: configured via `AGENT_VAULT_SMTP_HOST`, `AGENT_VAULT_SMTP_PORT` (default 587), `AGENT_VAULT_SMTP_USERNAME`, `AGENT_VAULT_SMTP_PASSWORD`, `AGENT_VAULT_SMTP_FROM`, `AGENT_VAULT_SMTP_FROM_NAME` (default "Agent Vault"), `AGENT_VAULT_SMTP_TLS_MODE` (default "opportunistic"; values: opportunistic/required/none), `AGENT_VAULT_SMTP_TLS_SKIP_VERIFY` (default false). If `AGENT_VAULT_SMTP_HOST` is unset, notifications are silently disabled.
-- `agent-vault register [--address, --email, --password-stdin]` -- self-signup; first user to register becomes owner (auto-active, auto-granted admin on default vault)
-- `agent-vault login` -- authenticate with email and password (prompts interactively; use `--email` and `--password-stdin` for piped input)
+- `agent-vault auth register [--address, --email, --password-stdin]` -- self-signup; first user to register becomes owner (auto-active, auto-granted admin on default vault)
+- `agent-vault auth login` -- authenticate with email and password (prompts interactively; use `--email` and `--password-stdin` for piped input)
 - `agent-vault account [whoami|change-password|delete]` -- manage your own account
   - `agent-vault account whoami` -- show current user and session info
   - `agent-vault account change-password` -- change your own password (prompts interactively for current + new + confirm; use `--password-stdin` to read current and new passwords as two lines from stdin). Invalidates all existing sessions and issues a new one.
@@ -169,7 +169,7 @@ type Service struct {
 - `POST /v1/admin/proposals/{id}/reject` -- reject a proposal (requires vault access); accepts `{ "vault": "default", "reason": "..." }`
 - Proxy 403 responses include a `proposal_hint` field with the denied host and endpoint to create a proposal
 
-Proposal states: `pending`, `applied`, `rejected`, or `expired` (7-day TTL). Approval atomically merges services into the broker config, upserts/deletes credentials in one transaction. CLI proposal commands (`approve`, `reject`, `review`) communicate with the running server via these admin endpoints, they require an active login session (`agent-vault login`).
+Proposal states: `pending`, `applied`, `rejected`, or `expired` (7-day TTL). Approval atomically merges services into the broker config, upserts/deletes credentials in one transaction. CLI proposal commands (`approve`, `reject`, `review`) communicate with the running server via these admin endpoints, they require an active login session (`agent-vault auth login`).
 
 - `GET /v1/service-catalog` -- returns list of built-in service templates (no auth required)
 

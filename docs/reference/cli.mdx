@@ -52,9 +52,9 @@ description: "Complete reference for all Agent Vault CLI commands."
 ## Authentication
 
 <AccordionGroup>
-  <Accordion title="agent-vault register">
+  <Accordion title="agent-vault auth register">
     ```bash
-    agent-vault register [flags]
+    agent-vault auth register [flags]
     ```
 
     Self-signup for a new account. The first user to register becomes the instance owner, is auto-activated, and is granted admin on the default vault. Subsequent users receive a 6-digit email verification code.
@@ -66,9 +66,9 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--password-stdin` | `false` | Read password from stdin |
   </Accordion>
 
-  <Accordion title="agent-vault login">
+  <Accordion title="agent-vault auth login">
     ```bash
-    agent-vault login [flags]
+    agent-vault auth login [flags]
     ```
 
     Authenticate with email and password. Prompts interactively by default. Rejects inactive (unverified) accounts.

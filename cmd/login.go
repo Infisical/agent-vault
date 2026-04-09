@@ -104,5 +104,4 @@ func init() {
 	loginCmd.Flags().String("address", DefaultAddress, "server address")
 	loginCmd.Flags().String("email", "", "account email address")
 	loginCmd.Flags().Bool("password-stdin", false, "read password from stdin (for non-interactive use)")
-	rootCmd.AddCommand(loginCmd)
 }

@@ -25,10 +25,29 @@ func TestCommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"server", "login", "register", "vault", "owner", "account"}
+	expected := []string{"server", "auth", "vault", "owner", "account"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected command %q to be registered, but it was not", name)
+		}
+	}
+}
+
+func TestAuthSubcommandsRegistered(t *testing.T) {
+	authCmd := findSubcommand(rootCmd, "auth")
+	if authCmd == nil {
+		t.Fatal("auth command not found")
+	}
+
+	registered := make(map[string]bool)
+	for _, c := range authCmd.Commands() {
+		registered[c.Name()] = true
+	}
+
+	expected := []string{"login", "register"}
+	for _, name := range expected {
+		if !registered[name] {
+			t.Errorf("expected auth subcommand %q to be registered, but it was not", name)
 		}
 	}
 }
