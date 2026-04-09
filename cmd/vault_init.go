@@ -62,7 +62,7 @@ var vaultInitCmd = &cobra.Command{
 		}
 		data = append(data, '\n')
 
-		if err := os.WriteFile(ProjectConfigFile, data, 0o644); err != nil {
+		if err := os.WriteFile(ProjectConfigFile, data, 0o600); err != nil {
 			return fmt.Errorf("writing %s: %w", ProjectConfigFile, err)
 		}
 

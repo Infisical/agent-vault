@@ -473,7 +473,7 @@ func TestLoadProjectVault(t *testing.T) {
 	t.Run("valid file returns vault name", func(t *testing.T) {
 		dir := t.TempDir()
 		os.Chdir(dir)
-		os.WriteFile(ProjectConfigFile, []byte(`{"vault": "staging"}`), 0o644)
+		os.WriteFile(ProjectConfigFile, []byte(`{"vault": "staging"}`), 0o600)
 		if got := loadProjectVault(); got != "staging" {
 			t.Errorf("expected %q, got %q", "staging", got)
 		}
@@ -482,7 +482,7 @@ func TestLoadProjectVault(t *testing.T) {
 	t.Run("malformed JSON returns empty", func(t *testing.T) {
 		dir := t.TempDir()
 		os.Chdir(dir)
-		os.WriteFile(ProjectConfigFile, []byte(`not json`), 0o644)
+		os.WriteFile(ProjectConfigFile, []byte(`not json`), 0o600)
 		if got := loadProjectVault(); got != "" {
 			t.Errorf("expected empty, got %q", got)
 		}
@@ -491,7 +491,7 @@ func TestLoadProjectVault(t *testing.T) {
 	t.Run("empty vault field returns empty", func(t *testing.T) {
 		dir := t.TempDir()
 		os.Chdir(dir)
-		os.WriteFile(ProjectConfigFile, []byte(`{"vault": ""}`), 0o644)
+		os.WriteFile(ProjectConfigFile, []byte(`{"vault": ""}`), 0o600)
 		if got := loadProjectVault(); got != "" {
 			t.Errorf("expected empty, got %q", got)
 		}
@@ -508,7 +508,7 @@ func TestResolveVaultWithProjectFile(t *testing.T) {
 	t.Run("project file used when no flag", func(t *testing.T) {
 		dir := t.TempDir()
 		os.Chdir(dir)
-		os.WriteFile(ProjectConfigFile, []byte(`{"vault": "team-vault"}`), 0o644)
+		os.WriteFile(ProjectConfigFile, []byte(`{"vault": "team-vault"}`), 0o600)
 
 		cmd := &cobra.Command{}
 		cmd.Flags().String("vault", "", "")
@@ -521,7 +521,7 @@ func TestResolveVaultWithProjectFile(t *testing.T) {
 	t.Run("flag takes priority over project file", func(t *testing.T) {
 		dir := t.TempDir()
 		os.Chdir(dir)
-		os.WriteFile(ProjectConfigFile, []byte(`{"vault": "team-vault"}`), 0o644)
+		os.WriteFile(ProjectConfigFile, []byte(`{"vault": "team-vault"}`), 0o600)
 
 		cmd := &cobra.Command{}
 		cmd.Flags().String("vault", "", "")
