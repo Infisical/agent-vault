@@ -332,10 +332,32 @@ func ensureSession() (*session.ClientSession, error) {
 	return sess, nil
 }
 
-// resolveVault returns the target vault using: --vault flag > context file > "default".
+// ProjectConfigFile is the name of the project-level vault binding file.
+const ProjectConfigFile = "agent-vault.json"
+
+// loadProjectVault reads agent-vault.json from the working directory.
+// Returns the vault name or "" if the file doesn't exist or is invalid.
+func loadProjectVault() string {
+	data, err := os.ReadFile(ProjectConfigFile)
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		Vault string `json:"vault"`
+	}
+	if json.Unmarshal(data, &cfg) != nil {
+		return ""
+	}
+	return cfg.Vault
+}
+
+// resolveVault returns the target vault using: --vault flag > project file > context file > "default".
 func resolveVault(cmd *cobra.Command) string {
 	if name, _ := cmd.Flags().GetString("vault"); name != "" {
 		return name
+	}
+	if pv := loadProjectVault(); pv != "" {
+		return pv
 	}
 	if ctx := session.LoadVaultContext(); ctx != "" {
 		return ctx

@@ -150,11 +150,15 @@ func maybeInstallSkill(agentName, relPath string) {
 }
 
 // resolveVaultForRun picks the vault for a run session. Priority:
-// --vault flag > vault context > interactive select (if multiple) > "default".
+// --vault flag > project file > vault context > interactive select (if multiple) > "default".
 func resolveVaultForRun(cmd *cobra.Command, addr, token string) (string, error) {
 	// Explicit --vault flag takes priority.
 	if name, _ := cmd.Flags().GetString("vault"); name != "" {
 		return name, nil
+	}
+	// Project-level agent-vault.json is next.
+	if pv := loadProjectVault(); pv != "" {
+		return pv, nil
 	}
 	// Vault context (set by a previous command) is next.
 	if ctx := session.LoadVaultContext(); ctx != "" {

@@ -55,11 +55,12 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault account whoami` -- show current user and session info
   - `agent-vault account change-password` -- change your own password (prompts interactively for current + new + confirm; use `--password-stdin` to read current and new passwords as two lines from stdin). Invalidates all existing sessions and issues a new one.
   - `agent-vault account delete` -- permanently delete your own account (owners cannot delete themselves; transfer ownership first)
-- `agent-vault vault [create|list|delete|rename]` -- manage vaults (default vault is seeded automatically)
+- `agent-vault vault [create|list|delete|rename|init]` -- manage vaults (default vault is seeded automatically)
   - `agent-vault vault create <name>` -- create a new vault
   - `agent-vault vault list` -- list vaults the current user has access to (owners see all vaults with `membership` field: `explicit` for joined, `implicit` for visible-but-not-joined)
   - `agent-vault vault delete <name>` -- delete a vault (vault admin or instance owner; cannot delete the default vault; use `--yes` to skip confirmation)
   - `agent-vault vault rename <old-name> <new-name>` -- rename a vault (vault admin or instance owner; cannot rename the default vault)
+  - `agent-vault vault init` -- bind the current directory to a vault by writing `agent-vault.json` (interactive picker; use `--vault` to skip picker). The file is meant to be committed so the whole team shares the vault binding. Vault resolution priority: `--vault` flag > `agent-vault.json` > user context > `"default"`.
   - `agent-vault vault user [invite|list|remove|set-role]` -- manage vault user access
     - `agent-vault vault user invite <email> [--vault <name>] [--role admin|member]` -- invite a user to a vault
     - `agent-vault vault user list [--vault <name>]` -- list vault users

@@ -97,7 +97,7 @@ func TestVaultSubcommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"create", "list", "rename", "use", "current", "user", "credentials", "service", "proposal", "agent"}
+	expected := []string{"create", "list", "rename", "use", "current", "init", "user", "credentials", "service", "proposal", "agent"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected vault subcommand %q to be registered, but it was not", name)
@@ -471,4 +471,95 @@ func TestInviteCreateDirectFlags(t *testing.T) {
 	if f.DefValue != "" {
 		t.Errorf("expected --label default to be empty, got %q", f.DefValue)
 	}
+}
+
+func TestLoadProjectVault(t *testing.T) {
+	// Run in a temp directory so we don't affect the real working directory.
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	t.Run("missing file returns empty", func(t *testing.T) {
+		dir := t.TempDir()
+		os.Chdir(dir)
+		if got := loadProjectVault(); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+
+	t.Run("valid file returns vault name", func(t *testing.T) {
+		dir := t.TempDir()
+		os.Chdir(dir)
+		os.WriteFile(ProjectConfigFile, []byte(`{"vault": "staging"}`), 0o600)
+		if got := loadProjectVault(); got != "staging" {
+			t.Errorf("expected %q, got %q", "staging", got)
+		}
+	})
+
+	t.Run("malformed JSON returns empty", func(t *testing.T) {
+		dir := t.TempDir()
+		os.Chdir(dir)
+		os.WriteFile(ProjectConfigFile, []byte(`not json`), 0o600)
+		if got := loadProjectVault(); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+
+	t.Run("empty vault field returns empty", func(t *testing.T) {
+		dir := t.TempDir()
+		os.Chdir(dir)
+		os.WriteFile(ProjectConfigFile, []byte(`{"vault": ""}`), 0o600)
+		if got := loadProjectVault(); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+}
+
+func TestResolveVaultWithProjectFile(t *testing.T) {
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	t.Run("project file used when no flag", func(t *testing.T) {
+		dir := t.TempDir()
+		os.Chdir(dir)
+		os.WriteFile(ProjectConfigFile, []byte(`{"vault": "team-vault"}`), 0o600)
+
+		cmd := &cobra.Command{}
+		cmd.Flags().String("vault", "", "")
+		got := resolveVault(cmd)
+		if got != "team-vault" {
+			t.Errorf("expected %q, got %q", "team-vault", got)
+		}
+	})
+
+	t.Run("flag takes priority over project file", func(t *testing.T) {
+		dir := t.TempDir()
+		os.Chdir(dir)
+		os.WriteFile(ProjectConfigFile, []byte(`{"vault": "team-vault"}`), 0o600)
+
+		cmd := &cobra.Command{}
+		cmd.Flags().String("vault", "", "")
+		cmd.Flags().Set("vault", "explicit")
+		got := resolveVault(cmd)
+		if got != "explicit" {
+			t.Errorf("expected %q, got %q", "explicit", got)
+		}
+	})
+
+	t.Run("falls back to default when no file", func(t *testing.T) {
+		dir := t.TempDir()
+		os.Chdir(dir)
+
+		cmd := &cobra.Command{}
+		cmd.Flags().String("vault", "", "")
+		got := resolveVault(cmd)
+		if got != store.DefaultVault {
+			t.Errorf("expected %q, got %q", store.DefaultVault, got)
+		}
+	})
 }

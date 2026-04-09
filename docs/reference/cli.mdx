@@ -167,6 +167,18 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     Show the active vault.
   </Accordion>
+
+  <Accordion title="agent-vault vault init">
+    ```bash
+    agent-vault vault init [flags]
+    ```
+
+    Bind the current directory to a vault by writing an `agent-vault.json` file. This file is meant to be committed to version control so the whole team shares the vault binding.
+
+    When present, `agent-vault.json` is used in vault resolution between the `--vault` flag and the user context: `--vault` flag > `agent-vault.json` > user context > `"default"`.
+
+    Uses an interactive picker if multiple vaults are available. Use `--vault` to skip the picker.
+  </Accordion>
 </AccordionGroup>
 
 ## Vault users
