@@ -85,7 +85,11 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault service set` -- interactive service builder (prompts for services, auth config, credentials; requires TTY)
   - `agent-vault service set -f <file>` -- replace services from YAML file
   - `agent-vault service clear` -- remove all services (prompts for confirmation; use `--yes` to skip)
-- `agent-vault vault credentials [list|set|delete]` -- manage credentials (alias: `creds`)
+- `agent-vault vault credentials [list|get|set|delete]` -- manage credentials (alias: `creds`)
+  - `agent-vault vault credentials list [--reveal]` -- list credential keys; with `--reveal`, shows decrypted values in a KEY+VALUE table (requires member+ role)
+  - `agent-vault vault credentials get <key>` -- print the decrypted value of a single credential to stdout (pipe-friendly, requires member+ role)
+  - `agent-vault vault credentials set <key=value> [...]` -- set one or more credentials
+  - `agent-vault vault credentials delete <key> [...]` -- delete one or more credentials
 - `agent-vault proposal [--vault] [list|show|approve|reject|review]` -- manage proposals (proposed service/credential changes)
   - `agent-vault proposal list [--status pending]` -- list proposals for vault
   - `agent-vault proposal show <number>` -- show proposal details

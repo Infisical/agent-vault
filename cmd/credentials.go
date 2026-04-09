@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -26,15 +27,23 @@ var credentialsListCmd = &cobra.Command{
 		}
 
 		vault := resolveVault(cmd)
+		reveal, _ := cmd.Flags().GetBool("reveal")
 
-		url := sess.Address + "/v1/credentials?vault=" + vault
-		respBody, err := doAdminRequestWithBody("GET", url, sess.Token, nil)
+		reqURL := sess.Address + "/v1/credentials?vault=" + url.QueryEscape(vault)
+		if reveal {
+			reqURL += "&reveal=true"
+		}
+		respBody, err := doAdminRequestWithBody("GET", reqURL, sess.Token, nil)
 		if err != nil {
 			return err
 		}
 
 		var result struct {
-			Keys []string `json:"keys"`
+			Keys        []string `json:"keys"`
+			Credentials []struct {
+				Key   string `json:"key"`
+				Value string `json:"value"`
+			} `json:"credentials"`
 		}
 		if err := json.Unmarshal(respBody, &result); err != nil {
 			return fmt.Errorf("parsing response: %w", err)
@@ -46,11 +55,57 @@ var credentialsListCmd = &cobra.Command{
 		}
 
 		t := newTable(cmd.OutOrStdout())
-		t.AppendHeader(table.Row{"KEY"})
-		for _, key := range result.Keys {
-			t.AppendRow(table.Row{key})
+		if reveal && len(result.Credentials) > 0 {
+			t.AppendHeader(table.Row{"KEY", "VALUE"})
+			for _, cred := range result.Credentials {
+				t.AppendRow(table.Row{cred.Key, cred.Value})
+			}
+		} else {
+			t.AppendHeader(table.Row{"KEY"})
+			for _, key := range result.Keys {
+				t.AppendRow(table.Row{key})
+			}
 		}
 		t.Render()
+		return nil
+	},
+}
+
+var credentialsGetCmd = &cobra.Command{
+	Use:   "get <key>",
+	Short: "Get the decrypted value of a credential",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sess, err := ensureSession()
+		if err != nil {
+			return err
+		}
+
+		vault := resolveVault(cmd)
+		key := args[0]
+
+		reqURL := sess.Address + "/v1/credentials?vault=" + url.QueryEscape(vault) + "&reveal=true&key=" + url.QueryEscape(key)
+		respBody, err := doAdminRequestWithBody("GET", reqURL, sess.Token, nil)
+		if err != nil {
+			return err
+		}
+
+		var result struct {
+			Credentials []struct {
+				Key   string `json:"key"`
+				Value string `json:"value"`
+			} `json:"credentials"`
+		}
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return fmt.Errorf("parsing response: %w", err)
+		}
+
+		if len(result.Credentials) == 0 {
+			return fmt.Errorf("credential %q not found in vault %q", key, vault)
+		}
+
+		// Print raw value (pipe-friendly).
+		fmt.Fprint(cmd.OutOrStdout(), result.Credentials[0].Value)
 		return nil
 	},
 }
@@ -145,7 +200,9 @@ var credentialsDeleteCmd = &cobra.Command{
 }
 
 func init() {
+	credentialsListCmd.Flags().Bool("reveal", false, "Show decrypted credential values (requires member+ role)")
 	credentialsCmd.AddCommand(credentialsListCmd)
+	credentialsCmd.AddCommand(credentialsGetCmd)
 	credentialsCmd.AddCommand(credentialsSetCmd)
 	credentialsCmd.AddCommand(credentialsDeleteCmd)
 	vaultCmd.AddCommand(credentialsCmd)

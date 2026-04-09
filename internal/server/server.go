@@ -2039,6 +2039,13 @@ func (s *Server) handleCredentialsSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	for key := range req.Credentials {
+		if !broker.CredentialKeyPattern.MatchString(key) {
+			http.Error(w, fmt.Sprintf(`{"error":"Invalid credential key %q: must be SCREAMING_SNAKE_CASE (e.g. STRIPE_KEY)"}`, key), http.StatusBadRequest)
+			return
+		}
+	}
+
 	var setKeys []string
 	for key, value := range req.Credentials {
 		ciphertext, nonce, err := crypto.Encrypt([]byte(value), s.encKey)
@@ -2057,8 +2064,14 @@ func (s *Server) handleCredentialsSet(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(credentialsSetResponse{Set: setKeys})
 }
 
+type credentialEntry struct {
+	Key   string `json:"key"`
+	Value string `json:"value,omitempty"`
+}
+
 type credentialsListResponse struct {
-	Keys []string `json:"keys"`
+	Keys        []string          `json:"keys"`
+	Credentials []credentialEntry `json:"credentials,omitempty"`
 }
 
 func (s *Server) handleCredentialsList(w http.ResponseWriter, r *http.Request) {
@@ -2066,6 +2079,8 @@ func (s *Server) handleCredentialsList(w http.ResponseWriter, r *http.Request) {
 	if vault == "" {
 		vault = store.DefaultVault
 	}
+	reveal := r.URL.Query().Get("reveal") == "true"
+	keyFilter := r.URL.Query().Get("key")
 
 	ctx := r.Context()
 
@@ -2075,8 +2090,35 @@ func (s *Server) handleCredentialsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check vault access (agent scoping + user role/grants).
-	if _, err := s.requireVaultAccess(w, r, ns.ID); err != nil {
+	if reveal {
+		// Revealing values requires member+ role (blocks consumers).
+		if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
+			return
+		}
+	} else {
+		// Listing keys only requires any vault access.
+		if _, err := s.requireVaultAccess(w, r, ns.ID); err != nil {
+			return
+		}
+	}
+
+	// Single-key reveal: fetch and decrypt one credential.
+	if reveal && keyFilter != "" {
+		cred, err := s.store.GetCredential(ctx, ns.ID, keyFilter)
+		if err != nil {
+			jsonError(w, http.StatusNotFound, fmt.Sprintf("Credential %q not found", keyFilter))
+			return
+		}
+		plaintext, err := crypto.Decrypt(cred.Ciphertext, cred.Nonce, s.encKey)
+		if err != nil {
+			http.Error(w, `{"error":"Failed to decrypt credential"}`, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(credentialsListResponse{
+			Keys:        []string{cred.Key},
+			Credentials: []credentialEntry{{Key: cred.Key, Value: string(plaintext)}},
+		})
 		return
 	}
 
@@ -2091,8 +2133,24 @@ func (s *Server) handleCredentialsList(w http.ResponseWriter, r *http.Request) {
 		keys[i] = cred.Key
 	}
 
+	resp := credentialsListResponse{Keys: keys}
+
+	// Bulk reveal: decrypt all credential values.
+	if reveal {
+		entries := make([]credentialEntry, len(creds))
+		for i, cred := range creds {
+			plaintext, err := crypto.Decrypt(cred.Ciphertext, cred.Nonce, s.encKey)
+			if err != nil {
+				http.Error(w, `{"error":"Failed to decrypt credential"}`, http.StatusInternalServerError)
+				return
+			}
+			entries[i] = credentialEntry{Key: cred.Key, Value: string(plaintext)}
+		}
+		resp.Credentials = entries
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(credentialsListResponse{Keys: keys})
+	json.NewEncoder(w).Encode(resp)
 }
 
 type credentialsDeleteRequest struct {
@@ -2129,6 +2187,13 @@ func (s *Server) handleCredentialsDelete(w http.ResponseWriter, r *http.Request)
 	// Deleting credentials requires member+ role.
 	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
 		return
+	}
+
+	for _, key := range req.Keys {
+		if !broker.CredentialKeyPattern.MatchString(key) {
+			http.Error(w, fmt.Sprintf(`{"error":"Invalid credential key %q: must be SCREAMING_SNAKE_CASE (e.g. STRIPE_KEY)"}`, key), http.StatusBadRequest)
+			return
+		}
 	}
 
 	var deleted []string

@@ -1544,6 +1544,170 @@ func TestCredentialsListDefaultVault(t *testing.T) {
 	}
 }
 
+// helper: pre-populate an encrypted credential in the mock store.
+func seedEncryptedCredential(t *testing.T, ms *mockStore, encKey []byte, vaultID, key, plaintext string) {
+	t.Helper()
+	ciphertext, nonce, err := crypto.Encrypt([]byte(plaintext), encKey)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	ms.credentials[vaultID+":"+key] = &store.Credential{
+		ID: "credential-" + key, VaultID: vaultID, Key: key,
+		Ciphertext: ciphertext, Nonce: nonce,
+	}
+}
+
+func TestCredentialsRevealMember(t *testing.T) {
+	// User session (owner) — member+ on vault, should see decrypted values.
+	ms, token := setupMockStoreWithSession(t)
+	encKey := make([]byte, 32)
+	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
+
+	seedEncryptedCredential(t, ms, encKey, "root-ns-id", "SECRET", "s3cr3t")
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default&reveal=true", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp credentialsListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Credentials) != 1 {
+		t.Fatalf("expected 1 credential, got %d", len(resp.Credentials))
+	}
+	if resp.Credentials[0].Value != "s3cr3t" {
+		t.Fatalf("expected value %q, got %q", "s3cr3t", resp.Credentials[0].Value)
+	}
+}
+
+func TestCredentialsRevealSingleKey(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	encKey := make([]byte, 32)
+	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
+
+	seedEncryptedCredential(t, ms, encKey, "root-ns-id", "A_KEY", "val-a")
+	seedEncryptedCredential(t, ms, encKey, "root-ns-id", "B_KEY", "val-b")
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default&reveal=true&key=A_KEY", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp credentialsListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Credentials) != 1 {
+		t.Fatalf("expected 1 credential, got %d", len(resp.Credentials))
+	}
+	if resp.Credentials[0].Key != "A_KEY" || resp.Credentials[0].Value != "val-a" {
+		t.Fatalf("unexpected credential: %+v", resp.Credentials[0])
+	}
+}
+
+func TestCredentialsRevealNotFoundKey(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default&reveal=true&key=NOPE", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCredentialsRevealConsumerBlocked(t *testing.T) {
+	// Scoped session with consumer role — should be blocked from reveal.
+	ms, token := setupMockStoreWithScopedSessionRole(t, "default", "root-ns-id", "consumer")
+	encKey := make([]byte, 32)
+	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
+
+	seedEncryptedCredential(t, ms, encKey, "root-ns-id", "SECRET", "s3cr3t")
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default&reveal=true", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCredentialsRevealScopedMemberAllowed(t *testing.T) {
+	// Scoped session with member role — should be allowed to reveal.
+	ms, token := setupMockStoreWithScopedSessionRole(t, "default", "root-ns-id", "member")
+	encKey := make([]byte, 32)
+	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
+
+	seedEncryptedCredential(t, ms, encKey, "root-ns-id", "TOKEN", "my-token")
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default&reveal=true", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp credentialsListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Credentials) != 1 || resp.Credentials[0].Value != "my-token" {
+		t.Fatalf("unexpected credentials: %+v", resp.Credentials)
+	}
+}
+
+func TestCredentialsListNoRevealBackwardCompat(t *testing.T) {
+	// Without reveal=true, response should have only keys, no credentials array.
+	ms, token := setupMockStoreWithSession(t)
+	encKey := make([]byte, 32)
+	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
+
+	seedEncryptedCredential(t, ms, encKey, "root-ns-id", "FOO", "bar")
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp credentialsListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Keys) != 1 || resp.Keys[0] != "FOO" {
+		t.Fatalf("expected keys [FOO], got %v", resp.Keys)
+	}
+	if len(resp.Credentials) != 0 {
+		t.Fatalf("expected no credentials in non-reveal response, got %d", len(resp.Credentials))
+	}
+}
+
 func TestScopedSessionEnforcesVaultOnList(t *testing.T) {
 	ms, token := setupMockStoreWithScopedSession(t, "proj", "proj-ns-id")
 	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)

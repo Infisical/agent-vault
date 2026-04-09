@@ -5,6 +5,7 @@ export interface Column<T> {
   header: string;
   render: (item: T, index: number) => ReactNode;
   align?: "left" | "right";
+  className?: string;
 }
 
 interface DataTableProps<T> {
@@ -32,7 +33,7 @@ export default function DataTable<T>({
             {columns.map((col) => (
               <th
                 key={col.key}
-                className={`px-5 py-3 text-xs font-semibold text-text-muted uppercase tracking-wider ${col.align === "right" ? "text-right w-0" : "text-left"}`}
+                className={`px-5 py-3 text-xs font-semibold text-text-muted uppercase tracking-wider ${col.align === "right" ? "text-right w-0" : "text-left"}${col.className ? " " + col.className : ""}`}
               >
                 {col.header}
               </th>
@@ -63,7 +64,7 @@ export default function DataTable<T>({
                 onClick={onRowClick ? () => onRowClick(item, index) : undefined}
               >
                 {columns.map((col) => (
-                  <td key={col.key} className={`px-5 py-3.5${col.align === "right" ? " w-0" : ""}`}>
+                  <td key={col.key} className={`px-5 py-3.5${col.align === "right" ? " w-0" : ""}${col.className ? " " + col.className : ""}`}>
                     {col.align === "right" ? (
                       <div className="flex justify-end">{col.render(item, index)}</div>
                     ) : (
