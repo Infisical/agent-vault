@@ -8,12 +8,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var settingsCmd = &cobra.Command{
-	Use:   "settings",
+var configCmd = &cobra.Command{
+	Use:   "config",
 	Short: "Manage instance settings (owner only)",
 }
 
-var settingsGetCmd = &cobra.Command{
+var configGetCmd = &cobra.Command{
 	Use:   "get",
 	Short: "Show instance settings",
 	Args:  cobra.NoArgs,
@@ -53,7 +53,7 @@ var settingsGetCmd = &cobra.Command{
 	},
 }
 
-var settingsSetCmd = &cobra.Command{
+var configSetCmd = &cobra.Command{
 	Use:   "set",
 	Short: "Update instance settings",
 	Args:  cobra.NoArgs,
@@ -127,9 +127,9 @@ var settingsSetCmd = &cobra.Command{
 }
 
 func init() {
-	settingsSetCmd.Flags().Bool("invite-only", false, "enable invite-only mode (only vault invites can create accounts)")
-	settingsSetCmd.Flags().String("allowed-domains", "", "comma-separated list of allowed email domains (empty to clear)")
-	settingsCmd.AddCommand(settingsGetCmd)
-	settingsCmd.AddCommand(settingsSetCmd)
-	ownerCmd.AddCommand(settingsCmd)
+	configSetCmd.Flags().Bool("invite-only", false, "enable invite-only mode (only vault invites can create accounts)")
+	configSetCmd.Flags().String("allowed-domains", "", "comma-separated list of allowed email domains (empty to clear)")
+	configCmd.AddCommand(configGetCmd)
+	configCmd.AddCommand(configSetCmd)
+	ownerCmd.AddCommand(configCmd)
 }

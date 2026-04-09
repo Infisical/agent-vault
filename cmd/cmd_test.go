@@ -97,7 +97,7 @@ func TestVaultSubcommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"create", "list", "rename", "use", "current", "init", "user", "credentials", "service", "proposal", "agent"}
+	expected := []string{"create", "list", "rename", "use", "current", "init", "user", "credential", "service", "proposal", "agent"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected vault subcommand %q to be registered, but it was not", name)

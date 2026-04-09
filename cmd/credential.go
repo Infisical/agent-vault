@@ -10,13 +10,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var credentialsCmd = &cobra.Command{
-	Use:     "credentials",
+var credentialCmd = &cobra.Command{
+	Use:     "credential",
 	Aliases: []string{"creds"},
 	Short:   "Manage credentials",
 }
 
-var credentialsListCmd = &cobra.Command{
+var credentialListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List credential keys in a vault",
 	Args:  cobra.NoArgs,
@@ -71,7 +71,7 @@ var credentialsListCmd = &cobra.Command{
 	},
 }
 
-var credentialsGetCmd = &cobra.Command{
+var credentialGetCmd = &cobra.Command{
 	Use:   "get <key>",
 	Short: "Get the decrypted value of a credential",
 	Args:  cobra.ExactArgs(1),
@@ -110,7 +110,7 @@ var credentialsGetCmd = &cobra.Command{
 	},
 }
 
-var credentialsSetCmd = &cobra.Command{
+var credentialSetCmd = &cobra.Command{
 	Use:   "set <key=value> [key2=value2 ...]",
 	Short: "Set one or more credentials",
 	Args:  cobra.MinimumNArgs(1),
@@ -159,7 +159,7 @@ var credentialsSetCmd = &cobra.Command{
 	},
 }
 
-var credentialsDeleteCmd = &cobra.Command{
+var credentialDeleteCmd = &cobra.Command{
 	Use:   "delete <key> [key2 ...]",
 	Short: "Delete one or more credentials",
 	Args:  cobra.MinimumNArgs(1),
@@ -200,10 +200,10 @@ var credentialsDeleteCmd = &cobra.Command{
 }
 
 func init() {
-	credentialsListCmd.Flags().Bool("reveal", false, "Show decrypted credential values (requires member+ role)")
-	credentialsCmd.AddCommand(credentialsListCmd)
-	credentialsCmd.AddCommand(credentialsGetCmd)
-	credentialsCmd.AddCommand(credentialsSetCmd)
-	credentialsCmd.AddCommand(credentialsDeleteCmd)
-	vaultCmd.AddCommand(credentialsCmd)
+	credentialListCmd.Flags().Bool("reveal", false, "Show decrypted credential values (requires member+ role)")
+	credentialCmd.AddCommand(credentialListCmd)
+	credentialCmd.AddCommand(credentialGetCmd)
+	credentialCmd.AddCommand(credentialSetCmd)
+	credentialCmd.AddCommand(credentialDeleteCmd)
+	vaultCmd.AddCommand(credentialCmd)
 }

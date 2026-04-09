@@ -71,11 +71,11 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault owner user info [email]` -- view user info (own info if no email given)
   - `agent-vault owner user remove <email>` -- remove a user
   - `agent-vault owner user set-role <email> --role owner|member` -- change instance-level role (last owner cannot be demoted)
-- `agent-vault owner settings [get|set]` -- manage instance settings (owner only)
-  - `agent-vault owner settings get` -- show current settings (invite_only, allowed_email_domains)
-  - `agent-vault owner settings set --invite-only` -- enable invite-only registration (only vault invites can create accounts)
-  - `agent-vault owner settings set --invite-only=false` -- disable invite-only registration
-  - `agent-vault owner settings set --allowed-domains acme.com,acme.org` -- restrict signups to specific domains (empty to clear)
+- `agent-vault owner config [get|set]` -- manage instance settings (owner only)
+  - `agent-vault owner config get` -- show current settings (invite_only, allowed_email_domains)
+  - `agent-vault owner config set --invite-only` -- enable invite-only registration (only vault invites can create accounts)
+  - `agent-vault owner config set --invite-only=false` -- disable invite-only registration
+  - `agent-vault owner config set --allowed-domains acme.com,acme.org` -- restrict signups to specific domains (empty to clear)
 - `agent-vault owner vault [list|join|remove]` -- manage all vaults across the instance (owner only)
   - `agent-vault owner vault list` -- list all vaults
   - `agent-vault owner vault join <name>` -- join a vault as admin (for recovering orphaned vaults)
@@ -85,11 +85,11 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault service set` -- interactive service builder (prompts for services, auth config, credentials; requires TTY)
   - `agent-vault service set -f <file>` -- replace services from YAML file
   - `agent-vault service clear` -- remove all services (prompts for confirmation; use `--yes` to skip)
-- `agent-vault vault credentials [list|get|set|delete]` -- manage credentials (alias: `creds`)
-  - `agent-vault vault credentials list [--reveal]` -- list credential keys; with `--reveal`, shows decrypted values in a KEY+VALUE table (requires member+ role)
-  - `agent-vault vault credentials get <key>` -- print the decrypted value of a single credential to stdout (pipe-friendly, requires member+ role)
-  - `agent-vault vault credentials set <key=value> [...]` -- set one or more credentials
-  - `agent-vault vault credentials delete <key> [...]` -- delete one or more credentials
+- `agent-vault vault credential [list|get|set|delete]` -- manage credentials (alias: `creds`)
+  - `agent-vault vault credential list [--reveal]` -- list credential keys; with `--reveal`, shows decrypted values in a KEY+VALUE table (requires member+ role)
+  - `agent-vault vault credential get <key>` -- print the decrypted value of a single credential to stdout (pipe-friendly, requires member+ role)
+  - `agent-vault vault credential set <key=value> [...]` -- set one or more credentials
+  - `agent-vault vault credential delete <key> [...]` -- delete one or more credentials
 - `agent-vault proposal [--vault] [list|show|approve|reject|review]` -- manage proposals (proposed service/credential changes)
   - `agent-vault proposal list [--status pending]` -- list proposals for vault
   - `agent-vault proposal show <number>` -- show proposal details
