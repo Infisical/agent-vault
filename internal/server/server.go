@@ -1823,7 +1823,8 @@ func (s *Server) optionalAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 type scopedSessionRequest struct {
-	Vault string `json:"vault"`
+	Vault     string `json:"vault"`
+	VaultRole string `json:"vault_role"`
 }
 
 type scopedSessionResponse struct {
@@ -1851,7 +1852,19 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := s.store.CreateScopedSession(ctx, ns.ID, "consumer", "", time.Now().Add(sessionTTL))
+	// Default to "member" if no role specified; cap to caller's own role.
+	requestedRole := req.VaultRole
+	if requestedRole == "" {
+		requestedRole = "member"
+	}
+	parentSess := sessionFromContext(ctx)
+	cappedRole, errMsg := s.capRequestedRole(ctx, parentSess, ns.ID, requestedRole)
+	if errMsg != "" {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, errMsg), http.StatusForbidden)
+		return
+	}
+
+	sess, err := s.store.CreateScopedSession(ctx, ns.ID, cappedRole, "", time.Now().Add(sessionTTL))
 	if err != nil {
 		http.Error(w, `{"error":"Failed to create scoped session"}`, http.StatusInternalServerError)
 		return
@@ -1864,13 +1877,15 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// capRequestedRole enforces role-capping rules: consumers cannot mint sessions,
-// members can only mint consumer sessions, admins can mint any role.
-// Returns the (possibly capped) role, or an error string if the caller lacks permission.
+// capRequestedRole enforces role-capping rules: the requested role cannot
+// exceed the caller's own vault role. Consumers cannot mint sessions at all.
+// Returns the validated role, or an error string if the caller lacks permission.
 func (s *Server) capRequestedRole(ctx context.Context, sess *store.Session, vaultID, requestedRole string) (string, string) {
 	if requestedRole == "" {
 		requestedRole = "consumer"
 	}
+
+	var callerRole string
 
 	if sess.VaultID != "" {
 		// Scoped session (agent or temp invite).
@@ -1880,29 +1895,26 @@ func (s *Server) capRequestedRole(ctx context.Context, sess *store.Session, vaul
 		if !agentRoleSatisfies(sess.VaultRole, "member") {
 			return "", "Member role required"
 		}
-		// Members can only mint consumer sessions.
-		if sess.VaultRole == "member" && requestedRole != "consumer" {
-			requestedRole = "consumer"
+		callerRole = sess.VaultRole
+	} else {
+		// User session: require vault access.
+		user, err := s.userFromSession(ctx, sess)
+		if err != nil || user == nil {
+			return "", "Invalid session"
 		}
-		return requestedRole, ""
+		has, err := s.store.HasVaultAccess(ctx, user.ID, vaultID)
+		if err != nil || !has {
+			return "", "No access to this vault"
+		}
+		role, err2 := s.store.GetVaultRole(ctx, user.ID, vaultID)
+		if err2 != nil {
+			return "", "Failed to check vault role"
+		}
+		callerRole = role
 	}
 
-	// User session: require vault access.
-	user, err := s.userFromSession(ctx, sess)
-	if err != nil || user == nil {
-		return "", "Invalid session"
-	}
-	has, err := s.store.HasVaultAccess(ctx, user.ID, vaultID)
-	if err != nil || !has {
-		return "", "No access to this vault"
-	}
-	// User vault members can only mint consumer sessions.
-	role, err2 := s.store.GetVaultRole(ctx, user.ID, vaultID)
-	if err2 != nil {
-		return "", "Failed to check vault role"
-	}
-	if role != "admin" && requestedRole != "consumer" {
-		requestedRole = "consumer"
+	if !agentRoleSatisfies(callerRole, requestedRole) {
+		return "", fmt.Sprintf("Your vault role (%s) cannot mint sessions with role %s", callerRole, requestedRole)
 	}
 	return requestedRole, ""
 }

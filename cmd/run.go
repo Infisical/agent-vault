@@ -57,7 +57,8 @@ Example:
 		}
 
 		// 3. Request a vault-scoped session token from the server.
-		scopedToken, err := requestScopedSession(addr, sess.Token, vault)
+		role, _ := cmd.Flags().GetString("role")
+		scopedToken, err := requestScopedSession(addr, sess.Token, vault, role)
 		if err != nil {
 			return err
 		}
@@ -231,8 +232,12 @@ func fetchUserVaults(addr, token string) ([]string, error) {
 
 // requestScopedSession calls the server to create a vault-scoped session
 // and returns the scoped token.
-func requestScopedSession(addr, adminToken, vault string) (string, error) {
-	reqBody, err := json.Marshal(map[string]string{"vault": vault})
+func requestScopedSession(addr, adminToken, vault, role string) (string, error) {
+	body := map[string]string{"vault": vault}
+	if role != "" {
+		body["vault_role"] = role
+	}
+	reqBody, err := json.Marshal(body)
 	if err != nil {
 		return "", err
 	}
@@ -272,6 +277,7 @@ func requestScopedSession(addr, adminToken, vault string) (string, error) {
 
 func init() {
 	runCmd.Flags().String("address", "", "Agent Vault server address (defaults to session address)")
+	runCmd.Flags().String("role", "", "Vault role for the agent session (consumer, member, admin; default: member)")
 
 	vaultCmd.AddCommand(runCmd)
 }
