@@ -26,6 +26,18 @@ agent-vault vault list
 
 Vault names must be **unique** across the Agent Vault instance and use **slug format**: lowercase letters, numbers, and hyphens only.
 
+## Bind a project to a vault
+
+Run `vault init` inside your project directory to create an `agent-vault.json` file that binds the project to a specific vault:
+
+```bash
+agent-vault vault init
+```
+
+This file is meant to be committed to version control. When present, all team members and agents running in that directory will automatically target the bound vault without needing `--vault` flags or per-user context.
+
+Vault resolution priority: `--vault` flag > `agent-vault.json` > user context > `"default"`.
+
 ## Invite agents to a vault
 
 <Tabs>
