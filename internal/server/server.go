@@ -5265,7 +5265,7 @@ func (s *Server) serveSkill(w http.ResponseWriter, r *http.Request, content []by
 		return
 	}
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-	w.Write(content)
+	_, _ = w.Write(content)
 }
 
 // ---------------------------------------------------------------------------
