@@ -4,7 +4,8 @@ description: >-
   Agent Vault CLI: manage authenticated HTTP proxy access to external services
   (Linear, GitHub, Stripe, Slack, Jira, etc.) using the agent-vault binary.
   Use when the task involves interacting with any third-party API or service
-  that requires credentials.
+  that requires credentials, or when writing code that needs environment
+  variables for secrets/API keys.
 compatibility: Requires a running Agent Vault server, the agent-vault binary on $PATH, and AGENT_VAULT_SESSION_TOKEN environment variable
 metadata:
   author: dangtony98
@@ -126,6 +127,41 @@ Key fields:
 3. Once status is `applied`, automatically retry your original request and continue your task
 
 **Check status:** `GET {AGENT_VAULT_ADDR}/v1/proposals/{id}` with `Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}` -- returns `pending`, `applied`, `rejected`, or `expired`
+
+## Building Code That Needs Credentials
+
+When you are writing or modifying application code that requires secrets or API keys (e.g. `process.env.STRIPE_KEY`, `os.Getenv("DB_PASSWORD")`), use Agent Vault to ensure those credentials are tracked and available.
+
+**Workflow:**
+1. Write the code referencing the environment variable as normal (e.g. `process.env.STRIPE_KEY`)
+2. Run `agent-vault vault discover --json` and check `available_credentials` for the key
+3. If the key exists, you're done -- the credential is already stored in the vault
+4. If the key is missing, create a credential-only proposal so the human can provide the value:
+
+```bash
+agent-vault vault proposal create \
+  --credential STRIPE_KEY="Stripe secret key for payment processing" \
+  -m "Adding Stripe integration -- need API key" \
+  --user-message "The app needs a Stripe secret key to process payments. You can find it at https://dashboard.stripe.com/apikeys" \
+  --json
+```
+
+5. Present the `approval_url` to the user and poll until approved (same as service proposals)
+6. Update `.env.example` (or equivalent) to document the new variable
+
+**Multiple credentials at once:** If your code change introduces several env vars, batch them in one proposal:
+
+```bash
+agent-vault vault proposal create \
+  --credential DB_HOST="Database hostname" \
+  --credential DB_PASSWORD="Database password" \
+  -m "Adding database connection -- need credentials" --json
+```
+
+**Key points:**
+- Use credential-only proposals (no `--host`/`--auth-type`) when the credential is for the application, not for proxying through Agent Vault
+- Always check `available_credentials` first to avoid proposing duplicates
+- Include `obtain` URLs or `obtain_instructions` in JSON mode proposals to help the human find the credential
 
 ## Reading Credentials
 

@@ -4,7 +4,8 @@ description: >-
   Agent Vault HTTP: interact with Agent Vault's authenticated HTTP proxy for
   external services (Linear, GitHub, Stripe, Slack, Jira, etc.) using only
   HTTP requests. Use when the task involves any third-party API or service
-  that requires credentials.
+  that requires credentials, or when writing code that needs environment
+  variables for secrets/API keys.
 compatibility: Requires a running Agent Vault server and AGENT_VAULT_SESSION_TOKEN environment variable
 metadata:
   author: dangtony98
@@ -124,6 +125,48 @@ Key fields:
 **Check status:** `GET {AGENT_VAULT_ADDR}/v1/proposals/{id}` with `Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}` -- returns `pending`, `applied`, `rejected`, or `expired`
 
 **List proposals:** `GET {AGENT_VAULT_ADDR}/v1/proposals?status=pending`
+
+## Building Code That Needs Credentials
+
+When you are writing or modifying application code that requires secrets or API keys (e.g. `process.env.STRIPE_KEY`, `os.Getenv("DB_PASSWORD")`), use Agent Vault to ensure those credentials are tracked and available.
+
+**Workflow:**
+1. Write the code referencing the environment variable as normal (e.g. `process.env.STRIPE_KEY`)
+2. Call `GET {AGENT_VAULT_ADDR}/discover` and check `available_credentials` for the key
+3. If the key exists, you're done -- the credential is already stored in the vault
+4. If the key is missing, create a credential-only proposal so the human can provide the value:
+
+```
+POST {AGENT_VAULT_ADDR}/v1/proposals
+Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Content-Type: application/json
+
+{
+  "credentials": [{"action": "set", "key": "STRIPE_KEY", "description": "Stripe secret key for payment processing", "obtain": "https://dashboard.stripe.com/apikeys", "obtain_instructions": "Developers -> API Keys -> Reveal secret key"}],
+  "message": "Adding Stripe integration -- need API key",
+  "user_message": "The app needs a Stripe secret key to process payments."
+}
+```
+
+5. Present the `approval_url` to the user and poll until approved (same as service proposals)
+6. Update `.env.example` (or equivalent) to document the new variable
+
+**Multiple credentials at once:** Batch them in one proposal:
+
+```json
+{
+  "credentials": [
+    {"action": "set", "key": "DB_HOST", "description": "Database hostname"},
+    {"action": "set", "key": "DB_PASSWORD", "description": "Database password"}
+  ],
+  "message": "Adding database connection -- need credentials"
+}
+```
+
+**Key points:**
+- Use credential-only proposals (no `services` array) when the credential is for the application, not for proxying through Agent Vault
+- Always check `available_credentials` first to avoid proposing duplicates
+- Include `obtain` and `obtain_instructions` to help the human find the credential
 
 ## Persistent Agent Mode
 
