@@ -524,8 +524,8 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("DELETE /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(s.handleServicesClear)))
 	mux.HandleFunc("GET /v1/vaults/{name}/services/credential-usage", s.requireInitialized(s.requireAuth(s.handleServicesCredentialUsage)))
 	mux.HandleFunc("GET /v1/service-catalog", s.requireInitialized(s.handleServiceCatalog))
-	mux.HandleFunc("GET /v1/skills/cli", s.handleSkillCLI)
-	mux.HandleFunc("GET /v1/skills/http", s.handleSkillHTTP)
+	mux.HandleFunc("GET /v1/skills/cli", s.requireInitialized(s.handleSkillCLI))
+	mux.HandleFunc("GET /v1/skills/http", s.requireInitialized(s.handleSkillHTTP))
 
 	// Vault invites
 	mux.HandleFunc("GET /v1/vault-invites/{token}/details", s.requireInitialized(s.handleVaultInviteDetails))
