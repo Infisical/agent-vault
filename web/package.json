@@ -9,7 +9,7 @@
   "dependencies": {
     "@tanstack/react-router": "^1.168.19",
     "react": "^19.2.5",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.2.5"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.2.2",
