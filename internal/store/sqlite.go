@@ -1639,7 +1639,7 @@ func (s *SQLiteStore) loadUserInviteVaultsBatch(ctx context.Context, invites []U
 		placeholders = append(placeholders, '?')
 	}
 
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.db.QueryContext(ctx, //nolint:gosec // placeholders are only '?' and ','
 		`SELECT uiv.user_invite_id, uiv.vault_id, v.name, uiv.vault_role
 		 FROM user_invite_vaults uiv
 		 JOIN vaults v ON v.id = uiv.vault_id
