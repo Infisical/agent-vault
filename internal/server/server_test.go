@@ -19,6 +19,9 @@ import (
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
+// tp is an alias for timePtr (defined in server.go, same package).
+var tp = timePtr
+
 // mockStore implements Store for testing.
 type mockStore struct {
 	masterKeyRecord    *store.MasterKeyRecord
@@ -110,19 +113,18 @@ func (m *mockStore) CreateSession(_ context.Context, userID string, expiresAt ti
 	s := &store.Session{
 		ID:        fmt.Sprintf("test-session-id-%d", m.sessionCounter),
 		UserID:    userID,
-		ExpiresAt: expiresAt,
+		ExpiresAt: &expiresAt,
 		CreatedAt: time.Now(),
 	}
 	m.sessions[s.ID] = s
 	return s, nil
 }
 
-func (m *mockStore) CreateScopedSession(_ context.Context, vaultID, vaultRole, label string, expiresAt time.Time) (*store.Session, error) {
+func (m *mockStore) CreateScopedSession(_ context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error) {
 	s := &store.Session{
 		ID:        "scoped-session-id",
 		VaultID:   vaultID,
 		VaultRole: vaultRole,
-		Label:     label,
 		ExpiresAt: expiresAt,
 		CreatedAt: time.Now(),
 	}
@@ -293,11 +295,11 @@ func (m *mockStore) ExpirePendingProposals(_ context.Context, before time.Time) 
 
 // --- Invite mocks ---
 
-func (m *mockStore) CreateInvite(_ context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time, sessionTTLSeconds int, sessionLabel string) (*store.Invite, error) {
+func (m *mockStore) CreateInvite(_ context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time, sessionTTLSeconds int) (*store.Invite, error) {
 	inv := &store.Invite{
 		ID: len(m.invites) + 1, Token: "av_inv_test" + fmt.Sprintf("%d", len(m.invites)),
 		VaultID: vaultID, VaultRole: vaultRole, Status: "pending", CreatedBy: createdBy,
-		SessionTTLSeconds: sessionTTLSeconds, SessionLabel: sessionLabel,
+		SessionTTLSeconds: sessionTTLSeconds,
 		CreatedAt: time.Now(), ExpiresAt: expiresAt,
 	}
 	m.invites[inv.Token] = inv
@@ -880,7 +882,7 @@ func (m *mockStore) RenameAgent(_ context.Context, id string, newName string) er
 func (m *mockStore) CountAgentSessions(_ context.Context, agentID string) (int, error) {
 	count := 0
 	for _, sess := range m.sessions {
-		if sess.AgentID == agentID && time.Now().Before(sess.ExpiresAt) {
+		if sess.AgentID == agentID && (sess.ExpiresAt == nil || time.Now().Before(*sess.ExpiresAt)) {
 			count++
 		}
 	}
@@ -891,8 +893,8 @@ func (m *mockStore) GetLatestAgentSessionExpiry(_ context.Context, agentID strin
 	var latest *time.Time
 	now := time.Now()
 	for _, sess := range m.sessions {
-		if sess.AgentID == agentID && sess.ExpiresAt.After(now) {
-			t := sess.ExpiresAt
+		if sess.AgentID == agentID && sess.ExpiresAt != nil && sess.ExpiresAt.After(now) {
+			t := *sess.ExpiresAt
 			if latest == nil || t.After(*latest) {
 				latest = &t
 			}
@@ -910,7 +912,7 @@ func (m *mockStore) DeleteAgentSessions(_ context.Context, agentID string) error
 	return nil
 }
 
-func (m *mockStore) CreateAgentSession(_ context.Context, agentID, vaultID, vaultRole string, expiresAt time.Time) (*store.Session, error) {
+func (m *mockStore) CreateAgentSession(_ context.Context, agentID, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error) {
 	id := "agent-session-" + agentID + "-" + fmt.Sprintf("%d", len(m.sessions))
 	s := &store.Session{
 		ID:        id,
@@ -1363,7 +1365,7 @@ func TestScopedSessionSuccess(t *testing.T) {
 	if resp.ExpiresAt == "" {
 		t.Fatal("expected non-empty expires_at")
 	}
-	// Verify the scoped session was stored with vault_id and default role "member".
+	// Verify the scoped session was stored with vault_id and default role "proxy".
 	scopedSess := ms.sessions[resp.Token]
 	if scopedSess == nil {
 		t.Fatal("scoped session not found in store")
@@ -1371,8 +1373,8 @@ func TestScopedSessionSuccess(t *testing.T) {
 	if scopedSess.VaultID != "root-ns-id" {
 		t.Fatalf("expected vault_id root-ns-id, got %q", scopedSess.VaultID)
 	}
-	if scopedSess.VaultRole != "member" {
-		t.Fatalf("expected vault_role member, got %q", scopedSess.VaultRole)
+	if scopedSess.VaultRole != "proxy" {
+		t.Fatalf("expected vault_role proxy, got %q", scopedSess.VaultRole)
 	}
 }
 
@@ -1505,7 +1507,7 @@ func TestScopedSessionUnauthenticated(t *testing.T) {
 // --- Vault Enforcement ---
 
 func setupMockStoreWithScopedSession(t *testing.T, vaultName, vaultID string) (*mockStore, string) {
-	return setupMockStoreWithScopedSessionRole(t, vaultName, vaultID, "consumer")
+	return setupMockStoreWithScopedSessionRole(t, vaultName, vaultID, "proxy")
 }
 
 func setupMockStoreWithScopedSessionRole(t *testing.T, vaultName, vaultID, role string) (*mockStore, string) {
@@ -1516,7 +1518,7 @@ func setupMockStoreWithScopedSessionRole(t *testing.T, vaultName, vaultID, role 
 		ms.vaults[vaultName] = &store.Vault{ID: vaultID, Name: vaultName}
 	}
 	// Create a scoped session locked to the given vault
-	sess, err := ms.CreateScopedSession(context.Background(), vaultID, role, "", time.Now().Add(time.Hour))
+	sess, err := ms.CreateScopedSession(context.Background(), vaultID, role, tp(time.Now().Add(time.Hour)))
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -1730,9 +1732,9 @@ func TestCredentialsRevealNotFoundKey(t *testing.T) {
 	}
 }
 
-func TestCredentialsRevealConsumerBlocked(t *testing.T) {
-	// Scoped session with consumer role — should be blocked from reveal.
-	ms, token := setupMockStoreWithScopedSessionRole(t, "default", "root-ns-id", "consumer")
+func TestCredentialsRevealProxyBlocked(t *testing.T) {
+	// Scoped session with proxy role — should be blocked from reveal.
+	ms, token := setupMockStoreWithScopedSessionRole(t, "default", "root-ns-id", "proxy")
 	encKey := make([]byte, 32)
 	srv := New("127.0.0.1:0", ms, encKey, nil, true, "http://127.0.0.1:14321", nil)
 
@@ -1853,7 +1855,7 @@ func setupProxyTest(t *testing.T, servicesJSON string) (*mockStore, string, []by
 	encKey := make([]byte, 32)
 
 	// Create a scoped session for root vault.
-	sess, err := ms.CreateScopedSession(context.Background(), "root-ns-id", "consumer", "", time.Now().Add(time.Hour))
+	sess, err := ms.CreateScopedSession(context.Background(), "root-ns-id", "proxy", tp(time.Now().Add(time.Hour)))
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -2218,7 +2220,7 @@ func TestDiscoverEmptyRules(t *testing.T) {
 
 func TestDiscoverNoCredentials(t *testing.T) {
 	ms := newMockStore()
-	sess, err := ms.CreateScopedSession(context.Background(), "root-ns-id", "consumer", "", time.Now().Add(time.Hour))
+	sess, err := ms.CreateScopedSession(context.Background(), "root-ns-id", "proxy", tp(time.Now().Add(time.Hour)))
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -2262,7 +2264,7 @@ func setupProposalTest(t *testing.T) (*Server, *mockStore, string) {
 	sess := &store.Session{
 		ID:          "scoped-cs-token",
 		VaultID: "root-ns-id",
-		ExpiresAt:   time.Now().Add(1 * time.Hour),
+		ExpiresAt:   tp(time.Now().Add(1 * time.Hour)),
 		CreatedAt:   time.Now(),
 	}
 	ms.sessions["scoped-cs-token"] = sess
@@ -2305,7 +2307,7 @@ func TestProposalCreateRequiresScopedSession(t *testing.T) {
 	// Create a global (admin) session.
 	sess := &store.Session{
 		ID:        "admin-token",
-		ExpiresAt: time.Now().Add(1 * time.Hour),
+		ExpiresAt: tp(time.Now().Add(1 * time.Hour)),
 		CreatedAt: time.Now(),
 	}
 	ms.sessions["admin-token"] = sess
@@ -2554,7 +2556,7 @@ func setupAdminProposalTest(t *testing.T) (*Server, *mockStore, string) {
 	adminSess := &store.Session{
 		ID:        "admin-session",
 		UserID:    "owner-user-id",
-		ExpiresAt: time.Now().Add(time.Hour),
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
 		CreatedAt: time.Now(),
 	}
 	ms.sessions[adminSess.ID] = adminSess
@@ -2617,7 +2619,7 @@ func TestAdminProposalApproveRequiresAdminSession(t *testing.T) {
 	scopedSess := &store.Session{
 		ID:          "scoped-session",
 		VaultID: "root-ns-id",
-		ExpiresAt:   time.Now().Add(time.Hour),
+		ExpiresAt:   tp(time.Now().Add(time.Hour)),
 		CreatedAt:   time.Now(),
 	}
 	ms.sessions[scopedSess.ID] = scopedSess
@@ -2700,7 +2702,7 @@ func TestAdminProposalRejectRequiresAdminSession(t *testing.T) {
 	scopedSess := &store.Session{
 		ID:          "scoped-session",
 		VaultID: "root-ns-id",
-		ExpiresAt:   time.Now().Add(time.Hour),
+		ExpiresAt:   tp(time.Now().Add(time.Hour)),
 		CreatedAt:   time.Now(),
 	}
 	ms.sessions[scopedSess.ID] = scopedSess
@@ -2740,11 +2742,11 @@ func TestHandleInviteRedeem(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.SBSessionToken == "" {
+	if resp.AVSessionToken == "" {
 		t.Fatal("expected non-empty session token")
 	}
-	if resp.SBVault != "default" {
-		t.Fatalf("expected vault default, got %s", resp.SBVault)
+	if resp.AVVault != "default" {
+		t.Fatalf("expected vault default, got %s", resp.AVVault)
 	}
 	if len(resp.Services) != 1 {
 		t.Fatalf("expected 1 service, got %d", len(resp.Services))
@@ -2857,7 +2859,7 @@ func setupMemberSession(t *testing.T, ms *mockStore, grantVaultIDs ...string) st
 	memberSess := &store.Session{
 		ID:        "member-session",
 		UserID:    "member-user-id",
-		ExpiresAt: time.Now().Add(time.Hour),
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
 		CreatedAt: time.Now(),
 	}
 	ms.sessions[memberSess.ID] = memberSess
@@ -3143,7 +3145,7 @@ func setupAgentTest(t *testing.T) (*Server, *mockStore, string) {
 	ms.GrantVaultRole(context.Background(), "owner-user-id", "root-ns-id", "admin")
 	adminSess := &store.Session{
 		ID: "admin-session", UserID: "owner-user-id",
-		ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now(),
+		ExpiresAt: tp(time.Now().Add(time.Hour)), CreatedAt: time.Now(),
 	}
 	ms.sessions[adminSess.ID] = adminSess
 	encKey := make([]byte, 32)
@@ -3195,9 +3197,6 @@ func TestPersistentInviteRedeemPOST(t *testing.T) {
 	var resp map[string]interface{}
 	json.NewDecoder(rec.Body).Decode(&resp)
 
-	if resp["av_agent_token"] == nil || resp["av_agent_token"].(string) == "" {
-		t.Fatal("expected non-empty av_agent_token")
-	}
 	if resp["agent_name"] != "mybot" {
 		t.Fatalf("expected agent_name mybot, got %v", resp["agent_name"])
 	}
@@ -3318,64 +3317,8 @@ func TestDuplicateAgentName409(t *testing.T) {
 	}
 }
 
-func TestAgentSessionMint(t *testing.T) {
-	srv, ms := setupInviteTest(t)
-
-	// Create an agent with known token hash.
-	token := "av_agent_abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
-	hash, salt, _, _ := auth.HashUserPassword([]byte(token))
-	prefix := token[len("av_agent_"):][:16]
-
-	ms.agents["mintbot"] = &store.Agent{
-		ID: "agent-mintbot", Name: "mintbot", VaultID: "root-ns-id",
-		ServiceTokenHash: hash, ServiceTokenSalt: salt, ServiceTokenPrefix: prefix,
-		Status: "active",
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/agent/session", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var resp map[string]interface{}
-	json.NewDecoder(rec.Body).Decode(&resp)
-
-	if resp["av_session_token"] == nil || resp["av_session_token"].(string) == "" {
-		t.Fatal("expected non-empty session token")
-	}
-	if resp["av_vault"] != "default" {
-		t.Fatalf("expected vault default, got %v", resp["av_vault"])
-	}
-}
-
-func TestAgentSessionMint_InvalidToken(t *testing.T) {
-	srv, _ := setupInviteTest(t)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/agent/session", nil)
-	req.Header.Set("Authorization", "Bearer av_agent_badbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbad")
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestAgentSessionMint_NoBearer(t *testing.T) {
-	srv, _ := setupInviteTest(t)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/agent/session", nil)
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
+// TestAgentSessionMint tests removed — POST /v1/agent/session endpoint was removed
+// as part of the unified token model (service tokens no longer issued).
 
 func TestAgentList(t *testing.T) {
 	srv, ms, sessID := setupAgentTest(t)
@@ -4236,7 +4179,7 @@ func TestDirectSessionSuccess(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
-	body := `{"vault":"default","vault_role":"consumer","ttl_seconds":3600}`
+	body := `{"vault":"default","vault_role":"proxy","ttl_seconds":3600}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/direct", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
@@ -4260,8 +4203,8 @@ func TestDirectSessionSuccess(t *testing.T) {
 	if resp.AVVault != "default" {
 		t.Fatalf("expected av_vault default, got %q", resp.AVVault)
 	}
-	if resp.VaultRole != "consumer" {
-		t.Fatalf("expected vault_role consumer, got %q", resp.VaultRole)
+	if resp.VaultRole != "proxy" {
+		t.Fatalf("expected vault_role proxy, got %q", resp.VaultRole)
 	}
 	if resp.ProxyURL != "http://127.0.0.1:14321/proxy" {
 		t.Fatalf("expected proxy_url with /proxy, got %q", resp.ProxyURL)
@@ -4293,8 +4236,8 @@ func TestDirectSessionDefaultsVaultAndRole(t *testing.T) {
 	if resp.AVVault != "default" {
 		t.Fatalf("expected default vault, got %q", resp.AVVault)
 	}
-	if resp.VaultRole != "consumer" {
-		t.Fatalf("expected consumer role, got %q", resp.VaultRole)
+	if resp.VaultRole != "proxy" {
+		t.Fatalf("expected proxy role, got %q", resp.VaultRole)
 	}
 }
 
@@ -4389,35 +4332,6 @@ func TestDirectSessionVaultNotFound(t *testing.T) {
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestDirectSessionWithLabel(t *testing.T) {
-	ms, token := setupMockStoreWithSession(t)
-	srv := New("127.0.0.1:0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
-
-	body := `{"vault":"default","label":"testing stripe"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/direct", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var resp directSessionResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-
-	// Verify label was stored on the session
-	storedSess := ms.sessions[resp.AVSessionToken]
-	if storedSess == nil {
-		t.Fatal("session not found in store")
-	}
-	if storedSess.Label != "testing stripe" {
-		t.Fatalf("expected label 'testing stripe', got %q", storedSess.Label)
 	}
 }
 

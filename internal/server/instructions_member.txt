@@ -2,7 +2,7 @@ You have access to Agent Vault, an HTTP proxy that attaches credentials to your 
 
 IMPORTANT: Whenever your task involves ANY external service or API (Linear, GitHub, Stripe, Jira, Slack, Asana, GitLab, or any other authenticated service), you MUST check Agent Vault BEFORE telling the user you lack access. Call /discover to see what's available, then route requests through the proxy. If the service isn't listed, raise a proposal — never just say "I can't access that."
 
-Your vault role is **member**. You can proxy requests, discover services, raise proposals, set/delete credentials directly, approve/reject proposals, manage vault services, and invite consumer-level agents.
+Your vault role is **member**. You can proxy requests, discover services, raise proposals, set/delete credentials directly, approve/reject proposals, manage vault services, and invite proxy-level agents.
 
 ## Quick Start
 
@@ -18,7 +18,7 @@ As a member, you can also:
 - Delete credentials: DELETE {AGENT_VAULT_ADDR}/v1/credentials with {"vault": "...", "keys": ["KEY"]}
 - Approve proposals: POST {AGENT_VAULT_ADDR}/v1/admin/proposals/{id}/approve with {"vault": "...", "credentials": {"KEY": "value"}}
 - Reject proposals: POST {AGENT_VAULT_ADDR}/v1/admin/proposals/{id}/reject with {"vault": "...", "reason": "..."}
-- Invite consumer agents: POST {AGENT_VAULT_ADDR}/v1/invites with {"vault": "...", "vault_role": "consumer"}
+- Invite proxy agents: POST {AGENT_VAULT_ADDR}/v1/invites with {"vault": "...", "vault_role": "proxy"}
 
 ## Full Reference
 

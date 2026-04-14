@@ -391,20 +391,20 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault agent invite create [flags]
     ```
 
-    Create an agent invite and print the onboarding prompt (copies to clipboard). By default creates a one-time invite. Use `--persistent` for agents that need ongoing access with a long-lived service token. Use `--direct` to skip the invite ceremony and mint a session token immediately.
+    Create an agent invite and print the onboarding prompt (copies to clipboard). By default creates a one-time invite. Use `--name` to create a persistent (named) agent. Use `--direct` to skip the invite ceremony and mint a session token immediately.
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
-    | `--ttl` | `15m` | Invite expiration time (direct connect: session lifetime, min 5m, max 7d) |
-    | `--persistent` | `false` | Create a persistent agent invite |
+    | `--invite-ttl` | `15m` | Invite link expiration time |
+    | `--ttl` | | Session expiry (omit for no expiry; min 5m, max 7d) |
     | `--direct` | `false` | Mint a session token immediately (skip invite ceremony) |
-    | `--name` | | Agent name (persistent invites only) |
-    | `--label` | | Optional session label (direct connect only) |
+    | `--name` | | Agent name (creates a persistent/named agent) |
+    | `--label` | | Optional session label |
     | `--address` | | Server address override (default: from session) |
-    | `--role` | `consumer` | Vault role for the invited agent: `consumer`, `member`, or `admin` |
+    | `--role` | `proxy` | Vault role for the invited agent: `proxy`, `member`, or `admin` |
 
-    `--direct` and `--persistent` are mutually exclusive. `--label` requires `--direct`.
+    `--direct` and `--name` are mutually exclusive.
   </Accordion>
 
   <Accordion title="agent-vault vault agent invite list">
@@ -465,7 +465,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault agent revoke <name> [flags]
     ```
 
-    Revoke an agent. Invalidates its service token and deletes all sessions.
+    Revoke an agent. Deletes all sessions.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -477,7 +477,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault agent rotate <name> [flags]
     ```
 
-    Create a rotation invite to re-issue an agent's service token. The old token is invalidated when the agent redeems the new invite.
+    Create a rotation invite to re-issue an agent's session. The old sessions are invalidated when the agent redeems the new invite.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -506,7 +506,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
-    | `--role` | | Vault role: `consumer`, `member`, or `admin` (required) |
+    | `--role` | | Vault role: `proxy`, `member`, or `admin` (required) |
   </Accordion>
 </AccordionGroup>
 

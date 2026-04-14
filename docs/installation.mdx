@@ -3,7 +3,7 @@ title: "Installation"
 description: "Install Agent Vault, start a server, and log in."
 ---
 
-Agent Vault ships as a single binary that acts as both the server and the CLI client. Install it once, then use `agent-vault server` to run a server and `agent-vault auth login` to interact with it.
+Agent Vault ships as a single binary that acts as both a server and CLI client. Install it once, then use `agent-vault server` to run a server and `agent-vault auth login` to interact with it.
 
 ## Install
 
@@ -27,6 +27,7 @@ Agent Vault ships as a single binary that acts as both the server and the CLI cl
     ```
 
     See [Docker deployment](/self-hosting/docker) for configuration options, Docker Compose, and volume management.
+
   </Tab>
   <Tab title="From source">
     **Prerequisites**: [Go 1.25+](https://go.dev/dl/), [Node.js 22+](https://nodejs.org/)
@@ -37,6 +38,7 @@ Agent Vault ships as a single binary that acts as both the server and the CLI cl
     make build
     sudo mv agent-vault /usr/local/bin/
     ```
+
   </Tab>
 </Tabs>
 
@@ -79,6 +81,7 @@ cosign verify-blob \
     ```bash
     agent-vault server
     ```
+
   </Tab>
   <Tab title="Docker">
     Pull the latest image and recreate the container. Your data is preserved on the named volume:
@@ -88,6 +91,7 @@ cosign verify-blob \
     docker stop agent-vault && docker rm agent-vault
     docker run -it -p 14321:14321 -v agent-vault-data:/data infisical/agent-vault
     ```
+
   </Tab>
   <Tab title="From source">
     Pull the latest changes and rebuild:
@@ -98,6 +102,7 @@ cosign verify-blob \
     make build
     sudo mv agent-vault /usr/local/bin/
     ```
+
   </Tab>
 </Tabs>
 
@@ -131,13 +136,12 @@ Any CLI command that needs authentication will walk you through registration and
 
 <Tabs>
   <Tab title="CLI">
-    ```bash
-    agent-vault auth register
-    agent-vault auth login
-    ```
+    ```bash agent-vault auth register agent-vault auth login ```
   </Tab>
   <Tab title="Web UI">
-    Open [http://localhost:14321/register](http://localhost:14321/register) (or the address you configured with `AGENT_VAULT_ADDR`) and create your account from the browser.
+    Open [http://localhost:14321/register](http://localhost:14321/register) (or
+    the address you configured with `AGENT_VAULT_ADDR`) and create your account
+    from the browser.
   </Tab>
 </Tabs>
 

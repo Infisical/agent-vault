@@ -177,7 +177,7 @@ Discovery is optional. If your agent already knows which hosts are configured, i
 
 | Status | Meaning | What to do |
 |---|---|---|
-| 401 | Invalid or expired session token | Re-authenticate. For persistent agents, mint a new session with the service token. |
+| 401 | Invalid or expired session token | Re-authenticate. For persistent agents, contact the operator for a new session. |
 | 403 | Host not allowed | The service isn't configured in the vault. Create a [proposal](/learn/proposals) to request access, or ask the vault admin to add it. The response body includes a `proposal_hint`. |
 | 429 | Too many pending proposals | Wait for existing proposals to be reviewed before creating new ones. |
 | 502 | Missing credential or upstream error | A credential may need to be added to the vault. Inform the user. |

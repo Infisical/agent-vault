@@ -59,12 +59,11 @@ type MasterKeyRecord struct {
 // If VaultID is non-empty, the session is scoped to that vault.
 type Session struct {
 	ID        string
-	UserID    string // non-empty for user login sessions, empty for agent sessions
-	VaultID   string // empty = global (admin), non-empty = scoped to vault
-	AgentID   string // non-empty for sessions minted by a persistent agent
-	VaultRole string // "consumer", "member", or "admin" — set for scoped sessions (temp invite + agent)
-	Label     string // optional label for direct-connect sessions
-	ExpiresAt time.Time
+	UserID    string     // non-empty for user login sessions, empty for agent sessions
+	VaultID   string     // empty = global (admin), non-empty = scoped to vault
+	AgentID   string     // non-empty for sessions minted by a persistent agent
+	VaultRole string     // "proxy", "member", or "admin" — set for scoped sessions (temp invite + agent)
+	ExpiresAt *time.Time // nil = never expires
 	CreatedAt time.Time
 }
 
@@ -123,7 +122,7 @@ type Invite struct {
 	ID                int
 	Token             string
 	VaultID           string
-	VaultRole         string     // "consumer", "member", or "admin"
+	VaultRole         string     // "proxy", "member", or "admin"
 	Status            string     // pending, redeemed, expired, revoked
 	SessionID         string     // populated after redemption
 	CreatedBy         string     // session ID of the creator
@@ -131,14 +130,13 @@ type Invite struct {
 	AgentName         string     // pre-set agent name (persistent invites only)
 	AgentID           string     // set for rotation invites (references existing agent)
 	SessionTTLSeconds int        // desired session lifetime when redeemed (0 = use default)
-	SessionLabel      string     // label to attach to the session created on redemption
 	CreatedAt         time.Time
 	ExpiresAt         time.Time
 	RedeemedAt        *time.Time
 	RevokedAt         *time.Time
 }
 
-// Agent represents a named, persistent agent with a long-lived service token.
+// Agent represents a named, persistent agent with a session token.
 type Agent struct {
 	ID                 string
 	Name               string
@@ -146,7 +144,7 @@ type Agent struct {
 	ServiceTokenHash   []byte
 	ServiceTokenSalt   []byte
 	ServiceTokenPrefix string // first 16 hex chars of the token, for lookup
-	VaultRole          string // "consumer", "member", or "admin"
+	VaultRole          string // "proxy", "member", or "admin"
 	Status             string // "active" or "revoked"
 	CreatedBy          string // user ID of the creator
 	CreatedAt          time.Time
@@ -262,7 +260,7 @@ type Store interface {
 
 	// Sessions
 	CreateSession(ctx context.Context, userID string, expiresAt time.Time) (*Session, error)
-	CreateScopedSession(ctx context.Context, vaultID, vaultRole, label string, expiresAt time.Time) (*Session, error)
+	CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*Session, error)
 	GetSession(ctx context.Context, id string) (*Session, error)
 	DeleteSession(ctx context.Context, id string) error
 
@@ -286,7 +284,7 @@ type Store interface {
 	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string) error
 
 	// Invites
-	CreateInvite(ctx context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time, sessionTTLSeconds int, sessionLabel string) (*Invite, error)
+	CreateInvite(ctx context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time, sessionTTLSeconds int) (*Invite, error)
 	GetInviteByToken(ctx context.Context, token string) (*Invite, error)
 	ListInvites(ctx context.Context, vaultID, status string) ([]Invite, error)
 	RedeemInvite(ctx context.Context, token, sessionID string) error
@@ -349,7 +347,7 @@ type Store interface {
 	CountAgentSessions(ctx context.Context, agentID string) (int, error)
 	GetLatestAgentSessionExpiry(ctx context.Context, agentID string) (*time.Time, error)
 	DeleteAgentSessions(ctx context.Context, agentID string) error
-	CreateAgentSession(ctx context.Context, agentID, vaultID, vaultRole string, expiresAt time.Time) (*Session, error)
+	CreateAgentSession(ctx context.Context, agentID, vaultID, vaultRole string, expiresAt *time.Time) (*Session, error)
 	CreatePersistentInvite(ctx context.Context, vaultID, vaultRole, createdBy string, agentName string, expiresAt time.Time) (*Invite, error)
 	CreateRotationInvite(ctx context.Context, agentID, vaultID, createdBy string, expiresAt time.Time) (*Invite, error)
 

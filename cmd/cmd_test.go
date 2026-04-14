@@ -369,7 +369,7 @@ func TestAgentSubcommandsRegistered(t *testing.T) {
 	}
 }
 
-func TestInviteCreatePersistentFlags(t *testing.T) {
+func TestInviteCreateFlags(t *testing.T) {
 	// Find vault > agent > invite > create command.
 	vCmd := findSubcommand(rootCmd, "vault")
 	if vCmd == nil {
@@ -402,22 +402,19 @@ func TestInviteCreatePersistentFlags(t *testing.T) {
 		t.Fatal("create command not found under invite")
 	}
 
-	// Verify --persistent flag exists.
-	f := createCmd.Flags().Lookup("persistent")
-	if f == nil {
-		t.Fatal("expected --persistent flag on invite create command")
-	}
-	if f.DefValue != "false" {
-		t.Errorf("expected --persistent default to be false, got %q", f.DefValue)
-	}
-
 	// Verify --name flag exists.
-	f = createCmd.Flags().Lookup("name")
+	f := createCmd.Flags().Lookup("name")
 	if f == nil {
 		t.Fatal("expected --name flag on invite create command")
 	}
 	if f.DefValue != "" {
 		t.Errorf("expected --name default to be empty, got %q", f.DefValue)
+	}
+
+	// Verify --ttl flag exists.
+	f = createCmd.Flags().Lookup("ttl")
+	if f == nil {
+		t.Fatal("expected --ttl flag on invite create command")
 	}
 }
 
@@ -463,14 +460,6 @@ func TestInviteCreateDirectFlags(t *testing.T) {
 		t.Errorf("expected --direct default to be false, got %q", f.DefValue)
 	}
 
-	// Verify --label flag exists.
-	f = createCmd.Flags().Lookup("label")
-	if f == nil {
-		t.Fatal("expected --label flag on invite create command")
-	}
-	if f.DefValue != "" {
-		t.Errorf("expected --label default to be empty, got %q", f.DefValue)
-	}
 }
 
 func TestLoadProjectVault(t *testing.T) {

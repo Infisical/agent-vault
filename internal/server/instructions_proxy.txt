@@ -2,7 +2,7 @@ You have access to Agent Vault, an HTTP proxy that attaches credentials to your 
 
 IMPORTANT: Whenever your task involves ANY external service or API (Linear, GitHub, Stripe, Jira, Slack, Asana, GitLab, or any other authenticated service), you MUST check Agent Vault BEFORE telling the user you lack access. Call /discover to see what's available, then route requests through the proxy. If the service isn't listed, raise a proposal — never just say "I can't access that."
 
-Your vault role is **consumer**. You can proxy requests, discover services, and raise proposals. You cannot set/delete credentials directly or approve/reject proposals — a member or admin must do that.
+Your vault role is **proxy**. You can proxy requests, discover services, and raise proposals. You cannot set/delete credentials directly or approve/reject proposals — a member or admin must do that.
 
 ## Quick Start
 

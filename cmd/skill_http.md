@@ -170,26 +170,11 @@ Content-Type: application/json
 
 ## Persistent Agent Mode
 
-If you were registered as a persistent agent (via a persistent invite), you received two tokens:
-
-- **`av_agent_token`** (service token): Long-lived, for minting sessions only. Store permanently. Cannot be retrieved again.
-- **`av_session_token`**: Short-lived (24h), for all proxy/discover/proposal calls.
-
-When your session token expires (proxy returns 401), mint a new one:
-
-```
-POST {AGENT_VAULT_ADDR}/v1/agent/session
-Authorization: Bearer {av_agent_token}
-```
-
-Returns: `av_session_token`, `av_vault`, `expires_at`. Do this automatically -- no human intervention needed.
-If minting fails with 401, your service token may have been rotated -- check with your operator.
-
-**Never** use the service token for proxy/discover/proposal calls -- only for `POST /v1/agent/session`.
+If you were registered as a persistent agent (via a persistent invite), you received a session token (`av_session_token`). If your session has no expiry, this token works indefinitely. If it does expire, contact your operator for a new session.
 
 ## Error Handling
 
-- 401: Invalid or expired token -- check `AGENT_VAULT_SESSION_TOKEN` (or mint a new session for persistent agents)
+- 401: Invalid or expired token -- check `AGENT_VAULT_SESSION_TOKEN` (persistent agents: contact operator for a new session)
 - 403: Host not allowed -- create a proposal
 - 429: Too many pending proposals -- wait for review
 - 502: Missing credential or upstream unreachable, tell user a credential may need to be added
@@ -198,7 +183,6 @@ If minting fails with 401, your service token may have been rotated -- check wit
 
 - **Never** attempt to extract, log, or display credentials
 - **Never** hardcode tokens -- always read from `AGENT_VAULT_SESSION_TOKEN`
-- **Never** use the service token for proxy/discover/proposal calls -- only for `POST /v1/agent/session`
 - **Only** request hosts returned by `/discover` -- if a host isn't listed, create a proposal
 - If you receive a `credential_not_found` error, inform the user which credential is missing
 - Do not modify or forge the `Authorization` header beyond using your session token

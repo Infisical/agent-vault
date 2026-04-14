@@ -37,8 +37,8 @@ import (
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
-//go:embed instructions_consumer.txt
-var instructionsConsumer string
+//go:embed instructions_proxy.txt
+var instructionsProxy string
 
 //go:embed instructions_member.txt
 var instructionsMember string
@@ -91,7 +91,7 @@ type Store interface {
 	CountOwners(ctx context.Context) (int, error)
 	RegisterFirstUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, defaultVaultID string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*store.User, error)
 	CreateSession(ctx context.Context, userID string, expiresAt time.Time) (*store.Session, error)
-	CreateScopedSession(ctx context.Context, vaultID, vaultRole, label string, expiresAt time.Time) (*store.Session, error)
+	CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error)
 	GetSession(ctx context.Context, id string) (*store.Session, error)
 	DeleteSession(ctx context.Context, id string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
@@ -138,7 +138,7 @@ type Store interface {
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
 
 	// Invites
-	CreateInvite(ctx context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time, sessionTTLSeconds int, sessionLabel string) (*store.Invite, error)
+	CreateInvite(ctx context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time, sessionTTLSeconds int) (*store.Invite, error)
 	GetInviteByToken(ctx context.Context, token string) (*store.Invite, error)
 	ListInvites(ctx context.Context, vaultID, status string) ([]store.Invite, error)
 	RedeemInvite(ctx context.Context, token, sessionID string) error
@@ -205,7 +205,7 @@ type Store interface {
 	CountAgentSessions(ctx context.Context, agentID string) (int, error)
 	GetLatestAgentSessionExpiry(ctx context.Context, agentID string) (*time.Time, error)
 	DeleteAgentSessions(ctx context.Context, agentID string) error
-	CreateAgentSession(ctx context.Context, agentID, vaultID, vaultRole string, expiresAt time.Time) (*store.Session, error)
+	CreateAgentSession(ctx context.Context, agentID, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error)
 	CreatePersistentInvite(ctx context.Context, vaultID, vaultRole, createdBy string, agentName string, expiresAt time.Time) (*store.Invite, error)
 	CreateRotationInvite(ctx context.Context, agentID, vaultID, createdBy string, expiresAt time.Time) (*store.Invite, error)
 
@@ -314,10 +314,11 @@ func (s *Server) requireVaultAdmin(w http.ResponseWriter, r *http.Request, vault
 }
 
 // agentRoleSatisfies returns true if agentRole is at least as privileged as requiredRole.
-// Hierarchy: consumer(0) < member(1) < admin(2).
+// Hierarchy: proxy(0) < member(1) < admin(2).
+var roleRank = map[string]int{"proxy": 0, "member": 1, "admin": 2}
+
 func agentRoleSatisfies(agentRole, requiredRole string) bool {
-	rank := map[string]int{"consumer": 0, "member": 1, "admin": 2}
-	return rank[agentRole] >= rank[requiredRole]
+	return roleRank[agentRole] >= roleRank[requiredRole]
 }
 
 // requireVaultMember checks that the session has member+ access to the vault.
@@ -349,7 +350,7 @@ func (s *Server) requireVaultMember(w http.ResponseWriter, r *http.Request, vaul
 }
 
 // requireProposalReview checks proposal approve/reject access.
-// Agent/scoped sessions require admin role (consumers cannot self-approve).
+// Agent/scoped sessions require admin role (proxy-role agents cannot self-approve).
 // User sessions require any vault access (member or admin — by design).
 func (s *Server) requireProposalReview(w http.ResponseWriter, r *http.Request, vaultID string) (*store.User, error) {
 	sess := sessionFromContext(r.Context())
@@ -486,9 +487,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("POST /v1/invites", s.requireInitialized(s.requireAuth(limitBody(s.handleInviteCreate))))
 	mux.HandleFunc("GET /v1/invites", s.requireInitialized(s.requireAuth(s.handleInviteList)))
 	mux.HandleFunc("DELETE /v1/invites/{token}", s.requireInitialized(s.requireAuth(s.handleInviteRevoke)))
-
-	// Agent session minting (service token is the credential, no requireAuth)
-	mux.HandleFunc("POST /v1/agent/session", s.requireInitialized(limitBody(s.handleAgentSessionMint)))
 
 	// Agent management (owner-only)
 	mux.HandleFunc("GET /v1/admin/agents", s.requireInitialized(s.requireAuth(s.handleAgentList)))
@@ -1179,7 +1177,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"message":       "Password reset successfully.",
 		"authenticated": true,
-		"expires_at":    session.ExpiresAt.Format(time.RFC3339),
+		"expires_at":    formatExpiresAt(session.ExpiresAt),
 	})
 }
 
@@ -1398,7 +1396,7 @@ func (s *Server) handleProposalApproveDetails(w http.ResponseWriter, r *http.Req
 	userEmail := ""
 	if c, err := r.Cookie("av_session"); err == nil && c.Value != "" {
 		sess, err := s.store.GetSession(ctx, c.Value)
-		if err == nil && sess != nil && !time.Now().After(sess.ExpiresAt) && sess.UserID != "" {
+		if err == nil && sess != nil && !sessionExpired(sess) && sess.UserID != "" {
 			user, err := s.userFromSession(ctx, sess)
 			if err == nil && user != nil {
 				authenticated = true
@@ -1661,7 +1659,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(loginResponse{
 		Token:     session.ID,
-		ExpiresAt: session.ExpiresAt.Format(time.RFC3339),
+		ExpiresAt: formatExpiresAt(session.ExpiresAt),
 	})
 }
 
@@ -1735,7 +1733,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(loginResponse{
 		Token:     newSess.ID,
-		ExpiresAt: newSess.ExpiresAt.Format(time.RFC3339),
+		ExpiresAt: formatExpiresAt(newSess.ExpiresAt),
 	})
 }
 
@@ -1791,7 +1789,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, `{"error":"Invalid or expired session"}`, http.StatusUnauthorized)
 			return
 		}
-		if time.Now().After(sess.ExpiresAt) {
+		if sessionExpired(sess) {
 			http.Error(w, `{"error":"Session expired"}`, http.StatusUnauthorized)
 			return
 		}
@@ -1815,7 +1813,7 @@ func (s *Server) optionalAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		if token != "" {
-			if sess, err := s.store.GetSession(r.Context(), token); err == nil && sess != nil && !time.Now().After(sess.ExpiresAt) {
+			if sess, err := s.store.GetSession(r.Context(), token); err == nil && sess != nil && !sessionExpired(sess) {
 				ctx := context.WithValue(r.Context(), sessionContextKey, sess)
 				next(w, r.WithContext(ctx))
 				return
@@ -1839,7 +1837,7 @@ type scopedSessionResponse struct {
 func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 	var req scopedSessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Vault == "" {
-		http.Error(w, `{"error":"Vault is required"}`, http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "Vault is required")
 		return
 	}
 
@@ -1847,7 +1845,7 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 
 	ns, err := s.store.GetVault(ctx, req.Vault)
 	if err != nil || ns == nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Vault %q not found"}`, req.Vault), http.StatusNotFound)
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", req.Vault))
 		return
 	}
 
@@ -1856,37 +1854,37 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Default to "member" if no role specified; cap to caller's own role.
+	// Default to "proxy" if no role specified; cap to caller's own role.
 	requestedRole := req.VaultRole
 	if requestedRole == "" {
-		requestedRole = "member"
+		requestedRole = "proxy"
 	}
 	parentSess := sessionFromContext(ctx)
 	cappedRole, errMsg := s.capRequestedRole(ctx, parentSess, ns.ID, requestedRole)
 	if errMsg != "" {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, errMsg), http.StatusForbidden)
+		jsonError(w, http.StatusForbidden, errMsg)
 		return
 	}
 
-	sess, err := s.store.CreateScopedSession(ctx, ns.ID, cappedRole, "", time.Now().Add(sessionTTL))
+	sess, err := s.store.CreateScopedSession(ctx, ns.ID, cappedRole, timePtr(time.Now().Add(sessionTTL)))
 	if err != nil {
-		http.Error(w, `{"error":"Failed to create scoped session"}`, http.StatusInternalServerError)
+		jsonError(w, http.StatusInternalServerError, "Failed to create scoped session")
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(scopedSessionResponse{
 		Token:     sess.ID,
-		ExpiresAt: sess.ExpiresAt.Format(time.RFC3339),
+		ExpiresAt: formatExpiresAt(sess.ExpiresAt),
 	})
 }
 
 // capRequestedRole enforces role-capping rules: the requested role cannot
-// exceed the caller's own vault role. Consumers cannot mint sessions at all.
+// exceed the caller's own vault role. Proxy-role agents cannot mint sessions at all.
 // Returns the validated role, or an error string if the caller lacks permission.
 func (s *Server) capRequestedRole(ctx context.Context, sess *store.Session, vaultID, requestedRole string) (string, string) {
 	if requestedRole == "" {
-		requestedRole = "consumer"
+		requestedRole = "proxy"
 	}
 
 	var callerRole string
@@ -1926,8 +1924,7 @@ func (s *Server) capRequestedRole(ctx context.Context, sess *store.Session, vaul
 type directSessionRequest struct {
 	Vault      string `json:"vault"`
 	VaultRole  string `json:"vault_role"`
-	TTLSeconds int    `json:"ttl_seconds"`
-	Label      string `json:"label"`
+	TTLSeconds *int   `json:"ttl_seconds,omitempty"`
 }
 
 type directSessionResponse struct {
@@ -1945,7 +1942,6 @@ const (
 	directSessionMinTTL = 5 * 60        // 5 minutes
 	directSessionMaxTTL = 7 * 24 * 3600 // 7 days
 	directSessionDefTTL = 24 * 3600     // 24 hours
-	maxLabelLength      = 128
 )
 
 func (s *Server) handleDirectSession(w http.ResponseWriter, r *http.Request) {
@@ -1959,24 +1955,19 @@ func (s *Server) handleDirectSession(w http.ResponseWriter, r *http.Request) {
 		req.Vault = "default"
 	}
 	if req.VaultRole == "" {
-		req.VaultRole = "consumer"
+		req.VaultRole = "proxy"
 	}
-	if req.VaultRole != "consumer" && req.VaultRole != "member" && req.VaultRole != "admin" {
-		jsonError(w, http.StatusBadRequest, "vault_role must be one of: consumer, member, admin")
+	if req.VaultRole != "proxy" && req.VaultRole != "member" && req.VaultRole != "admin" {
+		jsonError(w, http.StatusBadRequest, "vault_role must be one of: proxy, member, admin")
 		return
 	}
-	if req.TTLSeconds == 0 {
-		req.TTLSeconds = directSessionDefTTL
+	if req.TTLSeconds != nil {
+		ttl := *req.TTLSeconds
+		if ttl < directSessionMinTTL || ttl > directSessionMaxTTL {
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("ttl_seconds must be between %d and %d", directSessionMinTTL, directSessionMaxTTL))
+			return
+		}
 	}
-	if req.TTLSeconds < directSessionMinTTL || req.TTLSeconds > directSessionMaxTTL {
-		jsonError(w, http.StatusBadRequest, fmt.Sprintf("ttl_seconds must be between %d and %d", directSessionMinTTL, directSessionMaxTTL))
-		return
-	}
-	if len(req.Label) > maxLabelLength {
-		jsonError(w, http.StatusBadRequest, fmt.Sprintf("label must be at most %d characters", maxLabelLength))
-		return
-	}
-
 	ctx := r.Context()
 
 	ns, err := s.store.GetVault(ctx, req.Vault)
@@ -1997,8 +1988,13 @@ func (s *Server) handleDirectSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expiresAt := time.Now().Add(time.Duration(req.TTLSeconds) * time.Second)
-	newSess, err := s.store.CreateScopedSession(ctx, ns.ID, cappedRole, req.Label, expiresAt)
+	// ttl_seconds omitted = no expiry; ttl_seconds present = finite session.
+	var expiresAt *time.Time
+	if req.TTLSeconds != nil {
+		t := time.Now().Add(time.Duration(*req.TTLSeconds) * time.Second)
+		expiresAt = &t
+	}
+	newSess, err := s.store.CreateScopedSession(ctx, ns.ID, cappedRole, expiresAt)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
@@ -2015,7 +2011,7 @@ func (s *Server) handleDirectSession(w http.ResponseWriter, r *http.Request) {
 		ProxyURL:       s.baseURL + "/proxy",
 		Services:       services,
 		Instructions:   instructionsForRole(cappedRole),
-		ExpiresAt:      newSess.ExpiresAt.Format(time.RFC3339),
+		ExpiresAt:      formatExpiresAt(newSess.ExpiresAt),
 	})
 }
 
@@ -2107,7 +2103,7 @@ func (s *Server) handleCredentialsList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if reveal {
-		// Revealing values requires member+ role (blocks consumers).
+		// Revealing values requires member+ role (blocks proxy-role agents).
 		if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
 			return
 		}
@@ -2757,6 +2753,23 @@ func sessionCookie(r *http.Request, baseURL, value string, maxAge int) *http.Coo
 	}
 }
 
+// timePtr returns a pointer to the given time value.
+func timePtr(t time.Time) *time.Time { return &t }
+
+// formatExpiresAt returns a formatted RFC3339 string for an optional expiry time,
+// or an empty string if the session never expires.
+func formatExpiresAt(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.Format(time.RFC3339)
+}
+
+// sessionExpired returns true if the session has a finite expiry and that time has passed.
+func sessionExpired(s *store.Session) bool {
+	return s.ExpiresAt != nil && time.Now().After(*s.ExpiresAt)
+}
+
 func jsonError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -3004,9 +3017,9 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 // --- Invites ---
 
 type inviteRedeemResponse struct {
-	SBAddr         string            `json:"av_addr"`
-	SBSessionToken string            `json:"av_session_token"`
-	SBVault        string            `json:"av_vault"`
+	AVAddr         string            `json:"av_addr"`
+	AVSessionToken string            `json:"av_session_token"`
+	AVVault        string            `json:"av_vault"`
 	VaultRole      string            `json:"vault_role"`
 	ProxyURL       string            `json:"proxy_url"`
 	Services       []discoverService `json:"services"`
@@ -3060,11 +3073,12 @@ func (s *Server) handleInviteRedeem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a vault-scoped session for the agent with the invite's role.
-	sessDuration := sessionTTL
+	// SessionTTLSeconds > 0 = finite session; 0 = no expiry.
+	var sessExpiry *time.Time
 	if inv.SessionTTLSeconds > 0 {
-		sessDuration = time.Duration(inv.SessionTTLSeconds) * time.Second
+		sessExpiry = timePtr(time.Now().Add(time.Duration(inv.SessionTTLSeconds) * time.Second))
 	}
-	sess, err := s.store.CreateScopedSession(ctx, inv.VaultID, inv.VaultRole, inv.SessionLabel, time.Now().Add(sessDuration))
+	sess, err := s.store.CreateScopedSession(ctx, inv.VaultID, inv.VaultRole, sessExpiry)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
@@ -3082,9 +3096,9 @@ func (s *Server) handleInviteRedeem(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(inviteRedeemResponse{
-		SBAddr:         baseURL,
-		SBSessionToken: sess.ID,
-		SBVault:        ns.Name,
+		AVAddr:         baseURL,
+		AVSessionToken: sess.ID,
+		AVVault:        ns.Name,
 		VaultRole:      inv.VaultRole,
 		ProxyURL:       baseURL + "/proxy",
 		Services:       services,
@@ -3159,7 +3173,7 @@ func (s *Server) handleInviteList(w http.ResponseWriter, r *http.Request) {
 		// For redeemed invites, look up session expiry.
 		if inv.Status == "redeemed" && inv.SessionID != "" {
 			if session, err := s.store.GetSession(ctx, inv.SessionID); err == nil && session != nil {
-				e := session.ExpiresAt.Format(time.RFC3339)
+				e := formatExpiresAt(session.ExpiresAt)
 				items[i].SessionExpiresAt = &e
 			}
 		}
@@ -4128,8 +4142,8 @@ func (s *Server) handleVaultUserSetRole(w http.ResponseWriter, r *http.Request) 
 
 // --- Persistent Agent Identity ---
 
-//go:embed persistent_instructions_consumer.txt
-var persistentInstructionsConsumer string
+//go:embed persistent_instructions_proxy.txt
+var persistentInstructionsProxy string
 
 //go:embed persistent_instructions_member.txt
 var persistentInstructionsMember string
@@ -4145,7 +4159,7 @@ func instructionsForRole(role string) string {
 	case "admin":
 		return instructionsAdmin
 	default:
-		return instructionsConsumer
+		return instructionsProxy
 	}
 }
 
@@ -4157,7 +4171,7 @@ func persistentInstructionsForRole(role string) string {
 	case "admin":
 		return persistentInstructionsAdmin
 	default:
-		return persistentInstructionsConsumer
+		return persistentInstructionsProxy
 	}
 }
 
@@ -4166,15 +4180,13 @@ func capabilitiesForRole(role string) []string {
 	base := []string{"proxy", "discover", "proposals"}
 	switch role {
 	case "member":
-		return append(base, "credentials:write", "proposals:approve", "services:manage", "agents:invite:consumer")
+		return append(base, "credentials:write", "proposals:approve", "services:manage", "agents:invite:proxy")
 	case "admin":
 		return append(base, "credentials:write", "proposals:approve", "services:manage", "agents:invite:any", "users:invite")
 	default:
 		return base
 	}
 }
-
-const maxAgentSessions = 10
 
 // validateSlug checks that a name is 3-64 lowercase alphanumeric + hyphens.
 func validateSlug(name string) bool {
@@ -4189,81 +4201,9 @@ func validateSlug(name string) bool {
 	return true
 }
 
-// handleAgentSessionMint mints a short-lived session token from a service token.
-// POST /v1/agent/session — no requireAuth; service token is the credential.
-func (s *Server) handleAgentSessionMint(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	// Extract service token from Authorization header.
-	header := r.Header.Get("Authorization")
-	if !strings.HasPrefix(header, "Bearer av_agent_") {
-		jsonError(w, http.StatusUnauthorized, "Valid service token required (Authorization: Bearer av_agent_...)")
-		return
-	}
-	token := strings.TrimPrefix(header, "Bearer ")
-
-	// Extract prefix for lookup (first 16 hex chars after "av_agent_").
-	tokenBody := strings.TrimPrefix(token, "av_agent_")
-	if len(tokenBody) < 16 {
-		jsonError(w, http.StatusUnauthorized, "Invalid service token format")
-		return
-	}
-	prefix := tokenBody[:16]
-
-	agent, err := s.store.GetAgentByTokenPrefix(ctx, prefix)
-	if err != nil {
-		jsonError(w, http.StatusUnauthorized, "Invalid or revoked service token")
-		return
-	}
-
-	// Verify the full token hash.
-	if !auth.VerifyUserPassword([]byte(token), agent.ServiceTokenHash, agent.ServiceTokenSalt, crypto.DefaultKDFParams()) {
-		jsonError(w, http.StatusUnauthorized, "Invalid service token")
-		return
-	}
-
-	if agent.Status != "active" {
-		jsonError(w, http.StatusForbidden, "Agent has been revoked")
-		return
-	}
-
-	// Rate limit: max active sessions per agent.
-	count, err := s.store.CountAgentSessions(ctx, agent.ID)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to check session count")
-		return
-	}
-	if count >= maxAgentSessions {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error":   "too_many_sessions",
-			"message": fmt.Sprintf("agent has %d active sessions (max %d) — wait for existing sessions to expire", count, maxAgentSessions),
-		})
-		return
-	}
-
-	sess, err := s.store.CreateAgentSession(ctx, agent.ID, agent.VaultID, agent.VaultRole, time.Now().Add(sessionTTL))
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to create session")
-		return
-	}
-
-	ns, _ := s.store.GetVaultByID(ctx, agent.VaultID)
-	nsName := store.DefaultVault
-	if ns != nil {
-		nsName = ns.Name
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"av_session_token": sess.ID,
-		"av_vault":        nsName,
-		"vault_role":         agent.VaultRole,
-		"capabilities":       capabilitiesForRole(agent.VaultRole),
-		"expires_at":         sess.ExpiresAt.Format(time.RFC3339),
-	})
-}
+// handleAgentSessionMint was removed as part of the unified token model.
+// Persistent agents now receive session tokens directly (no service token minting).
+// The POST /v1/agent/session route is no longer registered.
 
 // handlePersistentInviteRedeem handles POST /invite/{token} for persistent agent invites.
 func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Request) {
@@ -4340,24 +4280,18 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Generate service token.
-	serviceToken := newServiceToken()
-	tokenHash, tokenSalt, _, err := auth.HashUserPassword([]byte(serviceToken))
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to hash service token")
-		return
-	}
-	tokenPrefix := serviceTokenPrefix(serviceToken)
-
-	// Create agent record.
-	agent, err := s.store.CreateAgent(ctx, agentName, inv.VaultID, tokenHash, tokenSalt, tokenPrefix, inv.VaultRole, inv.CreatedBy)
+	// Create agent record with placeholder service token fields (service tokens are
+	// no longer used — agents get session tokens directly).
+	placeholderHash := []byte("unused")
+	placeholderSalt := []byte("unused")
+	agent, err := s.store.CreateAgent(ctx, agentName, inv.VaultID, placeholderHash, placeholderSalt, "unused", inv.VaultRole, inv.CreatedBy)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create agent")
 		return
 	}
 
-	// Create initial session for immediate use.
-	sess, err := s.store.CreateAgentSession(ctx, agent.ID, inv.VaultID, agent.VaultRole, time.Now().Add(sessionTTL))
+	// Create a non-expiring session for the persistent agent.
+	sess, err := s.store.CreateAgentSession(ctx, agent.ID, inv.VaultID, agent.VaultRole, nil)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
@@ -4375,11 +4309,10 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"av_addr":          baseURL,
-		"av_agent_token":   serviceToken,
 		"av_session_token": sess.ID,
 		"av_vault":         nsName,
-		"vault_role":          inv.VaultRole,
-		"agent_name":          agentName,
+		"vault_role":       inv.VaultRole,
+		"agent_name":       agentName,
 		"proxy_url":        baseURL + "/proxy",
 		"services":         services,
 		"instructions":     persistentInstructionsForRole(inv.VaultRole),
@@ -4415,23 +4348,14 @@ func (s *Server) handleRotationRedeem(w http.ResponseWriter, r *http.Request, in
 		return
 	}
 
-	// Generate new service token.
-	serviceToken := newServiceToken()
-	tokenHash, tokenSalt, _, err := auth.HashUserPassword([]byte(serviceToken))
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to hash service token")
-		return
-	}
-	tokenPrefix := serviceTokenPrefix(serviceToken)
-
-	// Update the agent's service token (invalidates the old one at this moment).
-	if err := s.store.UpdateAgentServiceToken(ctx, agent.ID, tokenHash, tokenSalt, tokenPrefix); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to update service token")
+	// Invalidate existing sessions for this agent (rotation replaces access).
+	if err := s.store.DeleteAgentSessions(ctx, agent.ID); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to invalidate old sessions")
 		return
 	}
 
-	// Create a fresh session.
-	sess, err := s.store.CreateAgentSession(ctx, agent.ID, agent.VaultID, agent.VaultRole, time.Now().Add(sessionTTL))
+	// Create a new non-expiring session.
+	sess, err := s.store.CreateAgentSession(ctx, agent.ID, agent.VaultID, agent.VaultRole, nil)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
@@ -4449,11 +4373,10 @@ func (s *Server) handleRotationRedeem(w http.ResponseWriter, r *http.Request, in
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"av_addr":          baseURL,
-		"av_agent_token":   serviceToken,
 		"av_session_token": sess.ID,
 		"av_vault":         nsName,
-		"vault_role":          agent.VaultRole,
-		"agent_name":          agent.Name,
+		"vault_role":       agent.VaultRole,
+		"agent_name":       agent.Name,
 		"proxy_url":        baseURL + "/proxy",
 		"services":         services,
 		"instructions":     persistentInstructionsForRole(agent.VaultRole),
@@ -4638,14 +4561,14 @@ func (s *Server) handleAgentRotate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	inviteURL := s.baseURL + "/invite/" + inv.Token
-	prompt := fmt.Sprintf(`Your Agent Vault service token is being rotated. To accept the new token, make the following HTTP request:
+	prompt := fmt.Sprintf(`Your Agent Vault session is being rotated. To accept the new session, make the following HTTP request:
 
   POST %s
   Content-Type: application/json
 
   {}
 
-The response contains your new service token. Store it securely and discard the old one.
+The response contains your new session token and usage instructions.
 
 This link expires in 15 minutes and can only be used once.
 `, inviteURL)
@@ -4724,11 +4647,11 @@ func (s *Server) handleAgentSetRole(w http.ResponseWriter, r *http.Request) {
 		Role string `json:"role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Role == "" {
-		jsonError(w, http.StatusBadRequest, `Request body must include {"role": "consumer|member|admin"}`)
+		jsonError(w, http.StatusBadRequest, `Request body must include {"role": "proxy|member|admin"}`)
 		return
 	}
-	if body.Role != "consumer" && body.Role != "member" && body.Role != "admin" {
-		jsonError(w, http.StatusBadRequest, "Role must be one of: consumer, member, admin")
+	if body.Role != "proxy" && body.Role != "member" && body.Role != "admin" {
+		jsonError(w, http.StatusBadRequest, "Role must be one of: proxy, member, admin")
 		return
 	}
 
@@ -5281,8 +5204,7 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 		TTLSeconds        int    `json:"ttl_seconds"`
 		AgentName         string `json:"agent_name"`
 		VaultRole         string `json:"vault_role"`
-		SessionTTLSeconds int    `json:"session_ttl_seconds"`
-		SessionLabel      string `json:"session_label"`
+		SessionTTLSeconds *int   `json:"session_ttl_seconds,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
@@ -5294,36 +5216,34 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 	if req.TTLSeconds <= 0 {
 		req.TTLSeconds = 900 // 15 minutes default
 	}
+	// Determine if this is a persistent (named agent) invite.
+	// persistent=true or agent_name set → persistent invite.
+	isPersistent := req.Persistent || req.AgentName != ""
 	// Cap invite TTL: 24 hours for temporary, 7 days for persistent.
 	maxTTL := 24 * 60 * 60 // 24 hours
-	if req.Persistent {
+	if isPersistent {
 		maxTTL = 7 * 24 * 60 * 60 // 7 days
 	}
 	if req.TTLSeconds > maxTTL {
 		req.TTLSeconds = maxTTL
 	}
-	// Cap session TTL using the same bounds as direct connect sessions.
-	if req.SessionTTLSeconds > 0 {
-		if req.SessionTTLSeconds < directSessionMinTTL {
-			req.SessionTTLSeconds = directSessionMinTTL
-		} else if req.SessionTTLSeconds > directSessionMaxTTL {
-			req.SessionTTLSeconds = directSessionMaxTTL
+	// session_ttl_seconds: nil = no expiry, >0 = finite session.
+	// Cap finite session TTL using the same bounds as direct connect sessions.
+	if req.SessionTTLSeconds != nil && *req.SessionTTLSeconds > 0 {
+		ttl := *req.SessionTTLSeconds
+		if ttl < directSessionMinTTL {
+			ttl = directSessionMinTTL
+			req.SessionTTLSeconds = &ttl
+		} else if ttl > directSessionMaxTTL {
+			ttl = directSessionMaxTTL
+			req.SessionTTLSeconds = &ttl
 		}
 	}
-	if len(req.SessionLabel) > maxLabelLength {
-		jsonError(w, http.StatusBadRequest, fmt.Sprintf("session_label must be at most %d characters", maxLabelLength))
-		return
-	}
 	if req.VaultRole == "" {
-		req.VaultRole = "consumer"
+		req.VaultRole = "proxy"
 	}
-	if req.VaultRole != "consumer" && req.VaultRole != "member" && req.VaultRole != "admin" {
-		jsonError(w, http.StatusBadRequest, "Vault_role must be one of: consumer, member, admin")
-		return
-	}
-
-	if req.AgentName != "" && !req.Persistent {
-		jsonError(w, http.StatusBadRequest, "Agent_name requires persistent=true")
+	if req.VaultRole != "proxy" && req.VaultRole != "member" && req.VaultRole != "admin" {
+		jsonError(w, http.StatusBadRequest, "Vault_role must be one of: proxy, member, admin")
 		return
 	}
 
@@ -5334,8 +5254,8 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Role-based invite enforcement:
-	// - Consumers cannot invite anyone.
-	// - Members can invite agents but only as consumers.
+	// - Proxy-role agents cannot invite anyone.
+	// - Members can invite agents but only as proxy.
 	// - Admins (user vault admin or admin agent) can invite with any role.
 	sess := sessionFromContext(ctx)
 	if sess == nil {
@@ -5368,7 +5288,13 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 
 	expiresAt := time.Now().Add(time.Duration(req.TTLSeconds) * time.Second)
 
-	if req.Persistent {
+	// Resolve session TTL: nil = no expiry (0 stored), pointer = finite.
+	sessionTTL := 0
+	if req.SessionTTLSeconds != nil {
+		sessionTTL = *req.SessionTTLSeconds
+	}
+
+	if isPersistent {
 		// Check for duplicate agent name.
 		if req.AgentName != "" {
 			existing, _ := s.store.GetAgentByName(ctx, req.AgentName)
@@ -5396,7 +5322,7 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inv, err := s.store.CreateInvite(ctx, ns.ID, req.VaultRole, createdBy, expiresAt, req.SessionTTLSeconds, req.SessionLabel)
+	inv, err := s.store.CreateInvite(ctx, ns.ID, req.VaultRole, createdBy, expiresAt, sessionTTL)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create invite")
 		return
@@ -5434,15 +5360,15 @@ func (s *Server) handleAdminProposalList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Consumer-role agents can only view pending proposals (to avoid duplicates).
+	// Proxy-role agents can only view pending proposals (to avoid duplicates).
 	sess := sessionFromContext(r.Context())
-	isConsumer := sess != nil && sess.VaultID != "" && sess.VaultRole == "consumer"
+	isProxy := sess != nil && sess.VaultID != "" && sess.VaultRole == "proxy"
 
 	// Lazy expiration.
 	_, _ = s.store.ExpirePendingProposals(ctx, time.Now().Add(-7*24*time.Hour))
 
 	status := r.URL.Query().Get("status")
-	if isConsumer {
+	if isProxy {
 		status = "pending"
 	}
 	list, err := s.store.ListProposals(ctx, ns.ID, status)
@@ -5515,10 +5441,10 @@ func (s *Server) handleAdminProposalGet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Consumer-role agents can only view pending proposals.
+	// Proxy-role agents can only view pending proposals.
 	sess := sessionFromContext(r.Context())
-	if sess != nil && sess.VaultID != "" && sess.VaultRole == "consumer" && cs.Status != "pending" {
-		jsonError(w, http.StatusForbidden, "Consumer agents can only view pending proposals")
+	if sess != nil && sess.VaultID != "" && sess.VaultRole == "proxy" && cs.Status != "pending" {
+		jsonError(w, http.StatusForbidden, "Proxy-role agents can only view pending proposals")
 		return
 	}
 

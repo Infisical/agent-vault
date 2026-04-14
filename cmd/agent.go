@@ -110,7 +110,7 @@ var agentInfoCmd = &cobra.Command{
 
 var agentRevokeCmd = &cobra.Command{
 	Use:   "revoke <name>",
-	Short: "Revoke an agent (invalidates service token and deletes sessions)",
+	Short: "Revoke an agent (deletes all sessions)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
@@ -131,7 +131,7 @@ var agentRevokeCmd = &cobra.Command{
 
 var agentRotateCmd = &cobra.Command{
 	Use:   "rotate <name>",
-	Short: "Create a rotation invite to re-issue an agent's service token",
+	Short: "Create a rotation invite to re-issue an agent's session",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
@@ -202,10 +202,10 @@ var agentSetRoleCmd = &cobra.Command{
 		name := args[0]
 		role, _ := cmd.Flags().GetString("role")
 		if role == "" {
-			return fmt.Errorf("--role is required (consumer, member, admin)")
+			return fmt.Errorf("--role is required (proxy, member, admin)")
 		}
-		if role != "consumer" && role != "member" && role != "admin" {
-			return fmt.Errorf("--role must be one of: consumer, member, admin")
+		if role != "proxy" && role != "member" && role != "admin" {
+			return fmt.Errorf("--role must be one of: proxy, member, admin")
 		}
 
 		sess, err := ensureSession()
@@ -229,7 +229,7 @@ var agentSetRoleCmd = &cobra.Command{
 }
 
 func init() {
-	agentSetRoleCmd.Flags().String("role", "", "vault role (consumer, member, admin)")
+	agentSetRoleCmd.Flags().String("role", "", "vault role (proxy, member, admin)")
 
 	agentCmd.AddCommand(agentListCmd)
 	agentCmd.AddCommand(agentInfoCmd)

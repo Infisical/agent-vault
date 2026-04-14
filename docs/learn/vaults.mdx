@@ -9,7 +9,7 @@ Each vault contains:
 
 - **[Credentials](/learn/credentials)**: API keys, database credentials, and other sensitive material that cannot be extracted from the vault.
 - **[Services](/learn/services)**: Definitions of which hosts (e.g. `api.stripe.com`) can be accessed through the vault along with which and how credential(s) must be attached onto each proxy request.
-- **Members**: Users and agents that can access the vault under specific [roles](/learn/permissions#vault-roles) (`admin`, `member`, `consumer`).
+- **Members**: Users and agents that can access the vault under specific [roles](/learn/permissions#vault-roles) (`admin`, `member`, `proxy`).
 - **[Proposals](/learn/proposals)**: Requests from agents to set credential(s) and/or add service(s) that use those credentials.
 
 <Tip>
@@ -63,10 +63,10 @@ Vault resolution priority: `--vault` flag > `agent-vault.json` > user context > 
     For CI/CD pipelines, always-on assistants, or agents like OpenClaw that need to survive restarts.
 
     ```bash
-    agent-vault vault agent invite create --persistent --name my-agent --vault my-vault
+    agent-vault vault agent invite create --name my-agent --vault my-vault
     ```
 
-    The agent receives a long-lived **service token** that it uses to mint short-lived session tokens as needed.
+    The agent receives a **session token** (with configurable expiry, including no expiry).
 
   </Tab>
 </Tabs>
@@ -116,7 +116,7 @@ agent-vault vault agent list --vault my-vault
 # View agent details
 agent-vault vault agent info my-agent
 
-# Rotate an agent's service token
+# Rotate an agent's session
 agent-vault vault agent rotate my-agent
 
 # Rename an agent
