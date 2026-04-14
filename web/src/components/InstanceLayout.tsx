@@ -3,7 +3,7 @@ import { Link, Outlet, useLocation, useNavigate, useRouteContext } from "@tansta
 import type { AuthContext } from "../router";
 import Navbar from "./Navbar";
 
-type InstanceTab = "users" | "vaults" | "agents" | "settings";
+type InstanceTab = "agents" | "settings";
 
 interface NavItem {
   id: InstanceTab;
@@ -20,21 +20,11 @@ export default function InstanceLayout() {
 
   const pathSegments = location.pathname.split("/");
   const lastSegment = pathSegments[pathSegments.length - 1] as InstanceTab;
-  const activeTab: InstanceTab = ["users", "vaults", "agents", "settings"].includes(lastSegment)
-    ? lastSegment
-    : "users";
+  const activeTab: InstanceTab = ["agents", "settings"].includes(lastSegment)
+    ? (lastSegment as InstanceTab)
+    : "agents";
 
   const navItems: NavItem[] = [
-    {
-      id: "users",
-      label: "Users",
-      icon: (
-        <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-          <circle cx="12" cy="7" r="4" />
-        </svg>
-      ),
-    },
     {
       id: "agents",
       label: "Agents",
@@ -50,17 +40,6 @@ export default function InstanceLayout() {
           <line x1="20" y1="14" x2="23" y2="14" />
           <line x1="1" y1="9" x2="4" y2="9" />
           <line x1="1" y1="14" x2="4" y2="14" />
-        </svg>
-      ),
-    },
-    {
-      id: "vaults",
-      label: "Vaults",
-      icon: (
-        <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-          <rect x="7" y="7" width="3" height="9" />
-          <rect x="14" y="7" width="3" height="9" />
         </svg>
       ),
     },

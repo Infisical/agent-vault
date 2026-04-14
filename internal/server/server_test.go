@@ -3513,6 +3513,76 @@ func TestUserGetMe(t *testing.T) {
 	}
 }
 
+// --- Public User List Tests ---
+
+func TestPublicUserListAsOwner(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/users", nil)
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	users, ok := resp["users"].([]interface{})
+	if !ok {
+		t.Fatalf("expected users array, got %T", resp["users"])
+	}
+	if len(users) == 0 {
+		t.Fatal("expected at least one user")
+	}
+	// Owners should get vault membership data.
+	first := users[0].(map[string]interface{})
+	if _, hasVaults := first["vaults"]; !hasVaults {
+		t.Fatal("expected vaults field for owner view")
+	}
+}
+
+func TestPublicUserListAsMember(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/users", nil)
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	users, ok := resp["users"].([]interface{})
+	if !ok {
+		t.Fatalf("expected users array, got %T", resp["users"])
+	}
+	if len(users) == 0 {
+		t.Fatal("expected at least one user")
+	}
+	// Members should NOT get vault membership data.
+	first := users[0].(map[string]interface{})
+	if _, hasVaults := first["vaults"]; hasVaults {
+		t.Fatal("expected no vaults field for member view")
+	}
+	// Should still have basic fields.
+	if _, hasEmail := first["email"]; !hasEmail {
+		t.Fatal("expected email field")
+	}
+	if _, hasRole := first["role"]; !hasRole {
+		t.Fatal("expected role field")
+	}
+}
+
 // --- Change Password Tests ---
 
 // loginAndGetToken is a helper that logs in and returns the session token.

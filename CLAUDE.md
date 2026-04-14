@@ -66,6 +66,7 @@ Agent Vault requires two things before it becomes operational: a **master passwo
     - `agent-vault vault user list [--vault <name>]` -- list vault users
     - `agent-vault vault user remove <email> [--vault <name>]` -- remove a user from a vault
     - `agent-vault vault user set-role <email> --role admin|member [--vault <name>]` -- change a user's vault role
+- `agent-vault users` -- list all users in the instance (any authenticated user; owners see vault memberships, members see email/role/created)
 - `agent-vault owner user [list|info|remove|set-role]` -- manage users (owner only, except `info` for self)
   - `agent-vault owner user list` -- list all users
   - `agent-vault owner user info [email]` -- view user info (own info if no email given)
@@ -304,10 +305,12 @@ Invite states: `pending`, `accepted`, `expired`, or `revoked`. Token format: `av
 
 ### User Management API
 
+- `GET /v1/users` -- list all users (any authenticated user session). Owners get full data including `vaults` array; members get reduced view (`email`, `role`, `created_at` only).
+
 All owner-only except `GET /v1/admin/users/{email}` (owner or self):
 
 - `POST /v1/admin/users` -- create a user (email, password)
-- `GET /v1/admin/users` -- list all users
+- `GET /v1/admin/users` -- list all users (owner-only, includes vault memberships)
 - `GET /v1/admin/users/{email}` -- get user info + vault memberships
 - `DELETE /v1/admin/users/{email}` -- remove user
 - `POST /v1/admin/users/{email}/role` -- set instance-level role (blocks demoting last owner)

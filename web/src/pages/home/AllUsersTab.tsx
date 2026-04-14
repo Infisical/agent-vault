@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useRouteContext } from "@tanstack/react-router";
 import { LoadingSpinner, ErrorBanner, timeAgo } from "../../components/shared";
 import DataTable, { type Column } from "../../components/DataTable";
@@ -6,10 +6,10 @@ import DropdownMenu from "../../components/DropdownMenu";
 import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
 import type { AuthContext } from "../../router";
 
-interface InstanceUser {
+interface PublicUser {
   email: string;
   role: string;
-  vaults: string[];
+  vaults?: string[];
   created_at: string;
 }
 
@@ -19,10 +19,10 @@ function RowActions({
   onDone,
   onRemove,
 }: {
-  user: InstanceUser;
+  user: PublicUser;
   currentEmail: string;
   onDone: () => void;
-  onRemove: (user: InstanceUser) => void;
+  onRemove: (user: PublicUser) => void;
 }) {
   if (user.email === currentEmail) return null;
 
@@ -57,20 +57,16 @@ function RowActions({
   );
 }
 
-export default function InstanceUsersTab() {
+export default function AllUsersTab() {
   const { auth } = useRouteContext({ from: "/_auth" }) as { auth: AuthContext };
-  const [users, setUsers] = useState<InstanceUser[]>([]);
+  const [users, setUsers] = useState<PublicUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [deleteTarget, setDeleteTarget] = useState<InstanceUser | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<PublicUser | null>(null);
 
-  useEffect(() => {
-    fetchUsers();
-  }, []);
-
-  async function fetchUsers() {
+  const fetchUsers = useCallback(async () => {
     try {
-      const resp = await fetch("/v1/admin/users");
+      const resp = await fetch("/v1/users");
       if (!resp.ok) {
         const data = await resp.json();
         setError(data.error || "Failed to load users.");
@@ -83,7 +79,11 @@ export default function InstanceUsersTab() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    fetchUsers();
+  }, [fetchUsers]);
 
   async function handleDeleteUser() {
     if (!deleteTarget) return;
@@ -99,49 +99,60 @@ export default function InstanceUsersTab() {
     fetchUsers();
   }
 
-  const columns: Column<InstanceUser>[] = [
-    {
-      key: "email",
-      header: "Email",
-      render: (u) => <span className="text-sm text-text">{u.email}</span>,
-    },
-    {
-      key: "role",
-      header: "Role",
-      render: (u) => (
-        <span className="text-sm text-text-muted capitalize">{u.role}</span>
-      ),
-    },
-    {
-      key: "vaults",
-      header: "Vaults",
-      render: (u) => (
-        <span className="text-sm text-text-muted">
-          {u.vaults && u.vaults.length > 0 ? u.vaults.join(", ") : "—"}
-        </span>
-      ),
-    },
-    {
+  const columns = useMemo<Column<PublicUser>[]>(() => {
+    const cols: Column<PublicUser>[] = [
+      {
+        key: "email",
+        header: "Email",
+        render: (u) => <span className="text-sm text-text">{u.email}</span>,
+      },
+      {
+        key: "role",
+        header: "Role",
+        render: (u) => (
+          <span className="text-sm text-text-muted capitalize">{u.role}</span>
+        ),
+      },
+    ];
+
+    if (auth.is_owner) {
+      cols.push({
+        key: "vaults",
+        header: "Vaults",
+        render: (u) => (
+          <span className="text-sm text-text-muted">
+            {u.vaults && u.vaults.length > 0 ? u.vaults.join(", ") : "\u2014"}
+          </span>
+        ),
+      });
+    }
+
+    cols.push({
       key: "created_at",
       header: "Created",
       render: (u) => (
         <span className="text-sm text-text-muted">{timeAgo(u.created_at)}</span>
       ),
-    },
-    {
-      key: "actions",
-      header: "",
-      align: "right" as const,
-      render: (u: InstanceUser) => (
-        <RowActions
-          user={u}
-          currentEmail={auth.email}
-          onDone={fetchUsers}
-          onRemove={setDeleteTarget}
-        />
-      ),
-    },
-  ];
+    });
+
+    if (auth.is_owner) {
+      cols.push({
+        key: "actions",
+        header: "",
+        align: "right" as const,
+        render: (u: PublicUser) => (
+          <RowActions
+            user={u}
+            currentEmail={auth.email}
+            onDone={fetchUsers}
+            onRemove={setDeleteTarget}
+          />
+        ),
+      });
+    }
+
+    return cols;
+  }, [auth.is_owner, auth.email, fetchUsers]);
 
   return (
     <div className="p-8 w-full max-w-[960px]">
@@ -170,16 +181,18 @@ export default function InstanceUsersTab() {
         />
       )}
 
-      <ConfirmDeleteModal
-        open={deleteTarget !== null}
-        onClose={() => setDeleteTarget(null)}
-        onConfirm={handleDeleteUser}
-        title="Remove user"
-        description={`This will permanently remove "${deleteTarget?.email}" and revoke all their access. Type the email to confirm.`}
-        confirmLabel="Remove permanently"
-        confirmValue={deleteTarget?.email ?? ""}
-        inputLabel="Email address"
-      />
+      {auth.is_owner && (
+        <ConfirmDeleteModal
+          open={deleteTarget !== null}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={handleDeleteUser}
+          title="Remove user"
+          description={`This will permanently remove "${deleteTarget?.email}" and revoke all their access. Type the email to confirm.`}
+          confirmLabel="Remove permanently"
+          confirmValue={deleteTarget?.email ?? ""}
+          inputLabel="Email address"
+        />
+      )}
     </div>
   );
 }

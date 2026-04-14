@@ -503,6 +503,9 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("PUT /v1/admin/settings", s.requireInitialized(s.requireAuth(limitBody(s.handleUpdateSettings))))
 	mux.HandleFunc("POST /v1/admin/agents/{name}/vault-role", s.requireInitialized(s.requireAuth(limitBody(s.handleAgentSetRole))))
 
+	// Public user list (any authenticated user)
+	mux.HandleFunc("GET /v1/users", s.requireInitialized(s.requireAuth(s.handlePublicUserList)))
+
 	// User management (owner-only, except GET self)
 	mux.HandleFunc("POST /v1/admin/users", s.requireInitialized(s.requireAuth(limitBody(s.handleUserCreate))))
 	mux.HandleFunc("GET /v1/admin/users", s.requireInitialized(s.requireAuth(s.handleUserList)))
@@ -3327,6 +3330,35 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// buildOwnerUserList returns enriched user data with vault memberships.
+// Pre-fetches all vaults to avoid N*M queries.
+func (s *Server) buildOwnerUserList(ctx context.Context, users []store.User) []map[string]interface{} {
+	// Pre-fetch all vaults into a lookup map to avoid per-grant queries.
+	allVaults, _ := s.store.ListVaults(ctx)
+	vaultNameByID := make(map[string]string, len(allVaults))
+	for _, v := range allVaults {
+		vaultNameByID[v.ID] = v.Name
+	}
+
+	items := make([]map[string]interface{}, len(users))
+	for i, u := range users {
+		grants, _ := s.store.ListUserGrants(ctx, u.ID)
+		vaultNames := make([]string, 0, len(grants))
+		for _, g := range grants {
+			if name, ok := vaultNameByID[g.VaultID]; ok {
+				vaultNames = append(vaultNames, name)
+			}
+		}
+		items[i] = map[string]interface{}{
+			"email":      u.Email,
+			"role":       u.Role,
+			"vaults":     vaultNames,
+			"created_at": u.CreatedAt.Format(time.RFC3339),
+		}
+	}
+	return items
+}
+
 func (s *Server) handleUserList(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.requireOwner(w, r); err != nil {
 		return
@@ -3339,30 +3371,50 @@ func (s *Server) handleUserList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type userItem struct {
-		Email      string   `json:"email"`
-		Role       string   `json:"role"`
-		Vaults []string `json:"vaults"`
-		CreatedAt  string   `json:"created_at"`
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"users": s.buildOwnerUserList(ctx, users)})
+}
+
+// handlePublicUserList returns all users to any authenticated user.
+// Owners get full data (including vault memberships); members get a reduced view.
+func (s *Server) handlePublicUserList(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	sess := sessionFromContext(ctx)
+	if sess == nil {
+		jsonError(w, http.StatusForbidden, "Authentication required")
+		return
+	}
+	user, err := s.userFromSession(ctx, sess)
+	if err != nil || user == nil {
+		jsonError(w, http.StatusForbidden, "User session required")
+		return
 	}
 
+	users, err := s.store.ListUsers(ctx)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to list users")
+		return
+	}
+
+	if user.Role == "owner" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"users": s.buildOwnerUserList(ctx, users)})
+		return
+	}
+
+	type userItem struct {
+		Email     string `json:"email"`
+		Role      string `json:"role"`
+		CreatedAt string `json:"created_at"`
+	}
 	items := make([]userItem, len(users))
 	for i, u := range users {
-		grants, _ := s.store.ListUserGrants(ctx, u.ID)
-		nsNames := make([]string, 0, len(grants))
-		for _, g := range grants {
-			if ns, err := s.store.GetVaultByID(ctx, g.VaultID); err == nil && ns != nil {
-				nsNames = append(nsNames, ns.Name)
-			}
-		}
 		items[i] = userItem{
-			Email:      u.Email,
-			Role:       u.Role,
-			Vaults: nsNames,
-			CreatedAt:  u.CreatedAt.Format(time.RFC3339),
+			Email:     u.Email,
+			Role:      u.Role,
+			CreatedAt: u.CreatedAt.Format(time.RFC3339),
 		}
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"users": items})
 }
@@ -4226,6 +4278,17 @@ func validateSlug(name string) bool {
 	return true
 }
 
+// reservedVaultNames are names that conflict with /vaults/* frontend routes.
+// Keep in sync with vaultsLayoutRoute children in web/src/router.tsx.
+var reservedVaultNames = map[string]struct{}{
+	"users": {},
+}
+
+func isReservedVaultName(name string) bool {
+	_, ok := reservedVaultNames[name]
+	return ok
+}
+
 // handleAgentSessionMint was removed as part of the unified token model.
 // Persistent agents now receive session tokens directly (no service token minting).
 // The POST /v1/agent/session route is no longer registered.
@@ -4726,6 +4789,10 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "Vault name must be 3-64 characters, lowercase alphanumeric and hyphens only")
 		return
 	}
+	if isReservedVaultName(req.Name) {
+		jsonError(w, http.StatusBadRequest, "This vault name is reserved")
+		return
+	}
 
 	ctx := r.Context()
 	ns, err := s.store.CreateVault(ctx, req.Name)
@@ -4952,6 +5019,10 @@ func (s *Server) handleVaultRename(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validateSlug(body.Name) {
 		jsonError(w, http.StatusBadRequest, "Vault name must be 3-64 characters, lowercase alphanumeric and hyphens only")
+		return
+	}
+	if isReservedVaultName(body.Name) {
+		jsonError(w, http.StatusBadRequest, "This vault name is reserved")
 		return
 	}
 

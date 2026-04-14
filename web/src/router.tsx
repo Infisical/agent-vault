@@ -9,7 +9,9 @@ import { apiFetch } from "./lib/api";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import ForgotPassword from "./pages/ForgotPassword";
-import Vaults from "./pages/Vaults";
+import VaultsLayout from "./components/VaultsLayout";
+import VaultsListTab from "./pages/home/VaultsListTab";
+import AllUsersTab from "./pages/home/AllUsersTab";
 import VaultInvite from "./pages/VaultInvite";
 import ProposalApprove from "./pages/ProposalApprove";
 import VaultLayout from "./components/VaultLayout";
@@ -22,8 +24,6 @@ import SettingsTab from "./pages/vault/SettingsTab";
 import InstanceLayout from "./components/InstanceLayout";
 import AccountLayout from "./components/AccountLayout";
 import AccountSettingsTab from "./pages/account/SettingsTab";
-import InstanceUsersTab from "./pages/instance/UsersTab";
-import InstanceVaultsTab from "./pages/instance/VaultsTab";
 import InstanceAgentsTab from "./pages/instance/AgentsTab";
 import InstanceSettingsTab from "./pages/instance/SettingsTab";
 import OAuthCallback from "./pages/OAuthCallback";
@@ -182,10 +182,24 @@ const authLayoutRoute = createRoute({
   component: Outlet,
 });
 
-const vaultsRoute = createRoute({
+// --- Vaults Layout (sidebar with Vaults + Users tabs) ---
+
+const vaultsLayoutRoute = createRoute({
   getParentRoute: () => authLayoutRoute,
   path: "/vaults",
-  component: Vaults,
+  component: VaultsLayout,
+});
+
+const vaultsIndexRoute = createRoute({
+  getParentRoute: () => vaultsLayoutRoute,
+  path: "/",
+  component: VaultsListTab,
+});
+
+const vaultsUsersRoute = createRoute({
+  getParentRoute: () => vaultsLayoutRoute,
+  path: "/users",
+  component: AllUsersTab,
 });
 
 const accountRoute = createRoute({
@@ -224,20 +238,8 @@ const manageIndexRoute = createRoute({
   getParentRoute: () => manageInstanceRoute,
   path: "/",
   beforeLoad: async () => {
-    throw redirect({ to: "/manage/users" });
+    throw redirect({ to: "/manage/agents" });
   },
-});
-
-const manageUsersRoute = createRoute({
-  getParentRoute: () => manageInstanceRoute,
-  path: "/users",
-  component: InstanceUsersTab,
-});
-
-const manageVaultsRoute = createRoute({
-  getParentRoute: () => manageInstanceRoute,
-  path: "/vaults",
-  component: InstanceVaultsTab,
 });
 
 const manageAgentsRoute = createRoute({
@@ -338,15 +340,16 @@ const routeTree = rootRoute.addChildren([
   proposalApproveRoute,
   oauthCallbackRoute,
   authLayoutRoute.addChildren([
-    vaultsRoute,
+    vaultsLayoutRoute.addChildren([
+      vaultsIndexRoute,
+      vaultsUsersRoute,
+    ]),
     accountRoute.addChildren([
       accountIndexRoute,
       accountSettingsRoute,
     ]),
     manageInstanceRoute.addChildren([
       manageIndexRoute,
-      manageUsersRoute,
-      manageVaultsRoute,
       manageAgentsRoute,
       manageSettingsRoute,
     ]),
