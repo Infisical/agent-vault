@@ -4175,19 +4175,6 @@ func persistentInstructionsForRole(role string) string {
 	}
 }
 
-// capabilitiesForRole returns the list of capabilities for a given vault role.
-func capabilitiesForRole(role string) []string {
-	base := []string{"proxy", "discover", "proposals"}
-	switch role {
-	case "member":
-		return append(base, "credentials:write", "proposals:approve", "services:manage", "agents:invite:proxy")
-	case "admin":
-		return append(base, "credentials:write", "proposals:approve", "services:manage", "agents:invite:any", "users:invite")
-	default:
-		return base
-	}
-}
-
 // validateSlug checks that a name is 3-64 lowercase alphanumeric + hyphens.
 func validateSlug(name string) bool {
 	if len(name) < 3 || len(name) > 64 {
@@ -5464,24 +5451,6 @@ func (s *Server) handleAdminProposalGet(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
-}
-
-// newServiceToken generates a cryptographically random service token.
-func newServiceToken() string {
-	var b [32]byte
-	if _, err := io.ReadFull(crand.Reader, b[:]); err != nil {
-		panic("crypto/rand: " + err.Error())
-	}
-	return "av_agent_" + fmt.Sprintf("%x", b[:])
-}
-
-// serviceTokenPrefix extracts the first 16 hex chars after the "av_agent_" prefix.
-func serviceTokenPrefix(token string) string {
-	body := strings.TrimPrefix(token, "av_agent_")
-	if len(body) < 16 {
-		return body
-	}
-	return body[:16]
 }
 
 // --- OAuth handlers ---
