@@ -15,6 +15,7 @@ interface AgentRow {
   vault_role?: string;
   status: string;
   created_at: string;
+  invite_id?: number;
   invite_token?: string;
   session_expires_at?: string;
 }
@@ -29,12 +30,12 @@ function RowActions({
   if (agent.status === "revoked") return null;
 
   async function handleRevoke() {
-    if (agent.status === "pending" && agent.invite_token) {
-      await fetch(`/v1/invites/${encodeURIComponent(agent.invite_token)}`, {
+    if (agent.status === "pending" && agent.invite_id) {
+      await apiFetch(`/v1/invites/by-id/${agent.invite_id}`, {
         method: "DELETE",
       });
     } else {
-      await fetch(
+      await apiFetch(
         `/v1/admin/agents/${encodeURIComponent(agent.name)}`,
         { method: "DELETE" }
       );
@@ -171,11 +172,12 @@ export default function AgentsTab() {
             return false;
           })
           .map(
-            (inv: { agent_name?: string; vault_role?: string; persistent: boolean; token: string; status: string; created_at: string; session_expires_at?: string }) => ({
+            (inv: { id: number; agent_name?: string; vault_role?: string; persistent: boolean; token: string; status: string; created_at: string; session_expires_at?: string }) => ({
               name: inv.agent_name || (inv.persistent ? "Unnamed agent" : "Session"),
               vault_role: inv.vault_role,
               status: inv.status === "redeemed" ? "active" : inv.status,
               created_at: inv.created_at,
+              invite_id: inv.id,
               invite_token: inv.token,
               session_expires_at: inv.session_expires_at,
             })

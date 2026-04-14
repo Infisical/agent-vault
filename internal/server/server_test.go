@@ -343,6 +343,25 @@ func (m *mockStore) RevokeInvite(_ context.Context, token string) error {
 	return nil
 }
 
+func (m *mockStore) GetInviteByID(_ context.Context, id int) (*store.Invite, error) {
+	for _, inv := range m.invites {
+		if inv.ID == id {
+			return inv, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *mockStore) RevokeInviteByID(_ context.Context, id int) error {
+	for _, inv := range m.invites {
+		if inv.ID == id && inv.Status == "pending" {
+			inv.Status = "revoked"
+			return nil
+		}
+	}
+	return fmt.Errorf("not found")
+}
+
 func (m *mockStore) CountPendingInvites(_ context.Context, vaultID string) (int, error) {
 	count := 0
 	for _, inv := range m.invites {

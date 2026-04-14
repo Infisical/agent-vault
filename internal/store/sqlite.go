@@ -1242,6 +1242,35 @@ func (s *SQLiteStore) RevokeInvite(ctx context.Context, token string) error {
 	return nil
 }
 
+func (s *SQLiteStore) GetInviteByID(ctx context.Context, id int) (*Invite, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, '' as token, vault_id, vault_role, status, session_id, created_by,
+		        persistent, agent_name, agent_id,
+		        created_at, expires_at, redeemed_at, revoked_at,
+		        session_ttl_seconds
+		 FROM invites WHERE id = ?`, id,
+	)
+	return scanInvite(row)
+}
+
+func (s *SQLiteStore) RevokeInviteByID(ctx context.Context, id int) error {
+	nowStr := time.Now().UTC().Format(time.DateTime)
+
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE invites SET status = 'revoked', revoked_at = ?
+		 WHERE id = ? AND status = 'pending'`,
+		nowStr, id,
+	)
+	if err != nil {
+		return fmt.Errorf("revoking invite by id: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *SQLiteStore) CountPendingInvites(ctx context.Context, vaultID string) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx,

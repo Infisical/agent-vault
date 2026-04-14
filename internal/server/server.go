@@ -143,6 +143,8 @@ type Store interface {
 	ListInvites(ctx context.Context, vaultID, status string) ([]store.Invite, error)
 	RedeemInvite(ctx context.Context, token, sessionID string) error
 	RevokeInvite(ctx context.Context, token string) error
+	GetInviteByID(ctx context.Context, id int) (*store.Invite, error)
+	RevokeInviteByID(ctx context.Context, id int) error
 	CountPendingInvites(ctx context.Context, vaultID string) (int, error)
 	ExpirePendingInvites(ctx context.Context, before time.Time) (int, error)
 
@@ -487,6 +489,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("POST /v1/invites", s.requireInitialized(s.requireAuth(limitBody(s.handleInviteCreate))))
 	mux.HandleFunc("GET /v1/invites", s.requireInitialized(s.requireAuth(s.handleInviteList)))
 	mux.HandleFunc("DELETE /v1/invites/{token}", s.requireInitialized(s.requireAuth(s.handleInviteRevoke)))
+	mux.HandleFunc("DELETE /v1/invites/by-id/{id}", s.requireInitialized(s.requireAuth(s.handleInviteRevokeByID)))
 
 	// Agent management (owner-only)
 	mux.HandleFunc("GET /v1/admin/agents", s.requireInitialized(s.requireAuth(s.handleAgentList)))
@@ -3205,6 +3208,41 @@ func (s *Server) handleInviteRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.RevokeInvite(ctx, token); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to revoke invite")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "revoked"})
+}
+
+func (s *Server) handleInviteRevokeByID(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	idStr := r.PathValue("id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, "Invalid invite ID")
+		return
+	}
+
+	inv, err := s.store.GetInviteByID(ctx, id)
+	if err != nil || inv == nil {
+		proxyError(w, http.StatusNotFound, "invite_not_found", "Invite not found")
+		return
+	}
+
+	// Check vault access for the invite's vault.
+	if _, err := s.requireVaultAccess(w, r, inv.VaultID); err != nil {
+		return
+	}
+
+	if inv.Status != "pending" {
+		jsonError(w, http.StatusConflict, fmt.Sprintf("Invite is already %s", inv.Status))
+		return
+	}
+
+	if err := s.store.RevokeInviteByID(ctx, id); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to revoke invite")
 		return
 	}

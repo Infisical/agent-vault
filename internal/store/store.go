@@ -289,6 +289,8 @@ type Store interface {
 	ListInvites(ctx context.Context, vaultID, status string) ([]Invite, error)
 	RedeemInvite(ctx context.Context, token, sessionID string) error
 	RevokeInvite(ctx context.Context, token string) error
+	GetInviteByID(ctx context.Context, id int) (*Invite, error)
+	RevokeInviteByID(ctx context.Context, id int) error
 	CountPendingInvites(ctx context.Context, vaultID string) (int, error)
 	ExpirePendingInvites(ctx context.Context, before time.Time) (int, error)
 
