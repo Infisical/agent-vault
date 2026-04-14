@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 
@@ -1630,21 +1631,12 @@ func (s *SQLiteStore) loadUserInviteVaultsBatch(ctx context.Context, invites []U
 	}
 
 	ids := make([]any, len(invites))
-	placeholders := make([]byte, 0, len(invites)*2-1)
 	for i, inv := range invites {
 		ids[i] = inv.ID
-		if i > 0 {
-			placeholders = append(placeholders, ',')
-		}
-		placeholders = append(placeholders, '?')
 	}
 
-	rows, err := s.db.QueryContext(ctx, //nolint:gosec // placeholders are only '?' and ','
-		`SELECT uiv.user_invite_id, uiv.vault_id, v.name, uiv.vault_role
-		 FROM user_invite_vaults uiv
-		 JOIN vaults v ON v.id = uiv.vault_id
-		 WHERE uiv.user_invite_id IN (`+string(placeholders)+`)`, ids...,
-	)
+	query := "SELECT uiv.user_invite_id, uiv.vault_id, v.name, uiv.vault_role FROM user_invite_vaults uiv JOIN vaults v ON v.id = uiv.vault_id WHERE uiv.user_invite_id IN (" + strings.Repeat("?,", len(ids)-1) + "?)" //nolint:gosec // only '?' placeholders
+	rows, err := s.db.QueryContext(ctx, query, ids...)
 	if err != nil {
 		return fmt.Errorf("loading user invite vaults batch: %w", err)
 	}
