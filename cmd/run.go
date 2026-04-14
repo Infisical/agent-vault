@@ -297,7 +297,7 @@ func requestScopedSession(addr, adminToken, vault, role string) (string, error) 
 
 func init() {
 	runCmd.Flags().String("address", "", "Agent Vault server address (defaults to session address)")
-	runCmd.Flags().String("role", "", "Vault role for the agent session (consumer, member, admin; default: member)")
+	runCmd.Flags().String("role", "", "Vault role for the agent session (proxy, member, admin; default: proxy)")
 
 	vaultCmd.AddCommand(runCmd)
 }

@@ -31,9 +31,9 @@ Instance-level roles govern administrative operations across the entire Agent Va
 
 ## Vault roles
 
-Vault-level roles govern what users and [agents](/agents/overview) can do inside a [vault](/learn/vaults) they belong to. There are three roles: `admin`, `member`, and `consumer`.
+Vault-level roles govern what users and [agents](/agents/overview) can do inside a [vault](/learn/vaults) they belong to. There are three roles: `admin`, `member`, and `proxy`.
 
-| Capability                                     | Admin | Member   | Consumer |
+| Capability                                     | Admin | Member   | Proxy    |
 | ---------------------------------------------- | ----- | -------- | -------- |
 | Use proxy                                      | Yes   | Yes      | Yes      |
 | Discover services                              | Yes   | Yes      | Yes      |
@@ -42,14 +42,14 @@ Vault-level roles govern what users and [agents](/agents/overview) can do inside
 | Set / delete credentials directly               | Yes   | Yes      | No       |
 | Approve / reject [proposals](/learn/proposals) | Yes   | Yes      | No       |
 | Manage vault [services](/learn/services)       | Yes   | Yes      | No       |
-| Invite agents (consumer only)                  | Yes   | Yes      | No       |
+| Invite agents (proxy only)                     | Yes   | Yes      | No       |
 | Invite agents (any role)                       | Yes   | No       | No       |
 | Invite users to vault                          | Yes   | No       | No       |
 | Manage vault users (remove, set-role)          | Yes   | No       | No       |
 | Manage agents (revoke, rotate, rename)         | Yes   | No       | No       |
 | Delete vault                                   | Yes   | No       | No       |
 
-The **consumer** role is the most restricted, ideal for agents that only need to proxy requests and raise proposals for human review. The **member** role adds the ability to manage credentials, approve proposals, and configure vault services. The **admin** role has full control, including inviting users and agents with any role.
+The **proxy** role is the most restricted, ideal for agents that only need to proxy requests and raise proposals for human review. The **member** role adds the ability to manage credentials, approve proposals, and configure vault services. The **admin** role has full control, including inviting users and agents with any role.
 
 Vault admins and members can both review agent [proposals](/learn/proposals). When an agent raises a proposal, vault members receive the approval link (via email if SMTP is configured) and can approve or reject from the browser or CLI.
 
@@ -95,7 +95,7 @@ agent-vault owner user set-role alice@example.com --role owner
 Vault admins (and instance owners for any vault) can change vault-level roles.
 
 ```bash
-agent-vault vault user set-role alice@example.com --role consumer --vault my-vault
+agent-vault vault user set-role alice@example.com --role proxy --vault my-vault
 ```
 
 <Warning>

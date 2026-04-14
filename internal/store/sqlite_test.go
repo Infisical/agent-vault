@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+func tp(t time.Time) *time.Time { return &t }
+
 func openTestDB(t *testing.T) *SQLiteStore {
 	t.Helper()
 	s, err := Open(":memory:")
@@ -26,8 +28,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 31 {
-		t.Fatalf("expected migration version 31, got %d", version)
+	if version != 33 {
+		t.Fatalf("expected migration version 33, got %d", version)
 	}
 }
 
@@ -310,7 +312,7 @@ func TestSessionCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
-	if !got.ExpiresAt.Equal(expires) {
+	if got.ExpiresAt == nil || !got.ExpiresAt.Equal(expires) {
 		t.Fatalf("expected ExpiresAt %v, got %v", expires, got.ExpiresAt)
 	}
 
@@ -335,7 +337,7 @@ func TestScopedSessionCRUD(t *testing.T) {
 
 	expires := time.Now().Add(1 * time.Hour).UTC().Truncate(time.Second)
 
-	sess, err := s.CreateScopedSession(ctx, ns.ID, "consumer", "", expires)
+	sess, err := s.CreateScopedSession(ctx, ns.ID, "proxy", &expires)
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -353,7 +355,7 @@ func TestScopedSessionCRUD(t *testing.T) {
 	if got.VaultID != ns.ID {
 		t.Fatalf("expected VaultID %s on get, got %s", ns.ID, got.VaultID)
 	}
-	if !got.ExpiresAt.Equal(expires) {
+	if got.ExpiresAt == nil || !got.ExpiresAt.Equal(expires) {
 		t.Fatalf("expected ExpiresAt %v, got %v", expires, got.ExpiresAt)
 	}
 }
@@ -883,7 +885,7 @@ func TestCreateInvite(t *testing.T) {
 	ctx := context.Background()
 	ns, _ := s.CreateVault(ctx, "inv-test")
 
-	inv, err := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
+	inv, err := s.CreateInvite(ctx, ns.ID, "proxy", "admin", time.Now().Add(15*time.Minute), 0)
 	if err != nil {
 		t.Fatalf("CreateInvite: %v", err)
 	}
@@ -900,7 +902,7 @@ func TestRedeemInvite(t *testing.T) {
 	ctx := context.Background()
 	ns, _ := s.CreateVault(ctx, "inv-redeem")
 
-	inv, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
+	inv, _ := s.CreateInvite(ctx, ns.ID, "proxy", "admin", time.Now().Add(15*time.Minute), 0)
 
 	err := s.RedeemInvite(ctx, inv.Token, "sess-123")
 	if err != nil {
@@ -927,7 +929,7 @@ func TestRedeemInvite_Expired(t *testing.T) {
 	ctx := context.Background()
 	ns, _ := s.CreateVault(ctx, "inv-expired")
 
-	inv, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(-1*time.Minute), 0, "")
+	inv, _ := s.CreateInvite(ctx, ns.ID, "proxy", "admin", time.Now().Add(-1*time.Minute), 0)
 
 	err := s.RedeemInvite(ctx, inv.Token, "sess-456")
 	if err != sql.ErrNoRows {
@@ -940,7 +942,7 @@ func TestRedeemInvite_AlreadyRedeemed(t *testing.T) {
 	ctx := context.Background()
 	ns, _ := s.CreateVault(ctx, "inv-double")
 
-	inv, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
+	inv, _ := s.CreateInvite(ctx, ns.ID, "proxy", "admin", time.Now().Add(15*time.Minute), 0)
 	s.RedeemInvite(ctx, inv.Token, "sess-1")
 
 	err := s.RedeemInvite(ctx, inv.Token, "sess-2")
@@ -954,7 +956,7 @@ func TestRevokeInvite(t *testing.T) {
 	ctx := context.Background()
 	ns, _ := s.CreateVault(ctx, "inv-revoke")
 
-	inv, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
+	inv, _ := s.CreateInvite(ctx, ns.ID, "proxy", "admin", time.Now().Add(15*time.Minute), 0)
 
 	if err := s.RevokeInvite(ctx, inv.Token); err != nil {
 		t.Fatalf("RevokeInvite: %v", err)
@@ -974,8 +976,8 @@ func TestCountPendingInvites(t *testing.T) {
 	ctx := context.Background()
 	ns, _ := s.CreateVault(ctx, "inv-count")
 
-	inv1, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
-	s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
+	inv1, _ := s.CreateInvite(ctx, ns.ID, "proxy", "admin", time.Now().Add(15*time.Minute), 0)
+	s.CreateInvite(ctx, ns.ID, "proxy", "admin", time.Now().Add(15*time.Minute), 0)
 
 	count, err := s.CountPendingInvites(ctx, ns.ID)
 	if err != nil {
@@ -1000,8 +1002,8 @@ func TestExpirePendingInvites(t *testing.T) {
 	ns, _ := s.CreateVault(ctx, "inv-expire")
 
 	// Create two invites: one already expired, one still valid.
-	s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(-1*time.Minute), 0, "")
-	s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
+	s.CreateInvite(ctx, ns.ID, "proxy", "admin", time.Now().Add(-1*time.Minute), 0)
+	s.CreateInvite(ctx, ns.ID, "proxy", "admin", time.Now().Add(15*time.Minute), 0)
 
 	n, err := s.ExpirePendingInvites(ctx, time.Now())
 	if err != nil {
@@ -1022,8 +1024,8 @@ func TestListInvites(t *testing.T) {
 	ctx := context.Background()
 	ns, _ := s.CreateVault(ctx, "inv-list")
 
-	s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
-	inv2, _ := s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
+	s.CreateInvite(ctx, ns.ID, "proxy", "admin", time.Now().Add(15*time.Minute), 0)
+	inv2, _ := s.CreateInvite(ctx, ns.ID, "proxy", "admin", time.Now().Add(15*time.Minute), 0)
 	s.RevokeInvite(ctx, inv2.Token)
 
 	// All invites.
@@ -1049,7 +1051,7 @@ func TestInviteCascadeDelete(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 	ns, _ := s.CreateVault(ctx, "inv-cascade")
-	s.CreateInvite(ctx, ns.ID, "consumer", "admin", time.Now().Add(15*time.Minute), 0, "")
+	s.CreateInvite(ctx, ns.ID, "proxy", "admin", time.Now().Add(15*time.Minute), 0)
 
 	if err := s.DeleteVault(ctx, "inv-cascade"); err != nil {
 		t.Fatal(err)
@@ -1313,7 +1315,7 @@ func TestCreateAgent(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	ag, err := s.CreateAgent(ctx, "claudebot", ns.ID, []byte("hash"), []byte("salt"), "abcdef0123456789", "consumer", "creator1")
+	ag, err := s.CreateAgent(ctx, "claudebot", ns.ID, []byte("hash"), []byte("salt"), "abcdef0123456789", "proxy", "creator1")
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
 	}
@@ -1333,7 +1335,7 @@ func TestGetAgentByName(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	s.CreateAgent(ctx, "myagent", ns.ID, []byte("h"), []byte("s"), "prefix1234567890", "consumer", "creator1")
+	s.CreateAgent(ctx, "myagent", ns.ID, []byte("h"), []byte("s"), "prefix1234567890", "proxy", "creator1")
 
 	ag, err := s.GetAgentByName(ctx, "myagent")
 	if err != nil {
@@ -1354,7 +1356,7 @@ func TestGetAgentByTokenPrefix(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	s.CreateAgent(ctx, "bot1", ns.ID, []byte("h"), []byte("s"), "aaaa000000000001", "consumer", "creator1")
+	s.CreateAgent(ctx, "bot1", ns.ID, []byte("h"), []byte("s"), "aaaa000000000001", "proxy", "creator1")
 
 	ag, err := s.GetAgentByTokenPrefix(ctx, "aaaa000000000001")
 	if err != nil {
@@ -1378,9 +1380,9 @@ func TestListAgents(t *testing.T) {
 
 	ns, _ := s.GetVault(ctx, "default")
 	ns2, _ := s.CreateVault(ctx, "staging")
-	s.CreateAgent(ctx, "a1", ns.ID, []byte("h"), []byte("s"), "prefix0000000001", "consumer", "c")
-	s.CreateAgent(ctx, "a2", ns.ID, []byte("h"), []byte("s"), "prefix0000000002", "consumer", "c")
-	s.CreateAgent(ctx, "a3", ns2.ID, []byte("h"), []byte("s"), "prefix0000000003", "consumer", "c")
+	s.CreateAgent(ctx, "a1", ns.ID, []byte("h"), []byte("s"), "prefix0000000001", "proxy", "c")
+	s.CreateAgent(ctx, "a2", ns.ID, []byte("h"), []byte("s"), "prefix0000000002", "proxy", "c")
+	s.CreateAgent(ctx, "a3", ns2.ID, []byte("h"), []byte("s"), "prefix0000000003", "proxy", "c")
 
 	// All agents (cross-vault)
 	all, err := s.ListAllAgents(ctx)
@@ -1406,11 +1408,11 @@ func TestDuplicateAgentName(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	_, err := s.CreateAgent(ctx, "dup", ns.ID, []byte("h"), []byte("s"), "prefix0000000001", "consumer", "c")
+	_, err := s.CreateAgent(ctx, "dup", ns.ID, []byte("h"), []byte("s"), "prefix0000000001", "proxy", "c")
 	if err != nil {
 		t.Fatalf("first create: %v", err)
 	}
-	_, err = s.CreateAgent(ctx, "dup", ns.ID, []byte("h2"), []byte("s2"), "prefix0000000002", "consumer", "c")
+	_, err = s.CreateAgent(ctx, "dup", ns.ID, []byte("h2"), []byte("s2"), "prefix0000000002", "proxy", "c")
 	if err == nil {
 		t.Fatal("expected error for duplicate agent name")
 	}
@@ -1421,10 +1423,10 @@ func TestRevokeAgent(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	ag, _ := s.CreateAgent(ctx, "torevoke", ns.ID, []byte("h"), []byte("s"), "prefix0000000001", "consumer", "c")
+	ag, _ := s.CreateAgent(ctx, "torevoke", ns.ID, []byte("h"), []byte("s"), "prefix0000000001", "proxy", "c")
 
 	// Create a session for this agent.
-	sess, err := s.CreateAgentSession(ctx, ag.ID, ns.ID, "consumer", time.Now().Add(24*time.Hour))
+	sess, err := s.CreateAgentSession(ctx, ag.ID, ns.ID, "proxy", tp(time.Now().Add(24*time.Hour)))
 	if err != nil {
 		t.Fatalf("CreateAgentSession: %v", err)
 	}
@@ -1455,7 +1457,7 @@ func TestUpdateAgentServiceToken(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	ag, _ := s.CreateAgent(ctx, "rotatable", ns.ID, []byte("old-hash"), []byte("old-salt"), "oldprefix0000000", "consumer", "c")
+	ag, _ := s.CreateAgent(ctx, "rotatable", ns.ID, []byte("old-hash"), []byte("old-salt"), "oldprefix0000000", "proxy", "c")
 
 	err := s.UpdateAgentServiceToken(ctx, ag.ID, []byte("new-hash"), []byte("new-salt"), "newprefix0000000")
 	if err != nil {
@@ -1476,7 +1478,7 @@ func TestRenameAgent(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	ag, _ := s.CreateAgent(ctx, "oldname", ns.ID, []byte("h"), []byte("s"), "prefix0000000001", "consumer", "c")
+	ag, _ := s.CreateAgent(ctx, "oldname", ns.ID, []byte("h"), []byte("s"), "prefix0000000001", "proxy", "c")
 
 	err := s.RenameAgent(ctx, ag.ID, "newname")
 	if err != nil {
@@ -1499,15 +1501,15 @@ func TestCountAgentSessions(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	ag, _ := s.CreateAgent(ctx, "counter", ns.ID, []byte("h"), []byte("s"), "prefix0000000001", "consumer", "c")
+	ag, _ := s.CreateAgent(ctx, "counter", ns.ID, []byte("h"), []byte("s"), "prefix0000000001", "proxy", "c")
 
 	count, _ := s.CountAgentSessions(ctx, ag.ID)
 	if count != 0 {
 		t.Fatalf("expected 0 sessions, got %d", count)
 	}
 
-	s.CreateAgentSession(ctx, ag.ID, ns.ID, "consumer", time.Now().Add(24*time.Hour))
-	s.CreateAgentSession(ctx, ag.ID, ns.ID, "consumer", time.Now().Add(24*time.Hour))
+	s.CreateAgentSession(ctx, ag.ID, ns.ID, "proxy", tp(time.Now().Add(24*time.Hour)))
+	s.CreateAgentSession(ctx, ag.ID, ns.ID, "proxy", tp(time.Now().Add(24*time.Hour)))
 
 	count, _ = s.CountAgentSessions(ctx, ag.ID)
 	if count != 2 {
@@ -1515,7 +1517,7 @@ func TestCountAgentSessions(t *testing.T) {
 	}
 
 	// Expired sessions should not be counted.
-	s.CreateAgentSession(ctx, ag.ID, ns.ID, "consumer", time.Now().Add(-1*time.Hour))
+	s.CreateAgentSession(ctx, ag.ID, ns.ID, "proxy", tp(time.Now().Add(-1*time.Hour)))
 	count, _ = s.CountAgentSessions(ctx, ag.ID)
 	if count != 2 {
 		t.Fatalf("expected 2 active sessions (1 expired), got %d", count)
@@ -1527,9 +1529,9 @@ func TestCreateAgentSession(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	ag, _ := s.CreateAgent(ctx, "sessbot", ns.ID, []byte("h"), []byte("s"), "prefix0000000001", "consumer", "c")
+	ag, _ := s.CreateAgent(ctx, "sessbot", ns.ID, []byte("h"), []byte("s"), "prefix0000000001", "proxy", "c")
 
-	sess, err := s.CreateAgentSession(ctx, ag.ID, ns.ID, "consumer", time.Now().Add(24*time.Hour))
+	sess, err := s.CreateAgentSession(ctx, ag.ID, ns.ID, "proxy", tp(time.Now().Add(24*time.Hour)))
 	if err != nil {
 		t.Fatalf("CreateAgentSession: %v", err)
 	}
@@ -1553,7 +1555,7 @@ func TestGetSessionBackwardCompat(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	sess, _ := s.CreateScopedSession(ctx, ns.ID, "consumer", "", time.Now().Add(24*time.Hour))
+	sess, _ := s.CreateScopedSession(ctx, ns.ID, "proxy", tp(time.Now().Add(24*time.Hour)))
 
 	fetched, err := s.GetSession(ctx, sess.ID)
 	if err != nil {
@@ -1569,7 +1571,7 @@ func TestCreatePersistentInvite(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	inv, err := s.CreatePersistentInvite(ctx, ns.ID, "consumer", "creator1", "mybot", time.Now().Add(15*time.Minute))
+	inv, err := s.CreatePersistentInvite(ctx, ns.ID, "proxy", "creator1", "mybot", time.Now().Add(15*time.Minute))
 	if err != nil {
 		t.Fatalf("CreatePersistentInvite: %v", err)
 	}
@@ -1595,7 +1597,7 @@ func TestCreatePersistentInviteNoName(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	inv, err := s.CreatePersistentInvite(ctx, ns.ID, "consumer", "creator1", "", time.Now().Add(15*time.Minute))
+	inv, err := s.CreatePersistentInvite(ctx, ns.ID, "proxy", "creator1", "", time.Now().Add(15*time.Minute))
 	if err != nil {
 		t.Fatalf("CreatePersistentInvite (no name): %v", err)
 	}
@@ -1612,7 +1614,7 @@ func TestCreateRotationInvite(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	ag, _ := s.CreateAgent(ctx, "rotatebot", ns.ID, []byte("h"), []byte("s"), "prefix0000000001", "consumer", "c")
+	ag, _ := s.CreateAgent(ctx, "rotatebot", ns.ID, []byte("h"), []byte("s"), "prefix0000000001", "proxy", "c")
 
 	inv, err := s.CreateRotationInvite(ctx, ag.ID, ns.ID, "creator1", time.Now().Add(15*time.Minute))
 	if err != nil {
@@ -1637,10 +1639,10 @@ func TestDeleteAgentSessions(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	ag, _ := s.CreateAgent(ctx, "delbot", ns.ID, []byte("h"), []byte("s"), "prefix0000000001", "consumer", "c")
+	ag, _ := s.CreateAgent(ctx, "delbot", ns.ID, []byte("h"), []byte("s"), "prefix0000000001", "proxy", "c")
 
-	s.CreateAgentSession(ctx, ag.ID, ns.ID, "consumer", time.Now().Add(24*time.Hour))
-	s.CreateAgentSession(ctx, ag.ID, ns.ID, "consumer", time.Now().Add(24*time.Hour))
+	s.CreateAgentSession(ctx, ag.ID, ns.ID, "proxy", tp(time.Now().Add(24*time.Hour)))
+	s.CreateAgentSession(ctx, ag.ID, ns.ID, "proxy", tp(time.Now().Add(24*time.Hour)))
 
 	count, _ := s.CountAgentSessions(ctx, ag.ID)
 	if count != 2 {

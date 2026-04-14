@@ -18,7 +18,7 @@ As an admin, you can also:
 - Delete credentials: DELETE {AGENT_VAULT_ADDR}/v1/credentials with {"vault": "...", "keys": ["KEY"]}
 - Approve proposals: POST {AGENT_VAULT_ADDR}/v1/admin/proposals/{id}/approve with {"vault": "...", "credentials": {"KEY": "value"}}
 - Reject proposals: POST {AGENT_VAULT_ADDR}/v1/admin/proposals/{id}/reject with {"vault": "...", "reason": "..."}
-- Invite agents with any role: POST {AGENT_VAULT_ADDR}/v1/invites with {"vault": "...", "vault_role": "member|consumer|admin"}
+- Invite agents with any role: POST {AGENT_VAULT_ADDR}/v1/invites with {"vault": "...", "vault_role": "member|proxy|admin"}
 - Invite users: POST {AGENT_VAULT_ADDR}/v1/vaults/{name}/invites with {"email": "...", "role": "member|admin"}
 
 ## Full Reference

@@ -44,12 +44,12 @@ This prints an `export` block with `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKE
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--role` | `consumer` | Vault role: `consumer`, `member`, or `admin` |
+| `--role` | `proxy` | Vault role: `proxy`, `member`, or `admin` |
 | `--ttl` | `24h` | Session lifetime (min 5m, max 7d) |
 | `--label` | | Optional label to identify the session |
 
 ```bash
-# Create a 1-hour consumer session
+# Create a 1-hour proxy session
 agent-vault vault agent invite create --direct --ttl 1h
 
 # Create an admin session with a label
@@ -62,13 +62,13 @@ Direct connect sessions have a maximum TTL of 7 days. For agents that need indef
 
 ## Persistent agents
 
-A persistent agent has a named identity that outlives any single session. It receives a long-lived **service token** on creation and uses it to mint short-lived **session tokens** as needed, without human intervention. Best for CI/CD pipelines, always-on assistants, or agents that need to survive restarts.
+A persistent agent has a named identity that outlives any single session. It receives a **session token** on creation (with configurable expiry, including no expiry). Best for CI/CD pipelines, always-on assistants, or agents that need to survive restarts.
 
 ```bash
-agent-vault vault agent invite create --persistent --name my-agent --vault my-vault
+agent-vault vault agent invite create --name my-agent --vault my-vault
 ```
 
-Paste the output into the agent's chat. The agent redeems the invite and receives a service token plus an initial session token. When the session expires (24h), the agent mints a new one using the service token (see [Agent protocol](/agents/protocol#session-token)).
+Paste the output into the agent's chat. The agent redeems the invite and receives a session token. By default the session has no expiry. Use `--ttl` to set a finite session lifetime (see [Agent protocol](/agents/protocol#session-token)).
 
 <Note>
 Agent names must be 3-64 characters, lowercase alphanumeric and hyphens only, and globally unique across all vaults.
@@ -83,20 +83,20 @@ agent-vault vault agent list --vault my-vault
 # View agent details (vault, status, active sessions)
 agent-vault vault agent info my-agent
 
-# Revoke an agent (invalidates service token, deletes all sessions)
+# Revoke an agent (deletes all sessions)
 agent-vault vault agent revoke my-agent
 
-# Rename an agent (keeps the same service token and vault access)
+# Rename an agent (keeps the same vault access)
 agent-vault vault agent rename my-agent new-name
 ```
 
-### Rotating a service token
+### Rotating a session
 
 ```bash
 agent-vault vault agent rotate my-agent
 ```
 
-This creates a rotation invite. Paste the prompt into the agent's chat. The agent redeems it and receives a new service token. The old token stays valid until the rotation invite is redeemed, so there is no downtime.
+This creates a rotation invite. Paste the prompt into the agent's chat. The agent redeems it and receives a new session token. The old sessions are invalidated when the rotation invite is redeemed.
 
 ## Choosing the right type
 

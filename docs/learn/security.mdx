@@ -46,13 +46,12 @@ All tokens are generated from `crypto/rand` (256 bits of entropy) and hashed bef
 
 | Token | Prefix | Storage hash | TTL | Notes |
 | ----- | ------ | ------------ | --- | ----- |
-| Session | `av_sess_` | SHA-256 | 24 hours | Scoped to a vault or user-global |
+| Session | `av_sess_` | SHA-256 | Configurable (or no expiry) | Scoped to a vault or user-global |
 | Invite | `av_inv_` | SHA-256 | 15 minutes | Single-use, burned on redemption |
 | Approval | `av_appr_` | SHA-256 | 24 hours | Grants read-only access to a [proposal](/learn/proposals) |
 | Vault invite | `av_uinv_` | SHA-256 | 48 hours | For onboarding human users |
-| Agent service | `av_agent_` | Argon2id | No expiry | Long-lived, revocable; looked up by prefix |
 
-Agent service tokens use Argon2id (the same KDF as passwords) instead of SHA-256 because they are long-lived and high-value. All other tokens are short-lived and use SHA-256 for fast lookup.
+All tokens use SHA-256 for fast lookup.
 
 ## Network security
 
@@ -153,7 +152,6 @@ A summary of how each category of sensitive data is stored:
 | Credentials | AES-256-GCM ciphertext + nonce | No (write-only, decrypted only at proxy time) |
 | User passwords | Argon2id hash + salt + params | No |
 | Session tokens | SHA-256 hash | No (raw returned once at creation) |
-| Agent service tokens | Argon2id hash + salt + params | No (raw returned once at creation) |
 | Master password | Not stored | N/A (derived key held in memory only) |
 
 Key material is zeroed after use via `WipeBytes()` on a best-effort basis. Sensitive byte slices are never converted to strings (Go strings are immutable and cannot be wiped from memory).
