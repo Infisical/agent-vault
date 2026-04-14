@@ -454,24 +454,22 @@ function InviteAgentButton({
                   <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
                 )}
               </button>
-              {!isPersistent && (
-                <button
-                  onClick={() => {
-                    setDeliveryTab("envvars");
-                    fetchEnvVars();
-                  }}
-                  className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-                    deliveryTab === "envvars"
-                      ? "text-primary"
-                      : "text-text-muted hover:text-text"
-                  }`}
-                >
-                  Manual setup
-                  {deliveryTab === "envvars" && (
-                    <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
-                  )}
-                </button>
-              )}
+              <button
+                onClick={() => {
+                  setDeliveryTab("envvars");
+                  fetchEnvVars();
+                }}
+                className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+                  deliveryTab === "envvars"
+                    ? "text-primary"
+                    : "text-text-muted hover:text-text"
+                }`}
+              >
+                Manual setup
+                {deliveryTab === "envvars" && (
+                  <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
+                )}
+              </button>
             </div>
 
             {deliveryTab === "prompt" ? (
