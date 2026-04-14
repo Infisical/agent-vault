@@ -9,17 +9,14 @@ import DataTable, { type Column } from "../../components/DataTable";
 import Modal from "../../components/Modal";
 import DropdownMenu, { type DropdownMenuItem } from "../../components/DropdownMenu";
 import Button from "../../components/Button";
-import Input from "../../components/Input";
 import Select from "../../components/Select";
 import FormField from "../../components/FormField";
-import CopyButton from "../../components/CopyButton";
 import { apiFetch } from "../../lib/api";
 
 interface VaultUser {
   email: string;
   role: string;
   status: "active" | "pending";
-  invite_token?: string;
 }
 
 function RowActions({
@@ -27,37 +24,24 @@ function RowActions({
   vaultName,
   currentEmail,
   onDone,
-  onReinviteLink,
 }: {
   user: VaultUser;
   vaultName: string;
   currentEmail: string;
   onDone: () => void;
-  onReinviteLink: (email: string, link: string) => void;
 }) {
   if (user.email === currentEmail) return null;
 
   const newRole = user.role === "admin" ? "member" : "admin";
 
   async function handleChangeRole() {
-    let resp: Response;
-    if (user.status === "pending" && user.invite_token) {
-      resp = await apiFetch(
-        `/v1/vaults/${encodeURIComponent(vaultName)}/invites/${encodeURIComponent(user.invite_token)}`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({ role: newRole }),
-        }
-      );
-    } else {
-      resp = await apiFetch(
-        `/v1/vaults/${encodeURIComponent(vaultName)}/users/${encodeURIComponent(user.email)}/role`,
-        {
-          method: "POST",
-          body: JSON.stringify({ role: newRole }),
-        }
-      );
-    }
+    const resp = await apiFetch(
+      `/v1/vaults/${encodeURIComponent(vaultName)}/users/${encodeURIComponent(user.email)}/role`,
+      {
+        method: "POST",
+        body: JSON.stringify({ role: newRole }),
+      }
+    );
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
       alert(data.error || "Failed to change role");
@@ -67,18 +51,10 @@ function RowActions({
   }
 
   async function handleRemove() {
-    let resp: Response;
-    if (user.status === "pending" && user.invite_token) {
-      resp = await fetch(
-        `/v1/vaults/${encodeURIComponent(vaultName)}/invites/${encodeURIComponent(user.invite_token)}`,
-        { method: "DELETE" }
-      );
-    } else {
-      resp = await fetch(
-        `/v1/vaults/${encodeURIComponent(vaultName)}/users/${encodeURIComponent(user.email)}`,
-        { method: "DELETE" }
-      );
-    }
+    const resp = await fetch(
+      `/v1/vaults/${encodeURIComponent(vaultName)}/users/${encodeURIComponent(user.email)}`,
+      { method: "DELETE" }
+    );
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
       alert(data.error || "Failed to remove user");
@@ -87,27 +63,10 @@ function RowActions({
     onDone();
   }
 
-  async function handleReinvite() {
-    const resp = await fetch(
-      `/v1/vaults/${encodeURIComponent(vaultName)}/invites/${encodeURIComponent(user.invite_token!)}/reinvite`,
-      { method: "POST" }
-    );
-    if (resp.ok) {
-      const data = await resp.json();
-      onDone();
-      if (!data.email_sent && data.invite_link) {
-        onReinviteLink(user.email, data.invite_link);
-      }
-    }
-  }
-
   const items: DropdownMenuItem[] = [
     { label: `Make ${newRole}`, onClick: handleChangeRole },
-    ...(user.status === "pending" && user.invite_token
-      ? [{ label: "Reinvite", onClick: handleReinvite }]
-      : []),
     {
-      label: user.status === "pending" ? "Delete" : "Remove",
+      label: "Remove",
       onClick: handleRemove,
       variant: "danger" as const,
     },
@@ -121,10 +80,6 @@ export default function UsersTab() {
   const [users, setUsers] = useState<VaultUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [reinviteLink, setReinviteLink] = useState<{
-    email: string;
-    link: string;
-  } | null>(null);
 
   const columns: Column<VaultUser>[] = [
     {
@@ -156,9 +111,6 @@ export default function UsersTab() {
                 vaultName={vaultName}
                 currentEmail={currentEmail}
                 onDone={fetchUsers}
-                onReinviteLink={(email, link) =>
-                  setReinviteLink({ email, link })
-                }
               />
             ),
           },
@@ -172,42 +124,16 @@ export default function UsersTab() {
 
   async function fetchUsers() {
     try {
-      const usersResp = await fetch(
+      const resp = await fetch(
         `/v1/vaults/${encodeURIComponent(vaultName)}/users`
       );
-      if (!usersResp.ok) {
-        const data = await usersResp.json();
+      if (!resp.ok) {
+        const data = await resp.json();
         setError(data.error || "Failed to load users.");
         return;
       }
-      const usersData = await usersResp.json();
-      const activeUsers: VaultUser[] = (usersData.users ?? []).map(
-        (u: { email: string; role: string }) => ({
-          ...u,
-          status: "active" as const,
-        })
-      );
-
-      // Fetch pending invites if admin
-      let pendingUsers: VaultUser[] = [];
-      if (vaultRole === "admin") {
-        const invResp = await fetch(
-          `/v1/vaults/${encodeURIComponent(vaultName)}/invites?status=pending`
-        );
-        if (invResp.ok) {
-          const invData = await invResp.json();
-          pendingUsers = (invData.invites ?? []).map(
-            (inv: { email: string; role: string; token: string }) => ({
-              email: inv.email,
-              role: inv.role,
-              status: "pending" as const,
-              invite_token: inv.token,
-            })
-          );
-        }
-      }
-
-      setUsers([...activeUsers, ...pendingUsers]);
+      const data = await resp.json();
+      setUsers(data.users ?? []);
     } catch {
       setError("Network error.");
     } finally {
@@ -227,7 +153,7 @@ export default function UsersTab() {
           </p>
         </div>
         {vaultRole === "admin" && (
-          <InviteUserButton vaultName={vaultName} onInvited={fetchUsers} />
+          <AddUserButton vaultName={vaultName} vaultUsers={users} onAdded={fetchUsers} />
         )}
       </div>
 
@@ -241,88 +167,71 @@ export default function UsersTab() {
           data={users}
           rowKey={(u) => u.email}
           emptyTitle="No users"
-          emptyDescription="Invite people to give them access to this vault."
+          emptyDescription="Add existing instance users to give them access to this vault."
         />
       )}
-
-      <Modal
-        open={!!reinviteLink}
-        onClose={() => setReinviteLink(null)}
-        title="Invite Link"
-        description="Share this link to grant vault access."
-        footer={
-          <Button onClick={() => setReinviteLink(null)}>Done</Button>
-        }
-      >
-        {reinviteLink && (
-          <div className="space-y-4">
-            <p className="text-sm text-text-muted">
-              Email delivery is not configured. Share this link with{" "}
-              <span className="font-medium text-text">
-                {reinviteLink.email}
-              </span>{" "}
-              so they can accept the invite.
-            </p>
-            <div className="flex items-center gap-2">
-              <Input
-                readOnly
-                value={reinviteLink.link}
-                className="flex-1 px-4 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono outline-none select-all"
-                onFocus={(e) => e.target.select()}
-              />
-              <CopyButton value={reinviteLink.link} />
-            </div>
-          </div>
-        )}
-      </Modal>
     </div>
   );
 }
 
-function InviteUserButton({
+interface InstanceUser {
+  email: string;
+  role: string;
+}
+
+function AddUserButton({
   vaultName,
-  onInvited,
+  vaultUsers,
+  onAdded,
 }: {
   vaultName: string;
-  onInvited: () => void;
+  vaultUsers: VaultUser[];
+  onAdded: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<"member" | "admin">("member");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [inviteLink, setInviteLink] = useState("");
+  const [instanceUsers, setInstanceUsers] = useState<InstanceUser[]>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    fetch("/v1/users")
+      .then((r) => r.json())
+      .then((data) => setInstanceUsers(data.users ?? []))
+      .catch(() => {});
+  }, [open]);
+
+  const availableUsers = instanceUsers.filter(
+    (u) => !vaultUsers.some((vu) => vu.email === u.email)
+  );
 
   function close() {
     setOpen(false);
     setEmail("");
     setRole("member");
     setError("");
-    setInviteLink("");
   }
 
-  async function handleInvite() {
-    if (!email.trim()) return;
+  async function handleAdd() {
+    if (!email) return;
     setSubmitting(true);
     setError("");
     try {
       const resp = await apiFetch(
-        `/v1/vaults/${encodeURIComponent(vaultName)}/invites`,
+        `/v1/vaults/${encodeURIComponent(vaultName)}/users`,
         {
           method: "POST",
-          body: JSON.stringify({ email: email.trim(), role }),
+          body: JSON.stringify({ email, role }),
         }
       );
-      const data = await resp.json();
       if (resp.ok) {
-        onInvited();
-        if (data.email_sent) {
-          close();
-        } else {
-          setInviteLink(data.invite_link || "");
-        }
+        onAdded();
+        close();
       } else {
-        setError(data.error || "Failed to send invite.");
+        const data = await resp.json();
+        setError(data.error || "Failed to add user.");
       }
     } catch {
       setError("Network error.");
@@ -348,79 +257,62 @@ function InviteUserButton({
           <line x1="20" y1="8" x2="20" y2="14" />
           <line x1="23" y1="11" x2="17" y2="11" />
         </svg>
-        Invite user
+        Add user
       </Button>
 
       <Modal
         open={open}
         onClose={close}
-        title={inviteLink ? "Invite Created" : "Invite User"}
-        description={inviteLink ? "Share this link to grant vault access." : "Grant a user access to this vault."}
+        title="Add User to Vault"
+        description="Grant an existing instance user access to this vault."
         footer={
-          inviteLink ? (
-            <Button onClick={close}>Done</Button>
-          ) : (
-            <>
-              <Button variant="secondary" onClick={close}>Cancel</Button>
-              <Button
-                onClick={handleInvite}
-                disabled={!email.trim()}
-                loading={submitting}
-              >
-                Send invite
-              </Button>
-            </>
-          )
+          <>
+            <Button variant="secondary" onClick={close}>Cancel</Button>
+            <Button
+              onClick={handleAdd}
+              disabled={!email}
+              loading={submitting}
+            >
+              Add user
+            </Button>
+          </>
         }
       >
-        {inviteLink ? (
-          <div className="space-y-4">
-            <p className="text-sm text-text-muted">
-              Email delivery is not configured. Share this link with{" "}
-              <span className="font-medium text-text">{email}</span> so
-              they can accept the invite.
-            </p>
-            <div className="flex items-center gap-2">
-              <Input
-                readOnly
-                value={inviteLink}
-                className="flex-1 px-4 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono outline-none select-all"
-                onFocus={(e) => e.target.select()}
-              />
-              <CopyButton value={inviteLink} />
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <FormField label="Email">
-              <Input
-                type="email"
-                placeholder="name@company.com"
+        <div className="space-y-4">
+          <FormField label="User">
+            {availableUsers.length === 0 ? (
+              <p className="text-sm text-text-muted py-2">
+                All instance users already have access to this vault.
+              </p>
+            ) : (
+              <Select
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleInvite();
-                }}
                 autoFocus
-              />
-            </FormField>
-            <FormField
-              label="Role"
-              helperText={<>{role === "member"
-                ? "Manage credentials, use proxy, approve proposals, and manage services."
-                : "All member permissions, plus invite users and agents with any role."} <a href="https://docs.agent-vault.dev/learn/permissions#vault-roles" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Learn more</a></>}
-            >
-              <Select
-                value={role}
-                onChange={(e) => setRole(e.target.value as "member" | "admin")}
               >
-                <option value="member">Member</option>
-                <option value="admin">Admin</option>
+                <option value="" disabled>Select a user...</option>
+                {availableUsers.map((u) => (
+                  <option key={u.email} value={u.email}>{u.email}</option>
+                ))}
               </Select>
-            </FormField>
-            {error && <ErrorBanner message={error} />}
-          </div>
-        )}
+            )}
+          </FormField>
+          <FormField
+            label="Role"
+            helperText={<>{role === "member"
+              ? "Manage credentials, use proxy, approve proposals, and manage services."
+              : "All member permissions, plus invite users and agents with any role."} <a href="https://docs.agent-vault.dev/learn/permissions#vault-roles" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Learn more</a></>}
+          >
+            <Select
+              value={role}
+              onChange={(e) => setRole(e.target.value as "member" | "admin")}
+            >
+              <option value="member">Member</option>
+              <option value="admin">Admin</option>
+            </Select>
+          </FormField>
+          {error && <ErrorBanner message={error} />}
+        </div>
       </Modal>
     </>
   );

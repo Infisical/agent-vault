@@ -148,15 +148,16 @@ type Store interface {
 	CountPendingInvites(ctx context.Context, vaultID string) (int, error)
 	ExpirePendingInvites(ctx context.Context, before time.Time) (int, error)
 
-	// Vault invites
-	CreateVaultInvite(ctx context.Context, email, vaultID, vaultRole, createdBy string, expiresAt time.Time) (*store.VaultInvite, error)
-	GetVaultInviteByToken(ctx context.Context, token string) (*store.VaultInvite, error)
-	GetPendingVaultInviteByEmailAndVault(ctx context.Context, email, vaultID string) (*store.VaultInvite, error)
-	ListVaultInvites(ctx context.Context, vaultID, status string) ([]store.VaultInvite, error)
-	AcceptVaultInvite(ctx context.Context, token string) error
-	RevokeVaultInvite(ctx context.Context, token, vaultID string) error
-	UpdateVaultInviteRole(ctx context.Context, token, vaultID, newRole string) error
-	CountPendingVaultInvites(ctx context.Context, vaultID string) (int, error)
+	// User invites (instance-level)
+	CreateUserInvite(ctx context.Context, email, createdBy string, expiresAt time.Time, vaults []store.UserInviteVault) (*store.UserInvite, error)
+	GetUserInviteByToken(ctx context.Context, token string) (*store.UserInvite, error)
+	GetPendingUserInviteByEmail(ctx context.Context, email string) (*store.UserInvite, error)
+	ListUserInvites(ctx context.Context, status string) ([]store.UserInvite, error)
+	ListUserInvitesByVault(ctx context.Context, vaultID, status string) ([]store.UserInvite, error)
+	AcceptUserInvite(ctx context.Context, token string) error
+	RevokeUserInvite(ctx context.Context, token string) error
+	UpdateUserInviteVaults(ctx context.Context, token string, vaults []store.UserInviteVault) error
+	CountPendingUserInvites(ctx context.Context) (int, error)
 
 	// Email verification
 	CreateEmailVerification(ctx context.Context, email, code string, expiresAt time.Time) (*store.EmailVerification, error)
@@ -250,6 +251,22 @@ func (s *Server) requireOwner(w http.ResponseWriter, r *http.Request) (*store.Us
 	if user.Role != "owner" {
 		jsonError(w, http.StatusForbidden, "Owner role required")
 		return nil, fmt.Errorf("not owner")
+	}
+	return user, nil
+}
+
+// requireUser checks that the request is from a logged-in user (any role).
+// Writes a 403 and returns a non-nil error if the check fails.
+func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (*store.User, error) {
+	sess := sessionFromContext(r.Context())
+	if sess == nil || sess.UserID == "" {
+		jsonError(w, http.StatusForbidden, "User session required")
+		return nil, fmt.Errorf("no user session")
+	}
+	user, err := s.userFromSession(r.Context(), sess)
+	if err != nil || user == nil {
+		jsonError(w, http.StatusForbidden, "User session required")
+		return nil, fmt.Errorf("user not found")
 	}
 	return user, nil
 }
@@ -531,19 +548,17 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/skills/cli", s.requireInitialized(s.handleSkillCLI))
 	mux.HandleFunc("GET /v1/skills/http", s.requireInitialized(s.handleSkillHTTP))
 
-	// Vault invites
-	mux.HandleFunc("GET /v1/vault-invites/{token}/details", s.requireInitialized(s.handleVaultInviteDetails))
-	mux.HandleFunc("POST /v1/vault-invites/{token}/accept", s.requireInitialized(limitBody(s.handleVaultInviteAccept)))
-
-	// Vault invite management (vault admin)
-	mux.HandleFunc("POST /v1/vaults/{name}/invites", s.requireInitialized(s.requireAuth(limitBody(s.handleVaultInviteCreate))))
-	mux.HandleFunc("GET /v1/vaults/{name}/invites", s.requireInitialized(s.requireAuth(s.handleVaultInviteList)))
-	mux.HandleFunc("DELETE /v1/vaults/{name}/invites/{token}", s.requireInitialized(s.requireAuth(s.handleVaultInviteRevoke)))
-	mux.HandleFunc("POST /v1/vaults/{name}/invites/{token}/reinvite", s.requireInitialized(s.requireAuth(limitBody(s.handleVaultInviteReinvite))))
-	mux.HandleFunc("PATCH /v1/vaults/{name}/invites/{token}", s.requireInitialized(s.requireAuth(limitBody(s.handleVaultInviteUpdate))))
+	// Instance-level user invites
+	mux.HandleFunc("POST /v1/users/invites", s.requireInitialized(s.requireAuth(limitBody(s.handleUserInviteCreate))))
+	mux.HandleFunc("GET /v1/users/invites", s.requireInitialized(s.requireAuth(s.handleUserInviteList)))
+	mux.HandleFunc("DELETE /v1/users/invites/{token}", s.requireInitialized(s.requireAuth(s.handleUserInviteRevoke)))
+	mux.HandleFunc("POST /v1/users/invites/{token}/reinvite", s.requireInitialized(s.requireAuth(limitBody(s.handleUserInviteReinvite))))
+	mux.HandleFunc("GET /v1/users/invites/{token}/details", s.requireInitialized(s.handleUserInviteDetails))
+	mux.HandleFunc("POST /v1/users/invites/{token}/accept", s.requireInitialized(limitBody(s.handleUserInviteAccept)))
 
 	// Vault user management (vault admin)
 	mux.HandleFunc("GET /v1/vaults/{name}/users", s.requireInitialized(s.requireAuth(s.handleVaultUserList)))
+	mux.HandleFunc("POST /v1/vaults/{name}/users", s.requireInitialized(s.requireAuth(limitBody(s.handleVaultUserAdd))))
 	mux.HandleFunc("DELETE /v1/vaults/{name}/users/{email}", s.requireInitialized(s.requireAuth(s.handleVaultUserRemove)))
 	mux.HandleFunc("POST /v1/vaults/{name}/users/{email}/role", s.requireInitialized(s.requireAuth(limitBody(s.handleVaultUserSetRole))))
 
@@ -576,7 +591,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /register", s.handleSPA)
 	mux.HandleFunc("GET /vaults/{$}", s.handleSPA)
 	mux.HandleFunc("GET /vaults/{name...}", s.handleSPA)
-	mux.HandleFunc("GET /vault-invite/{token...}", s.handleSPA)
+	mux.HandleFunc("GET /invite/{token...}", s.handleSPA)
 	mux.HandleFunc("GET /approve/{id...}", s.handleSPA)
 	mux.HandleFunc("GET /manage/{path...}", s.handleSPA)
 	mux.HandleFunc("GET /change-password", s.handleSPA)
@@ -1282,12 +1297,12 @@ func (s *Server) handleVaultContext(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleVaultInviteDetails returns vault invite details as JSON (token-based, no auth).
-func (s *Server) handleVaultInviteDetails(w http.ResponseWriter, r *http.Request) {
+// handleUserInviteDetails returns instance-level invite details as JSON (token-based, no auth).
+func (s *Server) handleUserInviteDetails(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	token := r.PathValue("token")
 
-	inv, err := s.store.GetVaultInviteByToken(ctx, token)
+	inv, err := s.store.GetUserInviteByToken(ctx, token)
 	if err != nil || inv == nil {
 		jsonError(w, http.StatusNotFound, "Invite not found")
 		return
@@ -1298,21 +1313,21 @@ func (s *Server) handleVaultInviteDetails(w http.ResponseWriter, r *http.Request
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"error": true, "error_title": "Already Accepted",
-			"error_message": "This invitation has already been accepted. You can log in using 'agent-vault auth login'.",
+			"error_message": "This invitation has already been accepted. You can log in.",
 		})
 		return
 	case "revoked":
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"error": true, "error_title": "Invite Revoked",
-			"error_message": "This invitation was revoked. Please ask the vault admin for a new one.",
+			"error_message": "This invitation was revoked. Please ask for a new one.",
 		})
 		return
 	case "expired":
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"error": true, "error_title": "Invite Expired",
-			"error_message": "This invitation has expired. Please ask the vault admin for a new one.",
+			"error_message": "This invitation has expired. Please ask for a new one.",
 		})
 		return
 	}
@@ -1321,15 +1336,9 @@ func (s *Server) handleVaultInviteDetails(w http.ResponseWriter, r *http.Request
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"error": true, "error_title": "Invite Expired",
-			"error_message": "This invitation has expired. Please ask the vault admin for a new one.",
+			"error_message": "This invitation has expired. Please ask for a new one.",
 		})
 		return
-	}
-
-	vault, _ := s.store.GetVaultByID(ctx, inv.VaultID)
-	vaultName := ""
-	if vault != nil {
-		vaultName = vault.Name
 	}
 
 	existing, _ := s.store.GetUserByEmail(ctx, inv.Email)
@@ -1337,10 +1346,8 @@ func (s *Server) handleVaultInviteDetails(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"token":         inv.Token,
 		"email":         inv.Email,
-		"vault_name":    vaultName,
-		"vault_role":    inv.VaultRole,
+		"vaults":        vaultsToJSON(inv.Vaults),
 		"needs_account": needsAccount,
 	})
 }
@@ -1596,7 +1603,7 @@ var (
 	registerLimiter          = newSlidingWindowLimiter(loginRateWindow, 5, 10000) // 5 registrations per IP per 5 min
 	forgotPasswordLimiter    = newSlidingWindowLimiter(loginRateWindow, 5, 10000) // 5 forgot-password requests per IP per 5 min
 	resendVerifyLimiter      = newSlidingWindowLimiter(loginRateWindow, 5, 10000) // 5 resend-verification requests per IP per 5 min
-	vaultInviteAcceptLimiter = newSlidingWindowLimiter(loginRateWindow, 10, 10000) // 10 invite accepts per IP per 5 min
+	userInviteAcceptLimiter = newSlidingWindowLimiter(loginRateWindow, 10, 10000) // 10 invite accepts per IP per 5 min
 	resetVerifyLimiter    = &verifyRateLimiter{attempts: make(map[string]int), maxKeys: maxVerifyKeys}
 )
 
@@ -3622,28 +3629,72 @@ func (s *Server) handleEmailTest(w http.ResponseWriter, r *http.Request) {
 
 // --- Vault Invite Endpoints ---
 
-const vaultInviteTTL = 48 * time.Hour
-const maxPendingVaultInvites = 50
+const userInviteTTL = 48 * time.Hour
+const maxPendingUserInvites = 100
 
-func (s *Server) handleVaultInviteCreate(w http.ResponseWriter, r *http.Request) {
-	vaultName := r.PathValue("name")
-	ctx := r.Context()
+// userInviteVaultJSON is the JSON response shape for vault pre-assignments on invites.
+type userInviteVaultJSON struct {
+	VaultName string `json:"vault_name"`
+	VaultRole string `json:"vault_role"`
+}
 
-	vault, err := s.store.GetVault(ctx, vaultName)
-	if err != nil || vault == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
-		return
+func vaultsToJSON(vaults []store.UserInviteVault) []userInviteVaultJSON {
+	items := make([]userInviteVaultJSON, len(vaults))
+	for i, v := range vaults {
+		items[i] = userInviteVaultJSON{VaultName: v.VaultName, VaultRole: v.VaultRole}
+	}
+	return items
+}
+
+// sendUserInviteEmail sends the invite email. Returns true if sent.
+// On send failure, writes a JSON response directly and returns false.
+func (s *Server) sendUserInviteEmail(w http.ResponseWriter, recipientEmail, inviterEmail, inviteLink, subject string, vaults []store.UserInviteVault, expiresAt time.Time) bool {
+	if !s.notifier.Enabled() {
+		return false
+	}
+	vaultNames := make([]string, len(vaults))
+	for i, v := range vaults {
+		vaultNames[i] = v.VaultName
+	}
+	vaultsStr := "No vaults pre-assigned"
+	if len(vaultNames) > 0 {
+		vaultsStr = strings.Join(vaultNames, ", ")
 	}
 
-	// Vault user invites require admin role (user vault admin or admin agent).
-	user, err := s.requireVaultAdminSession(w, r, vault.ID)
+	emailHTML := userInviteEmailHTML
+	emailHTML = strings.ReplaceAll(emailHTML, "{{INVITER_EMAIL}}", html.EscapeString(inviterEmail))
+	emailHTML = strings.ReplaceAll(emailHTML, "{{VAULTS}}", html.EscapeString(vaultsStr))
+	emailHTML = strings.ReplaceAll(emailHTML, "{{INVITE_LINK}}", html.EscapeString(inviteLink))
+
+	if err := s.notifier.SendHTMLMail([]string{recipientEmail}, subject, emailHTML); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"email":       recipientEmail,
+			"invite_link": inviteLink,
+			"email_sent":  false,
+			"email_error": fmt.Sprintf("failed to send email: %v", err),
+			"expires_at":  expiresAt.Format(time.RFC3339),
+		})
+		return false
+	}
+	return true
+}
+
+func (s *Server) handleUserInviteCreate(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	user, err := s.requireUser(w, r)
 	if err != nil {
 		return
 	}
 
 	var req struct {
-		Email string `json:"email"`
-		Role  string `json:"role"`
+		Email  string `json:"email"`
+		Vaults []struct {
+			VaultName string `json:"vault_name"`
+			VaultRole string `json:"vault_role"`
+		} `json:"vaults"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
@@ -3653,27 +3704,17 @@ func (s *Server) handleVaultInviteCreate(w http.ResponseWriter, r *http.Request)
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.Role == "" {
-		req.Role = "member"
-	}
-	if req.Role != "admin" && req.Role != "member" {
-		jsonError(w, http.StatusBadRequest, "Role must be 'admin' or 'member'")
-		return
-	}
 
-	// Check for existing pending invite for this email+vault.
-	if pending, _ := s.store.GetPendingVaultInviteByEmailAndVault(ctx, req.Email, vault.ID); pending != nil {
-		jsonError(w, http.StatusConflict, fmt.Sprintf("A pending invite already exists for %q in vault %q", req.Email, vaultName))
-		return
-	}
-
-	// Check if user already has access to this vault.
+	// Check if user already exists in the instance.
 	if existing, _ := s.store.GetUserByEmail(ctx, req.Email); existing != nil {
-		has, _ := s.store.HasVaultAccess(ctx, existing.ID, vault.ID)
-		if has {
-			jsonError(w, http.StatusConflict, fmt.Sprintf("User %q already has access to vault %q", req.Email, vaultName))
-			return
-		}
+		jsonError(w, http.StatusConflict, fmt.Sprintf("User %q already has an account. Use vault user management to add them to a vault.", req.Email))
+		return
+	}
+
+	// Check for existing pending invite for this email.
+	if pending, _ := s.store.GetPendingUserInviteByEmail(ctx, req.Email); pending != nil {
+		jsonError(w, http.StatusConflict, fmt.Sprintf("A pending invite already exists for %q", req.Email))
+		return
 	}
 
 	// Check allowed email domains.
@@ -3683,62 +3724,58 @@ func (s *Server) handleVaultInviteCreate(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Check pending invite limit.
-	count, err := s.store.CountPendingVaultInvites(ctx, vault.ID)
+	count, err := s.store.CountPendingUserInvites(ctx)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to count pending invites")
 		return
 	}
-	if count >= maxPendingVaultInvites {
-		jsonError(w, http.StatusTooManyRequests, "Too many pending vault invites")
+	if count >= maxPendingUserInvites {
+		jsonError(w, http.StatusTooManyRequests, "Too many pending invites")
 		return
 	}
 
-	createdBy := "agent"
-	inviterLabel := "an agent"
-	if user != nil {
-		createdBy = user.ID
-		inviterLabel = user.Email
+	// Resolve and validate vault pre-assignments.
+	var vaults []store.UserInviteVault
+	for _, v := range req.Vaults {
+		if v.VaultRole == "" {
+			v.VaultRole = "member"
+		}
+		if v.VaultRole != "admin" && v.VaultRole != "member" {
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("Vault role must be 'admin' or 'member', got %q", v.VaultRole))
+			return
+		}
+		vault, err := s.store.GetVault(ctx, v.VaultName)
+		if err != nil || vault == nil {
+			jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", v.VaultName))
+			return
+		}
+		// Non-owners must be admin of each pre-assigned vault.
+		if user.Role != "owner" {
+			role, _ := s.store.GetVaultRole(ctx, user.ID, vault.ID)
+			if role != "admin" {
+				jsonError(w, http.StatusForbidden, fmt.Sprintf("You must be an admin of vault %q to pre-assign it", v.VaultName))
+				return
+			}
+		}
+		vaults = append(vaults, store.UserInviteVault{VaultID: vault.ID, VaultName: vault.Name, VaultRole: v.VaultRole})
 	}
 
-	inv, err := s.store.CreateVaultInvite(ctx, req.Email, vault.ID, req.Role, createdBy, time.Now().Add(vaultInviteTTL))
+	inv, err := s.store.CreateUserInvite(ctx, req.Email, user.ID, time.Now().Add(userInviteTTL), vaults)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create invite")
 		return
 	}
 
-	baseURL := s.baseURL
-	inviteLink := baseURL + "/vault-invite/" + inv.Token
+	inviteLink := s.baseURL + "/invite/" + inv.Token
 
-	// Send email if SMTP is configured.
-	emailSent := false
-	if s.notifier.Enabled() {
-		emailHTML := userInviteEmailHTML
-		emailHTML = strings.ReplaceAll(emailHTML, "{{INVITER_EMAIL}}", html.EscapeString(inviterLabel))
-		emailHTML = strings.ReplaceAll(emailHTML, "{{VAULTS}}", html.EscapeString(vaultName))
-		emailHTML = strings.ReplaceAll(emailHTML, "{{INVITE_LINK}}", html.EscapeString(inviteLink))
-
-		if err := s.notifier.SendHTMLMail(
-			[]string{req.Email},
-			fmt.Sprintf("You've been invited to vault %q on Agent Vault", vaultName),
-			emailHTML,
-		); err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"email":       req.Email,
-				"invite_link": inviteLink,
-				"email_sent":  false,
-				"email_error": fmt.Sprintf("failed to send email: %v", err),
-				"expires_at":  inv.ExpiresAt.Format(time.RFC3339),
-			})
-			return
-		}
-		emailSent = true
+	emailSent := s.sendUserInviteEmail(w, req.Email, user.Email, inviteLink, "You've been invited to Agent Vault", vaults, inv.ExpiresAt)
+	if !emailSent && s.notifier.Enabled() {
+		return // error response already written by sendUserInviteEmail
 	}
 
 	resp := map[string]interface{}{
 		"email":      req.Email,
-		"role":       req.Role,
+		"vaults":     vaultsToJSON(vaults),
 		"email_sent": emailSent,
 		"expires_at": inv.ExpiresAt.Format(time.RFC3339),
 	}
@@ -3773,9 +3810,9 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 
-func (s *Server) handleVaultInviteAccept(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleUserInviteAccept(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
-	if !vaultInviteAcceptLimiter.allow(ip) {
+	if !userInviteAcceptLimiter.allow(ip) {
 		jsonError(w, http.StatusTooManyRequests, "Too many requests. Please try again later.")
 		return
 	}
@@ -3789,7 +3826,7 @@ func (s *Server) handleVaultInviteAccept(w http.ResponseWriter, r *http.Request)
 	// Body may be empty for existing users.
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
-	inv, err := s.store.GetVaultInviteByToken(ctx, token)
+	inv, err := s.store.GetUserInviteByToken(ctx, token)
 	if err != nil || inv == nil {
 		jsonError(w, http.StatusNotFound, "Invite not found")
 		return
@@ -3815,8 +3852,7 @@ func (s *Server) handleVaultInviteAccept(w http.ResponseWriter, r *http.Request)
 	// Does the invitee already have an account?
 	existing, _ := s.store.GetUserByEmail(ctx, inv.Email)
 
-	// For new users, validate password and domain BEFORE claiming the invite
-	// so the invite isn't burned on a validation failure.
+	// For new users, validate password and domain BEFORE claiming the invite.
 	if existing == nil {
 		if msg := s.checkEmailDomain(ctx, inv.Email); msg != "" {
 			jsonError(w, http.StatusForbidden, msg)
@@ -3829,9 +3865,7 @@ func (s *Server) handleVaultInviteAccept(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Atomically claim the invite (prevents double-spend race).
-	// AcceptVaultInvite uses UPDATE ... WHERE status='pending', so only
-	// the first concurrent request succeeds.
-	if err := s.store.AcceptVaultInvite(ctx, token); err != nil {
+	if err := s.store.AcceptUserInvite(ctx, token); err != nil {
 		jsonError(w, http.StatusGone, "This invite has already been accepted")
 		return
 	}
@@ -3839,12 +3873,8 @@ func (s *Server) handleVaultInviteAccept(w http.ResponseWriter, r *http.Request)
 	var user *store.User
 
 	if existing != nil {
-		// Existing user — just grant vault role, no password needed.
 		user = existing
 	} else {
-
-		// New user — password already validated above.
-
 		hash, salt, kdfP, err := auth.HashUserPassword([]byte(req.Password))
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "Failed to hash password")
@@ -3864,15 +3894,20 @@ func (s *Server) handleVaultInviteAccept(w http.ResponseWriter, r *http.Request)
 		user = newUser
 	}
 
-	// Grant vault access with the invited role.
-	if err := s.store.GrantVaultRole(ctx, user.ID, inv.VaultID, inv.VaultRole); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to grant vault access")
-		return
+	// Grant pre-assigned vault access.
+	for _, v := range inv.Vaults {
+		if err := s.store.GrantVaultRole(ctx, user.ID, v.VaultID, v.VaultRole); err != nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to grant vault access")
+			return
+		}
 	}
 
-	msg := "Vault access granted."
-	if existing == nil {
-		msg = "Account created and vault access granted. You can now log in using 'agent-vault auth login'."
+	msg := "Account created."
+	if existing != nil {
+		msg = "Invite accepted."
+	}
+	if len(inv.Vaults) > 0 {
+		msg += " Vault access granted."
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -3882,68 +3917,107 @@ func (s *Server) handleVaultInviteAccept(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-func (s *Server) handleVaultInviteList(w http.ResponseWriter, r *http.Request) {
-	vaultName := r.PathValue("name")
+func (s *Server) handleUserInviteList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	vault, err := s.store.GetVault(ctx, vaultName)
-	if err != nil || vault == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
-		return
-	}
-
-	if _, err := s.requireVaultAdminSession(w, r, vault.ID); err != nil {
+	user, err := s.requireUser(w, r)
+	if err != nil {
 		return
 	}
 
 	status := r.URL.Query().Get("status")
-	invites, err := s.store.ListVaultInvites(ctx, vault.ID, status)
+	invites, err := s.store.ListUserInvites(ctx, status)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to list vault invites")
+		jsonError(w, http.StatusInternalServerError, "Failed to list invites")
 		return
 	}
 
-	type inviteItem struct {
-		Email     string `json:"email"`
-		Token     string `json:"token"`
-		Status    string `json:"status"`
-		Role      string `json:"role"`
-		ExpiresAt string `json:"expires_at"`
-		CreatedAt string `json:"created_at"`
+	// Non-owners only see invites they created or invites with pre-assignments to vaults they admin.
+	if user.Role != "owner" {
+		userGrants, _ := s.store.ListUserGrants(ctx, user.ID)
+		adminVaultIDs := map[string]bool{}
+		for _, g := range userGrants {
+			if g.Role == "admin" {
+				adminVaultIDs[g.VaultID] = true
+			}
+		}
+
+		var filtered []store.UserInvite
+		for _, inv := range invites {
+			if inv.CreatedBy == user.ID {
+				filtered = append(filtered, inv)
+				continue
+			}
+			for _, v := range inv.Vaults {
+				if adminVaultIDs[v.VaultID] {
+					filtered = append(filtered, inv)
+					break
+				}
+			}
+		}
+		invites = filtered
 	}
 
-	items := make([]inviteItem, len(invites))
-	for i, inv := range invites {
-		items[i] = inviteItem{
+	type inviteItem struct {
+		Email     string                `json:"email"`
+		Token     string                `json:"token"`
+		Status    string                `json:"status"`
+		CreatedBy string                `json:"created_by"`
+		Vaults    []userInviteVaultJSON `json:"vaults"`
+		ExpiresAt string                `json:"expires_at"`
+		CreatedAt string                `json:"created_at"`
+	}
+
+	items := make([]inviteItem, 0, len(invites))
+	for _, inv := range invites {
+		items = append(items, inviteItem{
 			Email:     inv.Email,
 			Token:     inv.Token,
 			Status:    inv.Status,
-			Role:      inv.VaultRole,
+			CreatedBy: inv.CreatedBy,
+			Vaults:    vaultsToJSON(inv.Vaults),
 			ExpiresAt: inv.ExpiresAt.Format(time.RFC3339),
 			CreatedAt: inv.CreatedAt.Format(time.RFC3339),
-		}
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"invites": items})
 }
 
-func (s *Server) handleVaultInviteRevoke(w http.ResponseWriter, r *http.Request) {
-	vaultName := r.PathValue("name")
+func (s *Server) handleUserInviteRevoke(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	vault, err := s.store.GetVault(ctx, vaultName)
-	if err != nil || vault == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
-		return
-	}
-
-	if _, err := s.requireVaultAdminSession(w, r, vault.ID); err != nil {
+	user, err := s.requireUser(w, r)
+	if err != nil {
 		return
 	}
 
 	token := r.PathValue("token")
-	if err := s.store.RevokeVaultInvite(ctx, token, vault.ID); err != nil {
+
+	inv, err := s.store.GetUserInviteByToken(ctx, token)
+	if err != nil || inv == nil || inv.Status != "pending" {
+		jsonError(w, http.StatusNotFound, "Invite not found or not pending")
+		return
+	}
+
+	// Authorization: creator, owner, or admin of a pre-assigned vault
+	allowed := inv.CreatedBy == user.Email || user.Role == "owner"
+	if !allowed {
+		for _, v := range inv.Vaults {
+			role, _ := s.store.GetVaultRole(ctx, user.ID, v.VaultID)
+			if role == "admin" {
+				allowed = true
+				break
+			}
+		}
+	}
+	if !allowed {
+		jsonError(w, http.StatusForbidden, "You don't have permission to revoke this invite")
+		return
+	}
+
+	if err := s.store.RevokeUserInvite(ctx, token); err != nil {
 		jsonError(w, http.StatusNotFound, "Invite not found or not pending")
 		return
 	}
@@ -3952,39 +4026,20 @@ func (s *Server) handleVaultInviteRevoke(w http.ResponseWriter, r *http.Request)
 	json.NewEncoder(w).Encode(map[string]string{"message": "Invite revoked"})
 }
 
-// handleVaultInviteReinvite revokes an existing pending invite and creates a
-// new one for the same email/role, generating a fresh token and link.
-func (s *Server) handleVaultInviteReinvite(w http.ResponseWriter, r *http.Request) {
-	vaultName := r.PathValue("name")
+// handleUserInviteReinvite revokes an existing pending invite and creates a
+// new one for the same email/vault assignments, generating a fresh token and link.
+func (s *Server) handleUserInviteReinvite(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	vault, err := s.store.GetVault(ctx, vaultName)
-	if err != nil || vault == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
-		return
-	}
-
-	user, err := s.requireVaultAdminSession(w, r, vault.ID)
+	user, err := s.requireUser(w, r)
 	if err != nil {
 		return
 	}
 
-	createdBy := "agent"
-	inviterLabel := "an agent"
-	if user != nil {
-		createdBy = user.ID
-		inviterLabel = user.Email
-	}
-
 	token := r.PathValue("token")
 
-	// Look up the existing invite to get email and role.
-	existing, err := s.store.GetVaultInviteByToken(ctx, token)
+	existing, err := s.store.GetUserInviteByToken(ctx, token)
 	if err != nil || existing == nil {
-		jsonError(w, http.StatusNotFound, "Invite not found")
-		return
-	}
-	if existing.VaultID != vault.ID {
 		jsonError(w, http.StatusNotFound, "Invite not found")
 		return
 	}
@@ -3994,52 +4049,27 @@ func (s *Server) handleVaultInviteReinvite(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Revoke the old invite.
-	if err := s.store.RevokeVaultInvite(ctx, token, vault.ID); err != nil {
+	if err := s.store.RevokeUserInvite(ctx, token); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to revoke old invite")
 		return
 	}
 
-	// Create a new invite with the same email and role.
-	inv, err := s.store.CreateVaultInvite(ctx, existing.Email, vault.ID, existing.VaultRole, createdBy, time.Now().Add(vaultInviteTTL))
+	// Create a new invite with the same email and vault assignments.
+	inv, err := s.store.CreateUserInvite(ctx, existing.Email, user.ID, time.Now().Add(userInviteTTL), existing.Vaults)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create new invite")
 		return
 	}
 
-	inviteLink := s.baseURL + "/vault-invite/" + inv.Token
+	inviteLink := s.baseURL + "/invite/" + inv.Token
 
-	// Send email if SMTP is configured.
-	emailSent := false
-	if s.notifier.Enabled() {
-		emailHTML := userInviteEmailHTML
-		emailHTML = strings.ReplaceAll(emailHTML, "{{INVITER_EMAIL}}", html.EscapeString(inviterLabel))
-		emailHTML = strings.ReplaceAll(emailHTML, "{{VAULTS}}", html.EscapeString(vaultName))
-		emailHTML = strings.ReplaceAll(emailHTML, "{{INVITE_LINK}}", html.EscapeString(inviteLink))
-
-		if err := s.notifier.SendHTMLMail(
-			[]string{existing.Email},
-			fmt.Sprintf("You've been re-invited to vault %q on Agent Vault", vaultName),
-			emailHTML,
-		); err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"email":       existing.Email,
-				"token":       inv.Token,
-				"invite_link": inviteLink,
-				"email_sent":  false,
-				"email_error": fmt.Sprintf("failed to send email: %v", err),
-				"expires_at":  inv.ExpiresAt.Format(time.RFC3339),
-			})
-			return
-		}
-		emailSent = true
+	emailSent := s.sendUserInviteEmail(w, existing.Email, user.Email, inviteLink, "You've been re-invited to Agent Vault", existing.Vaults, inv.ExpiresAt)
+	if !emailSent && s.notifier.Enabled() {
+		return // error response already written by sendUserInviteEmail
 	}
 
 	resp := map[string]interface{}{
 		"email":      existing.Email,
-		"token":      inv.Token,
-		"role":       existing.VaultRole,
 		"email_sent": emailSent,
 		"expires_at": inv.ExpiresAt.Format(time.RFC3339),
 	}
@@ -4050,44 +4080,6 @@ func (s *Server) handleVaultInviteReinvite(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(resp)
-}
-
-// handleVaultInviteUpdate updates a pending invite's role in place.
-func (s *Server) handleVaultInviteUpdate(w http.ResponseWriter, r *http.Request) {
-	vaultName := r.PathValue("name")
-	ctx := r.Context()
-
-	vault, err := s.store.GetVault(ctx, vaultName)
-	if err != nil || vault == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
-		return
-	}
-
-	if _, err := s.requireVaultAdminSession(w, r, vault.ID); err != nil {
-		return
-	}
-
-	token := r.PathValue("token")
-
-	var req struct {
-		Role string `json:"role"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-	if req.Role != "admin" && req.Role != "member" {
-		jsonError(w, http.StatusBadRequest, "Role must be 'admin' or 'member'")
-		return
-	}
-
-	if err := s.store.UpdateVaultInviteRole(ctx, token, vault.ID, req.Role); err != nil {
-		jsonError(w, http.StatusNotFound, "Invite not found or not pending")
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"role": req.Role})
 }
 
 // --- Vault User Endpoints ---
@@ -4113,8 +4105,9 @@ func (s *Server) handleVaultUserList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type userItem struct {
-		Email string `json:"email"`
-		Role  string `json:"role"`
+		Email  string `json:"email"`
+		Role   string `json:"role"`
+		Status string `json:"status"`
 	}
 
 	var users []userItem
@@ -4123,11 +4116,82 @@ func (s *Server) handleVaultUserList(w http.ResponseWriter, r *http.Request) {
 		if err != nil || u == nil {
 			continue
 		}
-		users = append(users, userItem{Email: u.Email, Role: g.Role})
+		users = append(users, userItem{Email: u.Email, Role: g.Role, Status: "active"})
+	}
+
+	// Include pending invite entries for this vault.
+	pendingInvites, _ := s.store.ListUserInvitesByVault(ctx, vault.ID, "pending")
+	for _, inv := range pendingInvites {
+		for _, v := range inv.Vaults {
+			if v.VaultID == vault.ID {
+				users = append(users, userItem{Email: inv.Email, Role: v.VaultRole, Status: "pending"})
+				break
+			}
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"users": users})
+}
+
+// handleVaultUserAdd adds an existing instance user to a vault directly.
+func (s *Server) handleVaultUserAdd(w http.ResponseWriter, r *http.Request) {
+	vaultName := r.PathValue("name")
+	ctx := r.Context()
+
+	vault, err := s.store.GetVault(ctx, vaultName)
+	if err != nil || vault == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
+		return
+	}
+
+	if _, err := s.requireVaultAdminSession(w, r, vault.ID); err != nil {
+		return
+	}
+
+	var req struct {
+		Email string `json:"email"`
+		Role  string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := auth.ValidateEmail(req.Email); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Role == "" {
+		req.Role = "member"
+	}
+	if req.Role != "admin" && req.Role != "member" {
+		jsonError(w, http.StatusBadRequest, "Role must be 'admin' or 'member'")
+		return
+	}
+
+	target, err := s.store.GetUserByEmail(ctx, req.Email)
+	if err != nil || target == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("User %q not found in this instance", req.Email))
+		return
+	}
+
+	has, _ := s.store.HasVaultAccess(ctx, target.ID, vault.ID)
+	if has {
+		jsonError(w, http.StatusConflict, fmt.Sprintf("User %q already has access to vault %q", req.Email, vaultName))
+		return
+	}
+
+	if err := s.store.GrantVaultRole(ctx, target.ID, vault.ID, req.Role); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to grant vault access")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"email": req.Email,
+		"role":  req.Role,
+	})
 }
 
 func (s *Server) handleVaultUserRemove(w http.ResponseWriter, r *http.Request) {

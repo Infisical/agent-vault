@@ -152,20 +152,25 @@ type Agent struct {
 	RevokedAt          *time.Time
 }
 
-// VaultInvite represents an invitation for a user to join a specific vault
-// with a given role. If the user doesn't have an account, they create one
-// during acceptance.
-type VaultInvite struct {
+// UserInvite represents an instance-level invitation for a new user.
+// Invites bring users into the instance, with optional vault pre-assignment.
+type UserInvite struct {
 	ID         int
-	Token      string
+	Token      string // only populated on creation (not stored in DB)
 	Email      string
-	VaultID    string
-	VaultRole  string // "admin" or "member"
 	Status     string // pending, accepted, expired, revoked
 	CreatedBy  string // user ID of the inviter
 	CreatedAt  time.Time
 	ExpiresAt  time.Time
 	AcceptedAt *time.Time
+	Vaults     []UserInviteVault // pre-assigned vault access
+}
+
+// UserInviteVault represents a pre-assigned vault grant on a user invite.
+type UserInviteVault struct {
+	VaultID   string
+	VaultName string // populated via JOIN on reads
+	VaultRole string // "admin" or "member"
 }
 
 // EmailVerification holds a verification code for self-signup email confirmation.
@@ -294,15 +299,16 @@ type Store interface {
 	CountPendingInvites(ctx context.Context, vaultID string) (int, error)
 	ExpirePendingInvites(ctx context.Context, before time.Time) (int, error)
 
-	// Vault invites
-	CreateVaultInvite(ctx context.Context, email, vaultID, vaultRole, createdBy string, expiresAt time.Time) (*VaultInvite, error)
-	GetVaultInviteByToken(ctx context.Context, token string) (*VaultInvite, error)
-	GetPendingVaultInviteByEmailAndVault(ctx context.Context, email, vaultID string) (*VaultInvite, error)
-	ListVaultInvites(ctx context.Context, vaultID, status string) ([]VaultInvite, error)
-	AcceptVaultInvite(ctx context.Context, token string) error
-	RevokeVaultInvite(ctx context.Context, token, vaultID string) error
-	UpdateVaultInviteRole(ctx context.Context, token, vaultID, newRole string) error
-	CountPendingVaultInvites(ctx context.Context, vaultID string) (int, error)
+	// User invites (instance-level)
+	CreateUserInvite(ctx context.Context, email, createdBy string, expiresAt time.Time, vaults []UserInviteVault) (*UserInvite, error)
+	GetUserInviteByToken(ctx context.Context, token string) (*UserInvite, error)
+	GetPendingUserInviteByEmail(ctx context.Context, email string) (*UserInvite, error)
+	ListUserInvites(ctx context.Context, status string) ([]UserInvite, error)
+	ListUserInvitesByVault(ctx context.Context, vaultID, status string) ([]UserInvite, error)
+	AcceptUserInvite(ctx context.Context, token string) error
+	RevokeUserInvite(ctx context.Context, token string) error
+	UpdateUserInviteVaults(ctx context.Context, token string, vaults []UserInviteVault) error
+	CountPendingUserInvites(ctx context.Context) (int, error)
 
 	// Email verification
 	CreateEmailVerification(ctx context.Context, email, code string, expiresAt time.Time) (*EmailVerification, error)

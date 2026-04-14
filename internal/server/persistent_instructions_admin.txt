@@ -22,7 +22,7 @@ As an admin, you can also:
 - Approve proposals: POST {AGENT_VAULT_ADDR}/v1/admin/proposals/{id}/approve with {"vault": "...", "credentials": {"KEY": "value"}}
 - Reject proposals: POST {AGENT_VAULT_ADDR}/v1/admin/proposals/{id}/reject with {"vault": "...", "reason": "..."}
 - Invite agents with any role: POST {AGENT_VAULT_ADDR}/v1/invites with {"vault": "...", "vault_role": "member|proxy|admin"}
-- Invite users: POST {AGENT_VAULT_ADDR}/v1/vaults/{name}/invites with {"email": "...", "role": "member|admin"}
+- Invite users: POST {AGENT_VAULT_ADDR}/v1/users/invites with {"email": "...", "vaults": [{"vault_name": "...", "vault_role": "member|admin"}]}
 
 ## Full Reference
 

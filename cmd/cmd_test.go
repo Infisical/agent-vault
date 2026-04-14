@@ -25,7 +25,7 @@ func TestCommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"server", "auth", "vault", "owner", "account", "catalog"}
+	expected := []string{"server", "auth", "vault", "owner", "account", "catalog", "user"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected command %q to be registered, but it was not", name)
@@ -667,6 +667,58 @@ func TestDiscoverFlagsRegistered(t *testing.T) {
 
 	if dCmd.Flags().Lookup("json") == nil {
 		t.Error("expected --json flag on discover command")
+	}
+}
+
+func TestUserInviteSubcommandsRegistered(t *testing.T) {
+	uCmd := findSubcommand(rootCmd, "user")
+	if uCmd == nil {
+		t.Fatal("user command not found")
+	}
+	invCmd := findSubcommand(uCmd, "invite")
+	if invCmd == nil {
+		t.Fatal("invite command not found under user")
+	}
+
+	registered := make(map[string]bool)
+	for _, c := range invCmd.Commands() {
+		registered[c.Name()] = true
+	}
+
+	expected := []string{"list", "revoke"}
+	for _, name := range expected {
+		if !registered[name] {
+			t.Errorf("expected user invite subcommand %q to be registered, but it was not", name)
+		}
+	}
+
+	// Verify --vault flag on invite command
+	f := invCmd.Flags().Lookup("vault")
+	if f == nil {
+		t.Fatal("expected --vault flag on user invite command")
+	}
+}
+
+func TestVaultUserAddSubcommandRegistered(t *testing.T) {
+	vCmd := findSubcommand(rootCmd, "vault")
+	if vCmd == nil {
+		t.Fatal("vault command not found")
+	}
+	userCmd := findSubcommand(vCmd, "user")
+	if userCmd == nil {
+		t.Fatal("user command not found under vault")
+	}
+
+	registered := make(map[string]bool)
+	for _, c := range userCmd.Commands() {
+		registered[c.Name()] = true
+	}
+
+	if !registered["add"] {
+		t.Error("expected vault user subcommand \"add\" to be registered, but it was not")
+	}
+	if !registered["list"] {
+		t.Error("expected vault user subcommand \"list\" to be registered, but it was not")
 	}
 }
 

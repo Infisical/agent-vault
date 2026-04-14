@@ -7,19 +7,24 @@ import { DomainNotice } from "../components/DomainNotice";
 import { apiFetch } from "../lib/api";
 import { OAuthSection } from "../components/GoogleButton";
 
-interface VaultInviteData {
+interface InviteVault {
+  vault_name: string;
+  vault_role: string;
+}
+
+interface UserInviteData {
   token?: string;
   email?: string;
-  vault_name?: string;
-  vault_role?: string;
+  vaults?: InviteVault[];
   needs_account?: boolean;
+  status?: string;
   error?: boolean;
   error_title?: string;
   error_message?: string;
 }
 
-export default function VaultInvite() {
-  const invite = useLoaderData({ from: "/vault-invite/$token" }) as VaultInviteData | null;
+export default function UserInvite() {
+  const invite = useLoaderData({ from: "/invite/$token" }) as UserInviteData | null;
 
   return (
     <div className="min-h-screen w-full flex flex-col bg-bg">
@@ -33,7 +38,7 @@ export default function VaultInvite() {
               <div className="bg-surface rounded-2xl w-full max-w-[480px] p-10 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_8px_24px_rgba(0,0,0,0.04)]">
                 <ErrorSection
                   title={invite?.error_title ?? "Invite Unavailable"}
-                  message={invite?.error_message ?? "This invite link is no longer valid. Please ask your vault administrator for a new invitation."}
+                  message={invite?.error_message ?? "This invite link is no longer valid. Please ask for a new invitation."}
                 />
               </div>
             )
@@ -43,15 +48,13 @@ export default function VaultInvite() {
                 <NewUserForm
                   token={invite.token!}
                   email={invite.email!}
-                  vaultName={invite.vault_name!}
-                  vaultRole={invite.vault_role!}
+                  vaults={invite.vaults ?? []}
                 />
               ) : (
                 <ExistingUserForm
                   token={invite.token!}
                   email={invite.email!}
-                  vaultName={invite.vault_name!}
-                  vaultRole={invite.vault_role!}
+                  vaults={invite.vaults ?? []}
                 />
               )}
             </div>
@@ -76,7 +79,7 @@ function AlreadyAccepted() {
           </div>
           <h2 className="text-2xl font-semibold text-text mb-2">Already Accepted</h2>
           <p className="text-text-muted text-[15px] mb-8">
-            This invitation has already been accepted. You can log in to access your vault.
+            This invitation has already been accepted. You can log in to access your account.
           </p>
           <Link
             to="/login"
@@ -110,20 +113,23 @@ function ErrorSection({ title, message }: { title: string; message: string }) {
   );
 }
 
-function InviteDetails({ vaultName, vaultRole }: { vaultName: string; vaultRole: string }) {
+function InviteDetails({ vaults }: { vaults: InviteVault[] }) {
+  if (vaults.length === 0) return null;
+
   return (
     <div className="bg-bg border border-border rounded-lg p-4 mb-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-1">Vault</div>
-          <div className="text-sm text-text font-medium">{vaultName}</div>
-        </div>
-        <div className="text-right">
-          <div className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-1">Role</div>
-          <span className="inline-block px-2.5 py-0.5 bg-primary/10 text-primary text-xs font-semibold rounded-full capitalize">
-            {vaultRole}
-          </span>
-        </div>
+      <div className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-2">
+        Vault Access
+      </div>
+      <div className="space-y-2">
+        {vaults.map((v) => (
+          <div key={v.vault_name} className="flex items-center justify-between">
+            <span className="text-sm text-text font-medium">{v.vault_name}</span>
+            <span className="inline-block px-2.5 py-0.5 bg-primary/10 text-primary text-xs font-semibold rounded-full capitalize">
+              {v.vault_role}
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -132,13 +138,11 @@ function InviteDetails({ vaultName, vaultRole }: { vaultName: string; vaultRole:
 function ExistingUserForm({
   token,
   email,
-  vaultName,
-  vaultRole,
+  vaults,
 }: {
   token: string;
   email: string;
-  vaultName: string;
-  vaultRole: string;
+  vaults: InviteVault[];
 }) {
   const [view, setView] = useState<"confirm" | "success">("confirm");
   const [formError, setFormError] = useState("");
@@ -149,7 +153,7 @@ function ExistingUserForm({
     setSubmitting(true);
 
     try {
-      const resp = await apiFetch(`/v1/vault-invites/${token}/accept`, {
+      const resp = await apiFetch(`/v1/users/invites/${token}/accept`, {
         method: "POST",
         body: JSON.stringify({}),
       });
@@ -178,7 +182,10 @@ function ExistingUserForm({
         </div>
         <h2 className="text-2xl font-semibold text-text mb-2">Invite Accepted</h2>
         <p className="text-text-muted text-[15px] mb-8">
-          You now have <strong className="text-text">{vaultRole}</strong> access to vault <strong className="text-text">{vaultName}</strong>.
+          You've joined Agent Vault.
+          {vaults.length > 0 && (
+            <> You have access to {vaults.map((v) => v.vault_name).join(", ")}.</>
+          )}
         </p>
         <a
           href="/login"
@@ -197,13 +204,13 @@ function ExistingUserForm({
   return (
     <>
       <h2 className="text-[28px] font-semibold mb-2 tracking-tight text-text">
-        Accept Vault Invitation
+        Join Agent Vault
       </h2>
       <p className="text-text-muted text-[15px] mb-6">
-        You've been invited to join a vault as <strong className="text-text">{email}</strong>.
+        You've been invited to join as <strong className="text-text">{email}</strong>.
       </p>
 
-      <InviteDetails vaultName={vaultName} vaultRole={vaultRole} />
+      <InviteDetails vaults={vaults} />
 
       {formError && <ErrorBanner message={formError} className="mb-4" />}
 
@@ -222,13 +229,11 @@ function ExistingUserForm({
 function NewUserForm({
   token,
   email,
-  vaultName,
-  vaultRole,
+  vaults,
 }: {
   token: string;
   email: string;
-  vaultName: string;
-  vaultRole: string;
+  vaults: InviteVault[];
 }) {
   const [view, setView] = useState<"form" | "success">("form");
   const [password, setPassword] = useState("");
@@ -266,7 +271,7 @@ function NewUserForm({
     setSubmitting(true);
 
     try {
-      const resp = await apiFetch(`/v1/vault-invites/${token}/accept`, {
+      const resp = await apiFetch(`/v1/users/invites/${token}/accept`, {
         method: "POST",
         body: JSON.stringify({ password }),
       });
@@ -295,7 +300,10 @@ function NewUserForm({
         </div>
         <h2 className="text-2xl font-semibold text-text mb-2">Account Created</h2>
         <p className="text-text-muted text-[15px] mb-8">
-          Your account is ready with <strong className="text-text">{vaultRole}</strong> access to vault <strong className="text-text">{vaultName}</strong>.
+          Your account is ready.
+          {vaults.length > 0 && (
+            <> You have access to {vaults.map((v) => v.vault_name).join(", ")}.</>
+          )}
         </p>
         <a
           href="/login"
@@ -314,17 +322,17 @@ function NewUserForm({
   return (
     <>
       <h2 className="text-[28px] font-semibold mb-2 tracking-tight text-text">
-        Accept Vault Invitation
+        Join Agent Vault
       </h2>
       <p className="text-text-muted text-[15px] mb-6">
-        Create an account to join vault <strong className="text-text">{vaultName}</strong> as <strong className="text-text">{vaultRole}</strong>.
+        Create an account to join Agent Vault.
       </p>
 
-      <InviteDetails vaultName={vaultName} vaultRole={vaultRole} />
+      <InviteDetails vaults={vaults} />
 
       <DomainNotice className="mb-4" />
 
-      <OAuthSection redirect={`/vault-invite/${token}`} />
+      <OAuthSection redirect={`/invite/${token}`} />
 
       <form onSubmit={handleSubmit} autoComplete="off">
         <div className="mb-6">
@@ -414,4 +422,3 @@ function NewUserForm({
     </>
   );
 }
-

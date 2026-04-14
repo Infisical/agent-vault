@@ -33,7 +33,7 @@ type mockStore struct {
 	invites            map[string]*store.Invite              // keyed by token
 	users              map[string]*store.User                // keyed by email
 	grants             map[string]map[string]string          // keyed by userID -> vaultID -> role
-	vaultInvites       map[string]*store.VaultInvite         // keyed by token
+	userInvites        map[string]*store.UserInvite           // keyed by token
 	emailVerifications []*store.EmailVerification
 	passwordResets     []*store.PasswordReset
 	agents             map[string]*store.Agent               // keyed by name
@@ -49,7 +49,7 @@ func newMockStore() *mockStore {
 		brokerConfigs: make(map[string]*store.BrokerConfig),
 		invites:       make(map[string]*store.Invite),
 		users:         make(map[string]*store.User),
-		vaultInvites:  make(map[string]*store.VaultInvite),
+		userInvites:   make(map[string]*store.UserInvite),
 		agents:        make(map[string]*store.Agent),
 		settings:      make(map[string]string),
 	}
@@ -593,54 +593,69 @@ func (m *mockStore) SetMasterKeyRecord(_ context.Context, record *store.MasterKe
 	return nil
 }
 
-// --- Vault Invite mock methods ---
+// --- User Invite mock methods ---
 
-func (m *mockStore) CreateVaultInvite(_ context.Context, email, vaultID, vaultRole, createdBy string, expiresAt time.Time) (*store.VaultInvite, error) {
-	token := "av_vinv_testtoken_" + email
-	inv := &store.VaultInvite{
-		ID:        len(m.vaultInvites) + 1,
+func (m *mockStore) CreateUserInvite(_ context.Context, email, createdBy string, expiresAt time.Time, vaults []store.UserInviteVault) (*store.UserInvite, error) {
+	token := "av_uinv_testtoken_" + email
+	inv := &store.UserInvite{
+		ID:        len(m.userInvites) + 1,
 		Token:     token,
 		Email:     email,
-		VaultID:   vaultID,
-		VaultRole: vaultRole,
 		Status:    "pending",
 		CreatedBy: createdBy,
 		CreatedAt: time.Now(),
 		ExpiresAt: expiresAt,
+		Vaults:    vaults,
 	}
-	m.vaultInvites[token] = inv
+	m.userInvites[token] = inv
 	return inv, nil
 }
 
-func (m *mockStore) GetVaultInviteByToken(_ context.Context, token string) (*store.VaultInvite, error) {
-	inv, ok := m.vaultInvites[token]
+func (m *mockStore) GetUserInviteByToken(_ context.Context, token string) (*store.UserInvite, error) {
+	inv, ok := m.userInvites[token]
 	if !ok {
-		return nil, fmt.Errorf("vault invite not found")
+		return nil, fmt.Errorf("user invite not found")
 	}
 	return inv, nil
 }
 
-func (m *mockStore) GetPendingVaultInviteByEmailAndVault(_ context.Context, email, vaultID string) (*store.VaultInvite, error) {
-	for _, inv := range m.vaultInvites {
-		if inv.Email == email && inv.VaultID == vaultID && inv.Status == "pending" && time.Now().Before(inv.ExpiresAt) {
+func (m *mockStore) GetPendingUserInviteByEmail(_ context.Context, email string) (*store.UserInvite, error) {
+	for _, inv := range m.userInvites {
+		if inv.Email == email && inv.Status == "pending" && time.Now().Before(inv.ExpiresAt) {
 			return inv, nil
 		}
 	}
 	return nil, nil
 }
 
-func (m *mockStore) ListVaultInvites(_ context.Context, vaultID, status string) ([]store.VaultInvite, error) {
-	var result []store.VaultInvite
-	for _, inv := range m.vaultInvites {
-		if inv.VaultID == vaultID && (status == "" || inv.Status == status) {
+func (m *mockStore) ListUserInvites(_ context.Context, status string) ([]store.UserInvite, error) {
+	var result []store.UserInvite
+	for _, inv := range m.userInvites {
+		if status == "" || inv.Status == status {
 			result = append(result, *inv)
 		}
 	}
 	return result, nil
 }
 
-func (m *mockStore) AcceptVaultInvite(_ context.Context, token string) error {
-	inv, ok := m.vaultInvites[token]
+func (m *mockStore) ListUserInvitesByVault(_ context.Context, vaultID, status string) ([]store.UserInvite, error) {
+	var result []store.UserInvite
+	for _, inv := range m.userInvites {
+		if status != "" && inv.Status != status {
+			continue
+		}
+		for _, v := range inv.Vaults {
+			if v.VaultID == vaultID {
+				result = append(result, *inv)
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
+func (m *mockStore) AcceptUserInvite(_ context.Context, token string) error {
+	inv, ok := m.userInvites[token]
 	if !ok || inv.Status != "pending" {
 		return fmt.Errorf("not found or not pending")
 	}
@@ -650,28 +665,28 @@ func (m *mockStore) AcceptVaultInvite(_ context.Context, token string) error {
 	return nil
 }
 
-func (m *mockStore) RevokeVaultInvite(_ context.Context, token, vaultID string) error {
-	inv, ok := m.vaultInvites[token]
-	if !ok || inv.Status != "pending" || inv.VaultID != vaultID {
+func (m *mockStore) RevokeUserInvite(_ context.Context, token string) error {
+	inv, ok := m.userInvites[token]
+	if !ok || inv.Status != "pending" {
 		return fmt.Errorf("not found or not pending")
 	}
 	inv.Status = "revoked"
 	return nil
 }
 
-func (m *mockStore) UpdateVaultInviteRole(_ context.Context, token, vaultID, newRole string) error {
-	inv, ok := m.vaultInvites[token]
-	if !ok || inv.Status != "pending" || inv.VaultID != vaultID {
+func (m *mockStore) UpdateUserInviteVaults(_ context.Context, token string, vaults []store.UserInviteVault) error {
+	inv, ok := m.userInvites[token]
+	if !ok || inv.Status != "pending" {
 		return fmt.Errorf("not found or not pending")
 	}
-	inv.VaultRole = newRole
+	inv.Vaults = vaults
 	return nil
 }
 
-func (m *mockStore) CountPendingVaultInvites(_ context.Context, vaultID string) (int, error) {
+func (m *mockStore) CountPendingUserInvites(_ context.Context) (int, error) {
 	count := 0
-	for _, inv := range m.vaultInvites {
-		if inv.VaultID == vaultID && inv.Status == "pending" {
+	for _, inv := range m.userInvites {
+		if inv.Status == "pending" {
 			count++
 		}
 	}
@@ -4214,13 +4229,13 @@ func TestOwnerVaultJoinNotFound(t *testing.T) {
 	}
 }
 
-func TestVaultInviteCreateBlockedByAllowedDomains(t *testing.T) {
+func TestUserInviteCreateBlockedByAllowedDomains(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	ms.settings[settingAllowedDomains] = `["acme.com"]`
 	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
-	body := `{"email":"user@gmail.com","role":"member"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/invites", strings.NewReader(body))
+	body := `{"email":"user@gmail.com"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/users/invites", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
@@ -4230,13 +4245,13 @@ func TestVaultInviteCreateBlockedByAllowedDomains(t *testing.T) {
 	}
 }
 
-func TestVaultInviteCreateAllowedDomain(t *testing.T) {
+func TestUserInviteCreateAllowedDomain(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	ms.settings[settingAllowedDomains] = `["acme.com"]`
 	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
-	body := `{"email":"user@acme.com","role":"member"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/invites", strings.NewReader(body))
+	body := `{"email":"user@acme.com"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/users/invites", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
@@ -4246,13 +4261,13 @@ func TestVaultInviteCreateAllowedDomain(t *testing.T) {
 	}
 }
 
-func TestVaultInviteCreateNoDomainRestrictions(t *testing.T) {
+func TestUserInviteCreateNoDomainRestrictions(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	// No domain restrictions set
 	srv := New(":0", ms, make([]byte, 32), nil, true, "http://127.0.0.1:14321", nil)
 
-	body := `{"email":"user@gmail.com","role":"member"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/invites", strings.NewReader(body))
+	body := `{"email":"user@gmail.com"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/users/invites", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)

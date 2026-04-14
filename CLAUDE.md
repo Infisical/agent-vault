@@ -61,11 +61,15 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault vault delete <name>` -- delete a vault (vault admin or instance owner; cannot delete the default vault; use `--yes` to skip confirmation)
   - `agent-vault vault rename <old-name> <new-name>` -- rename a vault (vault admin or instance owner; cannot rename the default vault)
   - `agent-vault vault init` -- bind the current directory to a vault by writing `agent-vault.json` (interactive picker; use `--vault` to skip picker). The file is meant to be committed so the whole team shares the vault binding. Vault resolution priority: `--vault` flag > `AGENT_VAULT_VAULT` env var > `agent-vault.json` > user context > `"default"`.
-  - `agent-vault vault user [invite|list|remove|set-role]` -- manage vault user access
-    - `agent-vault vault user invite <email> [--vault <name>] [--role admin|member]` -- invite a user to a vault
-    - `agent-vault vault user list [--vault <name>]` -- list vault users
+  - `agent-vault vault user [add|list|remove|set-role]` -- manage vault user access
+    - `agent-vault vault user add <email> [--vault <name>] [--role admin|member]` -- add an existing instance user to a vault (direct grant, no invite needed)
+    - `agent-vault vault user list [--vault <name>]` -- list vault users (includes pending invite pre-assignments with "pending" status)
     - `agent-vault vault user remove <email> [--vault <name>]` -- remove a user from a vault
     - `agent-vault vault user set-role <email> --role admin|member [--vault <name>]` -- change a user's vault role
+- `agent-vault user invite` -- instance-level user invite commands (any authenticated user)
+  - `agent-vault user invite <email> [--vault <name>:<role> ...]` -- invite a user to the Agent Vault instance with optional vault pre-assignments (repeatable --vault flag, format: `name:role`, role defaults to `member`)
+  - `agent-vault user invite list [--status pending]` -- list user invites
+  - `agent-vault user invite revoke <token_suffix>` -- revoke a pending invite
 - `agent-vault users` -- list all users in the instance (any authenticated user; owners see vault memberships, members see email/role/created)
 - `agent-vault owner user [list|info|remove|set-role]` -- manage users (owner only, except `info` for self)
   - `agent-vault owner user list` -- list all users
@@ -291,17 +295,21 @@ Agent Vault uses two independent permission axes:
 
 The first user to register is always an instance owner and is automatically invited as vault admin on the default vault. User deletion removes the user and their vault grants but leaves vaults intact. Orphaned vaults (no remaining members) can be recovered by an instance owner joining them.
 
-### Vault Invite API
+### User Invite API
 
-Vault-scoped invites let vault admins onboard human users. The invitee receives an email with a link to a browser-based acceptance page. For new users, they set their password on acceptance; for existing users, the vault grant is applied immediately on acceptance.
+Instance-level invites let any authenticated user invite people to Agent Vault. Invites optionally pre-assign vault access (vault admins can pre-assign their vaults; owners can pre-assign any vault). The invitee receives an email with a link to a browser-based acceptance page. For new users, they set their password on acceptance; for existing users, the invite is accepted immediately and pre-assigned vault grants are applied.
 
-- `POST /v1/vaults/{name}/invites` -- vault admin creates an invite; body: `{"email": "...", "role": "admin|member"}`. Sends HTML email if SMTP configured; always returns `invite_link` in response. 48-hour TTL, max 50 pending.
-- `GET /v1/vaults/{name}/invites` -- list invites for vault (vault admin only)
-- `DELETE /v1/vaults/{name}/invites/{token}` -- revoke a pending invite (vault admin only)
-- `GET /vault-invite/{token}` -- serves the browser acceptance page (no auth, token is credential)
-- `POST /v1/vault-invites/{token}/accept` -- accept invite (no auth); body: `{"password": "..."}` for new users, empty for existing users. Validates token, creates account if needed, grants vault membership.
+- `POST /v1/users/invites` -- any authenticated user creates an invite; body: `{"email": "...", "vaults": [{"vault_name": "...", "vault_role": "admin|member"}]}`. Vaults array is optional. Sends HTML email if SMTP configured; always returns `invite_link` in response. 48-hour TTL, max 50 pending.
+- `GET /v1/users/invites?status=pending` -- list invites (owners see all; others see invites they created or with pre-assignments to vaults they admin)
+- `DELETE /v1/users/invites/{token}` -- revoke a pending invite
+- `GET /v1/users/invites/{token}/details` -- public, token-based details for the acceptance page
+- `POST /v1/users/invites/{token}/accept` -- accept invite (no auth); body: `{"password": "..."}` for new users, empty for existing users. Creates account if needed, applies pre-assigned vault grants.
+- `GET /invite/{token}` -- serves the browser acceptance page (no auth, token is credential)
 
-Invite states: `pending`, `accepted`, `expired`, or `revoked`. Token format: `av_uinv_` + 64 hex chars. Duplicate pending invites for the same email+vault are blocked.
+Adding existing users to vaults is a direct grant (no invite needed):
+- `POST /v1/vaults/{name}/users` -- vault admin adds an existing instance user; body: `{"email": "...", "role": "admin|member"}`. User must exist (404 if not), must not already have access (409 if so).
+
+Invite states: `pending`, `accepted`, `expired`, or `revoked`. Token format: `av_uinv_` + 64 hex chars. Duplicate pending invites for the same email are blocked.
 
 ### User Management API
 

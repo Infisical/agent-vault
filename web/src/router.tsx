@@ -12,7 +12,7 @@ import ForgotPassword from "./pages/ForgotPassword";
 import VaultsLayout from "./components/VaultsLayout";
 import VaultsListTab from "./pages/home/VaultsListTab";
 import AllUsersTab from "./pages/home/AllUsersTab";
-import VaultInvite from "./pages/VaultInvite";
+import UserInvite from "./pages/UserInvite";
 import ProposalApprove from "./pages/ProposalApprove";
 import VaultLayout from "./components/VaultLayout";
 import ProposalsTab from "./pages/vault/ProposalsTab";
@@ -102,13 +102,15 @@ const forgotPasswordRoute = createRoute({
   component: ForgotPassword,
 });
 
-const vaultInviteRoute = createRoute({
+const userInviteRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/vault-invite/$token",
+  path: "/invite/$token",
   loader: async ({ params }) => {
-    const resp = await apiFetch(`/v1/vault-invites/${params.token}/details`);
+    const resp = await apiFetch(`/v1/users/invites/${params.token}/details`);
     if (resp.ok) {
-      return resp.json();
+      const data = await resp.json();
+      data.token = params.token;
+      return data;
     }
     // Return error shape the component expects
     const data = await resp.json().catch(() => ({}));
@@ -118,7 +120,7 @@ const vaultInviteRoute = createRoute({
       error_message: data.error || "This invite link is no longer valid.",
     };
   },
-  component: VaultInvite,
+  component: UserInvite,
 });
 
 const proposalApproveRoute = createRoute({
@@ -336,7 +338,7 @@ const routeTree = rootRoute.addChildren([
   loginRoute,
   registerRoute,
   forgotPasswordRoute,
-  vaultInviteRoute,
+  userInviteRoute,
   proposalApproveRoute,
   oauthCallbackRoute,
   authLayoutRoute.addChildren([

@@ -1356,7 +1356,7 @@ func scanInviteRow(rows *sql.Rows) (*Invite, error) {
 
 // --- Vault Invites ---
 
-func newVaultInviteToken() string {
+func newUserInviteToken() string {
 	var b [32]byte
 	if _, err := io.ReadFull(rand.Reader, b[:]); err != nil {
 		panic("crypto/rand: " + err.Error())
@@ -1364,93 +1364,175 @@ func newVaultInviteToken() string {
 	return "av_uinv_" + hex.EncodeToString(b[:])
 }
 
-func (s *SQLiteStore) CreateVaultInvite(ctx context.Context, email, vaultID, vaultRole, createdBy string, expiresAt time.Time) (*VaultInvite, error) {
+func (s *SQLiteStore) CreateUserInvite(ctx context.Context, email, createdBy string, expiresAt time.Time, vaults []UserInviteVault) (*UserInvite, error) {
 	now := time.Now().UTC()
-	token := newVaultInviteToken()
+	token := newUserInviteToken()
+	nowStr := now.Format(time.DateTime)
+	expiresStr := expiresAt.UTC().Format(time.DateTime)
 
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO vault_invites (token_hash, email, vault_id, vault_role, created_by, created_at, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		hashToken(token), email, vaultID, vaultRole, createdBy, now.Format(time.DateTime), expiresAt.UTC().Format(time.DateTime),
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO user_invites (token_hash, email, created_by, created_at, expires_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		hashToken(token), email, createdBy, nowStr, expiresStr,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("inserting vault invite: %w", err)
+		return nil, fmt.Errorf("inserting user invite: %w", err)
 	}
 
-	return &VaultInvite{
+	inviteID, _ := res.LastInsertId()
+
+	for _, v := range vaults {
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO user_invite_vaults (user_invite_id, vault_id, vault_role)
+			 VALUES (?, ?, ?)`,
+			inviteID, v.VaultID, v.VaultRole,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("inserting user invite vault: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+
+	return &UserInvite{
+		ID:        int(inviteID),
 		Token:     token,
 		Email:     email,
-		VaultID:   vaultID,
-		VaultRole: vaultRole,
 		Status:    "pending",
 		CreatedBy: createdBy,
 		CreatedAt: now,
 		ExpiresAt: expiresAt.UTC(),
+		Vaults:    vaults,
 	}, nil
 }
 
-func (s *SQLiteStore) GetVaultInviteByToken(ctx context.Context, token string) (*VaultInvite, error) {
+func (s *SQLiteStore) GetUserInviteByToken(ctx context.Context, token string) (*UserInvite, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, '' as token, email, vault_id, vault_role, status, created_by,
-		        created_at, expires_at, accepted_at
-		 FROM vault_invites WHERE token_hash = ?`, hashToken(token),
+		`SELECT id, email, status, created_by, created_at, expires_at, accepted_at
+		 FROM user_invites WHERE token_hash = ?`, hashToken(token),
 	)
-	return scanVaultInvite(row)
+	inv, err := scanUserInvite(row)
+	if err != nil {
+		return nil, err
+	}
+	vaults, err := s.loadUserInviteVaults(ctx, inv.ID)
+	if err != nil {
+		return nil, err
+	}
+	inv.Vaults = vaults
+	return inv, nil
 }
 
-func (s *SQLiteStore) GetPendingVaultInviteByEmailAndVault(ctx context.Context, email, vaultID string) (*VaultInvite, error) {
+func (s *SQLiteStore) GetPendingUserInviteByEmail(ctx context.Context, email string) (*UserInvite, error) {
 	nowStr := time.Now().UTC().Format(time.DateTime)
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, '' as token, email, vault_id, vault_role, status, created_by,
-		        created_at, expires_at, accepted_at
-		 FROM vault_invites WHERE email = ? AND vault_id = ? AND status = 'pending' AND expires_at > ?
-		 ORDER BY created_at DESC LIMIT 1`, email, vaultID, nowStr,
+		`SELECT id, email, status, created_by, created_at, expires_at, accepted_at
+		 FROM user_invites WHERE email = ? AND status = 'pending' AND expires_at > ?
+		 ORDER BY created_at DESC LIMIT 1`, email, nowStr,
 	)
-	return scanVaultInvite(row)
+	inv, err := scanUserInvite(row)
+	if err != nil {
+		return nil, err
+	}
+	vaults, err := s.loadUserInviteVaults(ctx, inv.ID)
+	if err != nil {
+		return nil, err
+	}
+	inv.Vaults = vaults
+	return inv, nil
 }
 
-func (s *SQLiteStore) ListVaultInvites(ctx context.Context, vaultID, status string) ([]VaultInvite, error) {
+func (s *SQLiteStore) ListUserInvites(ctx context.Context, status string) ([]UserInvite, error) {
 	var rows *sql.Rows
 	var err error
 	if status != "" {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, '' as token, email, vault_id, vault_role, status, created_by,
-			        created_at, expires_at, accepted_at
-			 FROM vault_invites WHERE vault_id = ? AND status = ? ORDER BY created_at DESC`, vaultID, status,
+			`SELECT id, email, status, created_by, created_at, expires_at, accepted_at
+			 FROM user_invites WHERE status = ? ORDER BY created_at DESC`, status,
 		)
 	} else {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, '' as token, email, vault_id, vault_role, status, created_by,
-			        created_at, expires_at, accepted_at
-			 FROM vault_invites WHERE vault_id = ? ORDER BY created_at DESC`, vaultID,
+			`SELECT id, email, status, created_by, created_at, expires_at, accepted_at
+			 FROM user_invites ORDER BY created_at DESC`,
 		)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("listing vault invites: %w", err)
+		return nil, fmt.Errorf("listing user invites: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var invites []VaultInvite
+	var invites []UserInvite
 	for rows.Next() {
-		inv, err := scanVaultInviteRow(rows)
+		inv, err := scanUserInviteRow(rows)
 		if err != nil {
 			return nil, err
 		}
 		invites = append(invites, *inv)
 	}
-	return invites, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if err := s.loadUserInviteVaultsBatch(ctx, invites); err != nil {
+		return nil, err
+	}
+	return invites, nil
 }
 
-func (s *SQLiteStore) AcceptVaultInvite(ctx context.Context, token string) error {
+func (s *SQLiteStore) ListUserInvitesByVault(ctx context.Context, vaultID, status string) ([]UserInvite, error) {
+	query := `SELECT ui.id, ui.email, ui.status, ui.created_by, ui.created_at, ui.expires_at, ui.accepted_at
+		 FROM user_invites ui
+		 JOIN user_invite_vaults uiv ON ui.id = uiv.user_invite_id
+		 WHERE uiv.vault_id = ?`
+	args := []any{vaultID}
+	if status != "" {
+		query += ` AND ui.status = ?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY ui.created_at DESC`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing user invites by vault: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var invites []UserInvite
+	for rows.Next() {
+		inv, err := scanUserInviteRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		invites = append(invites, *inv)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if err := s.loadUserInviteVaultsBatch(ctx, invites); err != nil {
+		return nil, err
+	}
+	return invites, nil
+}
+
+func (s *SQLiteStore) AcceptUserInvite(ctx context.Context, token string) error {
 	nowStr := time.Now().UTC().Format(time.DateTime)
 
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE vault_invites SET status = 'accepted', accepted_at = ?
+		`UPDATE user_invites SET status = 'accepted', accepted_at = ?
 		 WHERE token_hash = ? AND status = 'pending' AND expires_at > ?`,
 		nowStr, hashToken(token), nowStr,
 	)
 	if err != nil {
-		return fmt.Errorf("accepting vault invite: %w", err)
+		return fmt.Errorf("accepting user invite: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
@@ -1459,14 +1541,14 @@ func (s *SQLiteStore) AcceptVaultInvite(ctx context.Context, token string) error
 	return nil
 }
 
-func (s *SQLiteStore) RevokeVaultInvite(ctx context.Context, token, vaultID string) error {
+func (s *SQLiteStore) RevokeUserInvite(ctx context.Context, token string) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE vault_invites SET status = 'revoked'
-		 WHERE token_hash = ? AND vault_id = ? AND status = 'pending'`,
-		hashToken(token), vaultID,
+		`UPDATE user_invites SET status = 'revoked'
+		 WHERE token_hash = ? AND status = 'pending'`,
+		hashToken(token),
 	)
 	if err != nil {
-		return fmt.Errorf("revoking vault invite: %w", err)
+		return fmt.Errorf("revoking user invite: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
@@ -1475,37 +1557,124 @@ func (s *SQLiteStore) RevokeVaultInvite(ctx context.Context, token, vaultID stri
 	return nil
 }
 
-func (s *SQLiteStore) UpdateVaultInviteRole(ctx context.Context, token, vaultID, newRole string) error {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE vault_invites SET vault_role = ?
-		 WHERE token_hash = ? AND vault_id = ? AND status = 'pending'`,
-		newRole, hashToken(token), vaultID,
-	)
+func (s *SQLiteStore) UpdateUserInviteVaults(ctx context.Context, token string, vaults []UserInviteVault) error {
+	// Look up invite ID by token hash
+	var inviteID int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id FROM user_invites WHERE token_hash = ? AND status = 'pending'`,
+		hashToken(token),
+	).Scan(&inviteID)
 	if err != nil {
-		return fmt.Errorf("updating vault invite role: %w", err)
+		return fmt.Errorf("finding user invite: %w", err)
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return sql.ErrNoRows
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
 	}
-	return nil
+	defer func() { _ = tx.Rollback() }()
+
+	_, err = tx.ExecContext(ctx, `DELETE FROM user_invite_vaults WHERE user_invite_id = ?`, inviteID)
+	if err != nil {
+		return fmt.Errorf("clearing user invite vaults: %w", err)
+	}
+
+	for _, v := range vaults {
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO user_invite_vaults (user_invite_id, vault_id, vault_role) VALUES (?, ?, ?)`,
+			inviteID, v.VaultID, v.VaultRole,
+		)
+		if err != nil {
+			return fmt.Errorf("inserting user invite vault: %w", err)
+		}
+	}
+
+	return tx.Commit()
 }
 
-func (s *SQLiteStore) CountPendingVaultInvites(ctx context.Context, vaultID string) (int, error) {
+func (s *SQLiteStore) CountPendingUserInvites(ctx context.Context) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM vault_invites WHERE vault_id = ? AND status = 'pending'",
-		vaultID,
+		"SELECT COUNT(*) FROM user_invites WHERE status = 'pending'",
 	).Scan(&count)
 	return count, err
 }
 
-func scanVaultInvite(row *sql.Row) (*VaultInvite, error) {
-	var inv VaultInvite
+// loadUserInviteVaults fetches the vault pre-assignments for a user invite.
+func (s *SQLiteStore) loadUserInviteVaults(ctx context.Context, inviteID int) ([]UserInviteVault, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT uiv.vault_id, v.name, uiv.vault_role
+		 FROM user_invite_vaults uiv
+		 JOIN vaults v ON v.id = uiv.vault_id
+		 WHERE uiv.user_invite_id = ?`, inviteID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("loading user invite vaults: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var vaults []UserInviteVault
+	for rows.Next() {
+		var v UserInviteVault
+		if err := rows.Scan(&v.VaultID, &v.VaultName, &v.VaultRole); err != nil {
+			return nil, err
+		}
+		vaults = append(vaults, v)
+	}
+	return vaults, rows.Err()
+}
+
+func (s *SQLiteStore) loadUserInviteVaultsBatch(ctx context.Context, invites []UserInvite) error {
+	if len(invites) == 0 {
+		return nil
+	}
+
+	ids := make([]any, len(invites))
+	placeholders := make([]byte, 0, len(invites)*2-1)
+	for i, inv := range invites {
+		ids[i] = inv.ID
+		if i > 0 {
+			placeholders = append(placeholders, ',')
+		}
+		placeholders = append(placeholders, '?')
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT uiv.user_invite_id, uiv.vault_id, v.name, uiv.vault_role
+		 FROM user_invite_vaults uiv
+		 JOIN vaults v ON v.id = uiv.vault_id
+		 WHERE uiv.user_invite_id IN (`+string(placeholders)+`)`, ids...,
+	)
+	if err != nil {
+		return fmt.Errorf("loading user invite vaults batch: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	byID := make(map[int][]UserInviteVault, len(invites))
+	for rows.Next() {
+		var inviteID int
+		var v UserInviteVault
+		if err := rows.Scan(&inviteID, &v.VaultID, &v.VaultName, &v.VaultRole); err != nil {
+			return err
+		}
+		byID[inviteID] = append(byID[inviteID], v)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for i := range invites {
+		invites[i].Vaults = byID[invites[i].ID]
+	}
+	return nil
+}
+
+func scanUserInvite(row *sql.Row) (*UserInvite, error) {
+	var inv UserInvite
 	var createdAt, expiresAt string
 	var acceptedAt sql.NullString
 
-	if err := row.Scan(&inv.ID, &inv.Token, &inv.Email, &inv.VaultID, &inv.VaultRole, &inv.Status,
+	if err := row.Scan(&inv.ID, &inv.Email, &inv.Status,
 		&inv.CreatedBy, &createdAt, &expiresAt, &acceptedAt); err != nil {
 		return nil, err
 	}
@@ -1519,12 +1688,12 @@ func scanVaultInvite(row *sql.Row) (*VaultInvite, error) {
 	return &inv, nil
 }
 
-func scanVaultInviteRow(rows *sql.Rows) (*VaultInvite, error) {
-	var inv VaultInvite
+func scanUserInviteRow(rows *sql.Rows) (*UserInvite, error) {
+	var inv UserInvite
 	var createdAt, expiresAt string
 	var acceptedAt sql.NullString
 
-	if err := rows.Scan(&inv.ID, &inv.Token, &inv.Email, &inv.VaultID, &inv.VaultRole, &inv.Status,
+	if err := rows.Scan(&inv.ID, &inv.Email, &inv.Status,
 		&inv.CreatedBy, &createdAt, &expiresAt, &acceptedAt); err != nil {
 		return nil, err
 	}

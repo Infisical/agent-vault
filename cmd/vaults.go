@@ -140,9 +140,9 @@ var vaultUserCmd = &cobra.Command{
 	Short: "Manage vault users",
 }
 
-var vaultUserInviteCmd = &cobra.Command{
-	Use:   "invite <email>",
-	Short: "Invite a user to this vault",
+var vaultUserAddCmd = &cobra.Command{
+	Use:   "add <email>",
+	Short: "Add an existing instance user to this vault",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		email := args[0]
@@ -162,23 +162,12 @@ var vaultUserInviteCmd = &cobra.Command{
 			return err
 		}
 
-		reqURL := fmt.Sprintf("%s/v1/vaults/%s/invites", sess.Address, vaultName)
-		respBody, err := doAdminRequestWithBody("POST", reqURL, sess.Token, body)
-		if err != nil {
+		reqURL := fmt.Sprintf("%s/v1/vaults/%s/users", sess.Address, vaultName)
+		if _, err := doAdminRequestWithBody("POST", reqURL, sess.Token, body); err != nil {
 			return err
 		}
 
-		var result struct {
-			EmailSent  bool   `json:"email_sent"`
-			InviteLink string `json:"invite_link"`
-		}
-		_ = json.Unmarshal(respBody, &result)
-
-		if result.EmailSent {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s Invitation sent to %s (vault: %s, role: %s)\n", successText("✓"), email, vaultName, role)
-		} else {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s Invitation created. Share this link:\n  %s\n", successText("✓"), result.InviteLink)
-		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s Added %s to vault %s (role: %s)\n", successText("✓"), email, vaultName, role)
 		return nil
 	},
 }
@@ -203,8 +192,9 @@ var vaultUserListCmd = &cobra.Command{
 
 		var resp struct {
 			Users []struct {
-				Email string `json:"email"`
-				Role  string `json:"role"`
+				Email  string `json:"email"`
+				Role   string `json:"role"`
+				Status string `json:"status"`
 			} `json:"users"`
 		}
 		if err := json.Unmarshal(respBody, &resp); err != nil {
@@ -217,9 +207,9 @@ var vaultUserListCmd = &cobra.Command{
 		}
 
 		t := newTable(cmd.OutOrStdout())
-		t.AppendHeader(table.Row{"EMAIL", "ROLE"})
+		t.AppendHeader(table.Row{"EMAIL", "STATUS", "ROLE"})
 		for _, m := range resp.Users {
-			t.AppendRow(table.Row{m.Email, m.Role})
+			t.AppendRow(table.Row{m.Email, m.Status, m.Role})
 		}
 		t.Render()
 		return nil
@@ -358,10 +348,10 @@ func init() {
 	vaultCmd.AddCommand(vaultUseCmd)
 	vaultCmd.AddCommand(vaultCurrentCmd)
 
-	vaultUserInviteCmd.Flags().String("role", "member", "role to grant (admin or member)")
+	vaultUserAddCmd.Flags().String("role", "member", "role to grant (admin or member)")
 	vaultUserSetRoleCmd.Flags().String("role", "", "role to set (admin or member)")
 
-	vaultUserCmd.AddCommand(vaultUserInviteCmd, vaultUserListCmd, vaultUserRemoveCmd, vaultUserSetRoleCmd)
+	vaultUserCmd.AddCommand(vaultUserAddCmd, vaultUserListCmd, vaultUserRemoveCmd, vaultUserSetRoleCmd)
 	vaultCmd.AddCommand(vaultUserCmd)
 
 	rootCmd.AddCommand(vaultCmd)
