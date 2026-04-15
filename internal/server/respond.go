@@ -18,11 +18,6 @@ func jsonCreated(w http.ResponseWriter, data any) {
 	_ = json.NewEncoder(w).Encode(data)
 }
 
-// jsonNoContent writes a 204 response with no body.
-func jsonNoContent(w http.ResponseWriter) {
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // jsonStatus writes a JSON response with the given status code.
 func jsonStatus(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
