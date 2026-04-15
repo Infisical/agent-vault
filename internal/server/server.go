@@ -567,8 +567,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/users", s.requireInitialized(s.requireAuth(s.handlePublicUserList)))
 
 	// User management (owner-only, except GET self)
-	mux.HandleFunc("POST /v1/admin/users", s.requireInitialized(s.requireAuth(limitBody(s.handleUserCreate))))
-	mux.HandleFunc("GET /v1/admin/users", s.requireInitialized(s.requireAuth(s.handleUserList)))
 	mux.HandleFunc("GET /v1/admin/users/{email}", s.requireInitialized(s.requireAuth(s.handleUserGet)))
 	mux.HandleFunc("DELETE /v1/admin/users/{email}", s.requireInitialized(s.requireAuth(s.handleUserDelete)))
 	mux.HandleFunc("POST /v1/admin/users/{email}/role", s.requireInitialized(s.requireAuth(limitBody(s.handleUserSetRole))))

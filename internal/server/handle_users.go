@@ -64,78 +64,6 @@ func (s *Server) handleUserInviteDetails(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-type userCreateRequest struct {
-	Email    string   `json:"email"`
-	Password string   `json:"password"`
-	Vaults   []string `json:"vaults"`
-}
-
-func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.requireOwnerActor(w, r); err != nil {
-		return
-	}
-
-	var req userCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-	if err := auth.ValidateEmail(req.Email); err != nil {
-		jsonError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if len(req.Password) < 8 {
-		jsonError(w, http.StatusBadRequest, "Password must be at least 8 characters")
-		return
-	}
-
-	ctx := r.Context()
-
-	// Check email uniqueness.
-	if existing, _ := s.store.GetUserByEmail(ctx, req.Email); existing != nil {
-		jsonError(w, http.StatusConflict, fmt.Sprintf("User %q already exists", req.Email))
-		return
-	}
-
-	hash, salt, kdfP, err := auth.HashUserPassword([]byte(req.Password))
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to hash password")
-		return
-	}
-
-	user, err := s.store.CreateUser(ctx, req.Email, hash, salt, "member", kdfP.Time, kdfP.Memory, kdfP.Threads)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to create user")
-		return
-	}
-
-	// Admin-created users are active immediately (no email verification needed).
-	if err := s.store.ActivateUser(ctx, user.ID); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to activate user")
-		return
-	}
-	user.IsActive = true
-
-	// Grant vault access.
-	for _, nsName := range req.Vaults {
-		ns, err := s.store.GetVault(ctx, nsName)
-		if err != nil || ns == nil {
-			jsonError(w, http.StatusBadRequest, fmt.Sprintf("Vault %q not found", nsName))
-			return
-		}
-		if err := s.store.GrantVaultRole(ctx, user.ID, "user", ns.ID, "member"); err != nil {
-			jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to grant vault %q", nsName))
-			return
-		}
-	}
-
-	jsonCreated(w, map[string]interface{}{
-		"email":  user.Email,
-		"role":   user.Role,
-		"vaults": req.Vaults,
-	})
-}
-
 // buildOwnerUserList returns enriched user data with vault memberships.
 // Pre-fetches all vaults to avoid N*M queries.
 func (s *Server) buildOwnerUserList(ctx context.Context, users []store.User) []map[string]interface{} {
@@ -167,21 +95,6 @@ func (s *Server) buildOwnerUserList(ctx context.Context, users []store.User) []m
 		}
 	}
 	return items
-}
-
-func (s *Server) handleUserList(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.requireOwnerActor(w, r); err != nil {
-		return
-	}
-
-	ctx := r.Context()
-	users, err := s.store.ListUsers(ctx)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to list users")
-		return
-	}
-
-	jsonOK(w, map[string]interface{}{"users": s.buildOwnerUserList(ctx, users)})
 }
 
 // handlePublicUserList returns all users to any authenticated user.

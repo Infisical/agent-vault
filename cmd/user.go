@@ -6,68 +6,12 @@ import (
 	neturl "net/url"
 	"strings"
 
-	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/spf13/cobra"
 )
 
 var userCmd = &cobra.Command{
 	Use:   "user",
 	Short: "Manage users (owner only)",
-}
-
-var userListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List all users (owner only)",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := ensureSession()
-		if err != nil {
-			return err
-		}
-
-		url := sess.Address + "/v1/admin/users"
-		respBody, err := doAdminRequestWithBody("GET", url, sess.Token, nil)
-		if err != nil {
-			return err
-		}
-
-		type vaultGrant struct {
-			VaultName string `json:"vault_name"`
-			VaultRole string `json:"vault_role"`
-		}
-		var result struct {
-			Users []struct {
-				Email     string       `json:"email"`
-				Role      string       `json:"role"`
-				Vaults    []vaultGrant `json:"vaults"`
-				CreatedAt string       `json:"created_at"`
-			} `json:"users"`
-		}
-		if err := json.Unmarshal(respBody, &result); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
-		}
-
-		if len(result.Users) == 0 {
-			fmt.Fprintln(cmd.OutOrStdout(), "No users found.")
-			return nil
-		}
-
-		t := newTable(cmd.OutOrStdout())
-		t.AppendHeader(table.Row{"EMAIL", "ROLE", "VAULTS", "CREATED"})
-		for _, u := range result.Users {
-			var parts []string
-			for _, v := range u.Vaults {
-				parts = append(parts, v.VaultName+"("+v.VaultRole+")")
-			}
-			ns := strings.Join(parts, ", ")
-			if ns == "" {
-				ns = "-"
-			}
-			t.AppendRow(table.Row{u.Email, u.Role, ns, u.CreatedAt})
-		}
-		t.Render()
-		return nil
-	},
 }
 
 var userInfoCmd = &cobra.Command{
@@ -169,6 +113,6 @@ var userSetRoleCmd = &cobra.Command{
 func init() {
 	userSetRoleCmd.Flags().String("role", "", "role to set (owner or member)")
 
-	userCmd.AddCommand(userListCmd, userInfoCmd, userRemoveCmd, userSetRoleCmd)
+	userCmd.AddCommand(userInfoCmd, userRemoveCmd, userSetRoleCmd)
 	ownerCmd.AddCommand(userCmd)
 }

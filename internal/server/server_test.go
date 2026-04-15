@@ -3114,49 +3114,6 @@ func TestMemberCanApproveProposalInAnyMemberVault(t *testing.T) {
 	}
 }
 
-func TestUserCreateRequiresOwner(t *testing.T) {
-	ms := newMockStore()
-	memberToken := setupMemberSession(t, ms, "root-ns-id")
-	srv := newTestServer(withStore(ms))
-
-	body := `{"email":"new@test.com","password":"password12345","vaults":[]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/admin/users", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+memberToken)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestUserCreateSuccess(t *testing.T) {
-	ms, ownerToken := setupMockStoreWithSession(t)
-	srv := newTestServer(withStore(ms))
-
-	body := `{"email":"new@test.com","password":"password12345","vaults":["default"]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/admin/users", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+ownerToken)
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var resp map[string]interface{}
-	json.NewDecoder(rec.Body).Decode(&resp)
-	if resp["email"] != "new@test.com" {
-		t.Fatalf("expected email new@test.com, got %v", resp["email"])
-	}
-	if resp["role"] != "member" {
-		t.Fatalf("expected role member, got %v", resp["role"])
-	}
-}
-
 func TestLastOwnerCannotBeDemoted(t *testing.T) {
 	ms, ownerToken := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))

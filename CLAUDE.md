@@ -73,8 +73,7 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault user invite <email> [--vault <name>:<role> ...]` -- invite a user to the Agent Vault instance with optional vault pre-assignments (repeatable --vault flag, format: `name:role`, role defaults to `member`)
   - `agent-vault user invite list [--status pending]` -- list user invites
   - `agent-vault user invite revoke <token_suffix>` -- revoke a pending invite
-- `agent-vault owner user [list|info|remove|set-role]` -- manage users (owner only, except `info` for self)
-  - `agent-vault owner user list` -- list all users
+- `agent-vault owner user [info|remove|set-role]` -- manage users (owner only, except `info` for self)
   - `agent-vault owner user info [email]` -- view user info (own info if no email given)
   - `agent-vault owner user remove <email>` -- remove a user
   - `agent-vault owner user set-role <email> --role owner|member` -- change instance-level role (last owner cannot be demoted)
@@ -336,8 +335,6 @@ Invite states: `pending`, `accepted`, `expired`, or `revoked`. Token format: `av
 
 All owner-only except `GET /v1/admin/users/{email}` (owner or self):
 
-- `POST /v1/admin/users` -- create a user (email, password)
-- `GET /v1/admin/users` -- list all users (owner-only, includes vault memberships)
 - `GET /v1/admin/users/{email}` -- get user info + vault memberships
 - `DELETE /v1/admin/users/{email}` -- remove user
 - `POST /v1/admin/users/{email}/role` -- set instance-level role (blocks demoting last owner)
