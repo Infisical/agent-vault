@@ -150,6 +150,7 @@ type Store interface {
 	ListInvites(ctx context.Context, status string) ([]store.Invite, error)
 	ListInvitesByVault(ctx context.Context, vaultID, status string) ([]store.Invite, error)
 	RedeemInvite(ctx context.Context, token, sessionID string) error
+	UpdateInviteSessionID(ctx context.Context, inviteID int, sessionID string) error
 	RevokeInvite(ctx context.Context, token string) error
 	GetInviteByID(ctx context.Context, id int) (*store.Invite, error)
 	RevokeInviteByID(ctx context.Context, id int) error
@@ -4486,6 +4487,10 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 	// Create instance-level agent.
 	agent, err := s.store.CreateAgent(ctx, agentName, inv.CreatedBy)
 	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			proxyError(w, http.StatusConflict, "name_taken", fmt.Sprintf("An agent named %q already exists", agentName))
+			return
+		}
 		fmt.Fprintf(os.Stderr, "[agent-vault] ERROR: CreateAgent(%q): %v\n", agentName, err)
 		jsonError(w, http.StatusInternalServerError, "Failed to create agent")
 		return
@@ -4511,6 +4516,9 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
 	}
+
+	// Link session back to invite so invite list can show session expiry.
+	_ = s.store.UpdateInviteSessionID(ctx, inv.ID, sess.ID)
 
 	baseURL := s.baseURL
 
@@ -4553,6 +4561,9 @@ func (s *Server) handleRotationRedeem(w http.ResponseWriter, r *http.Request, in
 		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
 	}
+
+	// Link session back to invite so invite list can show session expiry.
+	_ = s.store.UpdateInviteSessionID(ctx, inv.ID, sess.ID)
 
 	var vaultInfos []agentVaultJSON
 	for _, v := range agent.Vaults {

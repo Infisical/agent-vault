@@ -80,8 +80,8 @@ export default function AllAgentsTab() {
   const fetchData = useCallback(async () => {
     try {
       const [agentsResp, invResp] = await Promise.all([
-        fetch("/v1/agents"),
-        fetch("/v1/agents/invites?status=pending"),
+        apiFetch("/v1/agents"),
+        apiFetch("/v1/agents/invites?status=pending"),
       ]);
 
       if (!agentsResp.ok) {
@@ -261,7 +261,7 @@ function InviteAgentButton({
 
   useEffect(() => {
     if (!open) return;
-    fetch("/v1/vaults")
+    apiFetch("/v1/vaults")
       .then((r) => r.json())
       .then((data) => {
         const vaults = (data.vaults ?? []).filter(

@@ -348,6 +348,16 @@ func (m *mockStore) RedeemInvite(_ context.Context, token, sessionID string) err
 	return nil
 }
 
+func (m *mockStore) UpdateInviteSessionID(_ context.Context, inviteID int, sessionID string) error {
+	for _, inv := range m.invites {
+		if inv.ID == inviteID {
+			inv.SessionID = sessionID
+			return nil
+		}
+	}
+	return fmt.Errorf("not found")
+}
+
 func (m *mockStore) RevokeInvite(_ context.Context, token string) error {
 	inv, ok := m.invites[token]
 	if !ok {
