@@ -338,9 +338,9 @@ description: "Complete reference for all Agent Vault CLI commands."
 ## Services
 
 <AccordionGroup>
-  <Accordion title="agent-vault service list">
+  <Accordion title="agent-vault vault service list">
     ```bash
-    agent-vault service list [flags]
+    agent-vault vault service list [flags]
     ```
 
     Print the current vault services as YAML.
@@ -350,9 +350,9 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--vault` | `default` | Target vault |
   </Accordion>
 
-  <Accordion title="agent-vault service set">
+  <Accordion title="agent-vault vault service set">
     ```bash
-    agent-vault service set [flags]
+    agent-vault vault service set [flags]
     ```
 
     Set the vault services. Without `-f`, launches an interactive builder that prompts for services, auth configs, and credentials (requires TTY). With `-f`, replaces the services from a YAML file.
@@ -363,9 +363,9 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `-f` | | Path to a YAML services file |
   </Accordion>
 
-  <Accordion title="agent-vault service clear">
+  <Accordion title="agent-vault vault service clear">
     ```bash
-    agent-vault service clear [flags]
+    agent-vault vault service clear [flags]
     ```
 
     Remove all vault services. Prompts for confirmation unless `--yes` is passed.
@@ -550,6 +550,9 @@ description: "Complete reference for all Agent Vault CLI commands."
     |------|---------|-------------|
     | `--role` | `member` | Instance-level role: `owner` or `member` |
     | `--vault` | | Vault pre-assignment in `name:role` format (repeatable). Role defaults to `proxy`. |
+    | `--invite-ttl` | `15m` | Invite link expiration time (Go duration format) |
+    | `--address` | | Agent Vault server address (default: from session) |
+    | `--token-only` | `false` | Output only the raw invite token (for programmatic use) |
 
     ```bash
     # Invite with vault pre-assignments

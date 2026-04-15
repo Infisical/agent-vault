@@ -36,7 +36,7 @@ agent-vault vault init
 
 This file is meant to be committed to version control. When present, all team members and agents running in that directory will automatically target the bound vault without needing `--vault` flags or per-user context.
 
-Vault resolution priority: `--vault` flag > `agent-vault.json` > user context > `"default"`.
+Vault resolution priority: `--vault` flag > `AGENT_VAULT_VAULT` env var > `agent-vault.json` > user context > `"default"`.
 
 ## Invite agents to a vault
 
@@ -65,7 +65,7 @@ Vault resolution priority: `--vault` flag > `agent-vault.json` > user context > 
 <Steps>
   <Step title="Send the invite">
     ```bash
-    agent-vault vault user invite alice@example.com --vault my-vault --role admin
+    agent-vault user invite alice@example.com --vault my-vault:admin
     ```
 
     If SMTP is configured, the invitee receives an HTML email with a browser
@@ -102,16 +102,16 @@ agent-vault vault user set-role alice@example.com --role member --vault my-vault
 # List agents in a vault
 agent-vault vault agent list --vault my-vault
 
-# View agent details
-agent-vault vault agent info my-agent
+# View agent details (instance-level)
+agent-vault agent info my-agent
 
-# Rotate an agent's session
-agent-vault vault agent rotate my-agent
+# Rotate an agent's session (instance-level)
+agent-vault agent rotate my-agent
 
-# Rename an agent
-agent-vault vault agent rename my-agent new-name
+# Rename an agent (instance-level)
+agent-vault agent rename my-agent new-name
 
-# Delete an agent from this vault
+# Remove an agent from this vault
 agent-vault vault agent remove my-agent
 ```
 

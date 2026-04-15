@@ -2,11 +2,11 @@
   <img src="assets/banner.png" alt="Agent Vault" />
 </p>
 
-<p align="center"><strong>Secure Credential Access for AI Agents</strong></p>
+<p align="center"><strong>Authenticated HTTP Proxy and Vault for AI Agents</strong></p>
 
 <p align="center">
-An open-source credential broker project by <a href="https://infisical.com">Infisical</a> that sits between your agents and the APIs they call.<br>
-Agent Vault eliminates credential exfiltration risk - just brokered access out of the box.
+An open-source credential broker by <a href="https://infisical.com">Infisical</a> that sits between your agents and the APIs they call.<br>
+Agents should not possess credentials. Agent Vault eliminates credential exfiltration risk with brokered access.
 </p>
 
 <p align="center">
@@ -15,13 +15,15 @@ Agent Vault eliminates credential exfiltration risk - just brokered access out o
 
 ## Why Agent Vault
 
-Traditional secret managers return credentials directly to the caller. This breaks down with AI agents, which are non-deterministic and vulnerable to prompt injection. An attacker can craft a malicious prompt and exfiltrate credentials from the agent.
+Secret managers return credentials directly to the caller. This breaks down with AI agents, which are non-deterministic systems vulnerable to prompt injection that can be tricked into exfiltrating secrets.
 
-- **Brokered access, not retrieval** - Agents route requests through a proxy. There is nothing to leak because agents never have credentials. [Learn more](https://docs.agent-vault.dev/learn/security)
-- **Self-onboarding** - Paste an invite prompt into any agent's chat and it connects itself. No env setup, no config files. Works with [Claude Code](https://docs.agent-vault.dev/quickstart/claude-code), [Cursor](https://docs.agent-vault.dev/quickstart/cursor), and any HTTP-capable agent.
-- **Agent-led access** - The agent discovers what it needs at runtime and raises a [proposal](https://docs.agent-vault.dev/learn/proposals). You review and approve in your browser with one click.
+Agent Vault takes a different approach: **agents never see credentials at all**. Instead, they route HTTP requests through a local proxy that injects the right credentials at the network layer.
+
+- **Brokered access, not retrieval** - Your agent gets a session token and a proxy URL. It sends requests to `proxy/{host}/{path}` and Agent Vault authenticates them. There is nothing to leak. [Learn more](https://docs.agent-vault.dev/learn/security)
+- **Works with any agent** - Custom Python/TypeScript agents, sandboxed processes, coding agents (Claude Code, Cursor, Codex), anything that can make HTTP requests. [Learn more](https://docs.agent-vault.dev/quickstart)
+- **Self-service access** - Agents discover available services at runtime and [propose access](https://docs.agent-vault.dev/learn/proposals) for anything missing. You review and approve in your browser with one click.
 - **Encrypted at rest** - Credentials are encrypted with AES-256-GCM using an Argon2id-derived key. The master password never touches disk. [Learn more](https://docs.agent-vault.dev/learn/credentials)
-- **Multi-user, multi-vault** - Role-based access control with instance-level and vault-level [permissions](https://docs.agent-vault.dev/learn/permissions). Invite teammates, scope agents to specific [vaults](https://docs.agent-vault.dev/learn/vaults), and audit everything.
+- **Multi-user, multi-vault** - Role-based access control with instance and vault-level [permissions](https://docs.agent-vault.dev/learn/permissions). Invite teammates, scope agents to specific [vaults](https://docs.agent-vault.dev/learn/vaults), and audit everything.
 
 <p align="center">
   <img src="docs/images/architecture.png" alt="Agent Vault architecture diagram" />
@@ -61,21 +63,64 @@ sudo mv agent-vault /usr/local/bin/
 ## Quickstart
 
 ```bash
-# Start the server (runs on localhost:14321 by default; use --host and --port to change)
+# Start the server (runs on localhost:14321 by default)
 agent-vault server -d
 
-# Run with your agent
+# Add a credential
+agent-vault vault credential set GITHUB_TOKEN=ghp_xxx
+
+# Configure a service proxy rule
+agent-vault vault service set -f - <<EOF
+services:
+  - host: api.github.com
+    auth:
+      type: bearer
+      token: GITHUB_TOKEN
+EOF
+```
+
+Any command that needs authentication will walk you through setup automatically. Just run it and follow the prompts. You can also run `agent-vault vault service set` interactively or browse templates with `agent-vault catalog`.
+
+The server includes a web UI at `http://localhost:14321` for managing services, credentials, approving proposals, and inviting users and agents.
+
+### Building custom agents
+
+Mint a session token and pass it to your agent process. The agent authenticates every request through the proxy. No credentials in its environment.
+
+```bash
+# Mint a scoped session token
+export AGENT_VAULT_SESSION_TOKEN=$(agent-vault vault token)
+export AGENT_VAULT_ADDR=http://localhost:14321
+```
+
+From your agent code, proxy requests through Agent Vault:
+
+```typescript
+const vault = process.env.AGENT_VAULT_ADDR;
+const token = process.env.AGENT_VAULT_SESSION_TOKEN;
+
+// Proxy an authenticated request (Agent Vault injects the credentials)
+const resp = await fetch(`${vault}/proxy/api.github.com/user/repos`, {
+  headers: { Authorization: `Bearer ${token}` },
+});
+```
+
+If a service isn't configured yet, the agent can [propose access](https://docs.agent-vault.dev/learn/proposals) via `POST /v1/proposals`. You approve in your browser and the agent retries.
+
+### Using with coding agents
+
+Wrap your coding agent with `vault run` for automatic session management:
+
+```bash
 agent-vault vault run -- claude    # Claude Code
-agent-vault vault run -- agent     # Cursor
+agent-vault vault run -- cursor    # Cursor
 agent-vault vault run -- codex     # Codex
 
 # Or create an invite for any agent
 agent-vault agent invite my-agent
 ```
 
-Any command that needs authentication will walk you through setup automatically — just run it and follow the prompts. `agent-vault vault run` wraps your agent process with a scoped session — no tokens to manage. Alternatively, `agent-vault agent invite` prints an invite prompt you can paste into any agent's chat to connect it.
-
-Once connected, ask the agent to call any external API. It will discover available services, [propose access](https://docs.agent-vault.dev/first-proposal) for anything missing, and give you a browser link to approve.
+`vault run` injects `AGENT_VAULT_SESSION_TOKEN`, `AGENT_VAULT_ADDR`, and `AGENT_VAULT_VAULT` into the child process. The agent discovers services, proxies requests, and proposes access for anything missing.
 
 ## Development
 
@@ -89,4 +134,4 @@ make docker     # Build Docker image
 
 ---
 
-> **Beta software.** Agent Vault is under active development and may have breaking changes. Use at your own risk. Please review the [security documentation](https://docs.agent-vault.dev/learn/security) before deploying.
+> **Preview.** Agent Vault is in active development and the API is subject to change. Please review the [security documentation](https://docs.agent-vault.dev/learn/security) before deploying.

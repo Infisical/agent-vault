@@ -36,7 +36,7 @@ services:
 ```
 
 ```bash
-agent-vault service set -f stripe-services.yaml --vault my-vault
+agent-vault vault service set -f stripe-services.yaml --vault my-vault
 ```
 
 The `host` tells Agent Vault which requests this service applies to. The `auth` block tells Agent Vault how to authenticate, referencing [credential](/learn/credentials) keys by name (not the actual credential values). The following section covers all four auth types.
@@ -174,7 +174,7 @@ services:
 ```
 
 ```bash
-agent-vault service set -f services.yaml --vault my-vault
+agent-vault vault service set -f services.yaml --vault my-vault
 ```
 
 Any [agent](/agents/overview) scoped to the [vault](/learn/vaults) named `my-vault` can now proxy requests to these hosts, and Agent Vault attaches the real [credentials](/learn/credentials) at request time.
@@ -184,7 +184,7 @@ Any [agent](/agents/overview) scoped to the [vault](/learn/vaults) named `my-vau
 ### Set from a file
 
 ```bash
-agent-vault service set -f services.yaml --vault my-vault
+agent-vault vault service set -f services.yaml --vault my-vault
 ```
 
 Replaces the entire service configuration with the contents of the file. This is idempotent, running it twice with the same file produces the same result.
@@ -192,7 +192,7 @@ Replaces the entire service configuration with the contents of the file. This is
 ### Set interactively
 
 ```bash
-agent-vault service set --vault my-vault
+agent-vault vault service set --vault my-vault
 ```
 
 Walks you through adding services, auth configs, and credential references one at a time. Requires a TTY (won't work in scripts).
@@ -200,7 +200,7 @@ Walks you through adding services, auth configs, and credential references one a
 ### View current services
 
 ```bash
-agent-vault service list --vault my-vault
+agent-vault vault service list --vault my-vault
 ```
 
 Prints the active services as YAML. If no services are configured, the output is empty.
@@ -208,7 +208,7 @@ Prints the active services as YAML. If no services are configured, the output is
 ### Clear all services
 
 ```bash
-agent-vault service clear --vault my-vault
+agent-vault vault service clear --vault my-vault
 ```
 
 Removes all services. Agents scoped to this [vault](/learn/vaults) will get `403` on every proxy request until new services are configured. Prompts for confirmation unless you pass `--yes`.

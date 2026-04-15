@@ -48,16 +48,16 @@ Approval atomically merges services into the [vault's](/learn/vaults) [service c
   <Tab title="CLI">
     ```bash
     # List pending proposals
-    agent-vault proposal list --vault my-vault --status pending
+    agent-vault vault proposal list --vault my-vault --status pending
 
     # Approve with interactive credential prompts
-    agent-vault proposal approve 3
+    agent-vault vault proposal approve 3
 
     # Approve with credentials inline
-    agent-vault proposal approve 3 STRIPE_KEY=sk_test_abc123
+    agent-vault vault proposal approve 3 STRIPE_KEY=sk_test_abc123
 
     # Skip confirmation prompt
-    agent-vault proposal approve 3 --yes
+    agent-vault vault proposal approve 3 --yes
     ```
 
     The CLI fetches the proposal, displays a summary, prompts for any missing [credential](/learn/credentials) values, and sends the approval to the running server.
@@ -83,7 +83,7 @@ Approval atomically merges services into the [vault's](/learn/vaults) [service c
   <Tab title="CLI">
     ```bash
     # Reject with a reason
-    agent-vault proposal reject 3 --reason "not needed"
+    agent-vault vault proposal reject 3 --reason "not needed"
     ```
 
     The `--reason` flag is optional but recommended so the agent understands why the request was denied.
@@ -95,16 +95,16 @@ Approval atomically merges services into the [vault's](/learn/vaults) [service c
 
 ```bash
 # List all proposals
-agent-vault proposal list --vault my-vault
+agent-vault vault proposal list --vault my-vault
 
 # Filter by status
-agent-vault proposal list --vault my-vault --status pending
+agent-vault vault proposal list --vault my-vault --status pending
 
 # View full details
-agent-vault proposal show 3 --vault my-vault
+agent-vault vault proposal show 3 --vault my-vault
 
 # Walk through all pending proposals interactively
-agent-vault proposal review --vault my-vault
+agent-vault vault proposal review --vault my-vault
 ```
 
 The `review` command presents each pending proposal one by one. For each, choose **Approve**, **Reject**, **Skip**, or **Quit**. At the end, a summary shows the count and IDs of approved, rejected, and skipped proposals.

@@ -149,7 +149,7 @@ A summary of how each category of sensitive data is stored:
 
 | Data | Storage format | Readable after storage? |
 | ---- | -------------- | ----------------------- |
-| Credentials | AES-256-GCM ciphertext + nonce | No (write-only, decrypted only at proxy time) |
+| Credentials | AES-256-GCM ciphertext + nonce | Yes, by vault members and admins via CLI (`credential get`, `credential list --reveal`). Proxy-role agents cannot read values. |
 | User passwords | Argon2id hash + salt + params | No |
 | Session tokens | SHA-256 hash | No (raw returned once at creation) |
 | Master password | Not stored | N/A (derived key held in memory only) |

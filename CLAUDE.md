@@ -55,12 +55,14 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault account whoami` -- show current user and session info
   - `agent-vault account change-password` -- change your own password (prompts interactively for current + new + confirm; use `--password-stdin` to read current and new passwords as two lines from stdin). Invalidates all existing sessions and issues a new one.
   - `agent-vault account delete` -- permanently delete your own account (owners cannot delete themselves; transfer ownership first)
-- `agent-vault vault [create|list|delete|rename|init]` -- manage vaults (default vault is seeded automatically)
+- `agent-vault vault [create|list|delete|rename|init|use|current]` -- manage vaults (default vault is seeded automatically)
   - `agent-vault vault create <name>` -- create a new vault
   - `agent-vault vault list` -- list vaults the current user has access to (owners see all vaults with `membership` field: `explicit` for joined, `implicit` for visible-but-not-joined)
   - `agent-vault vault delete <name>` -- delete a vault (vault admin or instance owner; cannot delete the default vault; use `--yes` to skip confirmation)
   - `agent-vault vault rename <old-name> <new-name>` -- rename a vault (vault admin or instance owner; cannot rename the default vault)
   - `agent-vault vault init` -- bind the current directory to a vault by writing `agent-vault.json` (interactive picker; use `--vault` to skip picker). The file is meant to be committed so the whole team shares the vault binding. Vault resolution priority: `--vault` flag > `AGENT_VAULT_VAULT` env var > `agent-vault.json` > user context > `"default"`.
+  - `agent-vault vault use <name>` -- set the active vault for subsequent commands (persisted in user context)
+  - `agent-vault vault current` -- show the currently active vault
   - `agent-vault vault user [add|list|remove|set-role]` -- manage vault user access
     - `agent-vault vault user add <email> [--vault <name>] [--role admin|member]` -- add an existing instance user to a vault (direct grant, no invite needed)
     - `agent-vault vault user list [--vault <name>]` -- list vault users (includes pending invite pre-assignments with "pending" status)
@@ -85,29 +87,29 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault owner vault list` -- list all vaults
   - `agent-vault owner vault join <name>` -- join a vault as admin (for recovering orphaned vaults)
   - `agent-vault owner vault delete <name>` -- delete a vault
-- `agent-vault service [--vault] [list|set|clear]` -- manage services per vault
-  - `agent-vault service list` -- list configured services as YAML
-  - `agent-vault service set` -- interactive service builder (prompts for services, auth config, credentials; requires TTY)
-  - `agent-vault service set -f <file>` -- replace services from YAML file
-  - `agent-vault service clear` -- remove all services (prompts for confirmation; use `--yes` to skip)
+- `agent-vault vault service [list|set|clear]` -- manage services per vault
+  - `agent-vault vault service list` -- list configured services as YAML
+  - `agent-vault vault service set` -- interactive service builder (prompts for services, auth config, credentials; requires TTY)
+  - `agent-vault vault service set -f <file>` -- replace services from YAML file
+  - `agent-vault vault service clear` -- remove all services (prompts for confirmation; use `--yes` to skip)
 - `agent-vault vault credential [list|get|set|delete]` -- manage credentials (alias: `creds`)
   - `agent-vault vault credential list [--reveal]` -- list credential keys; with `--reveal`, shows decrypted values in a KEY+VALUE table (requires member+ role)
   - `agent-vault vault credential get <key>` -- print the decrypted value of a single credential to stdout (pipe-friendly, requires member+ role)
   - `agent-vault vault credential set <key=value> [...]` -- set one or more credentials
   - `agent-vault vault credential delete <key> [...]` -- delete one or more credentials
-- `agent-vault proposal [--vault] [list|show|create|approve|reject|review]` -- manage proposals (proposed service/credential changes)
-  - `agent-vault proposal list [--status pending]` -- list proposals for vault
-  - `agent-vault proposal show <number>` -- show proposal details
-  - `agent-vault proposal create` -- create a proposal to request services or credentials. Supports two modes:
-    - Flag-driven: `--host`, `--auth-type`, `--token-key`/`--username-key`/`--password-key`/`--api-key-key`, `--credential KEY[=description]` (repeatable), `-m/--message`, `--user-message`. Credential slots have no value — the human provides it at approval time.
+- `agent-vault vault proposal [list|show|create|approve|reject|review]` -- manage proposals (proposed service/credential changes)
+  - `agent-vault vault proposal list [--status pending]` -- list proposals for vault
+  - `agent-vault vault proposal show <number>` -- show proposal details
+  - `agent-vault vault proposal create` -- create a proposal to request services or credentials. Supports two modes:
+    - Flag-driven: `--host`, `--description`, `--auth-type`, `--token-key`/`--username-key`/`--password-key`/`--api-key-key`/`--api-key-header`/`--api-key-prefix`, `--credential KEY[=description]` (repeatable), `-m/--message`, `--user-message`. Credential slots have no value — the human provides it at approval time.
     - JSON: `-f <file>` or `-f -` (stdin) for complex/multi-service proposals. `-m` and `--user-message` override JSON fields.
     - `--json` flag outputs machine-readable JSON response with `{id, status, vault, approval_url}`.
     - Auth: works with scoped sessions (via `AGENT_VAULT_SESSION_TOKEN` env var or `vault run`).
-  - `agent-vault proposal approve <number> [KEY=VALUE ...]` -- approve and apply (requires active login session; prompts for missing credentials)
-  - `agent-vault proposal reject <number> [--reason "..."]` -- reject a pending proposal (requires active login session)
-  - `agent-vault proposal review` -- interactively walk through all pending proposals (approve, reject, skip, or quit each; requires active login session)
+  - `agent-vault vault proposal approve <number> [KEY=VALUE ...]` -- approve and apply (requires active login session; prompts for missing credentials)
+  - `agent-vault vault proposal reject <number> [--reason "..."]` -- reject a pending proposal (requires active login session)
+  - `agent-vault vault proposal review` -- interactively walk through all pending proposals (approve, reject, skip, or quit each; requires active login session)
 - `agent-vault agent [invite|list|info|revoke|rotate|rename|set-role]` -- instance-level agent management
-  - `agent-vault agent invite <name> [--role owner|member] [--vault name:role ...]` -- invite an agent to the instance with an instance-level role (default `member`) and optional vault pre-assignments (repeatable --vault flag, format: `name:role`, role defaults to `proxy`)
+  - `agent-vault agent invite <name> [--role owner|member] [--vault name:role ...] [--invite-ttl 15m] [--address <url>] [--token-only]` -- invite an agent to the instance with an instance-level role (default `member`) and optional vault pre-assignments (repeatable --vault flag, format: `name:role`, role defaults to `proxy`). `--invite-ttl` sets expiration (default 15m). `--token-only` outputs only the raw invite token.
   - `agent-vault agent invite list [--status pending]` -- list agent invites
   - `agent-vault agent invite revoke <token_suffix>` -- revoke a pending agent invite
   - `agent-vault agent list` -- list all agents
@@ -121,8 +123,8 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault vault agent add <name> [--role proxy|member|admin]` -- add an existing instance agent to the vault
   - `agent-vault vault agent remove <name>` -- remove an agent from the vault
   - `agent-vault vault agent set-role <name> --role proxy|member|admin` -- change an agent's vault role
-- `agent-vault email test [--to <email>]` -- send a test email to verify SMTP configuration (owner-only; defaults to sending to the owner's own email)
-- `agent-vault reset [--yes]` -- permanently delete all data and reset the instance to a fresh state (owner-only; requires running server for role verification; auto-stops server before reset)
+- `agent-vault owner email test [--to <email>]` -- send a test email to verify SMTP configuration (owner-only; defaults to sending to the owner's own email)
+- `agent-vault owner reset [--yes]` -- permanently delete all data and reset the instance to a fresh state (owner-only; requires running server for role verification; auto-stops server before reset)
 - `agent-vault vault discover [--json]` -- show available services and credentials for the current vault. Requires a vault-scoped session (via `agent-vault vault run` or `AGENT_VAULT_SESSION_TOKEN` + `AGENT_VAULT_ADDR` env vars). `--json` for machine-readable output.
 - `agent-vault vault run [--address] [--role] [--ttl] -- <agent>` -- wrap an agent process with Agent Vault access
 - `agent-vault vault token [--address] [--role] [--ttl]` -- mint a vault-scoped session token and print it to stdout (pipe-friendly; use with `AGENT_VAULT_SESSION_TOKEN` env var)
@@ -202,6 +204,9 @@ type Service struct {
 - `GET /v1/proposals?status=pending` -- list proposals (scoped session)
 - `POST /v1/admin/proposals/{id}/approve` -- approve and apply a proposal (requires vault access); accepts `{ "vault": "default", "credentials": {"key": "value"} }` with human-provided credential values
 - `POST /v1/admin/proposals/{id}/reject` -- reject a proposal (requires vault access); accepts `{ "vault": "default", "reason": "..." }`
+- `GET /v1/admin/proposals?vault=...&status=...` -- list proposals (admin view, requires vault access)
+- `GET /v1/admin/proposals/{id}?vault=...` -- get proposal details (admin view, requires vault access)
+- `GET /v1/proposals/approve-details` -- get proposal approval page data (used by browser approval flow)
 - Proxy 403 responses include a `proposal_hint` field with the denied host and endpoint to create a proposal
 
 Proposal states: `pending`, `applied`, `rejected`, or `expired` (7-day TTL). Approval atomically merges services into the broker config, upserts/deletes credentials in one transaction. CLI proposal commands (`approve`, `reject`, `review`) communicate with the running server via these admin endpoints, they require an active login session (`agent-vault auth login`).
@@ -222,7 +227,11 @@ When an agent creates a proposal, the response includes an `approval_url` (e.g. 
 
 - `POST /v1/auth/register` -- self-signup. Accepts `{"email": "...", "password": "..."}` (password >= 8 chars). The first user to register becomes the owner (auto-active, auto-granted admin on default vault). Subsequent users receive a 6-digit email verification code and their account is inactive until verified. Returns 409 if the email is already registered.
 - `POST /v1/auth/verify` -- verify email with 6-digit code. Accepts `{"email": "...", "code": "123456"}`. Activates the account on success. Code TTL: 15 minutes.
+- `POST /v1/auth/resend-verification` -- resend email verification code (requires email in body).
+- `POST /v1/auth/forgot-password` -- initiate password reset flow. Sends a reset link via email.
+- `POST /v1/auth/reset-password` -- complete password reset with token from email.
 - `POST /v1/auth/change-password` -- change own password (requires user session). Accepts `{"current_password": "...", "new_password": "..."}` (new password >= 8 chars). Verifies current password, updates to new password, invalidates all existing sessions, and returns a fresh session token. Rejects agent/scoped sessions.
+- `POST /v1/auth/logout` -- invalidate the current session (requires user session).
 - `DELETE /v1/auth/account` -- delete own account (requires user session). Owners cannot delete themselves (returns 409). Deletes all sessions and the user record; vault grants cascade via FK.
 
 ## Instance Settings API
@@ -253,7 +262,8 @@ Agent invites let a human onboard any agent (including cloud-hosted agents like 
 
 - `POST /v1/agents/invites` -- create an agent invite (any authenticated user). Body: `{"name": "my-agent", "role": "member", "vaults": [{"vault_name": "default", "vault_role": "proxy"}]}`. Name is required. `role` sets instance-level role (default `member`). Vault pre-assignments are optional.
 - `GET /v1/agents/invites[?status=pending]` -- list agent invites
-- `DELETE /v1/agents/invites/{token}` -- revoke a pending agent invite
+- `DELETE /v1/agents/invites/{token}` -- revoke a pending agent invite by token suffix
+- `DELETE /v1/agents/invites/by-id/{id}` -- revoke a pending agent invite by numeric ID
 - `POST /invite/{token}` -- redeem an agent invite. Body: `{}`. Returns `av_session_token`, agent name, vault list, and usage instructions. Creates an instance-level agent session (vault_id = NULL). Also used for rotation invite redemption.
 
 Invite states: `pending`, `redeemed`, `expired`, or `revoked`. Token format: `av_inv_` + 64 hex chars. Default TTL: 15 minutes.
@@ -285,6 +295,11 @@ Agents are instance-level entities (like users) with instance-level roles (`owne
 - `DELETE /v1/vaults/{name}/agents/{agentName}` -- remove agent from vault
 - `POST /v1/vaults/{name}/agents/{agentName}/role` -- change vault role; body: `{"role": "member"}`
 
+### Additional Vault Endpoints
+
+- `GET /v1/vaults/{name}/context` -- get vault context info for the current user/agent
+- `GET /v1/vaults/{name}/services/credential-usage` -- list which credential keys are referenced by the vault's services
+
 ## Multi-User Permission Model
 
 Agent Vault uses two independent permission axes:
@@ -305,6 +320,7 @@ Instance-level invites let any authenticated user invite people to Agent Vault. 
 - `POST /v1/users/invites` -- any authenticated user creates an invite; body: `{"email": "...", "vaults": [{"vault_name": "...", "vault_role": "admin|member"}]}`. Vaults array is optional. Sends HTML email if SMTP configured; always returns `invite_link` in response. 48-hour TTL, max 50 pending.
 - `GET /v1/users/invites?status=pending` -- list invites (owners see all; others see invites they created or with pre-assignments to vaults they admin)
 - `DELETE /v1/users/invites/{token}` -- revoke a pending invite
+- `POST /v1/users/invites/{token}/reinvite` -- resend an existing invite (re-sends email notification)
 - `GET /v1/users/invites/{token}/details` -- public, token-based details for the acceptance page
 - `POST /v1/users/invites/{token}/accept` -- accept invite (no auth); body: `{"password": "..."}` for new users, empty for existing users. Creates account if needed, applies pre-assigned vault grants.
 - `GET /invite/{token}` -- serves the browser acceptance page (no auth, token is credential)

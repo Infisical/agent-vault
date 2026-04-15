@@ -17,6 +17,10 @@ Agent Vault is an HTTP proxy that attaches credentials to your outbound requests
 | `AGENT_VAULT_SESSION_TOKEN` | Bearer token for authenticating with Agent Vault |
 | `AGENT_VAULT_VAULT` | Vault the session is scoped to |
 
+## The X-Vault header
+
+If you received your session via an agent invite (instance-level session), you must include `X-Vault: {vault_name}` on all vault-scoped requests (discover, proxy, proposals). If `AGENT_VAULT_VAULT` is set, use that value. Vault-scoped sessions (from `vault run`) do not need this header.
+
 ## Discover available services
 
 Always call this first to learn which services have credentials configured:
@@ -24,9 +28,10 @@ Always call this first to learn which services have credentials configured:
 ```
 GET {AGENT_VAULT_ADDR}/discover
 Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+X-Vault: {vault_name}
 ```
 
-Response includes `vault`, `proxy_url`, `services` (host + description), and `available_credentials` (key names only — values are never exposed).
+Response includes `vault`, `proxy_url`, `services` (host + description), and `available_credentials` (key names only — values are never exposed). Before creating a proposal, check `available_credentials` to avoid requesting credentials that already exist in the vault.
 
 ## Route requests through the proxy
 

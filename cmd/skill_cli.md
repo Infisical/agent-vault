@@ -113,7 +113,14 @@ agent-vault vault proposal create -f - --json <<'EOF'
 EOF
 ```
 
-Key fields:
+Flag-driven auth flags by type:
+- **bearer**: `--auth-type bearer --token-key CREDENTIAL_KEY`
+- **basic**: `--auth-type basic --username-key USER_KEY [--password-key PASS_KEY]`
+- **api-key**: `--auth-type api-key --api-key-key KEY [--api-key-header x-api-key] [--api-key-prefix "ApiKey "]`
+
+Other flags: `--description` (service description), `--user-message` (shown on browser approval page), `--credential KEY=description` (repeatable).
+
+Key fields (JSON mode):
 - `services[].action` -- `"set"` (upsert, needs `host` + `auth`) or `"delete"` (needs `host` only)
 - `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates)
 - `credentials[].action` -- `"set"` (omit `value` for human to supply; include `value` to store back) or `"delete"`
