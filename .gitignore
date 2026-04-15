@@ -15,6 +15,10 @@ tmp/
 # Node
 web/node_modules/
 
+# TypeScript SDK
+sdks/sdk-typescript/node_modules/
+sdks/sdk-typescript/dist/
+
 # Secrets and credentials
 .env
 .env.*

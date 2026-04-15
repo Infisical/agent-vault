@@ -7,7 +7,7 @@ LDFLAGS := -s -w \
 	-X github.com/Infisical/agent-vault/cmd.commit=$(COMMIT) \
 	-X github.com/Infisical/agent-vault/cmd.date=$(DATE)
 
-.PHONY: build dev test lint coverage test-all clean docker web web-dev
+.PHONY: build dev test lint coverage test-all clean docker web web-dev sdk-ts sdk-ts-test
 
 web:
 	cd web && npm ci && npm run build
@@ -45,6 +45,12 @@ test-all: test lint
 clean:
 	rm -f agent-vault
 	rm -rf internal/server/webdist
+
+sdk-ts:
+	cd sdks/sdk-typescript && npm ci && npm run build
+
+sdk-ts-test:
+	cd sdks/sdk-typescript && npm test
 
 docker:
 	docker build \
