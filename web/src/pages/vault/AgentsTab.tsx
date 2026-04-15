@@ -84,6 +84,11 @@ export default function AgentsTab() {
       ),
     },
     {
+      key: "status",
+      header: "Status",
+      render: (agent) => <StatusBadge status={agent.status} />,
+    },
+    {
       key: "vault_role",
       header: "Role",
       render: (agent) => (
@@ -91,11 +96,6 @@ export default function AgentsTab() {
           {agent.vault_role || "\u2014"}
         </span>
       ),
-    },
-    {
-      key: "status",
-      header: "Status",
-      render: (agent) => <StatusBadge status={agent.status} />,
     },
     ...(vaultRole === "admin"
       ? [

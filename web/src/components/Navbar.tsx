@@ -11,7 +11,7 @@ export default function Navbar({ email, vaultName, isOwner }: NavbarProps) {
   return (
     <nav className="flex items-center justify-between px-6 py-4 bg-surface border-b border-border">
       <div className="flex items-center gap-2">
-        <Link to="/vaults" className="font-sans text-base font-semibold text-text tracking-tight hover:text-text no-underline">
+        <Link to="/" className="font-sans text-base font-semibold text-text tracking-tight hover:text-text no-underline">
           Agent Vault
         </Link>
         {vaultName && (

@@ -148,6 +148,13 @@ export default function AllAgentsTab() {
         render: (agent) => <StatusBadge status={agent.status} />,
       },
       {
+        key: "role",
+        header: "Role",
+        render: () => (
+          <span className="text-sm text-text-muted capitalize">agent</span>
+        ),
+      },
+      {
         key: "vaults",
         header: "Vaults",
         render: (agent) => {
