@@ -9,7 +9,7 @@ import { apiFetch } from "./lib/api";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import ForgotPassword from "./pages/ForgotPassword";
-import VaultsLayout from "./components/VaultsLayout";
+import HomeLayout from "./components/HomeLayout";
 import VaultsListTab from "./pages/home/VaultsListTab";
 import AllUsersTab from "./pages/home/AllUsersTab";
 import AllAgentsTab from "./pages/home/AllAgentsTab";
@@ -70,7 +70,7 @@ const loginRoute = createRoute({
     await requireInitializedOrRedirect();
     const resp = await apiFetch("/v1/auth/me");
     if (resp.ok) {
-      throw redirect({ to: "/vaults" });
+      throw redirect({ to: "/" });
     }
   },
   component: Login,
@@ -96,7 +96,7 @@ const forgotPasswordRoute = createRoute({
     await requireInitializedOrRedirect();
     const resp = await apiFetch("/v1/auth/me");
     if (resp.ok) {
-      throw redirect({ to: "/vaults" });
+      throw redirect({ to: "/" });
     }
   },
   component: ForgotPassword,
@@ -173,39 +173,45 @@ const authLayoutRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: "_auth",
   beforeLoad: async () => {
-    await requireInitializedOrRedirect();
-    const resp = await apiFetch("/v1/auth/me");
-    if (!resp.ok) {
+    const [statusResp, meResp] = await Promise.all([
+      apiFetch("/v1/status"),
+      apiFetch("/v1/auth/me"),
+    ]);
+    if (statusResp.ok) {
+      const status = await statusResp.json();
+      if (!status.initialized) throw redirect({ to: "/register" });
+    }
+    if (!meResp.ok) {
       throw redirect({ to: "/login" });
     }
-    const user: AuthContext = await resp.json();
+    const user: AuthContext = await meResp.json();
     return { auth: user };
   },
   component: Outlet,
 });
 
-// --- Vaults Layout (sidebar with Vaults + Users tabs) ---
+// --- Home Layout (sidebar with Vaults + Users + Agents tabs) ---
 
-const vaultsLayoutRoute = createRoute({
+const homeLayoutRoute = createRoute({
   getParentRoute: () => authLayoutRoute,
-  path: "/vaults",
-  component: VaultsLayout,
+  id: "_home",
+  component: HomeLayout,
 });
 
-const vaultsIndexRoute = createRoute({
-  getParentRoute: () => vaultsLayoutRoute,
+const homeIndexRoute = createRoute({
+  getParentRoute: () => homeLayoutRoute,
   path: "/",
   component: VaultsListTab,
 });
 
-const vaultsUsersRoute = createRoute({
-  getParentRoute: () => vaultsLayoutRoute,
+const homeUsersRoute = createRoute({
+  getParentRoute: () => homeLayoutRoute,
   path: "/users",
   component: AllUsersTab,
 });
 
-const vaultsAgentsRoute = createRoute({
-  getParentRoute: () => vaultsLayoutRoute,
+const homeAgentsRoute = createRoute({
+  getParentRoute: () => homeLayoutRoute,
   path: "/agents",
   component: AllAgentsTab,
 });
@@ -236,7 +242,7 @@ const manageInstanceRoute = createRoute({
   beforeLoad: async ({ context }) => {
     const { auth } = context as { auth: AuthContext };
     if (!auth.is_owner) {
-      throw redirect({ to: "/vaults" });
+      throw redirect({ to: "/" });
     }
   },
   component: InstanceLayout,
@@ -264,7 +270,7 @@ const vaultLayoutRoute = createRoute({
   beforeLoad: async ({ params }) => {
     const resp = await apiFetch(`/v1/vaults/${encodeURIComponent(params.name)}/context`);
     if (!resp.ok) {
-      throw redirect({ to: "/vaults" });
+      throw redirect({ to: "/" });
     }
     const ctx: VaultContext = await resp.json();
     return ctx;
@@ -316,25 +322,9 @@ const settingsTabRoute = createRoute({
   component: SettingsTab,
 });
 
-// --- Index Route (root redirect) ---
-
-const indexRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/",
-  beforeLoad: async () => {
-    await requireInitializedOrRedirect();
-    const meResp = await apiFetch("/v1/auth/me");
-    if (meResp.ok) {
-      throw redirect({ to: "/vaults" });
-    }
-    throw redirect({ to: "/login" });
-  },
-});
-
 // --- Route Tree ---
 
 const routeTree = rootRoute.addChildren([
-  indexRoute,
   loginRoute,
   registerRoute,
   forgotPasswordRoute,
@@ -342,10 +332,10 @@ const routeTree = rootRoute.addChildren([
   proposalApproveRoute,
   oauthCallbackRoute,
   authLayoutRoute.addChildren([
-    vaultsLayoutRoute.addChildren([
-      vaultsIndexRoute,
-      vaultsUsersRoute,
-      vaultsAgentsRoute,
+    homeLayoutRoute.addChildren([
+      homeIndexRoute,
+      homeUsersRoute,
+      homeAgentsRoute,
     ]),
     accountRoute.addChildren([
       accountIndexRoute,

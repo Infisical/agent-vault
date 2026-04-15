@@ -16,7 +16,7 @@ interface PublicUser {
   email: string;
   role: string;
   status: "active" | "pending";
-  vaults?: string[];
+  vaults?: { vault_name: string; vault_role: string }[];
   created_at: string;
   invite_token?: string;
 }
@@ -111,11 +111,11 @@ export default function AllUsersTab() {
       if (invResp.ok) {
         const invData = await invResp.json();
         pendingUsers = (invData.invites ?? []).map(
-          (inv: { email: string; token: string; created_at: string; vaults?: { vault_name: string }[] }) => ({
+          (inv: { email: string; token: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
             email: inv.email,
             role: "member",
             status: "pending" as const,
-            vaults: inv.vaults?.map((v: { vault_name: string }) => v.vault_name) ?? [],
+            vaults: inv.vaults ?? [],
             created_at: inv.created_at,
             invite_token: inv.token,
           })
@@ -195,11 +195,21 @@ export default function AllUsersTab() {
       cols.push({
         key: "vaults",
         header: "Vaults",
-        render: (u) => (
-          <span className="text-sm text-text-muted">
-            {u.vaults && u.vaults.length > 0 ? u.vaults.join(", ") : "\u2014"}
-          </span>
-        ),
+        render: (u) => {
+          if (!u.vaults || u.vaults.length === 0) return <span className="text-sm text-text-dim">{"\u2014"}</span>;
+          return (
+            <div className="flex flex-wrap gap-1">
+              {u.vaults.map((v) => (
+                <span
+                  key={typeof v === "string" ? v : v.vault_name}
+                  className="inline-block px-2 py-0.5 bg-primary/10 text-primary text-xs font-medium rounded-full"
+                >
+                  {typeof v === "string" ? v : `${v.vault_name}:${v.vault_role}`}
+                </span>
+              ))}
+            </div>
+          );
+        },
       });
     }
 

@@ -53,11 +53,11 @@ const navItems: NavItem[] = [
   },
 ];
 
-export default function VaultsLayout() {
+export default function HomeLayout() {
   const { auth } = useRouteContext({ from: "/_auth" }) as { auth: AuthContext };
   const location = useLocation();
 
-  const activeTab: HomeTab = location.pathname === "/vaults/users" ? "users" : location.pathname === "/vaults/agents" ? "agents" : "vaults";
+  const activeTab: HomeTab = location.pathname === "/users" ? "users" : location.pathname === "/agents" ? "agents" : "vaults";
 
   return (
     <div className="min-h-screen w-full flex flex-col bg-bg">
@@ -70,7 +70,7 @@ export default function VaultsLayout() {
               {navItems.map((item) => (
                 <li key={item.id}>
                   <Link
-                    to={item.id === "vaults" ? "/vaults" : item.id === "users" ? "/vaults/users" : "/vaults/agents"}
+                    to={item.id === "vaults" ? "/" : item.id === "users" ? "/users" : "/agents"}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors no-underline ${
                       activeTab === item.id
                         ? "bg-bg/50 text-text font-semibold"

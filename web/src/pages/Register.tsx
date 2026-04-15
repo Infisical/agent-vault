@@ -106,7 +106,7 @@ function CommandBlock({ command }: { command: string }) {
 
 function InstallCLI({ isAuthenticated }: { isAuthenticated: boolean }) {
   const navigate = useNavigate();
-  const destination = isAuthenticated ? "/vaults" : "/login";
+  const destination = isAuthenticated ? "/" : "/login";
 
   function handleContinue() {
     navigate({ to: destination });

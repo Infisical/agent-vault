@@ -357,7 +357,7 @@ func (s *Server) createOAuthSession(w http.ResponseWriter, r *http.Request, user
 
 	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(sessionTTL.Seconds())))
 
-	target := "/vaults"
+	target := "/"
 	if redirectURL != "" && isValidOAuthRedirect(redirectURL) {
 		target = redirectURL
 	}

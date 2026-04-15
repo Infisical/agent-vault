@@ -73,7 +73,7 @@ export default function VaultsListTab() {
   const otherVaults = useMemo(() => filtered.filter((v) => v.membership === "implicit"), [filtered]);
 
   return (
-    <div className="w-full max-w-[960px] px-6 py-10">
+    <div className="p-8 w-full max-w-[960px]">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>

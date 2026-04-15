@@ -220,7 +220,7 @@ function ChangePasswordForm({ hasPassword }: { hasPassword: boolean }) {
 
       if (resp.ok) {
         setSuccess(true);
-        setTimeout(() => navigate({ to: "/vaults" }), 1500);
+        setTimeout(() => navigate({ to: "/" }), 1500);
       } else {
         setFormError(data.error || "Failed to change password.");
         setSubmitting(false);

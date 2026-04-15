@@ -125,7 +125,7 @@ function ForgotPasswordForm() {
       }
 
       if (data.authenticated) {
-        navigate({ to: "/vaults" });
+        navigate({ to: "/" });
       } else {
         setStep("done");
         setSubmitting("");

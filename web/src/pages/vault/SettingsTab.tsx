@@ -67,7 +67,7 @@ export default function SettingsTab() {
       const data = await resp.json().catch(() => ({}));
       throw new Error(data.error || "Failed to delete vault");
     }
-    navigate({ to: "/vaults" });
+    navigate({ to: "/" });
   }
 
   return (

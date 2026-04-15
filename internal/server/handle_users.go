@@ -145,19 +145,23 @@ func (s *Server) buildOwnerUserList(ctx context.Context, users []store.User) []m
 		vaultNameByID[v.ID] = v.Name
 	}
 
+	type vaultEntry struct {
+		VaultName string `json:"vault_name"`
+		VaultRole string `json:"vault_role"`
+	}
 	items := make([]map[string]interface{}, len(users))
 	for i, u := range users {
 		grants, _ := s.store.ListUserGrants(ctx, u.ID)
-		vaultNames := make([]string, 0, len(grants))
+		vaults := make([]vaultEntry, 0, len(grants))
 		for _, g := range grants {
 			if name, ok := vaultNameByID[g.VaultID]; ok {
-				vaultNames = append(vaultNames, name)
+				vaults = append(vaults, vaultEntry{VaultName: name, VaultRole: g.Role})
 			}
 		}
 		items[i] = map[string]interface{}{
 			"email":      u.Email,
 			"role":       u.Role,
-			"vaults":     vaultNames,
+			"vaults":     vaults,
 			"created_at": u.CreatedAt.Format(time.RFC3339),
 		}
 	}

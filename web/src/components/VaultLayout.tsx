@@ -90,26 +90,25 @@ export default function VaultLayout() {
         </svg>
       ),
     },
+    {
+      id: "agents",
+      label: "Agents",
+      icon: (
+        <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="4" y="4" width="16" height="16" rx="2" ry="2" />
+          <rect x="9" y="9" width="6" height="6" />
+          <line x1="9" y1="1" x2="9" y2="4" />
+          <line x1="15" y1="1" x2="15" y2="4" />
+          <line x1="9" y1="20" x2="9" y2="23" />
+          <line x1="15" y1="20" x2="15" y2="23" />
+          <line x1="20" y1="9" x2="23" y2="9" />
+          <line x1="20" y1="14" x2="23" y2="14" />
+          <line x1="1" y1="9" x2="4" y2="9" />
+          <line x1="1" y1="14" x2="4" y2="14" />
+        </svg>
+      ),
+    },
   ];
-
-  memberNav.push({
-    id: "agents",
-    label: "Agents",
-    icon: (
-      <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="4" y="4" width="16" height="16" rx="2" ry="2" />
-        <rect x="9" y="9" width="6" height="6" />
-        <line x1="9" y1="1" x2="9" y2="4" />
-        <line x1="15" y1="1" x2="15" y2="4" />
-        <line x1="9" y1="20" x2="9" y2="23" />
-        <line x1="15" y1="20" x2="15" y2="23" />
-        <line x1="20" y1="9" x2="23" y2="9" />
-        <line x1="20" y1="14" x2="23" y2="14" />
-        <line x1="1" y1="9" x2="4" y2="9" />
-        <line x1="1" y1="14" x2="4" y2="14" />
-      </svg>
-    ),
-  });
 
   return (
     <div className="min-h-screen w-full flex flex-col bg-bg">
@@ -122,16 +121,16 @@ export default function VaultLayout() {
         >
           <div className="px-4 pt-5 pb-3">
             <a
-              href="/vaults"
+              href="/"
               onClick={(e) => {
                 e.preventDefault();
                 if (isExiting) return;
                 setIsExiting(true);
                 const aside = sidebarRef.current;
                 if (aside) {
-                  aside.addEventListener("animationend", () => navigate({ to: "/vaults" }), { once: true });
+                  aside.addEventListener("animationend", (e) => { if (e.target === aside) navigate({ to: "/" }); }, { once: true });
                 } else {
-                  navigate({ to: "/vaults" });
+                  navigate({ to: "/" });
                 }
               }}
               className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text transition-colors"

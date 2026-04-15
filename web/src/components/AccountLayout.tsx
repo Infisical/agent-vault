@@ -1,5 +1,5 @@
 import { type ReactNode, useRef, useState } from "react";
-import { Link, Outlet, useLocation, useNavigate, useRouteContext } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate, useRouteContext } from "@tanstack/react-router";
 import type { AuthContext } from "../router";
 import Navbar from "./Navbar";
 
@@ -13,14 +13,11 @@ interface NavItem {
 
 export default function AccountLayout() {
   const { auth } = useRouteContext({ from: "/_auth" }) as { auth: AuthContext };
-  const location = useLocation();
   const navigate = useNavigate();
   const [isExiting, setIsExiting] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
 
-  const pathSegments = location.pathname.split("/");
-  const lastSegment = pathSegments[pathSegments.length - 1] as AccountTab;
-  const activeTab: AccountTab = lastSegment === "settings" ? "settings" : "settings";
+  const activeTab: AccountTab = "settings";
 
   const navItems: NavItem[] = [
     {
@@ -46,16 +43,16 @@ export default function AccountLayout() {
         >
           <div className="px-4 pt-5 pb-3">
             <a
-              href="/vaults"
+              href="/"
               onClick={(e) => {
                 e.preventDefault();
                 if (isExiting) return;
                 setIsExiting(true);
                 const aside = sidebarRef.current;
                 if (aside) {
-                  aside.addEventListener("animationend", () => navigate({ to: "/vaults" }), { once: true });
+                  aside.addEventListener("animationend", (e) => { if (e.target === aside) navigate({ to: "/" }); }, { once: true });
                 } else {
-                  navigate({ to: "/vaults" });
+                  navigate({ to: "/" });
                 }
               }}
               className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text transition-colors"
@@ -63,7 +60,7 @@ export default function AccountLayout() {
               <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="15 18 9 12 15 6" />
               </svg>
-              All vaults
+              Home
             </a>
           </div>
 

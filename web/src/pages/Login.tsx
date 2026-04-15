@@ -77,7 +77,7 @@ function LoginForm() {
       const data = await resp.json();
 
       if (resp.ok) {
-        navigate({ to: "/vaults" });
+        navigate({ to: "/" });
       } else {
         setFormError(data.error || "Invalid email or password.");
         setSubmitting(false);
