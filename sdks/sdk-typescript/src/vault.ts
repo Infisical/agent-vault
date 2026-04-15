@@ -2,6 +2,15 @@ import { HttpClient } from "./http.js";
 import { SessionsResource } from "./resources/sessions.js";
 import type { VaultClientConfig } from "./types.js";
 
+/** @internal Marker to distinguish the internal construction path. */
+const INTERNAL = Symbol("VaultClient.internal");
+
+interface InternalArgs {
+  marker: typeof INTERNAL;
+  httpClient: HttpClient;
+  vaultName: string;
+}
+
 /**
  * Vault-scoped client for Agent Vault.
  *
@@ -32,19 +41,20 @@ export class VaultClient {
    */
   readonly sessions: SessionsResource | undefined;
 
-  constructor(config?: VaultClientConfig) {
-    this._httpClient = HttpClient.fromConfig(config);
-    this.name = undefined;
-    this.sessions = undefined;
+  constructor(config?: VaultClientConfig | InternalArgs) {
+    if (config && "marker" in config && config.marker === INTERNAL) {
+      this._httpClient = config.httpClient;
+      this.name = config.vaultName;
+      this.sessions = new SessionsResource(config.httpClient, config.vaultName);
+    } else {
+      this._httpClient = HttpClient.fromConfig(config as VaultClientConfig | undefined);
+      this.name = undefined;
+      this.sessions = undefined;
+    }
   }
 
   /** @internal Created by `AgentVault.vault(name)` with a pre-configured HttpClient. */
   static _create(httpClient: HttpClient, vaultName: string): VaultClient {
-    const instance = Object.create(VaultClient.prototype) as VaultClient;
-    (instance as { _httpClient: HttpClient })._httpClient = httpClient;
-    (instance as { name: string | undefined }).name = vaultName;
-    (instance as { sessions: SessionsResource | undefined }).sessions =
-      new SessionsResource(httpClient, vaultName);
-    return instance;
+    return new VaultClient({ marker: INTERNAL, httpClient, vaultName });
   }
 }

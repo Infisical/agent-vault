@@ -18,6 +18,8 @@ export interface HttpClientConfig {
   timeout?: number;
 }
 
+const SDK_VERSION = "0.1.0";
+const USER_AGENT = `agent-vault-sdk-typescript/${SDK_VERSION}`;
 const DEFAULT_TIMEOUT = 30_000;
 const DEFAULT_ADDRESS = "http://localhost:14321";
 const ENV_TOKEN = "AGENT_VAULT_SESSION_TOKEN";
@@ -104,6 +106,7 @@ export class HttpClient {
 
     const hasBody = options?.body !== undefined;
     const headers: Record<string, string> = {
+      "User-Agent": USER_AGENT,
       Authorization: `Bearer ${this.token}`,
       ...(hasBody ? { "Content-Type": "application/json" } : {}),
       ...this.defaultHeaders,
@@ -113,10 +116,17 @@ export class HttpClient {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
-    // Compose caller-provided signal with our timeout signal
-    const signal = options?.signal
-      ? AbortSignal.any([controller.signal, options.signal])
-      : controller.signal;
+    // If the caller provided a signal, forward its abort to our controller
+    // so both timeout and caller cancellation go through one AbortController.
+    const callerSignal = options?.signal;
+    const onCallerAbort = () => controller.abort();
+    if (callerSignal) {
+      if (callerSignal.aborted) {
+        controller.abort();
+      } else {
+        callerSignal.addEventListener("abort", onCallerAbort, { once: true });
+      }
+    }
 
     let response: Response;
     try {
@@ -124,7 +134,7 @@ export class HttpClient {
         method,
         headers,
         body: hasBody ? JSON.stringify(options.body) : undefined,
-        signal,
+        signal: controller.signal,
       });
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -137,6 +147,7 @@ export class HttpClient {
       );
     } finally {
       clearTimeout(timeoutId);
+      callerSignal?.removeEventListener("abort", onCallerAbort);
     }
 
     if (!response.ok) {

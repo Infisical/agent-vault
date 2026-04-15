@@ -37,6 +37,9 @@ jobs:
       - name: Run tests
         run: go test -race -count=1 ./...
 
+      - name: TypeScript SDK — install, typecheck, test, build
+        run: cd sdks/sdk-typescript && npm ci && npm run typecheck && npm test && npm run build
+
   lint:
     runs-on: ubuntu-latest
     steps:
