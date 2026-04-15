@@ -513,15 +513,6 @@ func (m *mockStore) DeleteUser(_ context.Context, userID string) error {
 	return fmt.Errorf("user not found")
 }
 
-func (m *mockStore) CountOwners(_ context.Context) (int, error) {
-	count := 0
-	for _, u := range m.users {
-		if u.Role == "owner" {
-			count++
-		}
-	}
-	return count, nil
-}
 
 func (m *mockStore) DeleteUserSessions(_ context.Context, userID string) error {
 	for id, sess := range m.sessions {

@@ -616,16 +616,8 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Safety: cannot revoke the last owner.
-	if agent.Role == "owner" {
-		count, err := s.store.CountAllOwners(ctx)
-		if err != nil {
-			jsonError(w, http.StatusInternalServerError, "Failed to count owners")
-			return
-		}
-		if count <= 1 {
-			jsonError(w, http.StatusConflict, "Cannot revoke the last owner")
-			return
-		}
+	if agent.Role == "owner" && s.guardLastOwner(ctx, w, "revoke") {
+		return
 	}
 
 	if err := s.store.RevokeAgent(ctx, agent.ID); err != nil {
@@ -1193,16 +1185,8 @@ func (s *Server) handleAgentSetRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Safety: cannot demote the last owner (user or agent).
-	if agent.Role == "owner" && body.Role == "member" {
-		count, err := s.store.CountAllOwners(ctx)
-		if err != nil {
-			jsonError(w, http.StatusInternalServerError, "Failed to count owners")
-			return
-		}
-		if count <= 1 {
-			jsonError(w, http.StatusConflict, "Cannot demote the last owner")
-			return
-		}
+	if agent.Role == "owner" && body.Role == "member" && s.guardLastOwner(ctx, w, "demote") {
+		return
 	}
 
 	if err := s.store.UpdateAgentRole(ctx, agent.ID, body.Role); err != nil {

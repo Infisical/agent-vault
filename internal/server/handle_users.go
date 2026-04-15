@@ -322,16 +322,8 @@ func (s *Server) handleUserSetRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Prevent demoting the last owner.
-	if user.Role == "owner" && req.Role == "member" {
-		count, err := s.store.CountAllOwners(ctx)
-		if err != nil {
-			jsonError(w, http.StatusInternalServerError, "Failed to count owners")
-			return
-		}
-		if count <= 1 {
-			jsonError(w, http.StatusConflict, "Cannot demote the last owner")
-			return
-		}
+	if user.Role == "owner" && req.Role == "member" && s.guardLastOwner(ctx, w, "demote") {
+		return
 	}
 
 	if err := s.store.UpdateUserRole(ctx, user.ID, req.Role); err != nil {

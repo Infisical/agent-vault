@@ -2360,7 +2360,7 @@ func (s *SQLiteStore) GetAgentByID(ctx context.Context, id string) (*Agent, erro
 	if err != nil {
 		return nil, err
 	}
-	ag.Vaults, err = s.loadAgentVaultGrants(ctx, ag.ID)
+	ag.Vaults, err = s.ListActorGrants(ctx, ag.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -2376,7 +2376,7 @@ func (s *SQLiteStore) GetAgentByName(ctx context.Context, name string) (*Agent, 
 	if err != nil {
 		return nil, err
 	}
-	ag.Vaults, err = s.loadAgentVaultGrants(ctx, ag.ID)
+	ag.Vaults, err = s.ListActorGrants(ctx, ag.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -2640,10 +2640,6 @@ func scanAgentRow(rows *sql.Rows) (*Agent, error) {
 	return &ag, nil
 }
 
-// loadAgentVaultGrants loads all vault grants for an agent from the unified vault_grants table.
-func (s *SQLiteStore) loadAgentVaultGrants(ctx context.Context, agentID string) ([]VaultGrant, error) {
-	return s.ListActorGrants(ctx, agentID)
-}
 
 // batchLoadAgentVaultGrants loads vault grants for all agents in a single query.
 func (s *SQLiteStore) batchLoadAgentVaultGrants(ctx context.Context, agents []Agent) error {
