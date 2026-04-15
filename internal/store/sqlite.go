@@ -1319,6 +1319,14 @@ func (s *SQLiteStore) RedeemInvite(ctx context.Context, token, sessionID string)
 	return nil
 }
 
+func (s *SQLiteStore) UpdateInviteSessionID(ctx context.Context, inviteID int, sessionID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE invites SET session_id = ? WHERE id = ?`,
+		sessionID, inviteID,
+	)
+	return err
+}
+
 func (s *SQLiteStore) RevokeInvite(ctx context.Context, token string) error {
 	nowStr := time.Now().UTC().Format(time.DateTime)
 
@@ -1402,11 +1410,11 @@ func (s *SQLiteStore) GetPendingInviteByAgentName(ctx context.Context, name stri
 		return nil, err
 	}
 	if !rows.Next() {
-		rows.Close()
+		_ = rows.Close()
 		return nil, sql.ErrNoRows
 	}
 	inv, err := scanInviteRow(rows)
-	rows.Close()
+	_ = rows.Close()
 	if err != nil {
 		return nil, err
 	}
@@ -2621,7 +2629,7 @@ func (s *SQLiteStore) batchLoadAgentVaultGrants(ctx context.Context, agents []Ag
 	query := `SELECT avg.agent_id, avg.vault_id, v.name, avg.vault_role, avg.created_at
 		 FROM agent_vault_grants avg
 		 JOIN vaults v ON v.id = avg.vault_id
-		 WHERE avg.agent_id IN (` + strings.Join(placeholders, ",") + `)`
+		 WHERE avg.agent_id IN (` + strings.Join(placeholders, ",") + `)` // #nosec G202 -- placeholders are static "?" strings, not user input
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

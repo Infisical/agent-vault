@@ -297,11 +297,21 @@ func (s *Server) requireVaultAccess(w http.ResponseWriter, r *http.Request, vaul
 		return nil, fmt.Errorf("no session")
 	}
 
-	// Agent session: relies on vault_id scoping.
+	// Scoped agent session: vault is baked into the session.
 	if sess.VaultID != "" {
 		if sess.VaultID != vaultID {
 			jsonError(w, http.StatusForbidden, "Session not authorized for this vault")
 			return nil, fmt.Errorf("vault mismatch")
+		}
+		return nil, nil // agent session, no user
+	}
+
+	// Instance-level agent session: check agent vault grants.
+	if sess.AgentID != "" {
+		_, err := s.store.GetAgentVaultRole(r.Context(), sess.AgentID, vaultID)
+		if err != nil {
+			jsonError(w, http.StatusForbidden, "Agent does not have access to this vault")
+			return nil, fmt.Errorf("no agent vault grant")
 		}
 		return nil, nil // agent session, no user
 	}
@@ -3104,16 +3114,6 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 // --- Invites ---
 
-type inviteRedeemResponse struct {
-	AVAddr         string            `json:"av_addr"`
-	AVSessionToken string            `json:"av_session_token"`
-	AVVault        string            `json:"av_vault"`
-	VaultRole      string            `json:"vault_role"`
-	ProxyURL       string            `json:"proxy_url"`
-	Services       []discoverService `json:"services"`
-	Instructions   string            `json:"instructions"`
-}
-
 // handleInviteRedeem serves the SPA for browser-based invite acceptance.
 // All agent invites are now redeemed via POST /invite/{token} (handlePersistentInviteRedeem).
 // GET /invite/{token} serves the browser page OR returns a redirect hint for agents.
@@ -4371,13 +4371,7 @@ func (s *Server) handleVaultUserSetRole(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// --- Persistent Agent Identity ---
-
-//go:embed persistent_instructions_proxy.txt
-var persistentInstructionsProxy string
-
-//go:embed persistent_instructions_member.txt
-var persistentInstructionsMember string
+// --- Instance-Level Agent Identity ---
 
 //go:embed persistent_instructions_admin.txt
 var persistentInstructionsAdmin string
@@ -4391,18 +4385,6 @@ func instructionsForRole(role string) string {
 		return instructionsAdmin
 	default:
 		return instructionsProxy
-	}
-}
-
-// persistentInstructionsForRole returns role-specific instructions for persistent agents.
-func persistentInstructionsForRole(role string) string {
-	switch role {
-	case "member":
-		return persistentInstructionsMember
-	case "admin":
-		return persistentInstructionsAdmin
-	default:
-		return persistentInstructionsProxy
 	}
 }
 
@@ -4609,25 +4591,36 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For non-owner users, filter to agents sharing at least one vault.
+	// For non-owner users/agents, filter to agents sharing at least one vault.
 	user, _ := s.userFromSession(ctx, sess)
 	isOwner := user != nil && user.Role == "owner"
-	if !isOwner && user != nil {
-		userGrants, _ := s.store.ListUserGrants(ctx, user.ID)
-		userVaults := make(map[string]bool)
-		for _, g := range userGrants {
-			userVaults[g.VaultID] = true
-		}
-		var filtered []store.Agent
-		for _, ag := range agents {
-			for _, v := range ag.Vaults {
-				if userVaults[v.VaultID] {
-					filtered = append(filtered, ag)
-					break
-				}
+	var accessibleVaults map[string]bool
+	if !isOwner {
+		if user != nil {
+			userGrants, _ := s.store.ListUserGrants(ctx, user.ID)
+			accessibleVaults = make(map[string]bool, len(userGrants))
+			for _, g := range userGrants {
+				accessibleVaults[g.VaultID] = true
+			}
+		} else if sess.AgentID != "" {
+			agentGrants, _ := s.store.ListAgentGrants(ctx, sess.AgentID)
+			accessibleVaults = make(map[string]bool, len(agentGrants))
+			for _, g := range agentGrants {
+				accessibleVaults[g.VaultID] = true
 			}
 		}
-		agents = filtered
+		if accessibleVaults != nil {
+			var filtered []store.Agent
+			for _, ag := range agents {
+				for _, v := range ag.Vaults {
+					if accessibleVaults[v.VaultID] {
+						filtered = append(filtered, ag)
+						break
+					}
+				}
+			}
+			agents = filtered
+		}
 	}
 
 	type agentItem struct {
@@ -4667,10 +4660,23 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Include agents with pending invites (not yet redeemed).
+	// Non-owners only see invites targeting vaults they can access.
 	pendingInvites, _ := s.store.ListInvites(ctx, "pending")
 	for _, inv := range pendingInvites {
 		if seen[inv.AgentName] {
 			continue
+		}
+		if !isOwner && accessibleVaults != nil {
+			hasOverlap := false
+			for _, v := range inv.Vaults {
+				if accessibleVaults[v.VaultID] {
+					hasOverlap = true
+					break
+				}
+			}
+			if !hasOverlap {
+				continue
+			}
 		}
 		vaults := make([]agentVaultJSON, 0, len(inv.Vaults))
 		for _, v := range inv.Vaults {
@@ -5849,9 +5855,18 @@ func (s *Server) handleAdminProposalList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Proxy-role agents can only view pending proposals (to avoid duplicates).
+	// Proxy-role sessions can only view pending proposals (to avoid duplicates).
 	sess := sessionFromContext(r.Context())
-	isProxy := sess != nil && sess.VaultID != "" && sess.VaultRole == "proxy"
+	isProxy := false
+	if sess != nil {
+		if sess.VaultID != "" {
+			isProxy = sess.VaultRole == "proxy"
+		} else if sess.AgentID != "" {
+			if role, err := s.store.GetAgentVaultRole(ctx, sess.AgentID, ns.ID); err == nil {
+				isProxy = role == "proxy"
+			}
+		}
+	}
 
 	// Lazy expiration.
 	_, _ = s.store.ExpirePendingProposals(ctx, time.Now().Add(-7*24*time.Hour))
