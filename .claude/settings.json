@@ -24,5 +24,9 @@
   "enabledPlugins": {
     "feature-dev@claude-plugins-official": true,
     "mintlify@claude-plugins-official": true
+  },
+  "attributes": {
+    "commit": "",
+    "pr": ""
   }
 }
