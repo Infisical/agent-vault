@@ -9,7 +9,7 @@ import (
 
 var emailCmd = &cobra.Command{
 	Use:   "email",
-	Short: "Email utilities",
+	Short: "Email commands (owner only)",
 }
 
 var emailTestCmd = &cobra.Command{

@@ -13,7 +13,7 @@ import (
 var credentialCmd = &cobra.Command{
 	Use:     "credential",
 	Aliases: []string{"creds"},
-	Short:   "Manage credentials",
+	Short:   "Manage credentials in a vault",
 }
 
 var credentialListCmd = &cobra.Command{

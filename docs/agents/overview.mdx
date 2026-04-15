@@ -80,8 +80,8 @@ agent-vault agent info my-agent
 # Change an agent's instance-level role
 agent-vault agent set-role my-agent --role owner
 
-# Revoke an agent (deletes all sessions)
-agent-vault agent revoke my-agent
+# Delete an agent and all its sessions
+agent-vault agent delete my-agent
 
 # Rename an agent
 agent-vault agent rename my-agent new-name

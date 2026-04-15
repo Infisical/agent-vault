@@ -234,12 +234,12 @@ func parseProposalJSON(data []byte) (*store.Proposal, error) {
 
 var proposalCmd = &cobra.Command{
 	Use:   "proposal",
-	Short: "Manage proposals (proposed service and credential changes)",
+	Short: "Manage proposals in a vault",
 }
 
 var proposalListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List proposals for a vault",
+	Short: "List proposals in a vault",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vault := resolveVault(cmd)
@@ -293,7 +293,7 @@ var proposalListCmd = &cobra.Command{
 
 var proposalShowCmd = &cobra.Command{
 	Use:   "show <number>",
-	Short: "Show details of a proposal",
+	Short: "Show proposal details",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vault := resolveVault(cmd)
@@ -419,7 +419,7 @@ var proposalRejectCmd = &cobra.Command{
 
 var proposalReviewCmd = &cobra.Command{
 	Use:   "review",
-	Short: "Interactively review all pending proposals",
+	Short: "Review all pending proposals interactively",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := requireTTY(); err != nil {

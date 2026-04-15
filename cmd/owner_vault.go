@@ -61,8 +61,8 @@ var ownerVaultListCmd = &cobra.Command{
 }
 
 var ownerVaultRemoveCmd = &cobra.Command{
-	Use:   "remove <name>",
-	Short: "Remove a vault (owner only)",
+	Use:   "delete <name>",
+	Short: "Delete a vault (owner only)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
@@ -77,7 +77,7 @@ var ownerVaultRemoveCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "%s Removed vault %q\n", successText("✓"), name)
+		fmt.Fprintf(cmd.OutOrStdout(), "%s Deleted vault %q\n", successText("✓"), name)
 		return nil
 	},
 }

@@ -20,7 +20,7 @@ and Agent Vault uses the appropriate credentials when performing outbound HTTP c
 
 var ownerCmd = &cobra.Command{
 	Use:   "owner",
-	Short: "Instance owner commands (user management, email, reset)",
+	Short: "Instance owner commands",
 }
 
 func init() {
