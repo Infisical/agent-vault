@@ -501,9 +501,8 @@ function InviteResultView({
     setRedeeming(true);
     setRedeemError("");
     try {
-      const resp = await fetch(`/invite/${token}`, {
+      const resp = await apiFetch(`/invite/${token}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: "{}",
       });
       if (!resp.ok) {

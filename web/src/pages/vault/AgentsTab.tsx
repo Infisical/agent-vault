@@ -124,7 +124,7 @@ export default function AgentsTab() {
 
   async function fetchData() {
     try {
-      const resp = await fetch(
+      const resp = await apiFetch(
         `/v1/vaults/${encodeURIComponent(vaultName)}/agents`
       );
 
@@ -207,7 +207,7 @@ function AddAgentButton({
 
   useEffect(() => {
     if (!open) return;
-    fetch("/v1/agents")
+    apiFetch("/v1/agents")
       .then((r) => r.json())
       .then((data) => setInstanceAgents(data.agents ?? []))
       .catch(() => {});

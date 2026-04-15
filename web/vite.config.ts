@@ -2,6 +2,8 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
+const API_TARGET = process.env.VITE_API_URL ?? "http://localhost:14321";
+
 export default defineConfig({
   plugins: [
     react(),
@@ -14,11 +16,11 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/v1": "http://localhost:14321",
-      "/proxy": "http://localhost:14321",
-      "/discover": "http://localhost:14321",
-      "/health": "http://localhost:14321",
-      "/invite": "http://localhost:14321",
+      "/v1": API_TARGET,
+      "/proxy": API_TARGET,
+      "/discover": API_TARGET,
+      "/health": API_TARGET,
+      "/invite": API_TARGET,
     },
   },
 });

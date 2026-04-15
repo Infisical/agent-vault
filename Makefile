@@ -7,7 +7,7 @@ LDFLAGS := -s -w \
 	-X github.com/Infisical/agent-vault/cmd.commit=$(COMMIT) \
 	-X github.com/Infisical/agent-vault/cmd.date=$(DATE)
 
-.PHONY: build dev test clean docker web web-dev
+.PHONY: build dev test lint coverage test-all clean docker web web-dev
 
 web:
 	cd web && npm ci && npm run build
@@ -31,6 +31,16 @@ dev: web
 
 test:
 	go test ./...
+
+lint:
+	golangci-lint run ./...
+	cd web && npx tsc --noEmit
+
+coverage:
+	go test -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out
+
+test-all: test lint
 
 clean:
 	rm -f agent-vault

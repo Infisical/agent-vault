@@ -21,18 +21,7 @@ var agentListCmd = &cobra.Command{
 	Short: "List all agents",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := ensureSession()
-		if err != nil {
-			return err
-		}
-
-		reqURL := sess.Address + "/v1/agents"
-		respBody, err := doAdminRequestWithBody("GET", reqURL, sess.Token, nil)
-		if err != nil {
-			return err
-		}
-
-		var result struct {
+		type agentListResult struct {
 			Agents []struct {
 				Name      string `json:"name"`
 				Status    string `json:"status"`
@@ -43,8 +32,9 @@ var agentListCmd = &cobra.Command{
 				} `json:"vaults"`
 			} `json:"agents"`
 		}
-		if err := json.Unmarshal(respBody, &result); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
+		result, err := fetchAndDecode[agentListResult]("GET", "/v1/agents")
+		if err != nil {
+			return err
 		}
 
 		if len(result.Agents) == 0 {

@@ -46,7 +46,7 @@ export default function ProposalsTab() {
     setError("");
     try {
       const qs = filter === "pending" ? "&status=pending" : "";
-      const resp = await fetch(
+      const resp = await apiFetch(
         `/v1/admin/proposals?vault=${encodeURIComponent(vaultName)}${qs}`,
         { signal: controller.signal }
       );
@@ -66,7 +66,7 @@ export default function ProposalsTab() {
 
       // Fetch the complementary count in the background.
       const countQs = filter !== "pending" ? "&status=pending" : "";
-      const countResp = await fetch(
+      const countResp = await apiFetch(
         `/v1/admin/proposals?vault=${encodeURIComponent(vaultName)}${countQs}`,
         { signal: controller.signal }
       );

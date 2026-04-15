@@ -30,7 +30,7 @@ export default function CredentialsTab() {
 
   async function fetchKeys() {
     try {
-      const resp = await fetch(
+      const resp = await apiFetch(
         `/v1/credentials?vault=${encodeURIComponent(vaultName)}`
       );
       if (resp.ok) {
@@ -52,7 +52,7 @@ export default function CredentialsTab() {
     setDeleteError("");
     setDeleteReferencing([]);
     try {
-      const resp = await fetch(
+      const resp = await apiFetch(
         `/v1/vaults/${encodeURIComponent(vaultName)}/services/credential-usage?key=${encodeURIComponent(key)}`
       );
       if (resp.ok) {
@@ -106,7 +106,7 @@ export default function CredentialsTab() {
     }
     setRevealing((prev) => ({ ...prev, [key]: true }));
     try {
-      const resp = await fetch(
+      const resp = await apiFetch(
         `/v1/credentials?vault=${encodeURIComponent(vaultName)}&reveal=true&key=${encodeURIComponent(key)}`
       );
       if (resp.ok) {

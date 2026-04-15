@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -14,18 +13,7 @@ var usersCmd = &cobra.Command{
 	Short: "List all users in the instance",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := ensureSession()
-		if err != nil {
-			return err
-		}
-
-		url := sess.Address + "/v1/users"
-		respBody, err := doAdminRequestWithBody("GET", url, sess.Token, nil)
-		if err != nil {
-			return err
-		}
-
-		var result struct {
+		type usersListResult struct {
 			Users []struct {
 				Email     string   `json:"email"`
 				Role      string   `json:"role"`
@@ -33,8 +21,9 @@ var usersCmd = &cobra.Command{
 				CreatedAt string   `json:"created_at"`
 			} `json:"users"`
 		}
-		if err := json.Unmarshal(respBody, &result); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
+		result, err := fetchAndDecode[usersListResult]("GET", "/v1/users")
+		if err != nil {
+			return err
 		}
 
 		if len(result.Users) == 0 {

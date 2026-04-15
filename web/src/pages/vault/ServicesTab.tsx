@@ -46,7 +46,7 @@ export default function ServicesTab() {
 
   async function fetchServices() {
     try {
-      const resp = await fetch(
+      const resp = await apiFetch(
         `/v1/vaults/${encodeURIComponent(vaultName)}/services`
       );
       if (resp.ok) {

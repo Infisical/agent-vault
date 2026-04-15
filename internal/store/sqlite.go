@@ -39,6 +39,11 @@ func utcTimePtr(t *time.Time) *time.Time {
 	return &u
 }
 
+// nowUTC returns the current UTC time formatted as time.DateTime.
+func nowUTC() string {
+	return time.Now().UTC().Format(time.DateTime)
+}
+
 // nullableInt returns nil for zero/negative ints, enabling SQL NULL inserts.
 func nullableInt(n int) interface{} {
 	if n <= 0 {
@@ -232,7 +237,7 @@ func (s *SQLiteStore) DeleteVault(ctx context.Context, name string) error {
 }
 
 func (s *SQLiteStore) RenameVault(ctx context.Context, oldName string, newName string) error {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 
 	v, err := s.GetVault(ctx, oldName)
 	if err != nil {
@@ -456,7 +461,7 @@ func (s *SQLiteStore) ListUsers(ctx context.Context) ([]User, error) {
 }
 
 func (s *SQLiteStore) UpdateUserPassword(ctx context.Context, userID string, passwordHash, passwordSalt []byte, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) error {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 	res, err := s.db.ExecContext(ctx,
 		"UPDATE users SET password_hash = ?, password_salt = ?, kdf_time = ?, kdf_memory = ?, kdf_threads = ?, updated_at = ? WHERE id = ?",
 		passwordHash, passwordSalt, kdfTime, kdfMemory, kdfThreads, nowStr, userID,
@@ -472,7 +477,7 @@ func (s *SQLiteStore) UpdateUserPassword(ctx context.Context, userID string, pas
 }
 
 func (s *SQLiteStore) UpdateUserRole(ctx context.Context, userID, role string) error {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 	res, err := s.db.ExecContext(ctx,
 		"UPDATE users SET role = ?, updated_at = ? WHERE id = ?",
 		role, nowStr, userID,
@@ -508,7 +513,7 @@ func (s *SQLiteStore) CountOwners(ctx context.Context) (int, error) {
 // --- Vault Grants ---
 
 func (s *SQLiteStore) GrantVaultRole(ctx context.Context, userID, vaultID, role string) error {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO vault_grants (user_id, vault_id, role, created_at) VALUES (?, ?, ?, ?)
 		 ON CONFLICT(user_id, vault_id) DO UPDATE SET role = excluded.role`,
@@ -618,7 +623,7 @@ func (s *SQLiteStore) ListVaultUsers(ctx context.Context, vaultID string) ([]Vau
 }
 
 func (s *SQLiteStore) ActivateUser(ctx context.Context, userID string) error {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 	res, err := s.db.ExecContext(ctx,
 		"UPDATE users SET is_active = 1, updated_at = ? WHERE id = ?",
 		nowStr, userID,
@@ -907,7 +912,7 @@ func (s *SQLiteStore) ListProposals(ctx context.Context, vaultID, status string)
 }
 
 func (s *SQLiteStore) UpdateProposalStatus(ctx context.Context, vaultID string, id int, status, reviewNote string) error {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 	var reviewedAt *string
 	if status == "applied" || status == "rejected" {
 		reviewedAt = &nowStr
@@ -938,7 +943,7 @@ func (s *SQLiteStore) CountPendingProposals(ctx context.Context, vaultID string)
 }
 
 func (s *SQLiteStore) ExpirePendingProposals(ctx context.Context, before time.Time) (int, error) {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE proposals SET status = 'expired', updated_at = ?
 		 WHERE status = 'pending' AND created_at < ?`,
@@ -974,7 +979,7 @@ func (s *SQLiteStore) GetProposalCredentials(ctx context.Context, vaultID string
 }
 
 func (s *SQLiteStore) ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string) error {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1195,7 +1200,7 @@ func (s *SQLiteStore) GetInviteByToken(ctx context.Context, token string) (*Invi
 
 func (s *SQLiteStore) ListInvites(ctx context.Context, status string) ([]Invite, error) {
 	// Lazily expire pending invites that are past their TTL.
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 	_, _ = s.db.ExecContext(ctx,
 		`UPDATE invites SET status = 'expired' WHERE status = 'pending' AND expires_at <= ?`,
 		nowStr,
@@ -1247,7 +1252,7 @@ func (s *SQLiteStore) ListInvites(ctx context.Context, status string) ([]Invite,
 
 func (s *SQLiteStore) ListInvitesByVault(ctx context.Context, vaultID, status string) ([]Invite, error) {
 	// Lazily expire pending invites that are past their TTL.
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 	_, _ = s.db.ExecContext(ctx,
 		`UPDATE invites SET status = 'expired' WHERE status = 'pending' AND expires_at <= ?`,
 		nowStr,
@@ -1302,7 +1307,7 @@ func (s *SQLiteStore) ListInvitesByVault(ctx context.Context, vaultID, status st
 }
 
 func (s *SQLiteStore) RedeemInvite(ctx context.Context, token, sessionID string) error {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE invites SET status = 'redeemed', session_id = ?, redeemed_at = ?
@@ -1328,7 +1333,7 @@ func (s *SQLiteStore) UpdateInviteSessionID(ctx context.Context, inviteID int, s
 }
 
 func (s *SQLiteStore) RevokeInvite(ctx context.Context, token string) error {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE invites SET status = 'revoked', revoked_at = ?
@@ -1364,7 +1369,7 @@ func (s *SQLiteStore) GetInviteByID(ctx context.Context, id int) (*Invite, error
 }
 
 func (s *SQLiteStore) RevokeInviteByID(ctx context.Context, id int) error {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE invites SET status = 'revoked', revoked_at = ?
@@ -1623,7 +1628,7 @@ func (s *SQLiteStore) GetUserInviteByToken(ctx context.Context, token string) (*
 }
 
 func (s *SQLiteStore) GetPendingUserInviteByEmail(ctx context.Context, email string) (*UserInvite, error) {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, email, status, created_by, created_at, expires_at, accepted_at
 		 FROM user_invites WHERE email = ? AND status = 'pending' AND expires_at > ?
@@ -1715,7 +1720,7 @@ func (s *SQLiteStore) ListUserInvitesByVault(ctx context.Context, vaultID, statu
 }
 
 func (s *SQLiteStore) AcceptUserInvite(ctx context.Context, token string) error {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE user_invites SET status = 'accepted', accepted_at = ?
@@ -1914,7 +1919,7 @@ func (s *SQLiteStore) CreateEmailVerification(ctx context.Context, email, code s
 }
 
 func (s *SQLiteStore) GetPendingEmailVerification(ctx context.Context, email, code string) (*EmailVerification, error) {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 	var ev EmailVerification
 	var createdAt, expiresAt string
 	err := s.db.QueryRowContext(ctx,
@@ -1947,7 +1952,7 @@ func (s *SQLiteStore) MarkEmailVerificationUsed(ctx context.Context, id int) err
 }
 
 func (s *SQLiteStore) CountPendingEmailVerifications(ctx context.Context, email string) (int, error) {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 	var count int
 	err := s.db.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM email_verifications WHERE email = ? AND status = 'pending' AND expires_at > ?",
@@ -1981,7 +1986,7 @@ func (s *SQLiteStore) CreatePasswordReset(ctx context.Context, email, code strin
 }
 
 func (s *SQLiteStore) GetPendingPasswordReset(ctx context.Context, email, code string) (*PasswordReset, error) {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 	var pr PasswordReset
 	var createdAt, expiresAt string
 	err := s.db.QueryRowContext(ctx,
@@ -2014,7 +2019,7 @@ func (s *SQLiteStore) MarkPasswordResetUsed(ctx context.Context, id int) error {
 }
 
 func (s *SQLiteStore) CountPendingPasswordResets(ctx context.Context, email string) (int, error) {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 	var count int
 	err := s.db.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM password_resets WHERE email = ? AND status = 'pending' AND expires_at > ?",
@@ -2395,7 +2400,7 @@ func (s *SQLiteStore) ListAllAgents(ctx context.Context) ([]Agent, error) {
 }
 
 func (s *SQLiteStore) RevokeAgent(ctx context.Context, id string) error {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2427,7 +2432,7 @@ func (s *SQLiteStore) RevokeAgent(ctx context.Context, id string) error {
 
 
 func (s *SQLiteStore) RenameAgent(ctx context.Context, id string, newName string) error {
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE agents SET name = ?, updated_at = ? WHERE id = ?`,
@@ -2445,7 +2450,7 @@ func (s *SQLiteStore) RenameAgent(ctx context.Context, id string, newName string
 
 func (s *SQLiteStore) CountAgentSessions(ctx context.Context, agentID string) (int, error) {
 	var count int
-	nowStr := time.Now().UTC().Format(time.DateTime)
+	nowStr := nowUTC()
 	err := s.db.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM sessions WHERE agent_id = ? AND (expires_at IS NULL OR expires_at > ?)",
 		agentID, nowStr,
@@ -2469,7 +2474,7 @@ func (s *SQLiteStore) GetLatestAgentSessionExpiry(ctx context.Context, agentID s
 	var expiresAtStr sql.NullString
 	err := s.db.QueryRowContext(ctx,
 		"SELECT MAX(expires_at) FROM sessions WHERE agent_id = ? AND expires_at > ?",
-		agentID, time.Now().UTC().Format(time.DateTime),
+		agentID, nowUTC(),
 	).Scan(&expiresAtStr)
 	if err != nil || !expiresAtStr.Valid {
 		return nil, err

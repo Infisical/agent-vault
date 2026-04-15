@@ -24,11 +24,13 @@ function RowActions({
   vaultName,
   currentEmail,
   onDone,
+  onError,
 }: {
   user: VaultUser;
   vaultName: string;
   currentEmail: string;
   onDone: () => void;
+  onError: (msg: string) => void;
 }) {
   if (user.email === currentEmail) return null;
 
@@ -44,20 +46,20 @@ function RowActions({
     );
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
-      alert(data.error || "Failed to change role");
+      onError(data.error || "Failed to change role");
       return;
     }
     onDone();
   }
 
   async function handleRemove() {
-    const resp = await fetch(
+    const resp = await apiFetch(
       `/v1/vaults/${encodeURIComponent(vaultName)}/users/${encodeURIComponent(user.email)}`,
       { method: "DELETE" }
     );
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
-      alert(data.error || "Failed to remove user");
+      onError(data.error || "Failed to remove user");
       return;
     }
     onDone();
@@ -111,6 +113,7 @@ export default function UsersTab() {
                 vaultName={vaultName}
                 currentEmail={currentEmail}
                 onDone={fetchUsers}
+                onError={setError}
               />
             ),
           },
@@ -124,7 +127,7 @@ export default function UsersTab() {
 
   async function fetchUsers() {
     try {
-      const resp = await fetch(
+      const resp = await apiFetch(
         `/v1/vaults/${encodeURIComponent(vaultName)}/users`
       );
       if (!resp.ok) {
@@ -197,7 +200,7 @@ function AddUserButton({
 
   useEffect(() => {
     if (!open) return;
-    fetch("/v1/users")
+    apiFetch("/v1/users")
       .then((r) => r.json())
       .then((data) => setInstanceUsers(data.users ?? []))
       .catch(() => {});

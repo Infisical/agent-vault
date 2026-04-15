@@ -34,7 +34,7 @@ export default function VaultsListTab() {
 
   async function fetchVaults() {
     try {
-      const resp = await fetch("/v1/vaults");
+      const resp = await apiFetch("/v1/vaults");
       if (resp.ok) {
         const data = await resp.json();
         setVaults(data.vaults || []);

@@ -3,6 +3,7 @@ import { StatusBadge, LoadingSpinner, ErrorBanner, timeAgo, timeUntil } from "..
 import DataTable, { type Column } from "../../components/DataTable";
 import DropdownMenu from "../../components/DropdownMenu";
 import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
+import { apiFetch } from "../../lib/api";
 
 interface AgentRow {
   name: string;
@@ -106,8 +107,8 @@ export default function InstanceAgentsTab() {
   async function fetchData() {
     try {
       const [agentsResp, vaultsResp] = await Promise.all([
-        fetch("/v1/admin/agents"),
-        fetch("/v1/admin/vaults"),
+        apiFetch("/v1/admin/agents"),
+        apiFetch("/v1/admin/vaults"),
       ]);
 
       if (!agentsResp.ok) {
@@ -177,7 +178,7 @@ export default function InstanceAgentsTab() {
         onClose={() => setRevokeTarget(null)}
         onConfirm={async () => {
           if (!revokeTarget) return;
-          const resp = await fetch(
+          const resp = await apiFetch(
             `/v1/admin/agents/${encodeURIComponent(revokeTarget.name)}`,
             { method: "DELETE" }
           );

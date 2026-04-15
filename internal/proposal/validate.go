@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/Infisical/agent-vault/internal/broker"
 )
 
 const (
@@ -20,10 +22,6 @@ const (
 	MaxObtainLen             = 500
 	MaxObtainInstructionsLen = 1000
 )
-
-// CredentialKeyPattern validates credential key names: UPPER_SNAKE_CASE (e.g. STRIPE_KEY, GITHUB_TOKEN).
-// Must start with an uppercase letter, contain only uppercase letters, digits, and underscores.
-var CredentialKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
 // hostLabelPattern matches a valid hostname (RFC 952 / RFC 1123 style).
 var hostLabelPattern = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
@@ -164,7 +162,7 @@ func Validate(services []Service, credentials []CredentialSlot) error {
 		if c.Key == "" {
 			return fmt.Errorf("credential slot key is required")
 		}
-		if !CredentialKeyPattern.MatchString(c.Key) {
+		if !broker.CredentialKeyPattern.MatchString(c.Key) {
 			return fmt.Errorf("credential slot key %q must be UPPER_SNAKE_CASE (e.g. STRIPE_KEY, GITHUB_TOKEN)", c.Key)
 		}
 		if seenKeys[c.Key] {

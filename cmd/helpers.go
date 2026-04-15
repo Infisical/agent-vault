@@ -392,6 +392,23 @@ func resolveAddress(cmd *cobra.Command) string {
 	return DefaultAddress
 }
 
+// fetchAndDecode performs an authenticated request and decodes the JSON response into T.
+func fetchAndDecode[T any](method, path string) (*T, error) {
+	sess, err := ensureSession()
+	if err != nil {
+		return nil, err
+	}
+	respBody, err := doAdminRequestWithBody(method, sess.Address+path, sess.Token, nil)
+	if err != nil {
+		return nil, err
+	}
+	var result T
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("parsing response: %w", err)
+	}
+	return &result, nil
+}
+
 // doAdminRequestWithBody makes an authenticated HTTP request to the server and returns the response body.
 func doAdminRequestWithBody(method, url, token string, body []byte) ([]byte, error) {
 	var bodyReader io.Reader

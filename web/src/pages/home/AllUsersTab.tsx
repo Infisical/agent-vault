@@ -32,11 +32,13 @@ function RowActions({
   currentEmail,
   onDone,
   onRemove,
+  onError,
 }: {
   user: PublicUser;
   currentEmail: string;
   onDone: () => void;
   onRemove: (user: PublicUser) => void;
+  onError: (msg: string) => void;
 }) {
   if (user.email === currentEmail) return null;
 
@@ -55,14 +57,13 @@ function RowActions({
 
   async function handleToggleRole() {
     const newRole = isOwner ? "member" : "owner";
-    const resp = await fetch(`/v1/admin/users/${encodeURIComponent(user.email)}/role`, {
+    const resp = await apiFetch(`/v1/admin/users/${encodeURIComponent(user.email)}/role`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ role: newRole }),
     });
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
-      alert(data.error || "Failed to change role");
+      onError(data.error || "Failed to change role");
       return;
     }
     onDone();
@@ -92,8 +93,8 @@ export default function AllUsersTab() {
   const fetchUsers = useCallback(async () => {
     try {
       const [usersResp, invResp] = await Promise.all([
-        fetch("/v1/users"),
-        fetch("/v1/users/invites?status=pending"),
+        apiFetch("/v1/users"),
+        apiFetch("/v1/users/invites?status=pending"),
       ]);
 
       if (!usersResp.ok) {
@@ -137,7 +138,7 @@ export default function AllUsersTab() {
     if (!deleteTarget) return;
     if (deleteTarget.status === "pending") {
       if (!deleteTarget.invite_token) return;
-      const resp = await fetch(
+      const resp = await apiFetch(
         `/v1/users/invites/${encodeURIComponent(deleteTarget.invite_token)}`,
         { method: "DELETE" }
       );
@@ -149,7 +150,7 @@ export default function AllUsersTab() {
       fetchUsers();
       return;
     }
-    const resp = await fetch(
+    const resp = await apiFetch(
       `/v1/admin/users/${encodeURIComponent(deleteTarget.email)}`,
       { method: "DELETE" }
     );
@@ -221,6 +222,7 @@ export default function AllUsersTab() {
             currentEmail={auth.email}
             onDone={fetchUsers}
             onRemove={setDeleteTarget}
+            onError={setError}
           />
         ),
       });
@@ -296,7 +298,7 @@ function InviteUserButton({
   useEffect(() => {
     if (!open) return;
     // Fetch vaults the user can assign
-    fetch("/v1/vaults")
+    apiFetch("/v1/vaults")
       .then((r) => r.json())
       .then((data) => {
         const vaults = (data.vaults ?? []).filter(
