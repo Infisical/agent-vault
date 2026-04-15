@@ -15,7 +15,7 @@ import (
 // Owner-only. Accepts optional JSON body {"to": "recipient@example.com"}.
 // If "to" is omitted, sends to the owner's own email address.
 func (s *Server) handleEmailTest(w http.ResponseWriter, r *http.Request) {
-	user, err := s.requireOwner(w, r)
+	actor, err := s.requireOwnerActor(w, r)
 	if err != nil {
 		return
 	}
@@ -25,8 +25,11 @@ func (s *Server) handleEmailTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse optional recipient override.
-	to := user.Email
+	// Parse optional recipient override. Default to owner's email if human user.
+	to := ""
+	if actor.User != nil {
+		to = actor.User.Email
+	}
 	if r.Body != nil && r.ContentLength > 0 {
 		var body struct {
 			To string `json:"to"`
@@ -34,6 +37,10 @@ func (s *Server) handleEmailTest(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && body.To != "" {
 			to = body.To
 		}
+	}
+	if to == "" {
+		jsonError(w, http.StatusBadRequest, "Recipient email required (provide {\"to\": \"email@example.com\"} in the request body)")
+		return
 	}
 
 	if err := s.notifier.SendHTMLMail(
@@ -52,7 +59,7 @@ func (s *Server) handleEmailTest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.requireOwner(w, r); err != nil {
+	if _, err := s.requireOwnerActor(w, r); err != nil {
 		return
 	}
 	s.writeSettingsResponse(w, r.Context())
@@ -85,7 +92,7 @@ func (s *Server) writeSettingsResponse(w http.ResponseWriter, ctx context.Contex
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.requireOwner(w, r); err != nil {
+	if _, err := s.requireOwnerActor(w, r); err != nil {
 		return
 	}
 

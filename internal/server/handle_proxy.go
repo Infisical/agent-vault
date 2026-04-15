@@ -156,7 +156,7 @@ func (s *Server) resolveVaultForSession(w http.ResponseWriter, r *http.Request, 
 	}
 
 	// Check agent has access to this vault.
-	role, err := s.store.GetAgentVaultRole(ctx, sess.AgentID, ns.ID)
+	role, err := s.store.GetVaultRole(ctx, sess.AgentID, ns.ID)
 	if err != nil {
 		jsonError(w, http.StatusForbidden, "Agent does not have access to vault: "+vaultName)
 		return nil, "", fmt.Errorf("no vault access")

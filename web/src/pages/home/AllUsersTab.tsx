@@ -7,6 +7,7 @@ import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
 import Modal from "../../components/Modal";
 import Button from "../../components/Button";
 import Input from "../../components/Input";
+import Select from "../../components/Select";
 import FormField from "../../components/FormField";
 import CopyButton from "../../components/CopyButton";
 import { apiFetch } from "../../lib/api";
@@ -111,9 +112,9 @@ export default function AllUsersTab() {
       if (invResp.ok) {
         const invData = await invResp.json();
         pendingUsers = (invData.invites ?? []).map(
-          (inv: { email: string; token: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
+          (inv: { email: string; role?: string; token: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
             email: inv.email,
-            role: "member",
+            role: inv.role || "member",
             status: "pending" as const,
             vaults: inv.vaults ?? [],
             created_at: inv.created_at,
@@ -299,6 +300,7 @@ function InviteUserButton({
 }) {
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
+  const [role, setRole] = useState<"owner" | "member">("member");
   const [vaultAssignments, setVaultAssignments] = useState<VaultAssignment[]>([]);
   const [availableVaults, setAvailableVaults] = useState<VaultOption[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -322,6 +324,7 @@ function InviteUserButton({
   function close() {
     setOpen(false);
     setEmail("");
+    setRole("member");
     setVaultAssignments([]);
     setError("");
     setInviteLink("");
@@ -351,6 +354,9 @@ function InviteUserButton({
     setError("");
     try {
       const payload: Record<string, unknown> = { email: email.trim() };
+      if (isOwner && role !== "member") {
+        payload.role = role;
+      }
       if (vaultAssignments.length > 0) {
         payload.vaults = vaultAssignments;
       }
@@ -452,6 +458,23 @@ function InviteUserButton({
                 autoFocus
               />
             </FormField>
+
+            {isOwner && (
+              <FormField
+                label="Instance role"
+                helperText={role === "owner"
+                  ? "This user will be able to manage users, vaults, and instance settings."
+                  : "This user will have standard access, scoped to their assigned vaults."}
+              >
+                <Select
+                  value={role}
+                  onChange={(e) => setRole(e.target.value as "owner" | "member")}
+                >
+                  <option value="member">Member</option>
+                  <option value="owner">Owner</option>
+                </Select>
+              </FormField>
+            )}
 
             <div>
               <div className="flex items-center justify-between mb-2">

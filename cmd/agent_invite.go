@@ -19,6 +19,7 @@ var agentInviteCmd = &cobra.Command{
 		inviteTTL, _ := cmd.Flags().GetDuration("invite-ttl")
 		vaultFlags, _ := cmd.Flags().GetStringArray("vault")
 		tokenOnly, _ := cmd.Flags().GetBool("token-only")
+		agentRole, _ := cmd.Flags().GetString("role")
 
 		sess, err := ensureSession()
 		if err != nil {
@@ -46,6 +47,7 @@ var agentInviteCmd = &cobra.Command{
 
 		payload := map[string]any{
 			"name":        agentName,
+			"role":        agentRole,
 			"ttl_seconds": int(inviteTTL.Seconds()),
 		}
 		if len(vaults) > 0 {
@@ -186,6 +188,7 @@ func init() {
 	agentInviteCmd.Flags().StringArray("vault", nil, "vault pre-assignment (format: name:role, role defaults to proxy)")
 	agentInviteCmd.Flags().String("address", "", "Agent Vault server address (default: from session)")
 	agentInviteCmd.Flags().Bool("token-only", false, "output only the raw invite token (for programmatic use)")
+	agentInviteCmd.Flags().String("role", "member", "instance-level role for the agent (owner or member)")
 	agentInviteListCmd.Flags().String("status", "", "filter by status (pending, redeemed, expired, revoked)")
 
 	agentInviteCmd.AddCommand(agentInviteListCmd, agentInviteRevokeCmd)

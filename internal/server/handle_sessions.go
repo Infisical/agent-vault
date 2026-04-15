@@ -11,13 +11,16 @@ import (
 )
 
 type scopedSessionRequest struct {
-	Vault     string `json:"vault"`
-	VaultRole string `json:"vault_role"`
+	Vault      string `json:"vault"`
+	VaultRole  string `json:"vault_role"`
+	TTLSeconds *int   `json:"ttl_seconds,omitempty"`
 }
 
 type scopedSessionResponse struct {
-	Token     string `json:"token"`
+	Token    string `json:"token"`
 	ExpiresAt string `json:"expires_at"`
+	AVAddr   string `json:"av_addr,omitempty"`
+	ProxyURL string `json:"proxy_url,omitempty"`
 }
 
 func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
@@ -25,6 +28,21 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Vault == "" {
 		jsonError(w, http.StatusBadRequest, "Vault is required")
 		return
+	}
+
+	// Validate role if provided.
+	if req.VaultRole != "" && req.VaultRole != "proxy" && req.VaultRole != "member" && req.VaultRole != "admin" {
+		jsonError(w, http.StatusBadRequest, "vault_role must be one of: proxy, member, admin")
+		return
+	}
+
+	// Validate TTL bounds if provided.
+	if req.TTLSeconds != nil {
+		ttl := *req.TTLSeconds
+		if ttl < scopedSessionMinTTL || ttl > scopedSessionMaxTTL {
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("ttl_seconds must be between %d and %d", scopedSessionMinTTL, scopedSessionMaxTTL))
+			return
+		}
 	}
 
 	ctx := r.Context()
@@ -35,7 +53,7 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check that the user has access to this vault.
+	// Check that the caller has access to this vault.
 	if _, err := s.requireVaultAccess(w, r, ns.ID); err != nil {
 		return
 	}
@@ -52,7 +70,17 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := s.store.CreateScopedSession(ctx, ns.ID, cappedRole, timePtr(time.Now().Add(sessionTTL)))
+	// Compute expiry: use ttl_seconds if provided, otherwise default 24h.
+	var expiresAt *time.Time
+	if req.TTLSeconds != nil {
+		t := time.Now().Add(time.Duration(*req.TTLSeconds) * time.Second)
+		expiresAt = &t
+	} else {
+		t := time.Now().Add(sessionTTL)
+		expiresAt = &t
+	}
+
+	sess, err := s.store.CreateScopedSession(ctx, ns.ID, cappedRole, expiresAt)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create scoped session")
 		return
@@ -61,6 +89,8 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, scopedSessionResponse{
 		Token:     sess.ID,
 		ExpiresAt: formatExpiresAt(sess.ExpiresAt),
+		AVAddr:    s.baseURL,
+		ProxyURL:  s.baseURL + "/proxy",
 	})
 }
 
@@ -79,116 +109,26 @@ func (s *Server) capRequestedRole(ctx context.Context, sess *store.Session, vaul
 		if sess.VaultID != vaultID {
 			return "", "Session not authorized for this vault"
 		}
-		if !agentRoleSatisfies(sess.VaultRole, "member") {
+		if !roleSatisfies(sess.VaultRole, "member") {
 			return "", "Member role required"
 		}
 		callerRole = sess.VaultRole
 	} else {
-		// User session: require vault access.
-		user, err := s.userFromSession(ctx, sess)
-		if err != nil || user == nil {
+		// Instance-level session: resolve actor and check vault access.
+		actor, err := s.actorFromSession(ctx, sess)
+		if err != nil || actor == nil {
 			return "", "Invalid session"
 		}
-		has, err := s.store.HasVaultAccess(ctx, user.ID, vaultID)
-		if err != nil || !has {
-			return "", "No access to this vault"
-		}
-		role, err2 := s.store.GetVaultRole(ctx, user.ID, vaultID)
+		role, err2 := s.store.GetVaultRole(ctx, actor.ID, vaultID)
 		if err2 != nil {
-			return "", "Failed to check vault role"
+			return "", "No access to this vault"
 		}
 		callerRole = role
 	}
 
-	if !agentRoleSatisfies(callerRole, requestedRole) {
+	if !roleSatisfies(callerRole, requestedRole) {
 		return "", fmt.Sprintf("Your vault role (%s) cannot mint sessions with role %s", callerRole, requestedRole)
 	}
 	return requestedRole, ""
 }
 
-type directSessionRequest struct {
-	Vault      string `json:"vault"`
-	VaultRole  string `json:"vault_role"`
-	TTLSeconds *int   `json:"ttl_seconds,omitempty"`
-}
-
-type directSessionResponse struct {
-	AVAddr         string            `json:"av_addr"`
-	AVSessionToken string            `json:"av_session_token"`
-	AVVault        string            `json:"av_vault"`
-	VaultRole      string            `json:"vault_role"`
-	ProxyURL       string            `json:"proxy_url"`
-	Services       []discoverService `json:"services"`
-	Instructions   string            `json:"instructions"`
-	ExpiresAt      string            `json:"expires_at"`
-}
-
-func (s *Server) handleDirectSession(w http.ResponseWriter, r *http.Request) {
-	var req directSessionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-
-	if req.Vault == "" {
-		req.Vault = "default"
-	}
-	if req.VaultRole == "" {
-		req.VaultRole = "proxy"
-	}
-	if req.VaultRole != "proxy" && req.VaultRole != "member" && req.VaultRole != "admin" {
-		jsonError(w, http.StatusBadRequest, "vault_role must be one of: proxy, member, admin")
-		return
-	}
-	if req.TTLSeconds != nil {
-		ttl := *req.TTLSeconds
-		if ttl < directSessionMinTTL || ttl > directSessionMaxTTL {
-			jsonError(w, http.StatusBadRequest, fmt.Sprintf("ttl_seconds must be between %d and %d", directSessionMinTTL, directSessionMaxTTL))
-			return
-		}
-	}
-	ctx := r.Context()
-
-	ns, err := s.store.GetVault(ctx, req.Vault)
-	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", req.Vault))
-		return
-	}
-
-	sess := sessionFromContext(ctx)
-	if sess == nil {
-		jsonError(w, http.StatusForbidden, "Authentication required")
-		return
-	}
-
-	cappedRole, errMsg := s.capRequestedRole(ctx, sess, ns.ID, req.VaultRole)
-	if errMsg != "" {
-		jsonError(w, http.StatusForbidden, errMsg)
-		return
-	}
-
-	// ttl_seconds omitted = no expiry; ttl_seconds present = finite session.
-	var expiresAt *time.Time
-	if req.TTLSeconds != nil {
-		t := time.Now().Add(time.Duration(*req.TTLSeconds) * time.Second)
-		expiresAt = &t
-	}
-	newSess, err := s.store.CreateScopedSession(ctx, ns.ID, cappedRole, expiresAt)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to create session")
-		return
-	}
-
-	services := s.buildServiceList(ctx, ns.ID)
-
-	jsonOK(w, directSessionResponse{
-		AVAddr:         s.baseURL,
-		AVSessionToken: newSess.ID,
-		AVVault:        ns.Name,
-		VaultRole:      cappedRole,
-		ProxyURL:       s.baseURL + "/proxy",
-		Services:       services,
-		Instructions:   instructionsForRole(cappedRole),
-		ExpiresAt:      formatExpiresAt(newSess.ExpiresAt),
-	})
-}

@@ -44,8 +44,16 @@ var userInviteCmd = &cobra.Command{
 			vaults = append(vaults, vaultEntry{VaultName: name, VaultRole: role})
 		}
 
+		role, _ := cmd.Flags().GetString("role")
+		if role != "" && role != "member" && role != "owner" {
+			return fmt.Errorf("role must be 'owner' or 'member'")
+		}
+
 		payload := map[string]any{
 			"email": email,
+		}
+		if role != "" && role != "member" {
+			payload["role"] = role
 		}
 		if len(vaults) > 0 {
 			payload["vaults"] = vaults
@@ -103,6 +111,7 @@ var userInviteListCmd = &cobra.Command{
 		var resp struct {
 			Invites []struct {
 				Email     string `json:"email"`
+				Role      string `json:"role"`
 				Status    string `json:"status"`
 				CreatedBy string `json:"created_by"`
 				CreatedAt string `json:"created_at"`
@@ -123,7 +132,7 @@ var userInviteListCmd = &cobra.Command{
 		}
 
 		t := newTable(cmd.OutOrStdout())
-		t.AppendHeader(table.Row{"EMAIL", "STATUS", "VAULTS", "INVITED BY", "CREATED", "EXPIRES"})
+		t.AppendHeader(table.Row{"EMAIL", "ROLE", "STATUS", "VAULTS", "INVITED BY", "CREATED", "EXPIRES"})
 		for _, inv := range resp.Invites {
 			var vaultParts []string
 			for _, v := range inv.Vaults {
@@ -141,7 +150,7 @@ var userInviteListCmd = &cobra.Command{
 			if parsed, err := time.Parse(time.RFC3339, inv.ExpiresAt); err == nil {
 				expires = parsed.Format("2006-01-02 15:04")
 			}
-			t.AppendRow(table.Row{inv.Email, inv.Status, vaults, inv.CreatedBy, created, expires})
+			t.AppendRow(table.Row{inv.Email, inv.Role, inv.Status, vaults, inv.CreatedBy, created, expires})
 		}
 		t.Render()
 		return nil
@@ -171,6 +180,7 @@ var userInviteRevokeCmd = &cobra.Command{
 }
 
 func init() {
+	userInviteCmd.Flags().String("role", "", "instance role for the invited user (owner or member, default member)")
 	userInviteCmd.Flags().StringArray("vault", nil, "vault pre-assignment (format: name:role, role defaults to member)")
 	userInviteListCmd.Flags().String("status", "", "filter by status (pending, accepted, expired, revoked)")
 

@@ -101,9 +101,9 @@ This means:
 
 Agent Vault enforces access at two independent layers. For full details, see [Permissions](/learn/permissions).
 
-- **Instance roles** (`owner`, `member`) control who can manage users, vaults, and server settings. Owners can see and join any vault, but must explicitly join to access vault contents.
-- **Vault roles** (`admin`, `member`) control who can approve [proposals](/learn/proposals), manage agents, and use the proxy within a specific [vault](/learn/vaults).
-- **Agents** are scoped to a single vault and cannot access other vaults or perform instance-level operations.
+- **Instance roles** (`owner`, `member`) control who can manage users, vaults, and server settings. Both users and agents have instance-level roles. Owners can see and join any vault, but must explicitly join to access vault contents.
+- **Vault roles** (`admin`, `member`, `proxy`) control who can approve [proposals](/learn/proposals), manage agents, and use the proxy within a specific [vault](/learn/vaults).
+- **Agents** are instance-level entities that can access multiple vaults via the `X-Vault` header. Vault-scoped sessions (from `vault run`) are limited to a single vault.
 - **Proposal approval** requires a valid user session. Read-only approval tokens let you view the proposal, but submitting an approval (providing credentials, clicking "Allow") requires logging in.
 - **Email domain restrictions** -- Owners can restrict signups to specific email domains (e.g., `@acme.com`). This applies to email/password registration, Google OAuth signup, and vault invite acceptance. The first user (owner) is exempt. Configure via **Manage > Settings** in the web UI or `agent-vault owner settings set --allowed-domains`.
 
