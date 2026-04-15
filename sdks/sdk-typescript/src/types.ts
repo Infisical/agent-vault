@@ -34,75 +34,10 @@ export type AgentVaultConfig = ClientConfig;
 export type VaultClientConfig = ClientConfig;
 
 // ---------------------------------------------------------------------------
-// Core entity types (mirror Go API JSON responses)
+// Internal wire types (match Go API JSON responses, used by resource methods)
 // ---------------------------------------------------------------------------
 
-export interface Vault {
-  name: string;
-  created_at: string;
-}
-
-export interface Credential {
-  key: string;
-  value?: string;
-}
-
-export interface ServiceAuth {
-  type: "bearer" | "basic" | "api-key" | "custom";
-  token?: string;
-  username?: string;
-  password?: string;
-  key?: string;
-  header?: string;
-  prefix?: string;
-  headers?: Record<string, string>;
-}
-
-export interface Service {
-  host: string;
-  description?: string;
-  auth: ServiceAuth;
-}
-
-export interface DiscoverService {
-  host: string;
-  description?: string;
-}
-
-export interface DiscoverResponse {
-  vault: string;
-  proxy_url: string;
-  services: DiscoverService[];
-  available_credentials: string[];
-}
-
-export interface ProposalService {
-  action: "set" | "delete";
-  host: string;
-  description?: string;
-  auth?: ServiceAuth;
-}
-
-export interface ProposalCredentialSlot {
-  action: "set" | "delete";
-  key: string;
-  description?: string;
-  obtain?: string;
-  obtain_instructions?: string;
-  value?: string;
-  has_value?: boolean;
-}
-
-export interface Proposal {
-  id: number;
-  status: "pending" | "applied" | "rejected" | "expired";
-  vault: string;
-  approval_url?: string;
-  message?: string;
-  user_message?: string;
-  created_at: string;
-}
-
+/** @internal Wire format for POST /v1/sessions response. */
 export interface ScopedSession {
   token: string;
   expires_at: string;
