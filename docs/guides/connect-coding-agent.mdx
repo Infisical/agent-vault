@@ -40,13 +40,13 @@ For agents you can't wrap with `vault run` (e.g. cloud-hosted agents, or when yo
   <Tab title="Web UI">
     <Steps>
       <Step title="Open the Agents tab">
-        Navigate to your vault and click the **Agents** tab.
+        Navigate to the **Agents** tab in the home view.
       </Step>
       <Step title="Create an invite">
-        Click **Invite agent**, choose **Session**, and configure the role and TTL.
+        Click **Invite agent**, enter a name, and optionally pre-assign vault access.
       </Step>
       <Step title="Copy the prompt">
-        On the **Paste into chat** tab, copy the invite prompt.
+        Copy the invite prompt that appears.
       </Step>
       <Step title="Paste into the agent">
         Paste the prompt into your agent's chat. The agent redeems the invite automatically and receives a session token.
@@ -55,10 +55,16 @@ For agents you can't wrap with `vault run` (e.g. cloud-hosted agents, or when yo
   </Tab>
   <Tab title="CLI">
     ```bash
-    agent-vault vault agent invite create
+    agent-vault agent invite my-agent
     ```
 
     This generates a one-time onboarding prompt and copies it to your clipboard. Paste it into the agent's chat.
+
+    Pre-assign vault access with `--vault`:
+
+    ```bash
+    agent-vault agent invite my-agent --vault default:proxy
+    ```
   </Tab>
 </Tabs>
 
@@ -77,17 +83,13 @@ You don't need to pre-configure anything. The agent discovers what it needs, ask
 
 ## For long-lived agents
 
-Session invites expire (default 24 hours). If your agent needs ongoing access without human intervention, use a [persistent agent](/agents/overview#persistent-agents) instead:
-
-```bash
-agent-vault vault agent invite create --name my-agent
-```
+Invited agents are instance-level entities with named identities that persist across sessions. You can manage vault access, rotate sessions, and revoke agents at any time. See [Agents overview](/agents/overview) for the full lifecycle.
 
 ## Next steps
 
 <CardGroup cols={2}>
   <Card title="Agents overview" icon="robot" href="/agents/overview">
-    Temporary, direct connect, and persistent agent types.
+    How agents work, vault access, and management commands.
   </Card>
   <Card title="Proposals" icon="file-circle-check" href="/learn/proposals">
     How agents request access to new services.

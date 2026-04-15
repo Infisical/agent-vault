@@ -25,7 +25,7 @@ func TestCommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"server", "auth", "vault", "owner", "account", "catalog", "user"}
+	expected := []string{"server", "auth", "vault", "owner", "account", "catalog", "user", "agent"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected command %q to be registered, but it was not", name)
@@ -97,7 +97,7 @@ func TestVaultSubcommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"create", "list", "rename", "use", "current", "init", "user", "credential", "service", "proposal", "agent", "discover"}
+	expected := []string{"create", "list", "rename", "use", "current", "init", "user", "credential", "service", "proposal", "agent", "discover", "delete"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected vault subcommand %q to be registered, but it was not", name)
@@ -347,6 +347,7 @@ func TestProposalSubcommandsRegistered(t *testing.T) {
 }
 
 func TestAgentSubcommandsRegistered(t *testing.T) {
+	// Vault-level agent commands: list, add, remove, set-role
 	vCmd := findSubcommand(rootCmd, "vault")
 	if vCmd == nil {
 		t.Fatal("vault command not found")
@@ -361,7 +362,27 @@ func TestAgentSubcommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"invite", "list", "info", "revoke", "rotate", "rename"}
+	expected := []string{"list", "add", "remove", "set-role"}
+	for _, name := range expected {
+		if !registered[name] {
+			t.Errorf("expected vault agent subcommand %q to be registered, but it was not", name)
+		}
+	}
+}
+
+func TestTopAgentSubcommandsRegistered(t *testing.T) {
+	// Instance-level agent commands: list, info, revoke, rotate, rename, invite
+	agCmd := findSubcommand(rootCmd, "agent")
+	if agCmd == nil {
+		t.Fatal("agent command not found")
+	}
+
+	registered := make(map[string]bool)
+	for _, c := range agCmd.Commands() {
+		registered[c.Name()] = true
+	}
+
+	expected := []string{"list", "info", "revoke", "rotate", "rename", "invite"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected agent subcommand %q to be registered, but it was not", name)
@@ -369,97 +390,33 @@ func TestAgentSubcommandsRegistered(t *testing.T) {
 	}
 }
 
-func TestInviteCreateFlags(t *testing.T) {
-	// Find vault > agent > invite > create command.
-	vCmd := findSubcommand(rootCmd, "vault")
-	if vCmd == nil {
-		t.Fatal("vault command not found")
-	}
-	agCmd := findSubcommand(vCmd, "agent")
+func TestAgentInviteSubcommandsRegistered(t *testing.T) {
+	agCmd := findSubcommand(rootCmd, "agent")
 	if agCmd == nil {
-		t.Fatal("agent command not found under vault")
+		t.Fatal("agent command not found")
 	}
-
-	var invCmd *cobra.Command
-	for _, c := range agCmd.Commands() {
-		if c.Name() == "invite" {
-			invCmd = c
-			break
-		}
-	}
+	invCmd := findSubcommand(agCmd, "invite")
 	if invCmd == nil {
 		t.Fatal("invite command not found under agent")
 	}
 
-	var createCmd *cobra.Command
+	registered := make(map[string]bool)
 	for _, c := range invCmd.Commands() {
-		if c.Name() == "create" {
-			createCmd = c
-			break
+		registered[c.Name()] = true
+	}
+
+	expected := []string{"list", "revoke"}
+	for _, name := range expected {
+		if !registered[name] {
+			t.Errorf("expected agent invite subcommand %q to be registered, but it was not", name)
 		}
 	}
-	if createCmd == nil {
-		t.Fatal("create command not found under invite")
-	}
 
-	// Verify --name flag exists.
-	f := createCmd.Flags().Lookup("name")
+	// Verify --vault flag on invite command
+	f := invCmd.Flags().Lookup("vault")
 	if f == nil {
-		t.Fatal("expected --name flag on invite create command")
+		t.Fatal("expected --vault flag on agent invite command")
 	}
-	if f.DefValue != "" {
-		t.Errorf("expected --name default to be empty, got %q", f.DefValue)
-	}
-
-	// Verify --ttl flag exists.
-	f = createCmd.Flags().Lookup("ttl")
-	if f == nil {
-		t.Fatal("expected --ttl flag on invite create command")
-	}
-}
-
-func TestInviteCreateDirectFlags(t *testing.T) {
-	// Find vault > agent > invite > create command.
-	vCmd := findSubcommand(rootCmd, "vault")
-	if vCmd == nil {
-		t.Fatal("vault command not found")
-	}
-	agCmd := findSubcommand(vCmd, "agent")
-	if agCmd == nil {
-		t.Fatal("agent command not found under vault")
-	}
-
-	var invCmd *cobra.Command
-	for _, c := range agCmd.Commands() {
-		if c.Name() == "invite" {
-			invCmd = c
-			break
-		}
-	}
-	if invCmd == nil {
-		t.Fatal("invite command not found under agent")
-	}
-
-	var createCmd *cobra.Command
-	for _, c := range invCmd.Commands() {
-		if c.Name() == "create" {
-			createCmd = c
-			break
-		}
-	}
-	if createCmd == nil {
-		t.Fatal("create command not found under invite")
-	}
-
-	// Verify --direct flag exists.
-	f := createCmd.Flags().Lookup("direct")
-	if f == nil {
-		t.Fatal("expected --direct flag on invite create command")
-	}
-	if f.DefValue != "false" {
-		t.Errorf("expected --direct default to be false, got %q", f.DefValue)
-	}
-
 }
 
 func TestLoadProjectVault(t *testing.T) {

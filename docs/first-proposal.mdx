@@ -16,19 +16,19 @@ If you haven't logged in yet, you'll be guided through setup automatically.
 <Tabs>
   <Tab title="CLI">
     ```bash
-    agent-vault vault agent invite create
+    agent-vault agent invite my-agent
     ```
 
     This generates a one-time onboarding prompt and copies it to your clipboard.
   </Tab>
   <Tab title="Web UI">
-    Go to **Agents** in your vault and click **Create invite**. Copy the generated prompt.
+    Go to the **Agents** tab and click **Invite agent**. Enter a name and optionally pre-assign vault access. Copy the generated prompt.
   </Tab>
 </Tabs>
 
 ## 2. Paste the prompt into your agent
 
-Open your agent (Claude Code, Cursor, or any supported agent) and paste the invite prompt. The agent redeems the invite automatically and receives a session token scoped to your vault.
+Open your agent (Claude Code, Cursor, or any supported agent) and paste the invite prompt. The agent redeems the invite automatically and receives a session token.
 
 ## 3. Give the agent a task
 

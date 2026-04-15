@@ -70,10 +70,10 @@ agent-vault vault run -- agent     # Cursor
 agent-vault vault run -- codex     # Codex
 
 # Or create an invite for any agent
-agent-vault vault agent invite create
+agent-vault agent invite my-agent
 ```
 
-Any command that needs authentication will walk you through setup automatically — just run it and follow the prompts. `agent-vault vault run` wraps your agent process with a scoped session — no tokens to manage. Alternatively, `agent-vault vault agent invite create` prints an invite prompt you can paste into any agent's chat to connect it.
+Any command that needs authentication will walk you through setup automatically — just run it and follow the prompts. `agent-vault vault run` wraps your agent process with a scoped session — no tokens to manage. Alternatively, `agent-vault agent invite` prints an invite prompt you can paste into any agent's chat to connect it.
 
 Once connected, ask the agent to call any external API. It will discover available services, [propose access](https://docs.agent-vault.dev/first-proposal) for anything missing, and give you a browser link to approve.
 

@@ -106,17 +106,20 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault proposal approve <number> [KEY=VALUE ...]` -- approve and apply (requires active login session; prompts for missing credentials)
   - `agent-vault proposal reject <number> [--reason "..."]` -- reject a pending proposal (requires active login session)
   - `agent-vault proposal review` -- interactively walk through all pending proposals (approve, reject, skip, or quit each; requires active login session)
-- `agent-vault vault agent [invite|list|info|revoke|rotate|rename]` -- manage agents and invite links
-  - `agent-vault vault agent invite create [--ttl 15m] [--role proxy|member|admin]` -- create a one-time invite and print the onboarding prompt (copies to clipboard; default role: proxy)
-  - `agent-vault vault agent invite create --name <agent-name> [--role proxy|member|admin] [--ttl <duration>]` -- create a persistent (named) agent invite (agent gets a session token with configurable expiry)
-  - `agent-vault vault agent invite create --direct [--role proxy|member|admin] [--ttl 24h] [--label "my agent"]` -- mint a scoped session token immediately, skipping the invite ceremony; outputs env vars to paste into the agent's environment
-  - `agent-vault vault agent invite list [--status pending]` -- list invites for vault
-  - `agent-vault vault agent invite revoke <token_suffix>` -- revoke a pending invite by last 8+ chars of token
-  - `agent-vault vault agent list [--vault default]` -- list registered agents
-  - `agent-vault vault agent info <name>` -- show agent details (vault, status, active sessions)
-  - `agent-vault vault agent revoke <name>` -- revoke an agent (deletes all sessions)
-  - `agent-vault vault agent rotate <name>` -- create a rotation invite to re-issue an agent's session
-  - `agent-vault vault agent rename <name> <new-name>` -- rename an agent
+- `agent-vault agent [invite|list|info|revoke|rotate|rename]` -- instance-level agent management
+  - `agent-vault agent invite <name> [--vault name:role ...]` -- invite an agent to the instance with optional vault pre-assignments (repeatable --vault flag, format: `name:role`, role defaults to `proxy`)
+  - `agent-vault agent invite list [--status pending]` -- list agent invites
+  - `agent-vault agent invite revoke <token_suffix>` -- revoke a pending agent invite
+  - `agent-vault agent list` -- list all agents
+  - `agent-vault agent info <name>` -- show agent details (vaults, status, active sessions)
+  - `agent-vault agent revoke <name>` -- revoke an agent (deletes all sessions)
+  - `agent-vault agent rotate <name>` -- create a rotation invite to re-issue an agent's session
+  - `agent-vault agent rename <name> <new-name>` -- rename an agent
+- `agent-vault vault agent [list|add|remove|set-role]` -- manage vault-level agent access
+  - `agent-vault vault agent list` -- list agents in the current vault
+  - `agent-vault vault agent add <name> [--role proxy|member|admin]` -- add an existing instance agent to the vault
+  - `agent-vault vault agent remove <name>` -- remove an agent from the vault
+  - `agent-vault vault agent set-role <name> --role proxy|member|admin` -- change an agent's vault role
 - `agent-vault email test [--to <email>]` -- send a test email to verify SMTP configuration (owner-only; defaults to sending to the owner's own email)
 - `agent-vault reset [--yes]` -- permanently delete all data and reset the instance to a fresh state (owner-only; requires running server for role verification; auto-stops server before reset)
 - `agent-vault vault discover [--json]` -- show available services and credentials for the current vault. Requires a vault-scoped session (via `agent-vault vault run` or `AGENT_VAULT_SESSION_TOKEN` + `AGENT_VAULT_ADDR` env vars). `--json` for machine-readable output.
@@ -140,7 +143,7 @@ The server exposes a generic HTTP proxy at `/proxy/{target_host}/{path}[?query]`
 Agent Vault provides two skill files that teach agents how to interact with it:
 
 - `cmd/skill_cli.md` (`agent-vault-cli`) -- For agents launched via `vault run` that have the `agent-vault` binary on `$PATH`. Covers CLI commands (`discover`, `catalog`, `proposal create`, `credential get`) and the proxy URL pattern.
-- `cmd/skill_http.md` (`agent-vault-http`) -- For agents without the binary (invite-redeemed, remote, persistent). Covers HTTP endpoints only, including persistent agent mode.
+- `cmd/skill_http.md` (`agent-vault-http`) -- For agents without the binary (invite-redeemed, remote, instance-level). Covers HTTP endpoints only, including instance-level agent sessions and X-Vault header.
 
 Both skills are embedded in the Go binary. `vault run` installs both to `~/.{claude,cursor,agents}/skills/agent-vault-{cli,http}/SKILL.md`. The server serves them at public endpoints:
 - `GET /v1/skills/cli` -- returns CLI skill as text/markdown
@@ -242,45 +245,41 @@ The `instance_settings` table is a generic key-value store. Settings are stored 
 
 OAuth state table (`oauth_states`) stores SHA-256 hashed state params, PKCE code_verifiers, mode (login/connect), and optional user_id. Expired states are cleaned up alongside proposal/invite expiry.
 
-## Invite API
+## Agent Invite API
 
-Invites let a human onboard any agent (including cloud-hosted agents like Devin or chat-based agents) by pasting a short prompt into the agent's chat. The agent redeems the invite via a single GET request (no auth required) and receives a session token plus full usage instructions.
+Agent invites let a human onboard any agent (including cloud-hosted agents like Devin or chat-based agents) by pasting a short prompt into the agent's chat. The agent redeems the invite via a POST request and receives an instance-level session token plus full usage instructions.
 
-- `GET /invite/{token}` -- redeem a temporary invite (no auth required; the token itself is the credential). Returns session token, proxy URL, services, and embedded usage instructions. Single-use: token is burned on redemption. Returns 405 for persistent invites (must use POST).
-- `POST /invite/{token}` -- redeem a persistent invite. Body: `{"name": "agent-name"}` (optional if name was pre-set). Returns `av_session_token`, agent name, services, and persistent agent instructions. Also used for rotation invite redemption (body ignored, new session issued).
-- `GET /v1/invites?vault=default&status=pending` -- list invites (admin session required)
-- `DELETE /v1/invites/{token}` -- revoke a pending invite (admin session required)
+- `POST /v1/agents/invites` -- create an agent invite (any authenticated user). Body: `{"name": "my-agent", "vaults": [{"vault_name": "default", "vault_role": "proxy"}]}`. Name is required. Vault pre-assignments are optional.
+- `GET /v1/agents/invites[?status=pending]` -- list agent invites
+- `DELETE /v1/agents/invites/{token}` -- revoke a pending agent invite
+- `POST /invite/{token}` -- redeem an agent invite. Body: `{}`. Returns `av_session_token`, agent name, vault list, and usage instructions. Creates an instance-level agent session (vault_id = NULL). Also used for rotation invite redemption.
 
-Invite states: `pending`, `redeemed`, `expired`, or `revoked`. Token format: `av_inv_` + 64 hex chars. Max 10 pending invites per vault. Default TTL: 15 minutes.
+Invite states: `pending`, `redeemed`, `expired`, or `revoked`. Token format: `av_inv_` + 64 hex chars. Default TTL: 15 minutes.
 
-## Direct Connect Sessions
+## Instance-Level Agent API
 
-Direct connect skips the invite ceremony entirely. Instead of creating an invite link for an agent to redeem, it uses the caller's login session to mint a scoped session token immediately. The output is a set of env vars (`AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, `AGENT_VAULT_VAULT`) that can be pasted directly into any agent's environment.
-
-- `POST /v1/sessions/direct` -- mint a scoped session token (requires user or agent session with at least member role on the vault)
-  - Request: `{"vault": "default", "vault_role": "proxy", "ttl_seconds": 86400, "label": "my agent"}`
-  - Defaults: vault=`"default"`, vault_role=`"proxy"`, ttl_seconds=`86400` (24h)
-  - TTL bounds: min 5 minutes (300s), max 7 days (604800s)
-  - Label: optional, max 128 characters
-  - Response: `{"av_addr", "av_session_token", "av_vault", "vault_role", "proxy_url", "services", "instructions", "expires_at"}`
-
-**Role capping**: The minted session's role is capped to the caller's own vault role. Members can only mint `proxy` sessions; admins can mint any role (`proxy`, `member`, `admin`). Proxy-role agents cannot mint sessions at all.
-
-## Persistent Agent API
-
-Persistent agents have named identities with session tokens that can be configured with no expiry (or a specific TTL). This is for agents that need ongoing access without human intervention.
+Agents are instance-level entities (like users) with multi-vault access via `agent_vault_grants`. Agent sessions are instance-level (vault_id = NULL) and select vaults per-request via the `X-Vault` header.
 
 - **Agent names**: globally unique, 3-64 chars, lowercase alphanumeric + hyphens.
 - **Session token**: `av_sess_` + 64 hex chars, hashed with SHA-256. Configurable expiry (including no expiry).
-- **Rotation**: `POST /v1/admin/agents/{name}/rotate` creates a rotation invite. The operator pastes the prompt into the agent's chat. The agent POSTs to the invite URL and receives a new session token. Old sessions are invalidated at redemption time (not at invite creation).
+- **Multi-vault**: Agents can be granted access to multiple vaults with independent roles per vault.
+- **X-Vault header**: Instance-level agent sessions must include `X-Vault: {vault_name}` on all vault-scoped requests (proxy, discover, proposals, credentials).
+- **Rotation**: `POST /v1/agents/{name}/rotate` creates a rotation invite. The operator pastes the prompt into the agent's chat. The agent POSTs to the invite URL and receives a new session token. Old sessions are invalidated at redemption time (not at invite creation).
 
-### Agent Admin Endpoints (owner-only)
+### Instance-Level Agent Endpoints
 
-- `GET /v1/admin/agents[?vault=...]` -- list agents
-- `GET /v1/admin/agents/{name}` -- get agent details (vault, status, active session count)
-- `DELETE /v1/admin/agents/{name}` -- revoke agent + cascade delete sessions
-- `POST /v1/admin/agents/{name}/rotate` -- create rotation invite, returns invite URL + prompt
-- `POST /v1/admin/agents/{name}/rename` -- rename agent; body: `{"name": "new-name"}`
+- `GET /v1/agents` -- list all agents (any authenticated user)
+- `GET /v1/agents/{name}` -- get agent details (vaults, status, active session count)
+- `DELETE /v1/agents/{name}` -- revoke agent + cascade delete sessions
+- `POST /v1/agents/{name}/rotate` -- create rotation invite, returns invite URL + prompt
+- `POST /v1/agents/{name}/rename` -- rename agent; body: `{"name": "new-name"}`
+
+### Vault-Level Agent Endpoints
+
+- `GET /v1/vaults/{name}/agents` -- list agents in a vault
+- `POST /v1/vaults/{name}/agents` -- add an existing agent to a vault; body: `{"name": "my-agent", "role": "proxy"}`
+- `DELETE /v1/vaults/{name}/agents/{agentName}` -- remove agent from vault
+- `POST /v1/vaults/{name}/agents/{agentName}/role` -- change vault role; body: `{"role": "member"}`
 
 ## Multi-User Permission Model
 

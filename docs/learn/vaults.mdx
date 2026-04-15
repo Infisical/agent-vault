@@ -41,32 +41,21 @@ Vault resolution priority: `--vault` flag > `agent-vault.json` > user context > 
 ## Invite agents to a vault
 
 <Tabs>
-  <Tab title="One-time invite">
-    For temporary agent sessions you can paste a prompt into (cloud-hosted, chat-based, or on another machine).
+  <Tab title="Agent invite">
+    For any agent you can paste a prompt into (cloud-hosted, chat-based, CI pipelines, or always-on assistants).
 
     <Steps>
       <Step title="Create the invite">
         ```bash
-        agent-vault vault agent invite create --vault my-vault
+        agent-vault agent invite my-agent --vault my-vault:proxy
         ```
         Outputs a prompt with the invite URL and usage instructions. Copied to your clipboard
-        automatically. Default TTL: 15 minutes.
+        automatically. The `--vault` flag pre-assigns vault access (format: `name:role`).
       </Step>
       <Step title="Paste into the agent's chat">
-        The agent redeems the invite automatically. Single-use — the token is burned
-        on redemption.
+        The agent redeems the invite automatically and receives a session token.
       </Step>
     </Steps>
-
-  </Tab>
-  <Tab title="Persistent invite">
-    For CI/CD pipelines, always-on assistants, or agents like OpenClaw that need to survive restarts.
-
-    ```bash
-    agent-vault vault agent invite create --name my-agent --vault my-vault
-    ```
-
-    The agent receives a **session token** (with configurable expiry, including no expiry).
 
   </Tab>
 </Tabs>

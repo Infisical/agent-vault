@@ -12,6 +12,7 @@ import ForgotPassword from "./pages/ForgotPassword";
 import VaultsLayout from "./components/VaultsLayout";
 import VaultsListTab from "./pages/home/VaultsListTab";
 import AllUsersTab from "./pages/home/AllUsersTab";
+import AllAgentsTab from "./pages/home/AllAgentsTab";
 import UserInvite from "./pages/UserInvite";
 import ProposalApprove from "./pages/ProposalApprove";
 import VaultLayout from "./components/VaultLayout";
@@ -24,7 +25,6 @@ import SettingsTab from "./pages/vault/SettingsTab";
 import InstanceLayout from "./components/InstanceLayout";
 import AccountLayout from "./components/AccountLayout";
 import AccountSettingsTab from "./pages/account/SettingsTab";
-import InstanceAgentsTab from "./pages/instance/AgentsTab";
 import InstanceSettingsTab from "./pages/instance/SettingsTab";
 import OAuthCallback from "./pages/OAuthCallback";
 
@@ -204,6 +204,12 @@ const vaultsUsersRoute = createRoute({
   component: AllUsersTab,
 });
 
+const vaultsAgentsRoute = createRoute({
+  getParentRoute: () => vaultsLayoutRoute,
+  path: "/agents",
+  component: AllAgentsTab,
+});
+
 const accountRoute = createRoute({
   getParentRoute: () => authLayoutRoute,
   path: "/account",
@@ -240,14 +246,8 @@ const manageIndexRoute = createRoute({
   getParentRoute: () => manageInstanceRoute,
   path: "/",
   beforeLoad: async () => {
-    throw redirect({ to: "/manage/agents" });
+    throw redirect({ to: "/manage/settings" });
   },
-});
-
-const manageAgentsRoute = createRoute({
-  getParentRoute: () => manageInstanceRoute,
-  path: "/agents",
-  component: InstanceAgentsTab,
 });
 
 const manageSettingsRoute = createRoute({
@@ -345,6 +345,7 @@ const routeTree = rootRoute.addChildren([
     vaultsLayoutRoute.addChildren([
       vaultsIndexRoute,
       vaultsUsersRoute,
+      vaultsAgentsRoute,
     ]),
     accountRoute.addChildren([
       accountIndexRoute,
@@ -352,7 +353,6 @@ const routeTree = rootRoute.addChildren([
     ]),
     manageInstanceRoute.addChildren([
       manageIndexRoute,
-      manageAgentsRoute,
       manageSettingsRoute,
     ]),
     vaultLayoutRoute.addChildren([

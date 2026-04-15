@@ -37,6 +37,7 @@ type mockStore struct {
 	emailVerifications []*store.EmailVerification
 	passwordResets     []*store.PasswordReset
 	agents             map[string]*store.Agent               // keyed by name
+	agentVaultGrants   []store.AgentVaultGrant               // agent vault grants
 	settings           map[string]string                     // instance settings
 	sessionCounter     int
 }
@@ -295,11 +296,11 @@ func (m *mockStore) ExpirePendingProposals(_ context.Context, before time.Time) 
 
 // --- Invite mocks ---
 
-func (m *mockStore) CreateInvite(_ context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time, sessionTTLSeconds int) (*store.Invite, error) {
+func (m *mockStore) CreateAgentInvite(_ context.Context, agentName, createdBy string, expiresAt time.Time, sessionTTLSeconds int, vaults []store.AgentInviteVault) (*store.Invite, error) {
 	inv := &store.Invite{
 		ID: len(m.invites) + 1, Token: "av_inv_test" + fmt.Sprintf("%d", len(m.invites)),
-		VaultID: vaultID, VaultRole: vaultRole, Status: "pending", CreatedBy: createdBy,
-		SessionTTLSeconds: sessionTTLSeconds,
+		AgentName: agentName, Status: "pending", CreatedBy: createdBy,
+		SessionTTLSeconds: sessionTTLSeconds, Vaults: vaults,
 		CreatedAt: time.Now(), ExpiresAt: expiresAt,
 	}
 	m.invites[inv.Token] = inv
@@ -314,11 +315,24 @@ func (m *mockStore) GetInviteByToken(_ context.Context, token string) (*store.In
 	return inv, nil
 }
 
-func (m *mockStore) ListInvites(_ context.Context, vaultID, status string) ([]store.Invite, error) {
+func (m *mockStore) ListInvites(_ context.Context, status string) ([]store.Invite, error) {
 	var result []store.Invite
 	for _, inv := range m.invites {
-		if inv.VaultID == vaultID && (status == "" || inv.Status == status) {
+		if status == "" || inv.Status == status {
 			result = append(result, *inv)
+		}
+	}
+	return result, nil
+}
+
+func (m *mockStore) ListInvitesByVault(_ context.Context, vaultID, status string) ([]store.Invite, error) {
+	var result []store.Invite
+	for _, inv := range m.invites {
+		for _, v := range inv.Vaults {
+			if v.VaultID == vaultID && (status == "" || inv.Status == status) {
+				result = append(result, *inv)
+				break
+			}
 		}
 	}
 	return result, nil
@@ -362,14 +376,76 @@ func (m *mockStore) RevokeInviteByID(_ context.Context, id int) error {
 	return fmt.Errorf("not found")
 }
 
-func (m *mockStore) CountPendingInvites(_ context.Context, vaultID string) (int, error) {
+func (m *mockStore) CountPendingInvites(_ context.Context) (int, error) {
 	count := 0
 	for _, inv := range m.invites {
-		if inv.VaultID == vaultID && inv.Status == "pending" {
+		if inv.Status == "pending" {
 			count++
 		}
 	}
 	return count, nil
+}
+
+func (m *mockStore) HasPendingInviteByAgentName(_ context.Context, name string) (bool, error) {
+	for _, inv := range m.invites {
+		if inv.Status == "pending" && inv.AgentName == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (m *mockStore) GetPendingInviteByAgentName(_ context.Context, name string) (*store.Invite, error) {
+	for _, inv := range m.invites {
+		if inv.Status == "pending" && inv.AgentName == name {
+			return inv, nil
+		}
+	}
+	return nil, fmt.Errorf("not found")
+}
+
+func (m *mockStore) AddAgentInviteVault(_ context.Context, inviteID int, vaultID, role string) error {
+	for _, inv := range m.invites {
+		if inv.ID == inviteID {
+			inv.Vaults = append(inv.Vaults, store.AgentInviteVault{
+				VaultID:   vaultID,
+				VaultRole: role,
+			})
+			return nil
+		}
+	}
+	return fmt.Errorf("invite not found")
+}
+
+func (m *mockStore) RemoveAgentInviteVault(_ context.Context, inviteID int, vaultID string) error {
+	for _, inv := range m.invites {
+		if inv.ID == inviteID {
+			var filtered []store.AgentInviteVault
+			for _, v := range inv.Vaults {
+				if v.VaultID != vaultID {
+					filtered = append(filtered, v)
+				}
+			}
+			inv.Vaults = filtered
+			return nil
+		}
+	}
+	return fmt.Errorf("invite not found")
+}
+
+func (m *mockStore) UpdateAgentInviteVaultRole(_ context.Context, inviteID int, vaultID, role string) error {
+	for _, inv := range m.invites {
+		if inv.ID == inviteID {
+			for i, v := range inv.Vaults {
+				if v.VaultID == vaultID {
+					inv.Vaults[i].VaultRole = role
+					return nil
+				}
+			}
+			return fmt.Errorf("vault not found on invite")
+		}
+	}
+	return fmt.Errorf("invite not found")
 }
 
 func (m *mockStore) Close() error { return nil }
@@ -796,19 +872,14 @@ func (m *mockStore) GetProposalByApprovalToken(_ context.Context, token string) 
 
 // --- Agent mock methods ---
 
-func (m *mockStore) CreateAgent(_ context.Context, name, vaultID string, tokenHash, tokenSalt []byte, tokenPrefix, vaultRole, createdBy string) (*store.Agent, error) {
+func (m *mockStore) CreateAgent(_ context.Context, name, createdBy string) (*store.Agent, error) {
 	ag := &store.Agent{
-		ID:                 "agent-" + name,
-		Name:               name,
-		VaultID:            vaultID,
-		ServiceTokenHash:   tokenHash,
-		ServiceTokenSalt:   tokenSalt,
-		ServiceTokenPrefix: tokenPrefix,
-		VaultRole:          vaultRole,
-		Status:             "active",
-		CreatedBy:          createdBy,
-		CreatedAt:          time.Now(),
-		UpdatedAt:          time.Now(),
+		ID:        "agent-" + name,
+		Name:      name,
+		Status:    "active",
+		CreatedBy: createdBy,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
 	}
 	m.agents[name] = ag
 	return ag, nil
@@ -831,23 +902,50 @@ func (m *mockStore) GetAgentByID(_ context.Context, id string) (*store.Agent, er
 	return nil, fmt.Errorf("agent not found")
 }
 
-func (m *mockStore) UpdateAgentVaultRole(_ context.Context, id, role string) error {
-	for _, ag := range m.agents {
-		if ag.ID == id {
-			ag.VaultRole = role
+func (m *mockStore) GrantAgentVaultRole(_ context.Context, agentID, vaultID, role string) error {
+	m.agentVaultGrants = append(m.agentVaultGrants, store.AgentVaultGrant{
+		AgentID: agentID, VaultID: vaultID, VaultRole: role, CreatedAt: time.Now(),
+	})
+	return nil
+}
+
+func (m *mockStore) RevokeAgentVaultAccess(_ context.Context, agentID, vaultID string) error {
+	for i, g := range m.agentVaultGrants {
+		if g.AgentID == agentID && g.VaultID == vaultID {
+			m.agentVaultGrants = append(m.agentVaultGrants[:i], m.agentVaultGrants[i+1:]...)
 			return nil
 		}
 	}
-	return fmt.Errorf("agent not found")
+	return fmt.Errorf("grant not found")
 }
 
-func (m *mockStore) GetAgentByTokenPrefix(_ context.Context, prefix string) (*store.Agent, error) {
-	for _, ag := range m.agents {
-		if ag.ServiceTokenPrefix == prefix && ag.Status == "active" {
-			return ag, nil
+func (m *mockStore) GetAgentVaultRole(_ context.Context, agentID, vaultID string) (string, error) {
+	for _, g := range m.agentVaultGrants {
+		if g.AgentID == agentID && g.VaultID == vaultID {
+			return g.VaultRole, nil
 		}
 	}
-	return nil, fmt.Errorf("agent not found")
+	return "", fmt.Errorf("no grant")
+}
+
+func (m *mockStore) ListAgentGrants(_ context.Context, agentID string) ([]store.AgentVaultGrant, error) {
+	var result []store.AgentVaultGrant
+	for _, g := range m.agentVaultGrants {
+		if g.AgentID == agentID {
+			result = append(result, g)
+		}
+	}
+	return result, nil
+}
+
+func (m *mockStore) ListVaultAgents(_ context.Context, vaultID string) ([]store.AgentVaultGrant, error) {
+	var result []store.AgentVaultGrant
+	for _, g := range m.agentVaultGrants {
+		if g.VaultID == vaultID {
+			result = append(result, g)
+		}
+	}
+	return result, nil
 }
 
 func (m *mockStore) ListAgents(_ context.Context, vaultID string) ([]store.Agent, error) {
@@ -855,9 +953,14 @@ func (m *mockStore) ListAgents(_ context.Context, vaultID string) ([]store.Agent
 		return nil, fmt.Errorf("vaultID is required")
 	}
 	var result []store.Agent
-	for _, ag := range m.agents {
-		if ag.VaultID == vaultID {
-			result = append(result, *ag)
+	for _, g := range m.agentVaultGrants {
+		if g.VaultID == vaultID {
+			for _, ag := range m.agents {
+				if ag.ID == g.AgentID {
+					result = append(result, *ag)
+					break
+				}
+			}
 		}
 	}
 	return result, nil
@@ -883,18 +986,6 @@ func (m *mockStore) RevokeAgent(_ context.Context, id string) error {
 					delete(m.sessions, sid)
 				}
 			}
-			return nil
-		}
-	}
-	return fmt.Errorf("agent not found")
-}
-
-func (m *mockStore) UpdateAgentServiceToken(_ context.Context, id string, tokenHash, tokenSalt []byte, tokenPrefix string) error {
-	for _, ag := range m.agents {
-		if ag.ID == id {
-			ag.ServiceTokenHash = tokenHash
-			ag.ServiceTokenSalt = tokenSalt
-			ag.ServiceTokenPrefix = tokenPrefix
 			return nil
 		}
 	}
@@ -946,13 +1037,11 @@ func (m *mockStore) DeleteAgentSessions(_ context.Context, agentID string) error
 	return nil
 }
 
-func (m *mockStore) CreateAgentSession(_ context.Context, agentID, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error) {
+func (m *mockStore) CreateAgentSession(_ context.Context, agentID string, expiresAt *time.Time) (*store.Session, error) {
 	id := "agent-session-" + agentID + "-" + fmt.Sprintf("%d", len(m.sessions))
 	s := &store.Session{
 		ID:        id,
-		VaultID:   vaultID,
 		AgentID:   agentID,
-		VaultRole: vaultRole,
 		ExpiresAt: expiresAt,
 		CreatedAt: time.Now(),
 	}
@@ -960,24 +1049,12 @@ func (m *mockStore) CreateAgentSession(_ context.Context, agentID, vaultID, vaul
 	return s, nil
 }
 
-func (m *mockStore) CreatePersistentInvite(_ context.Context, vaultID, vaultRole, createdBy string, agentName string, expiresAt time.Time) (*store.Invite, error) {
-	token := "av_inv_persistent_" + fmt.Sprintf("%d", len(m.invites))
-	inv := &store.Invite{
-		ID: len(m.invites) + 1, Token: token,
-		VaultID: vaultID, VaultRole: vaultRole, Status: "pending", CreatedBy: createdBy,
-		Persistent: true, AgentName: agentName,
-		CreatedAt: time.Now(), ExpiresAt: expiresAt,
-	}
-	m.invites[token] = inv
-	return inv, nil
-}
-
-func (m *mockStore) CreateRotationInvite(_ context.Context, agentID, vaultID, createdBy string, expiresAt time.Time) (*store.Invite, error) {
+func (m *mockStore) CreateRotationInvite(_ context.Context, agentID, createdBy string, expiresAt time.Time) (*store.Invite, error) {
 	token := "av_inv_rotation_" + fmt.Sprintf("%d", len(m.invites))
 	inv := &store.Invite{
 		ID: len(m.invites) + 1, Token: token,
-		VaultID: vaultID, Status: "pending", CreatedBy: createdBy,
-		Persistent: true, AgentID: agentID,
+		Status: "pending", CreatedBy: createdBy,
+		AgentID: agentID,
 		CreatedAt: time.Now(), ExpiresAt: expiresAt,
 	}
 	m.invites[token] = inv
@@ -2756,15 +2833,18 @@ func TestAdminProposalRejectRequiresAdminSession(t *testing.T) {
 func TestHandleInviteRedeem(t *testing.T) {
 	srv, ms := setupInviteTest(t)
 
-	// Seed a valid invite.
+	// Seed a valid invite (all invites are now persistent/named).
 	inv := &store.Invite{
 		ID: 1, Token: "av_inv_validtoken1234567890abcdef",
-		VaultID: "root-ns-id", Status: "pending",
+		Status: "pending", AgentName: "test-agent",
 		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(15 * time.Minute),
 	}
 	ms.invites[inv.Token] = inv
 
-	req := httptest.NewRequest(http.MethodGet, "/invite/"+inv.Token, nil)
+	// All invites require POST now.
+	body := strings.NewReader(`{}`)
+	req := httptest.NewRequest(http.MethodPost, "/invite/"+inv.Token, body)
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 
@@ -2772,20 +2852,17 @@ func TestHandleInviteRedeem(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	var resp inviteRedeemResponse
+	var resp map[string]interface{}
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.AVSessionToken == "" {
+	if resp["av_session_token"] == nil || resp["av_session_token"].(string) == "" {
 		t.Fatal("expected non-empty session token")
 	}
-	if resp.AVVault != "default" {
-		t.Fatalf("expected vault default, got %s", resp.AVVault)
+	if resp["agent_name"] != "test-agent" {
+		t.Fatalf("expected agent_name test-agent, got %v", resp["agent_name"])
 	}
-	if len(resp.Services) != 1 {
-		t.Fatalf("expected 1 service, got %d", len(resp.Services))
-	}
-	if resp.Instructions == "" {
+	if resp["instructions"] == nil || resp["instructions"].(string) == "" {
 		t.Fatal("expected non-empty instructions")
 	}
 
@@ -2798,7 +2875,9 @@ func TestHandleInviteRedeem(t *testing.T) {
 func TestHandleInviteRedeem_NotFound(t *testing.T) {
 	srv, _ := setupInviteTest(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/invite/av_inv_nonexistent", nil)
+	body := strings.NewReader(`{}`)
+	req := httptest.NewRequest(http.MethodPost, "/invite/av_inv_nonexistent", body)
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 
@@ -2812,12 +2891,14 @@ func TestHandleInviteRedeem_Expired(t *testing.T) {
 
 	inv := &store.Invite{
 		ID: 1, Token: "av_inv_expiredtoken12345678abcdef",
-		VaultID: "root-ns-id", Status: "pending",
+		Status: "pending", AgentName: "test-agent",
 		CreatedAt: time.Now().Add(-20 * time.Minute), ExpiresAt: time.Now().Add(-5 * time.Minute),
 	}
 	ms.invites[inv.Token] = inv
 
-	req := httptest.NewRequest(http.MethodGet, "/invite/"+inv.Token, nil)
+	reqBody := strings.NewReader(`{}`)
+	req := httptest.NewRequest(http.MethodPost, "/invite/"+inv.Token, reqBody)
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 
@@ -2825,10 +2906,10 @@ func TestHandleInviteRedeem_Expired(t *testing.T) {
 		t.Fatalf("expected 410, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	var body map[string]string
-	json.NewDecoder(rec.Body).Decode(&body)
-	if body["error"] != "invite_expired" {
-		t.Fatalf("expected error code invite_expired, got %s", body["error"])
+	var resp map[string]string
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["error"] != "invite_expired" {
+		t.Fatalf("expected error code invite_expired, got %s", resp["error"])
 	}
 }
 
@@ -2837,12 +2918,14 @@ func TestHandleInviteRedeem_AlreadyRedeemed(t *testing.T) {
 
 	inv := &store.Invite{
 		ID: 1, Token: "av_inv_redeemedtoken123456abcdef",
-		VaultID: "root-ns-id", Status: "redeemed",
+		Status: "redeemed", AgentName: "test-agent",
 		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(15 * time.Minute),
 	}
 	ms.invites[inv.Token] = inv
 
-	req := httptest.NewRequest(http.MethodGet, "/invite/"+inv.Token, nil)
+	reqBody := strings.NewReader(`{}`)
+	req := httptest.NewRequest(http.MethodPost, "/invite/"+inv.Token, reqBody)
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 
@@ -2850,10 +2933,10 @@ func TestHandleInviteRedeem_AlreadyRedeemed(t *testing.T) {
 		t.Fatalf("expected 410, got %d", rec.Code)
 	}
 
-	var body map[string]string
-	json.NewDecoder(rec.Body).Decode(&body)
-	if body["error"] != "invite_redeemed" {
-		t.Fatalf("expected error code invite_redeemed, got %s", body["error"])
+	var resp map[string]string
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["error"] != "invite_redeemed" {
+		t.Fatalf("expected error code invite_redeemed, got %s", resp["error"])
 	}
 }
 
@@ -2862,12 +2945,14 @@ func TestHandleInviteRedeem_Revoked(t *testing.T) {
 
 	inv := &store.Invite{
 		ID: 1, Token: "av_inv_revokedtoken1234567abcdef",
-		VaultID: "root-ns-id", Status: "revoked",
+		Status: "revoked", AgentName: "test-agent",
 		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(15 * time.Minute),
 	}
 	ms.invites[inv.Token] = inv
 
-	req := httptest.NewRequest(http.MethodGet, "/invite/"+inv.Token, nil)
+	reqBody := strings.NewReader(`{}`)
+	req := httptest.NewRequest(http.MethodPost, "/invite/"+inv.Token, reqBody)
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 
@@ -2875,10 +2960,10 @@ func TestHandleInviteRedeem_Revoked(t *testing.T) {
 		t.Fatalf("expected 410, got %d", rec.Code)
 	}
 
-	var body map[string]string
-	json.NewDecoder(rec.Body).Decode(&body)
-	if body["error"] != "invite_revoked" {
-		t.Fatalf("expected error code invite_revoked, got %s", body["error"])
+	var resp map[string]string
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["error"] != "invite_revoked" {
+		t.Fatalf("expected error code invite_revoked, got %s", resp["error"])
 	}
 }
 
@@ -3192,8 +3277,7 @@ func TestPersistentInviteRedeemGET405(t *testing.T) {
 
 	inv := &store.Invite{
 		ID: 1, Token: "av_inv_persistent_test",
-		VaultID: "root-ns-id", Status: "pending", Persistent: true,
-		AgentName: "testbot",
+		Status: "pending", AgentName: "testbot",
 		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(15 * time.Minute),
 	}
 	ms.invites[inv.Token] = inv
@@ -3212,8 +3296,8 @@ func TestPersistentInviteRedeemPOST(t *testing.T) {
 
 	inv := &store.Invite{
 		ID: 1, Token: "av_inv_persistent_post",
-		VaultID: "root-ns-id", Status: "pending", Persistent: true,
-		AgentName: "mybot", CreatedBy: "owner-user-id",
+		Status: "pending", AgentName: "mybot",
+		CreatedBy: "owner-user-id",
 		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(15 * time.Minute),
 	}
 	ms.invites[inv.Token] = inv
@@ -3253,17 +3337,18 @@ func TestPersistentInviteRedeemPOST(t *testing.T) {
 	}
 }
 
-func TestPersistentInviteRedeemPOST_NameFromBody(t *testing.T) {
+func TestPersistentInviteRedeemPOST_InviteNameTakesPrecedence(t *testing.T) {
 	srv, ms := setupInviteTest(t)
 
 	inv := &store.Invite{
 		ID: 1, Token: "av_inv_persistent_nobody",
-		VaultID: "root-ns-id", Status: "pending", Persistent: true,
+		Status: "pending", AgentName: "test-agent",
 		CreatedBy: "owner-user-id",
 		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(15 * time.Minute),
 	}
 	ms.invites[inv.Token] = inv
 
+	// Body name should NOT override invite-specified name.
 	body := strings.NewReader(`{"name": "bodybot"}`)
 	req := httptest.NewRequest(http.MethodPost, "/invite/"+inv.Token, body)
 	req.Header.Set("Content-Type", "application/json")
@@ -3276,51 +3361,57 @@ func TestPersistentInviteRedeemPOST_NameFromBody(t *testing.T) {
 
 	var resp map[string]interface{}
 	json.NewDecoder(rec.Body).Decode(&resp)
-	if resp["agent_name"] != "bodybot" {
-		t.Fatalf("expected agent_name bodybot, got %v", resp["agent_name"])
+	if resp["agent_name"] != "test-agent" {
+		t.Fatalf("expected agent_name test-agent, got %v", resp["agent_name"])
 	}
 }
 
-func TestPersistentInviteRedeemPOST_NoName400(t *testing.T) {
+func TestInviteRedeemPOST_UsesInviteName(t *testing.T) {
 	srv, ms := setupInviteTest(t)
 
 	inv := &store.Invite{
-		ID: 1, Token: "av_inv_persistent_noname",
-		VaultID: "root-ns-id", Status: "pending", Persistent: true,
+		ID: 1, Token: "av_inv_persistent_named",
+		Status: "pending", AgentName: "preset-bot",
 		CreatedBy: "owner-user-id",
 		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(15 * time.Minute),
 	}
 	ms.invites[inv.Token] = inv
 
+	// Empty body should use the invite's pre-set AgentName.
 	body := strings.NewReader(`{}`)
 	req := httptest.NewRequest(http.MethodPost, "/invite/"+inv.Token, body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for missing name, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["agent_name"] != "preset-bot" {
+		t.Fatalf("expected agent_name preset-bot, got %v", resp["agent_name"])
 	}
 }
 
-func TestTemporaryInvitePOST400(t *testing.T) {
+func TestInviteRedeemGET_Returns405(t *testing.T) {
 	srv, ms := setupInviteTest(t)
 
 	inv := &store.Invite{
-		ID: 1, Token: "av_inv_temp_post",
-		VaultID: "root-ns-id", Status: "pending", Persistent: false,
+		ID: 1, Token: "av_inv_get_test",
+		Status: "pending", AgentName: "test-agent",
 		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(15 * time.Minute),
 	}
 	ms.invites[inv.Token] = inv
 
-	body := strings.NewReader(`{"name": "bot"}`)
-	req := httptest.NewRequest(http.MethodPost, "/invite/"+inv.Token, body)
-	req.Header.Set("Content-Type", "application/json")
+	// GET should return 405 since all invites are now persistent.
+	req := httptest.NewRequest(http.MethodGet, "/invite/"+inv.Token, nil)
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for POST on temporary invite, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 for GET on invite, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -3329,13 +3420,13 @@ func TestDuplicateAgentName409(t *testing.T) {
 
 	// Pre-create an agent.
 	ms.agents["existing"] = &store.Agent{
-		ID: "agent-existing", Name: "existing", VaultID: "root-ns-id", Status: "active",
+		ID: "agent-existing", Name: "existing", Status: "active",
 	}
 
 	inv := &store.Invite{
 		ID: 1, Token: "av_inv_dup_name",
-		VaultID: "root-ns-id", Status: "pending", Persistent: true,
-		AgentName: "existing", CreatedBy: "owner-user-id",
+		Status: "pending", AgentName: "existing",
+		CreatedBy: "owner-user-id",
 		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(15 * time.Minute),
 	}
 	ms.invites[inv.Token] = inv
@@ -3357,10 +3448,12 @@ func TestDuplicateAgentName409(t *testing.T) {
 func TestAgentList(t *testing.T) {
 	srv, ms, sessID := setupAgentTest(t)
 
-	ms.agents["bot1"] = &store.Agent{ID: "a1", Name: "bot1", VaultID: "root-ns-id", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}
-	ms.agents["bot2"] = &store.Agent{ID: "a2", Name: "bot2", VaultID: "root-ns-id", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	ms.agents["bot1"] = &store.Agent{ID: "a1", Name: "bot1", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	ms.agents["bot2"] = &store.Agent{ID: "a2", Name: "bot2", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	ms.agentVaultGrants = append(ms.agentVaultGrants, store.AgentVaultGrant{AgentID: "a1", VaultID: "root-ns-id", VaultRole: "proxy"})
+	ms.agentVaultGrants = append(ms.agentVaultGrants, store.AgentVaultGrant{AgentID: "a2", VaultID: "root-ns-id", VaultRole: "proxy"})
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/admin/agents", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/agents", nil)
 	req.Header.Set("Authorization", "Bearer "+sessID)
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
@@ -3380,9 +3473,9 @@ func TestAgentList(t *testing.T) {
 func TestAgentRevoke(t *testing.T) {
 	srv, ms, sessID := setupAgentTest(t)
 
-	ms.agents["revokebot"] = &store.Agent{ID: "a1", Name: "revokebot", VaultID: "root-ns-id", Status: "active"}
+	ms.agents["revokebot"] = &store.Agent{ID: "a1", Name: "revokebot", Status: "active"}
 
-	req := httptest.NewRequest(http.MethodDelete, "/v1/admin/agents/revokebot", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/v1/agents/revokebot", nil)
 	req.Header.Set("Authorization", "Bearer "+sessID)
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
@@ -3400,9 +3493,9 @@ func TestAgentRevoke(t *testing.T) {
 func TestAgentRotate(t *testing.T) {
 	srv, ms, sessID := setupAgentTest(t)
 
-	ms.agents["rotatebot"] = &store.Agent{ID: "a1", Name: "rotatebot", VaultID: "root-ns-id", Status: "active"}
+	ms.agents["rotatebot"] = &store.Agent{ID: "a1", Name: "rotatebot", Status: "active"}
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/admin/agents/rotatebot/rotate", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/rotatebot/rotate", nil)
 	req.Header.Set("Authorization", "Bearer "+sessID)
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
@@ -3424,10 +3517,10 @@ func TestAgentRotate(t *testing.T) {
 func TestAgentRename(t *testing.T) {
 	srv, ms, sessID := setupAgentTest(t)
 
-	ms.agents["oldbot"] = &store.Agent{ID: "a1", Name: "oldbot", VaultID: "root-ns-id", Status: "active"}
+	ms.agents["oldbot"] = &store.Agent{ID: "a1", Name: "oldbot", Status: "active"}
 
 	body := strings.NewReader(`{"name": "newbot"}`)
-	req := httptest.NewRequest(http.MethodPost, "/v1/admin/agents/oldbot/rename", body)
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/oldbot/rename", body)
 	req.Header.Set("Authorization", "Bearer "+sessID)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

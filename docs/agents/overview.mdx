@@ -1,120 +1,146 @@
 ---
 title: "Agents"
-description: "Understand the two types of agents in Agent Vault and how to connect them."
+description: "Understand how agents connect to Agent Vault and how to manage them."
 ---
 
-An `Agent` is any AI-powered process that connects to a [vault](/learn/vaults) to proxy requests and raise [proposals](/learn/proposals) through Agent Vault. Agent Vault supports three ways to connect agents: **temporary**, **direct connect**, and **persistent**.
+An `Agent` is any AI-powered process that connects to Agent Vault to proxy requests and raise [proposals](/learn/proposals). Agents are **instance-level entities** (like users) that can be granted access to multiple [vaults](/learn/vaults) with independent roles per vault.
 
-## Temporary agents
+There are two ways to connect an agent: **wrapping** a local process or **inviting** any agent via a prompt.
 
-A temporary agent is an ephemeral session with no stored identity. It connects to a vault, does its work, and the session expires. There is nothing to manage afterward.
+## Wrapping with `vault run`
 
-### `agent-vault vault run` (recommended for local dev)
-
-Wraps a local agent process with the environment variables it needs. No invite, no token management.
+The simplest approach for local development. Wraps a local agent process with the environment variables it needs — no invite, no token management.
 
 ```bash
-agent-vault vault run -- claude
+agent-vault vault run -- claude    # Claude Code
 agent-vault vault run --vault my-vault -- claude
 ```
 
-The agent can immediately make proxied requests and raise proposals.
+The agent receives a temporary, vault-scoped session and can immediately make proxied requests and raise proposals.
 
-### One-time invite
+## Inviting an agent
 
-For agents you can paste a prompt into, like Devin or other cloud-hosted agents.
-
-```bash
-agent-vault vault agent invite create --vault my-vault
-```
-
-Outputs a prompt with the invite URL. Paste it into the agent's chat. The token is burned on redemption and the agent receives a single session token.
-
-## Direct connect
-
-Direct connect skips the invite ceremony entirely. Instead of creating an invite link for the agent to redeem, it mints a scoped session token immediately and outputs the environment variables you can paste into any agent.
+For agents you can't wrap (cloud-hosted agents, existing sessions, CI pipelines), create an invite. The agent redeems the invite via HTTP and receives a session token.
 
 ```bash
-agent-vault vault agent invite create --direct --vault my-vault
+agent-vault agent invite my-agent
 ```
 
-This prints an `export` block with `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT` (and copies it to your clipboard). Paste these into the agent's environment or chat.
+Outputs a prompt with the invite URL. Paste it into the agent's chat. The agent redeems the invite and receives an instance-level session token.
 
-### Options
+### Vault pre-assignments
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--role` | `proxy` | Vault role: `proxy`, `member`, or `admin` |
-| `--ttl` | `24h` | Session lifetime (min 5m, max 7d) |
-| `--label` | | Optional label to identify the session |
+Optionally pre-assign vault access at invite time using the `--vault` flag (repeatable):
 
 ```bash
-# Create a 1-hour proxy session
-agent-vault vault agent invite create --direct --ttl 1h
+# Invite with proxy access to the default vault
+agent-vault agent invite my-agent --vault default:proxy
 
-# Create an admin session with a label
-agent-vault vault agent invite create --direct --role admin --label "ci-pipeline" --ttl 4h
+# Invite with access to multiple vaults
+agent-vault agent invite my-agent --vault default:member --vault payments:proxy
 ```
+
+The format is `vault_name:role` where role is `proxy`, `member`, or `admin` (defaults to `proxy` if omitted).
 
 <Note>
-Direct connect sessions have a maximum TTL of 7 days. For agents that need indefinite access, use [persistent agents](#persistent-agents) instead.
+Agent names must be 3-64 characters, lowercase alphanumeric and hyphens only, and globally unique across the instance.
 </Note>
 
-## Persistent agents
+### Adding vaults after creation
 
-A persistent agent has a named identity that outlives any single session. It receives a **session token** on creation (with configurable expiry, including no expiry). Best for CI/CD pipelines, always-on assistants, or agents that need to survive restarts.
+You can also grant vault access after the agent has been created:
 
 ```bash
-agent-vault vault agent invite create --name my-agent --vault my-vault
+agent-vault vault agent add my-agent --role proxy
+agent-vault vault agent add my-agent --vault payments --role member
 ```
 
-Paste the output into the agent's chat. The agent redeems the invite and receives a session token. By default the session has no expiry. Use `--ttl` to set a finite session lifetime (see [Agent protocol](/agents/protocol#session-token)).
+## Managing agents
 
-<Note>
-Agent names must be 3-64 characters, lowercase alphanumeric and hyphens only, and globally unique across all vaults.
-</Note>
+Agents are managed at two levels: **instance-level** (the agent identity) and **vault-level** (per-vault access).
 
-### Managing persistent agents
+### Instance-level commands
 
 ```bash
-# List agents
-agent-vault vault agent list --vault my-vault
+# List all agents across the instance
+agent-vault agent list
 
-# View agent details (vault, status, active sessions)
-agent-vault vault agent info my-agent
+# View agent details (vaults, status, active sessions)
+agent-vault agent info my-agent
 
 # Revoke an agent (deletes all sessions)
-agent-vault vault agent revoke my-agent
+agent-vault agent revoke my-agent
 
-# Rename an agent (keeps the same vault access)
-agent-vault vault agent rename my-agent new-name
+# Rename an agent
+agent-vault agent rename my-agent new-name
+```
+
+### Vault-level commands
+
+```bash
+# List agents in a specific vault
+agent-vault vault agent list --vault my-vault
+
+# Add an existing agent to a vault
+agent-vault vault agent add my-agent --role proxy
+
+# Change an agent's vault role
+agent-vault vault agent set-role my-agent --role member
+
+# Remove an agent from a vault
+agent-vault vault agent remove my-agent
 ```
 
 ### Rotating a session
 
 ```bash
-agent-vault vault agent rotate my-agent
+agent-vault agent rotate my-agent
 ```
 
-This creates a rotation invite. Paste the prompt into the agent's chat. The agent redeems it and receives a new session token. The old sessions are invalidated when the rotation invite is redeemed.
+This creates a rotation invite. Paste the prompt into the agent's chat. The agent redeems it and receives a new session token. Old sessions are invalidated when the rotation invite is redeemed.
 
-## Choosing the right type
+### Managing invites
 
-| Scenario | Type | Why |
+```bash
+# List pending invites
+agent-vault agent invite list --status pending
+
+# Revoke a pending invite
+agent-vault agent invite revoke <token_suffix>
+```
+
+## The X-Vault header
+
+Instance-level agent sessions are not scoped to a single vault. Instead, agents select a vault per-request using the `X-Vault` header:
+
+```
+GET /discover
+Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+X-Vault: my-vault
+```
+
+This applies to all vault-scoped requests: `/discover`, `/proxy/...`, `/v1/proposals`, and `/v1/credentials`.
+
+<Note>
+Agents created via `agent-vault vault run` receive vault-scoped sessions and do not need the `X-Vault` header — the vault is embedded in the session.
+</Note>
+
+## Choosing the right approach
+
+| Scenario | Approach | Why |
 |---|---|---|
-| Local dev with Claude Code or Cursor | Temporary (`agent-vault vault run`) | Simplest setup, no tokens to manage |
-| Paste into a cloud agent for a task | Temporary (one-time invite) | Session expires when the task is done |
-| Quick scripted access, CI jobs | Direct connect | Instant token, no invite ceremony |
-| CI/CD pipeline on every push | Persistent | Reconnects without human intervention |
-| Always-on assistant (e.g. OpenClaw) | Persistent | Survives process restarts |
+| Local dev with Claude Code or Cursor | `agent-vault vault run` | Simplest setup, no tokens to manage |
+| Cloud-hosted agent (e.g. Devin) | `agent-vault agent invite` | Paste a prompt, agent connects itself |
+| CI/CD pipeline | `agent-vault agent invite` | Named identity, survives restarts |
+| Always-on assistant | `agent-vault agent invite` | Multi-vault access, session rotation |
 
 <Tip>
-When in doubt, start with a temporary agent. You can always upgrade to persistent later.
+When in doubt, start with `agent-vault vault run`. You can always create a named agent later.
 </Tip>
 
 ## What happens after connecting
 
-Regardless of type, every agent follows the same [protocol](/agents/protocol) once connected:
+Regardless of how an agent connects, it follows the same [protocol](/agents/protocol):
 
 1. Call `/discover` to learn which services are available
 2. Route requests through the proxy at `/proxy/{host}/{path}`

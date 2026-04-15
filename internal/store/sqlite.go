@@ -1126,26 +1126,50 @@ func newInviteToken() string {
 	return "av_inv_" + hex.EncodeToString(b[:])
 }
 
-func (s *SQLiteStore) CreateInvite(ctx context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time, sessionTTLSeconds int) (*Invite, error) {
+func (s *SQLiteStore) CreateAgentInvite(ctx context.Context, agentName, createdBy string, expiresAt time.Time, sessionTTLSeconds int, vaults []AgentInviteVault) (*Invite, error) {
 	now := time.Now().UTC()
 	token := newInviteToken()
 
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO invites (token_hash, vault_id, vault_role, status, created_by, created_at, expires_at, session_ttl_seconds)
-		 VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`,
-		hashToken(token), vaultID, vaultRole, createdBy, now.Format(time.DateTime), expiresAt.UTC().Format(time.DateTime), nullableInt(sessionTTLSeconds),
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO invites (token_hash, agent_name, status, created_by, created_at, expires_at, session_ttl_seconds)
+		 VALUES (?, ?, 'pending', ?, ?, ?, ?)`,
+		hashToken(token), agentName, createdBy, now.Format(time.DateTime), expiresAt.UTC().Format(time.DateTime), nullableInt(sessionTTLSeconds),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("inserting invite: %w", err)
 	}
 
+	inviteID, _ := res.LastInsertId()
+
+	// Insert vault pre-assignments.
+	for _, v := range vaults {
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO agent_invite_vaults (invite_id, vault_id, vault_role) VALUES (?, ?, ?)`,
+			inviteID, v.VaultID, v.VaultRole,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("inserting invite vault: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing invite: %w", err)
+	}
+
 	return &Invite{
+		ID:                int(inviteID),
 		Token:             token,
-		VaultID:           vaultID,
-		VaultRole:         vaultRole,
+		AgentName:         agentName,
 		Status:            "pending",
 		CreatedBy:         createdBy,
 		SessionTTLSeconds: sessionTTLSeconds,
+		Vaults:            vaults,
 		CreatedAt:         now,
 		ExpiresAt:         expiresAt.UTC(),
 	}, nil
@@ -1153,58 +1177,128 @@ func (s *SQLiteStore) CreateInvite(ctx context.Context, vaultID, vaultRole, crea
 
 func (s *SQLiteStore) GetInviteByToken(ctx context.Context, token string) (*Invite, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, '' as token, vault_id, vault_role, status, session_id, created_by,
-		        persistent, agent_name, agent_id,
-		        created_at, expires_at, redeemed_at, revoked_at,
-		        session_ttl_seconds
+		`SELECT id, '' as token, agent_name, agent_id, session_ttl_seconds,
+		        status, session_id, created_by,
+		        created_at, expires_at, redeemed_at, revoked_at
 		 FROM invites WHERE token_hash = ?`, hashToken(token),
 	)
-	return scanInvite(row)
+	inv, err := scanInvite(row)
+	if err != nil {
+		return nil, err
+	}
+	inv.Vaults, err = s.loadAgentInviteVaults(ctx, inv.ID)
+	if err != nil {
+		return nil, err
+	}
+	return inv, nil
 }
 
-func (s *SQLiteStore) ListInvites(ctx context.Context, vaultID, status string) ([]Invite, error) {
+func (s *SQLiteStore) ListInvites(ctx context.Context, status string) ([]Invite, error) {
 	// Lazily expire pending invites that are past their TTL.
 	nowStr := time.Now().UTC().Format(time.DateTime)
 	_, _ = s.db.ExecContext(ctx,
-		`UPDATE invites SET status = 'expired' WHERE vault_id = ? AND status = 'pending' AND expires_at <= ?`,
-		vaultID, nowStr,
+		`UPDATE invites SET status = 'expired' WHERE status = 'pending' AND expires_at <= ?`,
+		nowStr,
 	)
 
 	var rows *sql.Rows
 	var err error
 	if status != "" {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, '' as token, vault_id, vault_role, status, session_id, created_by,
-			        persistent, agent_name, agent_id,
-			        created_at, expires_at, redeemed_at, revoked_at,
-			        session_ttl_seconds
-			 FROM invites WHERE vault_id = ? AND status = ? ORDER BY created_at DESC`,
-			vaultID, status,
+			`SELECT id, '' as token, agent_name, agent_id, session_ttl_seconds,
+			        status, session_id, created_by,
+			        created_at, expires_at, redeemed_at, revoked_at
+			 FROM invites WHERE status = ? ORDER BY created_at DESC`,
+			status,
 		)
 	} else {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, '' as token, vault_id, vault_role, status, session_id, created_by,
-			        persistent, agent_name, agent_id,
-			        created_at, expires_at, redeemed_at, revoked_at,
-			        session_ttl_seconds
-			 FROM invites WHERE vault_id = ? ORDER BY created_at DESC`,
-			vaultID,
+			`SELECT id, '' as token, agent_name, agent_id, session_ttl_seconds,
+			        status, session_id, created_by,
+			        created_at, expires_at, redeemed_at, revoked_at
+			 FROM invites ORDER BY created_at DESC`,
 		)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("listing invites: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
 
 	var invites []Invite
 	for rows.Next() {
 		inv, err := scanInviteRow(rows)
 		if err != nil {
+			_ = rows.Close()
 			return nil, err
 		}
 		invites = append(invites, *inv)
 	}
-	return invites, rows.Err()
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	_ = rows.Close()
+
+	// Load vault pre-assignments after closing rows to avoid connection deadlock.
+	for i := range invites {
+		invites[i].Vaults, _ = s.loadAgentInviteVaults(ctx, invites[i].ID)
+	}
+	return invites, nil
+}
+
+func (s *SQLiteStore) ListInvitesByVault(ctx context.Context, vaultID, status string) ([]Invite, error) {
+	// Lazily expire pending invites that are past their TTL.
+	nowStr := time.Now().UTC().Format(time.DateTime)
+	_, _ = s.db.ExecContext(ctx,
+		`UPDATE invites SET status = 'expired' WHERE status = 'pending' AND expires_at <= ?`,
+		nowStr,
+	)
+
+	var rows *sql.Rows
+	var err error
+	if status != "" {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT DISTINCT i.id, '' as token, i.agent_name, i.agent_id, i.session_ttl_seconds,
+			        i.status, i.session_id, i.created_by,
+			        i.created_at, i.expires_at, i.redeemed_at, i.revoked_at
+			 FROM invites i
+			 JOIN agent_invite_vaults aiv ON aiv.invite_id = i.id
+			 WHERE aiv.vault_id = ? AND i.status = ? ORDER BY i.created_at DESC`,
+			vaultID, status,
+		)
+	} else {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT DISTINCT i.id, '' as token, i.agent_name, i.agent_id, i.session_ttl_seconds,
+			        i.status, i.session_id, i.created_by,
+			        i.created_at, i.expires_at, i.redeemed_at, i.revoked_at
+			 FROM invites i
+			 JOIN agent_invite_vaults aiv ON aiv.invite_id = i.id
+			 WHERE aiv.vault_id = ? ORDER BY i.created_at DESC`,
+			vaultID,
+		)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listing invites by vault: %w", err)
+	}
+
+	var invites []Invite
+	for rows.Next() {
+		inv, err := scanInviteRow(rows)
+		if err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		invites = append(invites, *inv)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	_ = rows.Close()
+
+	for i := range invites {
+		invites[i].Vaults, _ = s.loadAgentInviteVaults(ctx, invites[i].ID)
+	}
+	return invites, nil
 }
 
 func (s *SQLiteStore) RedeemInvite(ctx context.Context, token, sessionID string) error {
@@ -1245,13 +1339,20 @@ func (s *SQLiteStore) RevokeInvite(ctx context.Context, token string) error {
 
 func (s *SQLiteStore) GetInviteByID(ctx context.Context, id int) (*Invite, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, '' as token, vault_id, vault_role, status, session_id, created_by,
-		        persistent, agent_name, agent_id,
-		        created_at, expires_at, redeemed_at, revoked_at,
-		        session_ttl_seconds
+		`SELECT id, '' as token, agent_name, agent_id, session_ttl_seconds,
+		        status, session_id, created_by,
+		        created_at, expires_at, redeemed_at, revoked_at
 		 FROM invites WHERE id = ?`, id,
 	)
-	return scanInvite(row)
+	inv, err := scanInvite(row)
+	if err != nil {
+		return nil, err
+	}
+	inv.Vaults, err = s.loadAgentInviteVaults(ctx, inv.ID)
+	if err != nil {
+		return nil, err
+	}
+	return inv, nil
 }
 
 func (s *SQLiteStore) RevokeInviteByID(ctx context.Context, id int) error {
@@ -1272,13 +1373,73 @@ func (s *SQLiteStore) RevokeInviteByID(ctx context.Context, id int) error {
 	return nil
 }
 
-func (s *SQLiteStore) CountPendingInvites(ctx context.Context, vaultID string) (int, error) {
+func (s *SQLiteStore) CountPendingInvites(ctx context.Context) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM invites WHERE vault_id = ? AND status = 'pending'",
-		vaultID,
+		"SELECT COUNT(*) FROM invites WHERE status = 'pending'",
 	).Scan(&count)
 	return count, err
+}
+
+func (s *SQLiteStore) HasPendingInviteByAgentName(ctx context.Context, name string) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM invites WHERE status = 'pending' AND agent_name = ?",
+		name,
+	).Scan(&count)
+	return count > 0, err
+}
+
+func (s *SQLiteStore) GetPendingInviteByAgentName(ctx context.Context, name string) (*Invite, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, '' as token, agent_name, agent_id, session_ttl_seconds,
+		        status, session_id, created_by,
+		        created_at, expires_at, redeemed_at, revoked_at
+		 FROM invites WHERE status = 'pending' AND agent_name = ? LIMIT 1`,
+		name,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if !rows.Next() {
+		rows.Close()
+		return nil, sql.ErrNoRows
+	}
+	inv, err := scanInviteRow(rows)
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	vaults, err := s.loadAgentInviteVaults(ctx, inv.ID)
+	if err != nil {
+		return nil, err
+	}
+	inv.Vaults = vaults
+	return inv, nil
+}
+
+func (s *SQLiteStore) AddAgentInviteVault(ctx context.Context, inviteID int, vaultID, role string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO agent_invite_vaults (invite_id, vault_id, vault_role) VALUES (?, ?, ?)`,
+		inviteID, vaultID, role,
+	)
+	return err
+}
+
+func (s *SQLiteStore) RemoveAgentInviteVault(ctx context.Context, inviteID int, vaultID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM agent_invite_vaults WHERE invite_id = ? AND vault_id = ?`,
+		inviteID, vaultID,
+	)
+	return err
+}
+
+func (s *SQLiteStore) UpdateAgentInviteVaultRole(ctx context.Context, inviteID int, vaultID, role string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE agent_invite_vaults SET vault_role = ? WHERE invite_id = ? AND vault_id = ?`,
+		role, inviteID, vaultID,
+	)
+	return err
 }
 
 func (s *SQLiteStore) ExpirePendingInvites(ctx context.Context, before time.Time) (int, error) {
@@ -1295,11 +1456,9 @@ func (s *SQLiteStore) ExpirePendingInvites(ctx context.Context, before time.Time
 }
 
 // scanInviteFields populates an Invite from pre-scanned fields.
-func scanInviteFields(inv *Invite, sessionID, agentName, agentID sql.NullString, persistent int, createdAt, expiresAt string, redeemedAt, revokedAt sql.NullString, sessionTTL sql.NullInt64) {
-	inv.SessionID = sessionID.String
-	inv.Persistent = persistent != 0
-	inv.AgentName = agentName.String
+func scanInviteFields(inv *Invite, agentID, sessionID sql.NullString, createdAt, expiresAt string, redeemedAt, revokedAt sql.NullString, sessionTTL sql.NullInt64) {
 	inv.AgentID = agentID.String
+	inv.SessionID = sessionID.String
 	inv.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
 	inv.ExpiresAt, _ = time.Parse(time.DateTime, expiresAt)
 	if redeemedAt.Valid {
@@ -1316,43 +1475,66 @@ func scanInviteFields(inv *Invite, sessionID, agentName, agentID sql.NullString,
 }
 
 // scanInvite scans a single invite row from a *sql.Row.
+// Expected column order: id, token, agent_name, agent_id, session_ttl_seconds,
+//
+//	status, session_id, created_by, created_at, expires_at, redeemed_at, revoked_at
 func scanInvite(row *sql.Row) (*Invite, error) {
 	var inv Invite
-	var sessionID, agentName, agentID sql.NullString
-	var persistent int
+	var agentID, sessionID sql.NullString
 	var createdAt, expiresAt string
 	var redeemedAt, revokedAt sql.NullString
 	var sessionTTL sql.NullInt64
 
-	if err := row.Scan(&inv.ID, &inv.Token, &inv.VaultID, &inv.VaultRole, &inv.Status,
-		&sessionID, &inv.CreatedBy, &persistent, &agentName, &agentID,
-		&createdAt, &expiresAt, &redeemedAt, &revokedAt,
-		&sessionTTL); err != nil {
+	if err := row.Scan(&inv.ID, &inv.Token, &inv.AgentName, &agentID, &sessionTTL,
+		&inv.Status, &sessionID, &inv.CreatedBy,
+		&createdAt, &expiresAt, &redeemedAt, &revokedAt); err != nil {
 		return nil, err
 	}
 
-	scanInviteFields(&inv, sessionID, agentName, agentID, persistent, createdAt, expiresAt, redeemedAt, revokedAt, sessionTTL)
+	scanInviteFields(&inv, agentID, sessionID, createdAt, expiresAt, redeemedAt, revokedAt, sessionTTL)
 	return &inv, nil
 }
 
 // scanInviteRow scans a single invite from a *sql.Rows.
 func scanInviteRow(rows *sql.Rows) (*Invite, error) {
 	var inv Invite
-	var sessionID, agentName, agentID sql.NullString
-	var persistent int
+	var agentID, sessionID sql.NullString
 	var createdAt, expiresAt string
 	var redeemedAt, revokedAt sql.NullString
 	var sessionTTL sql.NullInt64
 
-	if err := rows.Scan(&inv.ID, &inv.Token, &inv.VaultID, &inv.VaultRole, &inv.Status,
-		&sessionID, &inv.CreatedBy, &persistent, &agentName, &agentID,
-		&createdAt, &expiresAt, &redeemedAt, &revokedAt,
-		&sessionTTL); err != nil {
+	if err := rows.Scan(&inv.ID, &inv.Token, &inv.AgentName, &agentID, &sessionTTL,
+		&inv.Status, &sessionID, &inv.CreatedBy,
+		&createdAt, &expiresAt, &redeemedAt, &revokedAt); err != nil {
 		return nil, err
 	}
 
-	scanInviteFields(&inv, sessionID, agentName, agentID, persistent, createdAt, expiresAt, redeemedAt, revokedAt, sessionTTL)
+	scanInviteFields(&inv, agentID, sessionID, createdAt, expiresAt, redeemedAt, revokedAt, sessionTTL)
 	return &inv, nil
+}
+
+// loadAgentInviteVaults loads the vault pre-assignments for an invite.
+func (s *SQLiteStore) loadAgentInviteVaults(ctx context.Context, inviteID int) ([]AgentInviteVault, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT aiv.vault_id, v.name, aiv.vault_role
+		 FROM agent_invite_vaults aiv
+		 JOIN vaults v ON v.id = aiv.vault_id
+		 WHERE aiv.invite_id = ?`, inviteID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("loading invite vaults: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var vaults []AgentInviteVault
+	for rows.Next() {
+		var v AgentInviteVault
+		if err := rows.Scan(&v.VaultID, &v.VaultName, &v.VaultRole); err != nil {
+			return nil, err
+		}
+		vaults = append(vaults, v)
+	}
+	return vaults, rows.Err()
 }
 
 // --- Vault Invites ---
@@ -2081,109 +2263,127 @@ func (s *SQLiteStore) CreateOAuthUserAndAccount(ctx context.Context, email, role
 
 // --- Agents ---
 
-func (s *SQLiteStore) CreateAgent(ctx context.Context, name, vaultID string, tokenHash, tokenSalt []byte, tokenPrefix, vaultRole, createdBy string) (*Agent, error) {
+func (s *SQLiteStore) CreateAgent(ctx context.Context, name, createdBy string) (*Agent, error) {
 	id := newUUID()
 	now := time.Now().UTC()
 	nowStr := now.Format(time.DateTime)
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO agents (id, name, vault_id, service_token_hash, service_token_salt, service_token_prefix, vault_role, status, created_by, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
-		id, name, vaultID, tokenHash, tokenSalt, tokenPrefix, vaultRole, createdBy, nowStr, nowStr,
+		`INSERT INTO agents (id, name, status, created_by, created_at, updated_at)
+		 VALUES (?, ?, 'active', ?, ?, ?)`,
+		id, name, createdBy, nowStr, nowStr,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating agent: %w", err)
 	}
 
 	return &Agent{
-		ID:                 id,
-		Name:               name,
-		VaultID:            vaultID,
-		ServiceTokenHash:   tokenHash,
-		ServiceTokenSalt:   tokenSalt,
-		ServiceTokenPrefix: tokenPrefix,
-		VaultRole:          vaultRole,
-		Status:             "active",
-		CreatedBy:          createdBy,
-		CreatedAt:          now,
-		UpdatedAt:          now,
+		ID:        id,
+		Name:      name,
+		Status:    "active",
+		CreatedBy: createdBy,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}, nil
 }
 
 func (s *SQLiteStore) GetAgentByID(ctx context.Context, id string) (*Agent, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, vault_id, service_token_hash, service_token_salt, service_token_prefix,
-		        vault_role, status, created_by, created_at, updated_at, revoked_at
+		`SELECT id, name, status, created_by, created_at, updated_at, revoked_at
 		 FROM agents WHERE id = ?`, id,
 	)
-	return scanAgent(row)
+	ag, err := scanAgent(row)
+	if err != nil {
+		return nil, err
+	}
+	ag.Vaults, err = s.loadAgentVaultGrants(ctx, ag.ID)
+	if err != nil {
+		return nil, err
+	}
+	return ag, nil
 }
 
 func (s *SQLiteStore) GetAgentByName(ctx context.Context, name string) (*Agent, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, vault_id, service_token_hash, service_token_salt, service_token_prefix,
-		        vault_role, status, created_by, created_at, updated_at, revoked_at
+		`SELECT id, name, status, created_by, created_at, updated_at, revoked_at
 		 FROM agents WHERE name = ?`, name,
 	)
-	return scanAgent(row)
+	ag, err := scanAgent(row)
+	if err != nil {
+		return nil, err
+	}
+	ag.Vaults, err = s.loadAgentVaultGrants(ctx, ag.ID)
+	if err != nil {
+		return nil, err
+	}
+	return ag, nil
 }
 
-func (s *SQLiteStore) GetAgentByTokenPrefix(ctx context.Context, prefix string) (*Agent, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, vault_id, service_token_hash, service_token_salt, service_token_prefix,
-		        vault_role, status, created_by, created_at, updated_at, revoked_at
-		 FROM agents WHERE service_token_prefix = ? AND status = 'active'`, prefix,
-	)
-	return scanAgent(row)
-}
-
-// ListAgents returns agents for a specific vault. Use ListAllAgents for cross-vault listing.
+// ListAgents returns agents that have access to a specific vault via agent_vault_grants.
 func (s *SQLiteStore) ListAgents(ctx context.Context, vaultID string) ([]Agent, error) {
 	if vaultID == "" {
 		return nil, fmt.Errorf("vaultID is required; use ListAllAgents for cross-vault listing")
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, vault_id, service_token_hash, service_token_salt, service_token_prefix,
-		        vault_role, status, created_by, created_at, updated_at, revoked_at
-		 FROM agents WHERE vault_id = ? ORDER BY name`, vaultID,
+		`SELECT a.id, a.name, a.status, a.created_by, a.created_at, a.updated_at, a.revoked_at
+		 FROM agents a
+		 JOIN agent_vault_grants avg ON avg.agent_id = a.id
+		 WHERE avg.vault_id = ? ORDER BY a.name`, vaultID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("listing agents: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
 
 	var agents []Agent
 	for rows.Next() {
 		ag, err := scanAgentRow(rows)
 		if err != nil {
+			_ = rows.Close()
 			return nil, err
 		}
 		agents = append(agents, *ag)
 	}
-	return agents, rows.Err()
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	_ = rows.Close()
+
+	if err := s.batchLoadAgentVaultGrants(ctx, agents); err != nil {
+		return nil, err
+	}
+	return agents, nil
 }
 
-// ListAllAgents returns all agents across all vaults (owner-only use case).
+// ListAllAgents returns all agents with their vault grants.
 func (s *SQLiteStore) ListAllAgents(ctx context.Context) ([]Agent, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, vault_id, service_token_hash, service_token_salt, service_token_prefix,
-		        vault_role, status, created_by, created_at, updated_at, revoked_at
+		`SELECT id, name, status, created_by, created_at, updated_at, revoked_at
 		 FROM agents ORDER BY name`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("listing all agents: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
 
 	var agents []Agent
 	for rows.Next() {
 		ag, err := scanAgentRow(rows)
 		if err != nil {
+			_ = rows.Close()
 			return nil, err
 		}
 		agents = append(agents, *ag)
 	}
-	return agents, rows.Err()
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	_ = rows.Close()
+
+	if err := s.batchLoadAgentVaultGrants(ctx, agents); err != nil {
+		return nil, err
+	}
+	return agents, nil
 }
 
 func (s *SQLiteStore) RevokeAgent(ctx context.Context, id string) error {
@@ -2217,40 +2417,6 @@ func (s *SQLiteStore) RevokeAgent(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
-func (s *SQLiteStore) UpdateAgentServiceToken(ctx context.Context, id string, tokenHash, tokenSalt []byte, tokenPrefix string) error {
-	nowStr := time.Now().UTC().Format(time.DateTime)
-
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE agents SET service_token_hash = ?, service_token_salt = ?, service_token_prefix = ?, updated_at = ?
-		 WHERE id = ? AND status = 'active'`,
-		tokenHash, tokenSalt, tokenPrefix, nowStr, id,
-	)
-	if err != nil {
-		return fmt.Errorf("updating agent service token: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
-}
-
-func (s *SQLiteStore) UpdateAgentVaultRole(ctx context.Context, id, role string) error {
-	nowStr := time.Now().UTC().Format(time.DateTime)
-
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE agents SET vault_role = ?, updated_at = ? WHERE id = ? AND status = 'active'`,
-		role, nowStr, id,
-	)
-	if err != nil {
-		return fmt.Errorf("updating agent vault role: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
-}
 
 func (s *SQLiteStore) RenameAgent(ctx context.Context, id string, newName string) error {
 	nowStr := time.Now().UTC().Format(time.DateTime)
@@ -2316,7 +2482,7 @@ func (s *SQLiteStore) DeleteAgentSessions(ctx context.Context, agentID string) e
 	return nil
 }
 
-func (s *SQLiteStore) CreateAgentSession(ctx context.Context, agentID, vaultID, vaultRole string, expiresAt *time.Time) (*Session, error) {
+func (s *SQLiteStore) CreateAgentSession(ctx context.Context, agentID string, expiresAt *time.Time) (*Session, error) {
 	rawToken := newSessionToken()
 	tokenHash := hashSessionToken(rawToken)
 	now := time.Now().UTC()
@@ -2327,80 +2493,58 @@ func (s *SQLiteStore) CreateAgentSession(ctx context.Context, agentID, vaultID, 
 	}
 
 	_, err := s.db.ExecContext(ctx,
-		"INSERT INTO sessions (id, vault_id, agent_id, vault_role, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-		tokenHash, vaultID, agentID, vaultRole, expiresAtStr, now.Format(time.DateTime),
+		"INSERT INTO sessions (id, agent_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+		tokenHash, agentID, expiresAtStr, now.Format(time.DateTime),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating agent session: %w", err)
 	}
 
-	return &Session{ID: rawToken, VaultID: vaultID, AgentID: agentID, VaultRole: vaultRole, ExpiresAt: utcTimePtr(expiresAt), CreatedAt: now}, nil
+	return &Session{ID: rawToken, AgentID: agentID, ExpiresAt: utcTimePtr(expiresAt), CreatedAt: now}, nil
 }
 
-func (s *SQLiteStore) CreatePersistentInvite(ctx context.Context, vaultID, vaultRole, createdBy string, agentName string, expiresAt time.Time) (*Invite, error) {
+func (s *SQLiteStore) CreateRotationInvite(ctx context.Context, agentID, createdBy string, expiresAt time.Time) (*Invite, error) {
 	now := time.Now().UTC()
 	token := newInviteToken()
 
-	var agName sql.NullString
-	if agentName != "" {
-		agName = sql.NullString{String: agentName, Valid: true}
-	}
-
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO invites (token_hash, vault_id, vault_role, status, created_by, persistent, agent_name, created_at, expires_at)
-		 VALUES (?, ?, ?, 'pending', ?, 1, ?, ?, ?)`,
-		hashToken(token), vaultID, vaultRole, createdBy, agName, now.Format(time.DateTime), expiresAt.UTC().Format(time.DateTime),
-	)
+	// Use agent's existing name for the invite record.
+	var agentName string
+	err := s.db.QueryRowContext(ctx, "SELECT name FROM agents WHERE id = ?", agentID).Scan(&agentName)
 	if err != nil {
-		return nil, fmt.Errorf("inserting persistent invite: %w", err)
+		return nil, fmt.Errorf("looking up agent for rotation: %w", err)
 	}
 
-	return &Invite{
-		Token:      token,
-		VaultID:    vaultID,
-		VaultRole:  vaultRole,
-		Status:     "pending",
-		CreatedBy:  createdBy,
-		Persistent: true,
-		AgentName:  agentName,
-		CreatedAt:  now,
-		ExpiresAt:  expiresAt.UTC(),
-	}, nil
-}
-
-func (s *SQLiteStore) CreateRotationInvite(ctx context.Context, agentID, vaultID, createdBy string, expiresAt time.Time) (*Invite, error) {
-	now := time.Now().UTC()
-	token := newInviteToken()
-
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO invites (token_hash, vault_id, status, created_by, persistent, agent_id, created_at, expires_at)
-		 VALUES (?, ?, 'pending', ?, 1, ?, ?, ?)`,
-		hashToken(token), vaultID, createdBy, agentID, now.Format(time.DateTime), expiresAt.UTC().Format(time.DateTime),
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO invites (token_hash, agent_name, agent_id, status, created_by, created_at, expires_at)
+		 VALUES (?, ?, ?, 'pending', ?, ?, ?)`,
+		hashToken(token), agentName, agentID, createdBy, now.Format(time.DateTime), expiresAt.UTC().Format(time.DateTime),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("inserting rotation invite: %w", err)
 	}
 
+	inviteID, _ := res.LastInsertId()
 	return &Invite{
-		Token:       token,
-		VaultID: vaultID,
-		Status:      "pending",
-		CreatedBy:   createdBy,
-		Persistent:  true,
-		AgentID:     agentID,
-		CreatedAt:   now,
-		ExpiresAt:   expiresAt.UTC(),
+		ID:        int(inviteID),
+		Token:     token,
+		AgentName: agentName,
+		AgentID:   agentID,
+		Status:    "pending",
+		CreatedBy: createdBy,
+		CreatedAt: now,
+		ExpiresAt: expiresAt.UTC(),
 	}, nil
 }
 
+// scanAgent scans a single agent row from a *sql.Row.
+// Expected column order: id, name, status, created_by, created_at, updated_at, revoked_at
 func scanAgent(row *sql.Row) (*Agent, error) {
 	var ag Agent
 	var createdAt, updatedAt string
 	var revokedAt sql.NullString
 
-	if err := row.Scan(&ag.ID, &ag.Name, &ag.VaultID,
-		&ag.ServiceTokenHash, &ag.ServiceTokenSalt, &ag.ServiceTokenPrefix,
-		&ag.VaultRole, &ag.Status, &ag.CreatedBy, &createdAt, &updatedAt, &revokedAt); err != nil {
+	if err := row.Scan(&ag.ID, &ag.Name,
+		&ag.Status, &ag.CreatedBy, &createdAt, &updatedAt, &revokedAt); err != nil {
 		return nil, err
 	}
 
@@ -2418,9 +2562,8 @@ func scanAgentRow(rows *sql.Rows) (*Agent, error) {
 	var createdAt, updatedAt string
 	var revokedAt sql.NullString
 
-	if err := rows.Scan(&ag.ID, &ag.Name, &ag.VaultID,
-		&ag.ServiceTokenHash, &ag.ServiceTokenSalt, &ag.ServiceTokenPrefix,
-		&ag.VaultRole, &ag.Status, &ag.CreatedBy, &createdAt, &updatedAt, &revokedAt); err != nil {
+	if err := rows.Scan(&ag.ID, &ag.Name,
+		&ag.Status, &ag.CreatedBy, &createdAt, &updatedAt, &revokedAt); err != nil {
 		return nil, err
 	}
 
@@ -2431,6 +2574,138 @@ func scanAgentRow(rows *sql.Rows) (*Agent, error) {
 		ag.RevokedAt = &t
 	}
 	return &ag, nil
+}
+
+// loadAgentVaultGrants loads all vault grants for an agent.
+func (s *SQLiteStore) loadAgentVaultGrants(ctx context.Context, agentID string) ([]AgentVaultGrant, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT avg.agent_id, avg.vault_id, v.name, avg.vault_role, avg.created_at
+		 FROM agent_vault_grants avg
+		 JOIN vaults v ON v.id = avg.vault_id
+		 WHERE avg.agent_id = ?`, agentID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("loading agent vault grants: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var grants []AgentVaultGrant
+	for rows.Next() {
+		var g AgentVaultGrant
+		var createdAt string
+		if err := rows.Scan(&g.AgentID, &g.VaultID, &g.VaultName, &g.VaultRole, &createdAt); err != nil {
+			return nil, err
+		}
+		g.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
+		grants = append(grants, g)
+	}
+	return grants, rows.Err()
+}
+
+// batchLoadAgentVaultGrants loads vault grants for all agents in a single query.
+func (s *SQLiteStore) batchLoadAgentVaultGrants(ctx context.Context, agents []Agent) error {
+	if len(agents) == 0 {
+		return nil
+	}
+
+	// Build agent ID list and index map.
+	idxMap := make(map[string][]int, len(agents))
+	args := make([]interface{}, len(agents))
+	placeholders := make([]string, len(agents))
+	for i, ag := range agents {
+		idxMap[ag.ID] = append(idxMap[ag.ID], i)
+		args[i] = ag.ID
+		placeholders[i] = "?"
+	}
+
+	query := `SELECT avg.agent_id, avg.vault_id, v.name, avg.vault_role, avg.created_at
+		 FROM agent_vault_grants avg
+		 JOIN vaults v ON v.id = avg.vault_id
+		 WHERE avg.agent_id IN (` + strings.Join(placeholders, ",") + `)`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("batch loading agent vault grants: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var g AgentVaultGrant
+		var createdAt string
+		if err := rows.Scan(&g.AgentID, &g.VaultID, &g.VaultName, &g.VaultRole, &createdAt); err != nil {
+			return err
+		}
+		g.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
+		for _, idx := range idxMap[g.AgentID] {
+			agents[idx].Vaults = append(agents[idx].Vaults, g)
+		}
+	}
+	return rows.Err()
+}
+
+func (s *SQLiteStore) GrantAgentVaultRole(ctx context.Context, agentID, vaultID, role string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO agent_vault_grants (agent_id, vault_id, vault_role) VALUES (?, ?, ?)
+		 ON CONFLICT(agent_id, vault_id) DO UPDATE SET vault_role = excluded.vault_role`,
+		agentID, vaultID, role,
+	)
+	if err != nil {
+		return fmt.Errorf("granting agent vault role: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) RevokeAgentVaultAccess(ctx context.Context, agentID, vaultID string) error {
+	res, err := s.db.ExecContext(ctx,
+		"DELETE FROM agent_vault_grants WHERE agent_id = ? AND vault_id = ?",
+		agentID, vaultID,
+	)
+	if err != nil {
+		return fmt.Errorf("revoking agent vault access: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *SQLiteStore) GetAgentVaultRole(ctx context.Context, agentID, vaultID string) (string, error) {
+	var role string
+	err := s.db.QueryRowContext(ctx,
+		"SELECT vault_role FROM agent_vault_grants WHERE agent_id = ? AND vault_id = ?",
+		agentID, vaultID,
+	).Scan(&role)
+	return role, err
+}
+
+func (s *SQLiteStore) ListAgentGrants(ctx context.Context, agentID string) ([]AgentVaultGrant, error) {
+	return s.loadAgentVaultGrants(ctx, agentID)
+}
+
+func (s *SQLiteStore) ListVaultAgents(ctx context.Context, vaultID string) ([]AgentVaultGrant, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT avg.agent_id, avg.vault_id, v.name, avg.vault_role, avg.created_at
+		 FROM agent_vault_grants avg
+		 JOIN vaults v ON v.id = avg.vault_id
+		 WHERE avg.vault_id = ?`, vaultID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing vault agents: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var grants []AgentVaultGrant
+	for rows.Next() {
+		var g AgentVaultGrant
+		var createdAt string
+		if err := rows.Scan(&g.AgentID, &g.VaultID, &g.VaultName, &g.VaultRole, &createdAt); err != nil {
+			return nil, err
+		}
+		g.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
+		grants = append(grants, g)
+	}
+	return grants, rows.Err()
 }
 
 // newUUID generates a v4 UUID using crypto/rand.

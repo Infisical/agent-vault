@@ -10,27 +10,29 @@ description: "Connect any HTTP-capable agent or script to Agent Vault using envi
 
 ## Quick start
 
-Create a direct-connect session to get the environment variables your agent needs. If you haven't logged in yet, you'll be guided through setup automatically.
+The simplest way to connect a custom agent is with `vault run`, which sets up the environment variables automatically:
 
 ```bash
-agent-vault vault agent invite create --direct
+agent-vault vault run -- my-agent
 ```
 
-This prints an `export` block:
-
-```bash
-export AGENT_VAULT_ADDR="http://127.0.0.1:14321"
-export AGENT_VAULT_SESSION_TOKEN="..."
-export AGENT_VAULT_VAULT="default"
-```
-
-Paste these into your agent's environment, then start your agent.
+This sets `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT` in your agent's environment.
 
 ### Target a specific vault
 
 ```bash
-agent-vault vault agent invite create --direct --vault myproject
+agent-vault vault run --vault myproject -- my-agent
 ```
+
+### Alternative: agent invite
+
+For agents that can't be wrapped with `vault run` (e.g. cloud-hosted or CI pipelines), create an invite:
+
+```bash
+agent-vault agent invite my-agent --vault default:proxy
+```
+
+The agent redeems the invite via HTTP and receives a session token. See [Connect a custom agent](/guides/connect-custom-agent) for the full walkthrough.
 
 ## Try it out
 
@@ -102,7 +104,7 @@ Requests to hosts not in this list should go direct, not through the proxy.
 
 <CardGroup cols={2}>
   <Card title="Connect a custom agent" icon="plug" href="/guides/connect-custom-agent">
-    Full guide with error handling, proposals, and persistent agents.
+    Full guide with error handling and proposals.
   </Card>
   <Card title="Agent protocol" icon="code" href="/agents/protocol">
     HTTP reference for sessions, discovery, proxy, and proposals.

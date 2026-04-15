@@ -1,9 +1,9 @@
 import { type ReactNode, useRef, useState } from "react";
-import { Link, Outlet, useLocation, useNavigate, useRouteContext } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate, useRouteContext } from "@tanstack/react-router";
 import type { AuthContext } from "../router";
 import Navbar from "./Navbar";
 
-type InstanceTab = "agents" | "settings";
+type InstanceTab = "settings";
 
 interface NavItem {
   id: InstanceTab;
@@ -13,36 +13,13 @@ interface NavItem {
 
 export default function InstanceLayout() {
   const { auth } = useRouteContext({ from: "/_auth" }) as { auth: AuthContext };
-  const location = useLocation();
   const navigate = useNavigate();
   const [isExiting, setIsExiting] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
 
-  const pathSegments = location.pathname.split("/");
-  const lastSegment = pathSegments[pathSegments.length - 1] as InstanceTab;
-  const activeTab: InstanceTab = ["agents", "settings"].includes(lastSegment)
-    ? (lastSegment as InstanceTab)
-    : "agents";
+  const activeTab: InstanceTab = "settings";
 
   const navItems: NavItem[] = [
-    {
-      id: "agents",
-      label: "Agents",
-      icon: (
-        <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="4" y="4" width="16" height="16" rx="2" ry="2" />
-          <rect x="9" y="9" width="6" height="6" />
-          <line x1="9" y1="1" x2="9" y2="4" />
-          <line x1="15" y1="1" x2="15" y2="4" />
-          <line x1="9" y1="20" x2="9" y2="23" />
-          <line x1="15" y1="20" x2="15" y2="23" />
-          <line x1="20" y1="9" x2="23" y2="9" />
-          <line x1="20" y1="14" x2="23" y2="14" />
-          <line x1="1" y1="9" x2="4" y2="9" />
-          <line x1="1" y1="14" x2="4" y2="14" />
-        </svg>
-      ),
-    },
     {
       id: "settings",
       label: "Settings",

@@ -13,7 +13,7 @@ Instance-level roles govern administrative operations across the entire Agent Va
 | ------------------------------------- | --------------- | --------------- |
 | [Instance settings](/guides/instance-settings) (invite-only, domains) | Yes | No |
 | Manage users (list, remove, set-role) | Yes             | No              |
-| Manage agents (list, revoke, rotate, rename) | Yes      | No              |
+| Manage agents (invite, list, revoke, rotate, rename) | Yes | Yes |
 | List / delete all vaults              | Yes             | No              |
 | See all vaults & join as admin        | Yes             | No              |
 | Send test emails                      | Yes             | No              |
@@ -42,11 +42,11 @@ Vault-level roles govern what users and [agents](/agents/overview) can do inside
 | Set / delete credentials directly               | Yes   | Yes      | No       |
 | Approve / reject [proposals](/learn/proposals) | Yes   | Yes      | No       |
 | Manage vault [services](/learn/services)       | Yes   | Yes      | No       |
-| Invite agents (proxy only)                     | Yes   | Yes      | No       |
-| Invite agents (any role)                       | Yes   | No       | No       |
+| Add agents to vault (proxy only)               | Yes   | Yes      | No       |
+| Add agents to vault (any role)                 | Yes   | No       | No       |
 | Invite users to vault                          | Yes   | No       | No       |
 | Manage vault users (remove, set-role)          | Yes   | No       | No       |
-| Manage agents (revoke, rotate, rename)         | Yes   | No       | No       |
+| Manage vault agents (remove, set-role)         | Yes   | No       | No       |
 | Delete vault                                   | Yes   | No       | No       |
 
 The **proxy** role is the most restricted, ideal for agents that only need to proxy requests and raise proposals for human review. The **member** role adds the ability to manage credentials, approve proposals, and configure vault services. The **admin** role has full control, including inviting users and agents with any role.
@@ -110,7 +110,7 @@ agent-vault vault user set-role alice@example.com --role proxy --vault my-vault
     - **See all vaults**: Owners see every vault in their vault list, including vaults they have not joined.
     - **Join any vault**: `agent-vault owner vault join <name>` grants the owner admin access to a vault. Useful for recovering orphaned vaults.
     - **Delete any vault**: `agent-vault owner vault remove <name>` removes a vault regardless of membership.
-    - **Manage agents**: `agent-vault vault agent list`, `info`, `revoke`, `rotate`, and `rename` are owner-only operations that work across all vaults.
+    - **Manage agents**: `agent-vault agent list`, `info`, `revoke`, `rotate`, and `rename` are instance-level operations. Any authenticated user can invite agents; vault admins control per-vault agent access.
 
     These operations affect vault existence and agent lifecycle. To access vault contents (credentials, proposals, proxy), the owner must first join the vault.
 

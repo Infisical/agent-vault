@@ -64,6 +64,12 @@ var passwordResetEmailHTML string
 //go:embed test_email.html
 var testEmailHTML string
 
+// agentVaultJSON is the JSON representation of an agent's vault grant (reused across handlers).
+type agentVaultJSON struct {
+	VaultName string `json:"vault_name"`
+	VaultRole string `json:"vault_role"`
+}
+
 // Server is the Agent Vault HTTP server.
 type Server struct {
 	httpServer  *http.Server
@@ -137,15 +143,22 @@ type Store interface {
 	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string) error
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
 
-	// Invites
-	CreateInvite(ctx context.Context, vaultID, vaultRole, createdBy string, expiresAt time.Time, sessionTTLSeconds int) (*store.Invite, error)
+	// Agent invites (instance-level)
+	CreateAgentInvite(ctx context.Context, agentName, createdBy string, expiresAt time.Time, sessionTTLSeconds int, vaults []store.AgentInviteVault) (*store.Invite, error)
+	CreateRotationInvite(ctx context.Context, agentID, createdBy string, expiresAt time.Time) (*store.Invite, error)
 	GetInviteByToken(ctx context.Context, token string) (*store.Invite, error)
-	ListInvites(ctx context.Context, vaultID, status string) ([]store.Invite, error)
+	ListInvites(ctx context.Context, status string) ([]store.Invite, error)
+	ListInvitesByVault(ctx context.Context, vaultID, status string) ([]store.Invite, error)
 	RedeemInvite(ctx context.Context, token, sessionID string) error
 	RevokeInvite(ctx context.Context, token string) error
 	GetInviteByID(ctx context.Context, id int) (*store.Invite, error)
 	RevokeInviteByID(ctx context.Context, id int) error
-	CountPendingInvites(ctx context.Context, vaultID string) (int, error)
+	CountPendingInvites(ctx context.Context) (int, error)
+	HasPendingInviteByAgentName(ctx context.Context, name string) (bool, error)
+	GetPendingInviteByAgentName(ctx context.Context, name string) (*store.Invite, error)
+	AddAgentInviteVault(ctx context.Context, inviteID int, vaultID, role string) error
+	RemoveAgentInviteVault(ctx context.Context, inviteID int, vaultID string) error
+	UpdateAgentInviteVaultRole(ctx context.Context, inviteID int, vaultID, role string) error
 	ExpirePendingInvites(ctx context.Context, before time.Time) (int, error)
 
 	// User invites (instance-level)
@@ -195,22 +208,24 @@ type Store interface {
 	GetAllSettings(ctx context.Context) (map[string]string, error)
 
 	// Agents
-	CreateAgent(ctx context.Context, name, vaultID string, tokenHash, tokenSalt []byte, tokenPrefix, vaultRole, createdBy string) (*store.Agent, error)
+	CreateAgent(ctx context.Context, name, createdBy string) (*store.Agent, error)
 	GetAgentByID(ctx context.Context, id string) (*store.Agent, error)
 	GetAgentByName(ctx context.Context, name string) (*store.Agent, error)
-	GetAgentByTokenPrefix(ctx context.Context, prefix string) (*store.Agent, error)
 	ListAgents(ctx context.Context, vaultID string) ([]store.Agent, error)
 	ListAllAgents(ctx context.Context) ([]store.Agent, error)
 	RevokeAgent(ctx context.Context, id string) error
-	UpdateAgentServiceToken(ctx context.Context, id string, tokenHash, tokenSalt []byte, tokenPrefix string) error
-	UpdateAgentVaultRole(ctx context.Context, id, role string) error
 	RenameAgent(ctx context.Context, id string, newName string) error
 	CountAgentSessions(ctx context.Context, agentID string) (int, error)
 	GetLatestAgentSessionExpiry(ctx context.Context, agentID string) (*time.Time, error)
 	DeleteAgentSessions(ctx context.Context, agentID string) error
-	CreateAgentSession(ctx context.Context, agentID, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error)
-	CreatePersistentInvite(ctx context.Context, vaultID, vaultRole, createdBy string, agentName string, expiresAt time.Time) (*store.Invite, error)
-	CreateRotationInvite(ctx context.Context, agentID, vaultID, createdBy string, expiresAt time.Time) (*store.Invite, error)
+	CreateAgentSession(ctx context.Context, agentID string, expiresAt *time.Time) (*store.Session, error)
+
+	// Agent vault grants
+	GrantAgentVaultRole(ctx context.Context, agentID, vaultID, role string) error
+	RevokeAgentVaultAccess(ctx context.Context, agentID, vaultID string) error
+	GetAgentVaultRole(ctx context.Context, agentID, vaultID string) (string, error)
+	ListAgentGrants(ctx context.Context, agentID string) ([]store.AgentVaultGrant, error)
+	ListVaultAgents(ctx context.Context, vaultID string) ([]store.AgentVaultGrant, error)
 
 	Close() error
 }
@@ -500,25 +515,32 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("POST /v1/admin/proposals/{id}/reject", s.requireInitialized(s.requireAuth(limitBody(s.handleAdminProposalReject))))
 	mux.HandleFunc("/proxy/", s.requireInitialized(s.requireAuth(s.handleProxy)))
 
-	// Agent invites
+	// Agent invite redemption (no auth — token is the credential)
 	mux.HandleFunc("GET /invite/{token}", s.requireInitialized(s.handleInviteRedeem))
 	mux.HandleFunc("POST /invite/{token}", s.requireInitialized(limitBody(s.handlePersistentInviteRedeem)))
-	mux.HandleFunc("POST /v1/invites", s.requireInitialized(s.requireAuth(limitBody(s.handleInviteCreate))))
-	mux.HandleFunc("GET /v1/invites", s.requireInitialized(s.requireAuth(s.handleInviteList)))
-	mux.HandleFunc("DELETE /v1/invites/{token}", s.requireInitialized(s.requireAuth(s.handleInviteRevoke)))
-	mux.HandleFunc("DELETE /v1/invites/by-id/{id}", s.requireInitialized(s.requireAuth(s.handleInviteRevokeByID)))
 
-	// Agent management (owner-only)
-	mux.HandleFunc("GET /v1/admin/agents", s.requireInitialized(s.requireAuth(s.handleAgentList)))
-	mux.HandleFunc("GET /v1/admin/agents/{name}", s.requireInitialized(s.requireAuth(s.handleAgentGet)))
-	mux.HandleFunc("DELETE /v1/admin/agents/{name}", s.requireInitialized(s.requireAuth(s.handleAgentRevoke)))
-	mux.HandleFunc("POST /v1/admin/agents/{name}/rotate", s.requireInitialized(s.requireAuth(limitBody(s.handleAgentRotate))))
-	mux.HandleFunc("POST /v1/admin/agents/{name}/rename", s.requireInitialized(s.requireAuth(limitBody(s.handleAgentRename))))
+	// Agent invites (instance-level, requires auth)
+	mux.HandleFunc("POST /v1/agents/invites", s.requireInitialized(s.requireAuth(limitBody(s.handleAgentInviteCreate))))
+	mux.HandleFunc("GET /v1/agents/invites", s.requireInitialized(s.requireAuth(s.handleAgentInviteList)))
+	mux.HandleFunc("DELETE /v1/agents/invites/{token}", s.requireInitialized(s.requireAuth(s.handleAgentInviteRevoke)))
+	mux.HandleFunc("DELETE /v1/agents/invites/by-id/{id}", s.requireInitialized(s.requireAuth(s.handleAgentInviteRevokeByID)))
+
+	// Agent management (instance-level)
+	mux.HandleFunc("GET /v1/agents", s.requireInitialized(s.requireAuth(s.handleAgentList)))
+	mux.HandleFunc("GET /v1/agents/{name}", s.requireInitialized(s.requireAuth(s.handleAgentGet)))
+	mux.HandleFunc("DELETE /v1/agents/{name}", s.requireInitialized(s.requireAuth(s.handleAgentRevoke)))
+	mux.HandleFunc("POST /v1/agents/{name}/rotate", s.requireInitialized(s.requireAuth(limitBody(s.handleAgentRotate))))
+	mux.HandleFunc("POST /v1/agents/{name}/rename", s.requireInitialized(s.requireAuth(limitBody(s.handleAgentRename))))
+
+	// Vault-level agent management
+	mux.HandleFunc("GET /v1/vaults/{name}/agents", s.requireInitialized(s.requireAuth(s.handleVaultAgentList)))
+	mux.HandleFunc("POST /v1/vaults/{name}/agents", s.requireInitialized(s.requireAuth(limitBody(s.handleVaultAgentAdd))))
+	mux.HandleFunc("DELETE /v1/vaults/{name}/agents/{agentName}", s.requireInitialized(s.requireAuth(s.handleVaultAgentRemove)))
+	mux.HandleFunc("POST /v1/vaults/{name}/agents/{agentName}/role", s.requireInitialized(s.requireAuth(limitBody(s.handleVaultAgentSetRole))))
 
 	// Instance settings (owner-only)
 	mux.HandleFunc("GET /v1/admin/settings", s.requireInitialized(s.requireAuth(s.handleGetSettings)))
 	mux.HandleFunc("PUT /v1/admin/settings", s.requireInitialized(s.requireAuth(limitBody(s.handleUpdateSettings))))
-	mux.HandleFunc("POST /v1/admin/agents/{name}/vault-role", s.requireInitialized(s.requireAuth(limitBody(s.handleAgentSetRole))))
 
 	// Public user list (any authenticated user)
 	mux.HandleFunc("GET /v1/users", s.requireInitialized(s.requireAuth(s.handlePublicUserList)))
@@ -2263,23 +2285,22 @@ func (s *Server) listCredentialKeys(ctx context.Context, vaultID string) []strin
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Require scoped session — global admin sessions may not use discovery.
+	// Require scoped session or agent session with X-Vault.
 	sess := sessionFromContext(ctx)
-	if sess == nil || sess.VaultID == "" {
+	if sess == nil {
 		proxyError(w, http.StatusForbidden, "forbidden", "Discovery requires a vault-scoped session")
 		return
 	}
 
-	ns, err := s.store.GetVaultByID(ctx, sess.VaultID)
-	if err != nil || ns == nil {
-		proxyError(w, http.StatusInternalServerError, "internal", "Failed to resolve vault")
+	ns, _, err := s.resolveVaultForSession(w, r, sess)
+	if err != nil {
 		return
 	}
 
-	credentialKeys := s.listCredentialKeys(ctx, sess.VaultID)
+	credentialKeys := s.listCredentialKeys(ctx, ns.ID)
 
 	// Load broker config for this vault.
-	brokerCfg, err := s.store.GetBrokerConfig(ctx, sess.VaultID)
+	brokerCfg, err := s.store.GetBrokerConfig(ctx, ns.ID)
 	if err != nil || brokerCfg == nil {
 		// No config means no services — return empty list.
 		w.Header().Set("Content-Type", "application/json")
@@ -2329,12 +2350,18 @@ type proposalCreateRequest struct {
 func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Enforce scoped session.
+	// Enforce scoped session or agent session with X-Vault.
 	sess := sessionFromContext(ctx)
-	if sess == nil || sess.VaultID == "" {
+	if sess == nil {
 		jsonError(w, http.StatusForbidden, "Proposals require a vault-scoped session")
 		return
 	}
+
+	resolvedVault, _, err := s.resolveVaultForSession(w, r, sess)
+	if err != nil {
+		return
+	}
+	vaultID := resolvedVault.ID
 
 	var req proposalCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -2349,14 +2376,14 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate that all credential references resolve to existing or proposed credentials.
-	existingKeys := s.listCredentialKeys(ctx, sess.VaultID)
+	existingKeys := s.listCredentialKeys(ctx, vaultID)
 	if err := proposal.ValidateCredentialRefs(req.Services, req.Credentials, existingKeys); err != nil {
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	// Check pending limit.
-	count, err := s.store.CountPendingProposals(ctx, sess.VaultID)
+	count, err := s.store.CountPendingProposals(ctx, vaultID)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to count pending proposals")
 		return
@@ -2388,17 +2415,13 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	servicesJSON, _ := json.Marshal(req.Services)
 	credentialsJSON, _ := json.Marshal(req.Credentials)
 
-	cs, err := s.store.CreateProposal(ctx, sess.VaultID, sess.ID, string(servicesJSON), string(credentialsJSON), req.Message, req.UserMessage, encCredentials)
+	cs, err := s.store.CreateProposal(ctx, vaultID, sess.ID, string(servicesJSON), string(credentialsJSON), req.Message, req.UserMessage, encCredentials)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create proposal")
 		return
 	}
 
-	// Look up vault name for the response message.
-	nsName := sess.VaultID
-	if ns, err := s.store.GetVaultByID(ctx, sess.VaultID); err == nil && ns != nil {
-		nsName = ns.Name
-	}
+	nsName := resolvedVault.Name
 
 	approvalURL := fmt.Sprintf("%s/approve/%d?token=%s", s.baseURL, cs.ID, cs.ApprovalToken)
 
@@ -2413,7 +2436,7 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	// Notify vault members about the new proposal (fire-and-forget).
 	// The goroutine intentionally outlives the request, so we use a detached context.
 	if s.notifier.Enabled() {
-		go s.notifyProposalCreated(sess.VaultID, nsName, cs.ID, req.Message, approvalURL, proposalAgentName) //nolint:gosec // G118: intentional fire-and-forget goroutine
+		go s.notifyProposalCreated(vaultID, nsName, cs.ID, req.Message, approvalURL, proposalAgentName) //nolint:gosec // G118: intentional fire-and-forget goroutine
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -2470,8 +2493,13 @@ func (s *Server) handleProposalGet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	sess := sessionFromContext(ctx)
-	if sess == nil || sess.VaultID == "" {
+	if sess == nil {
 		jsonError(w, http.StatusForbidden, "Proposals require a vault-scoped session")
+		return
+	}
+
+	resolvedVault, _, err := s.resolveVaultForSession(w, r, sess)
+	if err != nil {
 		return
 	}
 
@@ -2482,7 +2510,7 @@ func (s *Server) handleProposalGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cs, err := s.store.GetProposal(ctx, sess.VaultID, id)
+	cs, err := s.store.GetProposal(ctx, resolvedVault.ID, id)
 	if err != nil {
 		jsonError(w, http.StatusNotFound, fmt.Sprintf("Proposal %d not found", id))
 		return
@@ -2505,13 +2533,18 @@ func (s *Server) handleProposalList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	sess := sessionFromContext(ctx)
-	if sess == nil || sess.VaultID == "" {
+	if sess == nil {
 		jsonError(w, http.StatusForbidden, "Proposals require a vault-scoped session")
 		return
 	}
 
+	resolvedVault, _, err := s.resolveVaultForSession(w, r, sess)
+	if err != nil {
+		return
+	}
+
 	status := r.URL.Query().Get("status")
-	list, err := s.store.ListProposals(ctx, sess.VaultID, status)
+	list, err := s.store.ListProposals(ctx, resolvedVault.ID, status)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to list proposals")
 		return
@@ -2891,6 +2924,51 @@ func newProxyClient() *http.Client {
 // proxyClient is initialized in New() to ensure environment is fully configured.
 var proxyClient *http.Client
 
+// resolveVaultForSession resolves the vault ID for the current session.
+// For user scoped sessions (VaultID set), returns the session's vault directly.
+// For agent sessions (VaultID empty), reads vault name from X-Vault header and checks access.
+// Returns vault, vault role, error. Writes error response to w on failure.
+func (s *Server) resolveVaultForSession(w http.ResponseWriter, r *http.Request, sess *store.Session) (*store.Vault, string, error) {
+	ctx := r.Context()
+
+	if sess.VaultID != "" {
+		// User scoped session — vault is baked into the session.
+		ns, err := s.store.GetVaultByID(ctx, sess.VaultID)
+		if err != nil || ns == nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to resolve vault")
+			return nil, "", fmt.Errorf("vault not found")
+		}
+		return ns, sess.VaultRole, nil
+	}
+
+	// Agent session — resolve vault from X-Vault header.
+	if sess.AgentID == "" {
+		jsonError(w, http.StatusForbidden, "Session requires vault scope")
+		return nil, "", fmt.Errorf("no vault context")
+	}
+
+	vaultName := r.Header.Get("X-Vault")
+	if vaultName == "" {
+		jsonError(w, http.StatusBadRequest, "Agent sessions require X-Vault header to specify which vault to use")
+		return nil, "", fmt.Errorf("missing X-Vault header")
+	}
+
+	ns, err := s.store.GetVault(ctx, vaultName)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, "Vault not found: "+vaultName)
+		return nil, "", fmt.Errorf("vault not found")
+	}
+
+	// Check agent has access to this vault.
+	role, err := s.store.GetAgentVaultRole(ctx, sess.AgentID, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusForbidden, "Agent does not have access to vault: "+vaultName)
+		return nil, "", fmt.Errorf("no vault access")
+	}
+
+	return ns, role, nil
+}
+
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// 1. Parse target host and path from /proxy/{target_host}/{path...}
 	trimmed := strings.TrimPrefix(r.URL.Path, "/proxy/")
@@ -2914,22 +2992,19 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// 2. Enforce scoped session — global admin sessions may not use the proxy.
+	// 2. Resolve vault — user scoped sessions use session vault, agent sessions use X-Vault header.
 	sess := sessionFromContext(ctx)
-	if sess == nil || sess.VaultID == "" {
-		proxyError(w, http.StatusForbidden, "forbidden", "Proxy requires a vault-scoped session")
+	if sess == nil {
+		proxyError(w, http.StatusForbidden, "forbidden", "Proxy requires an authenticated session")
 		return
 	}
-
-	// 3. Look up vault name for error messages.
-	ns, err := s.store.GetVaultByID(ctx, sess.VaultID)
-	if err != nil || ns == nil {
-		proxyError(w, http.StatusInternalServerError, "internal", "Failed to resolve vault")
-		return
+	ns, _, err := s.resolveVaultForSession(w, r, sess)
+	if err != nil {
+		return // error already written
 	}
 
 	// 4. Load broker config for this vault.
-	brokerCfg, err := s.store.GetBrokerConfig(ctx, sess.VaultID)
+	brokerCfg, err := s.store.GetBrokerConfig(ctx, ns.ID)
 	if err != nil || brokerCfg == nil {
 		proxyForbiddenWithHint(w, targetHost, ns.Name)
 		return
@@ -2955,7 +3030,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// 6. Resolve credentials from matched service's auth config.
 	resolved, err := matched.Auth.Resolve(func(key string) (string, error) {
-		cred, err := s.store.GetCredential(ctx, sess.VaultID, key)
+		cred, err := s.store.GetCredential(ctx, ns.ID, key)
 		if err != nil {
 			return "", fmt.Errorf("credential %q not found", key)
 		}
@@ -2966,7 +3041,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return string(plaintext), nil
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[agent-vault] credential resolution failed for vault %s: %v\n", sess.VaultID, err)
+		fmt.Fprintf(os.Stderr, "[agent-vault] credential resolution failed for vault %s: %v\n", ns.ID, err)
 		proxyError(w, http.StatusBadGateway, "credential_not_found", "A required credential could not be resolved; check vault configuration")
 		return
 	}
@@ -3039,9 +3114,18 @@ type inviteRedeemResponse struct {
 	Instructions   string            `json:"instructions"`
 }
 
+// handleInviteRedeem serves the SPA for browser-based invite acceptance.
+// All agent invites are now redeemed via POST /invite/{token} (handlePersistentInviteRedeem).
+// GET /invite/{token} serves the browser page OR returns a redirect hint for agents.
 func (s *Server) handleInviteRedeem(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	token := r.PathValue("token")
+
+	// Check if this is a user invite (av_uinv_ prefix) — delegate to SPA.
+	if strings.HasPrefix(token, "av_uinv_") {
+		s.handleSPA(w, r)
+		return
+	}
 
 	inv, err := s.store.GetInviteByToken(ctx, token)
 	if err != nil || inv == nil {
@@ -3049,7 +3133,6 @@ func (s *Server) handleInviteRedeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check status — return distinct codes for each terminal state.
 	switch inv.Status {
 	case "redeemed":
 		proxyError(w, http.StatusGone, "invite_redeemed", "This invite has already been used — ask for a new one")
@@ -3062,128 +3145,100 @@ func (s *Server) handleInviteRedeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Lazy expiry check for pending invites whose TTL has passed.
 	if time.Now().After(inv.ExpiresAt) {
 		proxyError(w, http.StatusGone, "invite_expired", "This invite has expired — ask for a new one")
 		return
 	}
 
-	// Persistent invites must be redeemed via POST.
-	if inv.Persistent {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error":   "persistent_invite",
-			"message": "This is a persistent agent invite. Use POST /invite/{token} with a JSON body to redeem it.",
-		})
-		return
-	}
-
-	// Burn the invite first to prevent double-redeem race conditions.
-	if err := s.store.RedeemInvite(ctx, token, ""); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to redeem invite")
-		return
-	}
-
-	// Create a vault-scoped session for the agent with the invite's role.
-	// SessionTTLSeconds > 0 = finite session; 0 = no expiry.
-	var sessExpiry *time.Time
-	if inv.SessionTTLSeconds > 0 {
-		sessExpiry = timePtr(time.Now().Add(time.Duration(inv.SessionTTLSeconds) * time.Second))
-	}
-	sess, err := s.store.CreateScopedSession(ctx, inv.VaultID, inv.VaultRole, sessExpiry)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to create session")
-		return
-	}
-
-	// Build the onboarding payload — same data as /discover plus instructions.
-	ns, err := s.store.GetVaultByID(ctx, inv.VaultID)
-	if err != nil || ns == nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to resolve vault")
-		return
-	}
-
-	baseURL := s.baseURL
-	services := s.buildServiceList(ctx, inv.VaultID)
-
+	// All agent invites must be redeemed via POST.
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(inviteRedeemResponse{
-		AVAddr:         baseURL,
-		AVSessionToken: sess.ID,
-		AVVault:        ns.Name,
-		VaultRole:      inv.VaultRole,
-		ProxyURL:       baseURL + "/proxy",
-		Services:       services,
-		Instructions:   instructionsForRole(inv.VaultRole),
+	w.WriteHeader(http.StatusMethodNotAllowed)
+	json.NewEncoder(w).Encode(map[string]string{
+		"error":   "use_post",
+		"message": "Agent invites must be redeemed via POST /invite/{token} with a JSON body.",
 	})
 }
 
-func (s *Server) handleInviteList(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAgentInviteList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	nsName := r.URL.Query().Get("vault")
-	if nsName == "" {
-		nsName = store.DefaultVault
-	}
-	ns, err := s.store.GetVault(ctx, nsName)
-	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, "Vault not found")
+	sess := sessionFromContext(ctx)
+	if sess == nil || sess.UserID == "" {
+		jsonError(w, http.StatusForbidden, "Agent invite list requires a user session")
 		return
 	}
 
-	// Check vault access.
-	if _, err := s.requireVaultAccess(w, r, ns.ID); err != nil {
+	user, err := s.store.GetUserByID(ctx, sess.UserID)
+	if err != nil || user == nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to load user")
 		return
 	}
 
 	status := r.URL.Query().Get("status")
-	invites, err := s.store.ListInvites(ctx, ns.ID, status)
+	invites, err := s.store.ListInvites(ctx, status)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to list invites")
 		return
 	}
 
-	type inviteItem struct {
-		ID               int     `json:"id"`
-		Token            string  `json:"token"`
-		Status           string  `json:"status"`
-		Vault            string  `json:"vault"`
-		VaultRole        string  `json:"vault_role"`
-		Persistent       bool    `json:"persistent"`
-		AgentName        string  `json:"agent_name,omitempty"`
-		CreatedAt        string  `json:"created_at"`
-		ExpiresAt        string  `json:"expires_at"`
-		RedeemedAt       *string `json:"redeemed_at,omitempty"`
-		SessionExpiresAt *string `json:"session_expires_at,omitempty"`
+	// Filter: owners see all; others see invites they created or with pre-assignments to vaults they admin.
+	// Pre-load user's vault roles to avoid per-invite queries.
+	var userAdminVaults map[string]bool
+	if user.Role != "owner" {
+		userAdminVaults = make(map[string]bool)
+		if grants, err := s.store.ListUserGrants(ctx, user.ID); err == nil {
+			for _, g := range grants {
+				if g.Role == "admin" {
+					userAdminVaults[g.VaultID] = true
+				}
+			}
+		}
 	}
 
-	// Return full tokens for admin (user) sessions so CLI can do suffix-based revoke.
-	sess := sessionFromContext(ctx)
-	isAdmin := sess != nil && sess.UserID != ""
+	var filtered []store.Invite
+	for _, inv := range invites {
+		if user.Role == "owner" || inv.CreatedBy == user.ID {
+			filtered = append(filtered, inv)
+			continue
+		}
+		for _, v := range inv.Vaults {
+			if userAdminVaults[v.VaultID] {
+				filtered = append(filtered, inv)
+				break
+			}
+		}
+	}
 
-	items := make([]inviteItem, len(invites))
-	for i, inv := range invites {
-		token := inv.Token
-		if !isAdmin && len(token) > 8 {
-			token = token[len(token)-8:]
+	type inviteItem struct {
+		ID               int              `json:"id"`
+		Token            string           `json:"token,omitempty"`
+		AgentName        string           `json:"agent_name"`
+		Status           string           `json:"status"`
+		Vaults           []agentVaultJSON `json:"vaults"`
+		CreatedAt        string      `json:"created_at"`
+		ExpiresAt        string      `json:"expires_at"`
+		RedeemedAt       *string     `json:"redeemed_at,omitempty"`
+		SessionExpiresAt *string     `json:"session_expires_at,omitempty"`
+	}
+
+	items := make([]inviteItem, len(filtered))
+	for i, inv := range filtered {
+		var vaults []agentVaultJSON
+		for _, v := range inv.Vaults {
+			vaults = append(vaults, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.VaultRole})
 		}
 		items[i] = inviteItem{
-			ID:         inv.ID,
-			Token:      token,
-			Status:     inv.Status,
-			Vault:      nsName,
-			VaultRole:  inv.VaultRole,
-			Persistent: inv.Persistent,
-			AgentName:  inv.AgentName,
-			CreatedAt:  inv.CreatedAt.Format(time.RFC3339),
-			ExpiresAt:  inv.ExpiresAt.Format(time.RFC3339),
+			ID:        inv.ID,
+			AgentName: inv.AgentName,
+			Status:    inv.Status,
+			Vaults:    vaults,
+			CreatedAt: inv.CreatedAt.Format(time.RFC3339),
+			ExpiresAt: inv.ExpiresAt.Format(time.RFC3339),
 		}
 		if inv.RedeemedAt != nil {
 			r := inv.RedeemedAt.Format(time.RFC3339)
 			items[i].RedeemedAt = &r
 		}
-		// For redeemed invites, look up session expiry.
 		if inv.Status == "redeemed" && inv.SessionID != "" {
 			if session, err := s.store.GetSession(ctx, inv.SessionID); err == nil && session != nil {
 				e := formatExpiresAt(session.ExpiresAt)
@@ -3193,13 +3248,17 @@ func (s *Server) handleInviteList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(items)
+	json.NewEncoder(w).Encode(map[string]interface{}{"invites": items})
 }
 
-func (s *Server) handleInviteRevoke(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAgentInviteRevoke(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-
 	token := r.PathValue("token")
+
+	user, err := s.requireUser(w, r)
+	if err != nil {
+		return
+	}
 
 	inv, err := s.store.GetInviteByToken(ctx, token)
 	if err != nil || inv == nil {
@@ -3207,8 +3266,8 @@ func (s *Server) handleInviteRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check vault access for the invite's vault.
-	if _, err := s.requireVaultAccess(w, r, inv.VaultID); err != nil {
+	if !s.canRevokeAgentInvite(ctx, user, inv) {
+		jsonError(w, http.StatusForbidden, "You do not have permission to revoke this invite")
 		return
 	}
 
@@ -3226,8 +3285,13 @@ func (s *Server) handleInviteRevoke(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "revoked"})
 }
 
-func (s *Server) handleInviteRevokeByID(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAgentInviteRevokeByID(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	user, err := s.requireUser(w, r)
+	if err != nil {
+		return
+	}
 
 	idStr := r.PathValue("id")
 	id, err := strconv.Atoi(idStr)
@@ -3242,8 +3306,8 @@ func (s *Server) handleInviteRevokeByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Check vault access for the invite's vault.
-	if _, err := s.requireVaultAccess(w, r, inv.VaultID); err != nil {
+	if !s.canRevokeAgentInvite(ctx, user, inv) {
+		jsonError(w, http.StatusForbidden, "You do not have permission to revoke this invite")
 		return
 	}
 
@@ -3259,6 +3323,19 @@ func (s *Server) handleInviteRevokeByID(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "revoked"})
+}
+
+// canRevokeAgentInvite checks if the user is the invite creator, an owner, or admin of a pre-assigned vault.
+func (s *Server) canRevokeAgentInvite(ctx context.Context, user *store.User, inv *store.Invite) bool {
+	if user.Role == "owner" || inv.CreatedBy == user.ID {
+		return true
+	}
+	for _, v := range inv.Vaults {
+		if role, err := s.store.GetVaultRole(ctx, user.ID, v.VaultID); err == nil && role == "admin" {
+			return true
+		}
+	}
+	return false
 }
 
 // --- User Management Endpoints ---
@@ -4357,7 +4434,7 @@ func isReservedVaultName(name string) bool {
 // Persistent agents now receive session tokens directly (no service token minting).
 // The POST /v1/agent/session route is no longer registered.
 
-// handlePersistentInviteRedeem handles POST /invite/{token} for persistent agent invites.
+// handlePersistentInviteRedeem handles POST /invite/{token} for agent invite redemption.
 func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	token := r.PathValue("token")
@@ -4368,7 +4445,6 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Check status.
 	switch inv.Status {
 	case "redeemed":
 		proxyError(w, http.StatusGone, "invite_redeemed", "This invite has already been used — ask for a new one")
@@ -4385,12 +4461,13 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if !inv.Persistent {
-		proxyError(w, http.StatusBadRequest, "not_persistent", "This is a temporary invite — use GET /invite/{token} instead")
+	// Rotation invite: agent_id is set, no new agent creation needed.
+	if inv.AgentID != "" {
+		s.handleRotationRedeem(w, r, inv, token)
 		return
 	}
 
-	// Parse optional body for agent name.
+	// New agent invite: determine name.
 	var body struct {
 		Name string `json:"name"`
 	}
@@ -4398,15 +4475,8 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 		_ = json.NewDecoder(r.Body).Decode(&body)
 	}
 
-	// Rotation invite: agent_id is set, no new agent creation needed.
-	if inv.AgentID != "" {
-		s.handleRotationRedeem(w, r, inv, token)
-		return
-	}
-
-	// New persistent agent invite: determine name.
 	agentName := inv.AgentName
-	if agentName == "" {
+	if agentName == "" && body.Name != "" {
 		agentName = body.Name
 	}
 	if agentName == "" {
@@ -4425,67 +4495,57 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Burn the invite first (atomic CAS via status='pending' guard) to prevent
-	// double-redeem race conditions. Only one concurrent request can succeed.
+	// Burn the invite (atomic CAS via status='pending' guard).
 	if err := s.store.RedeemInvite(ctx, token, ""); err != nil {
 		proxyError(w, http.StatusGone, "invite_redeemed", "This invite has already been used — ask for a new one")
 		return
 	}
 
-	// Create agent record with placeholder service token fields (service tokens are
-	// no longer used — agents get session tokens directly).
-	placeholderHash := []byte("unused")
-	placeholderSalt := []byte("unused")
-	agent, err := s.store.CreateAgent(ctx, agentName, inv.VaultID, placeholderHash, placeholderSalt, "unused", inv.VaultRole, inv.CreatedBy)
+	// Create instance-level agent.
+	agent, err := s.store.CreateAgent(ctx, agentName, inv.CreatedBy)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[agent-vault] ERROR: CreateAgent(%q): %v\n", agentName, err)
 		jsonError(w, http.StatusInternalServerError, "Failed to create agent")
 		return
 	}
 
-	// Create a non-expiring session for the persistent agent.
-	sess, err := s.store.CreateAgentSession(ctx, agent.ID, inv.VaultID, agent.VaultRole, nil)
+	// Apply vault pre-assignments from the invite.
+	var vaultInfos []agentVaultJSON
+	for _, v := range inv.Vaults {
+		if err := s.store.GrantAgentVaultRole(ctx, agent.ID, v.VaultID, v.VaultRole); err != nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to grant vault access")
+			return
+		}
+		vaultInfos = append(vaultInfos, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.VaultRole})
+	}
+
+	// Create instance-level session (no vault_id).
+	var sessExpiry *time.Time
+	if inv.SessionTTLSeconds > 0 {
+		sessExpiry = timePtr(time.Now().Add(time.Duration(inv.SessionTTLSeconds) * time.Second))
+	}
+	sess, err := s.store.CreateAgentSession(ctx, agent.ID, sessExpiry)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
 	}
 
-	ns, _ := s.store.GetVaultByID(ctx, inv.VaultID)
-	nsName := store.DefaultVault
-	if ns != nil {
-		nsName = ns.Name
-	}
-
 	baseURL := s.baseURL
-	services := s.buildServiceList(ctx, inv.VaultID)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"av_addr":          baseURL,
 		"av_session_token": sess.ID,
-		"av_vault":         nsName,
-		"vault_role":       inv.VaultRole,
 		"agent_name":       agentName,
 		"proxy_url":        baseURL + "/proxy",
-		"services":         services,
-		"instructions":     persistentInstructionsForRole(inv.VaultRole),
+		"vaults":           vaultInfos,
+		"instructions":     persistentInstructionsAdmin,
 	})
 }
 
-// handleRotationRedeem handles redemption of a rotation invite (persistent invite with agent_id set).
+// handleRotationRedeem handles redemption of a rotation invite (invite with agent_id set).
 func (s *Server) handleRotationRedeem(w http.ResponseWriter, r *http.Request, inv *store.Invite, token string) {
 	ctx := r.Context()
-
-	// Look up existing agent by the invite's agent_id.
-	// We need to query by ID; since GetAgentByName won't work, query the store directly.
-	// Use ListAgents and filter, or add a helper. For now, use the agent_id from the invite
-	// by looking up all agents and matching. But that's inefficient.
-	// Actually, we can use GetAgentByTokenPrefix — but we don't have the prefix.
-	// Let's query directly. We need to find the agent. Let me use a simpler approach:
-	// we query the agents table by iterating. But a better approach: look up agent by name
-	// from the invite. However, the rotation invite doesn't store the agent name.
-	// The invite stores agent_id. We need a GetAgentByID method.
-	// For now, let's add a lightweight lookup. Actually, let me check — we can list all agents
-	// and filter by ID. But that's wasteful. Let me just query by the agent_id.
 
 	agent, err := s.store.GetAgentByID(ctx, inv.AgentID)
 	if err != nil || agent == nil || agent.Status != "active" {
@@ -4493,8 +4553,7 @@ func (s *Server) handleRotationRedeem(w http.ResponseWriter, r *http.Request, in
 		return
 	}
 
-	// Burn the invite first (atomic CAS via status='pending' guard) to prevent
-	// double-redeem race conditions. Only one concurrent request can succeed.
+	// Burn the invite.
 	if err := s.store.RedeemInvite(ctx, token, ""); err != nil {
 		proxyError(w, http.StatusGone, "invite_redeemed", "This invite has already been used — ask for a new one")
 		return
@@ -4506,32 +4565,28 @@ func (s *Server) handleRotationRedeem(w http.ResponseWriter, r *http.Request, in
 		return
 	}
 
-	// Create a new non-expiring session.
-	sess, err := s.store.CreateAgentSession(ctx, agent.ID, agent.VaultID, agent.VaultRole, nil)
+	// Create a new instance-level session.
+	sess, err := s.store.CreateAgentSession(ctx, agent.ID, nil)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
 	}
 
-	ns, _ := s.store.GetVaultByID(ctx, agent.VaultID)
-	nsName := store.DefaultVault
-	if ns != nil {
-		nsName = ns.Name
+	var vaultInfos []agentVaultJSON
+	for _, v := range agent.Vaults {
+		vaultInfos = append(vaultInfos, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.VaultRole})
 	}
 
 	baseURL := s.baseURL
-	services := s.buildServiceList(ctx, agent.VaultID)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"av_addr":          baseURL,
 		"av_session_token": sess.ID,
-		"av_vault":         nsName,
-		"vault_role":       agent.VaultRole,
 		"agent_name":       agent.Name,
 		"proxy_url":        baseURL + "/proxy",
-		"services":         services,
-		"instructions":     persistentInstructionsForRole(agent.VaultRole),
+		"vaults":           vaultInfos,
+		"instructions":     persistentInstructionsAdmin,
 	})
 }
 
@@ -4540,58 +4595,62 @@ func (s *Server) handleRotationRedeem(w http.ResponseWriter, r *http.Request, in
 func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	nsName := r.URL.Query().Get("vault")
-	if nsName == "" {
-		// Without a vault filter, only owners can list all agents.
-		if _, err := s.requireOwner(w, r); err != nil {
-			return
-		}
+	// Any authenticated user can list agents.
+	// Owners see all; members see agents that share at least one vault.
+	sess := sessionFromContext(ctx)
+	if sess == nil {
+		jsonError(w, http.StatusForbidden, "Authentication required")
+		return
 	}
 
-	var vaultID string
-	if nsName != "" {
-		ns, err := s.store.GetVault(ctx, nsName)
-		if err != nil || ns == nil {
-			jsonError(w, http.StatusNotFound, "Vault not found")
-			return
-		}
-		vaultID = ns.ID
-		// Any vault member can list agents in their vault.
-		if _, err := s.requireVaultAccess(w, r, vaultID); err != nil {
-			return
-		}
-	}
-
-	var agents []store.Agent
-	var agentErr error
-	if vaultID != "" {
-		agents, agentErr = s.store.ListAgents(ctx, vaultID)
-	} else {
-		agents, agentErr = s.store.ListAllAgents(ctx)
-	}
+	agents, agentErr := s.store.ListAllAgents(ctx)
 	if agentErr != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to list agents")
 		return
 	}
 
+	// For non-owner users, filter to agents sharing at least one vault.
+	user, _ := s.userFromSession(ctx, sess)
+	isOwner := user != nil && user.Role == "owner"
+	if !isOwner && user != nil {
+		userGrants, _ := s.store.ListUserGrants(ctx, user.ID)
+		userVaults := make(map[string]bool)
+		for _, g := range userGrants {
+			userVaults[g.VaultID] = true
+		}
+		var filtered []store.Agent
+		for _, ag := range agents {
+			for _, v := range ag.Vaults {
+				if userVaults[v.VaultID] {
+					filtered = append(filtered, ag)
+					break
+				}
+			}
+		}
+		agents = filtered
+	}
+
 	type agentItem struct {
-		Name              string  `json:"name"`
-		VaultID           string  `json:"vault_id"`
-		VaultRole         string  `json:"vault_role"`
-		Status            string  `json:"status"`
-		CreatedAt         string  `json:"created_at"`
-		RevokedAt         *string `json:"revoked_at,omitempty"`
-		SessionExpiresAt  *string `json:"session_expires_at,omitempty"`
+		Name              string           `json:"name"`
+		Status            string           `json:"status"`
+		Vaults            []agentVaultJSON `json:"vaults"`
+		CreatedAt         string           `json:"created_at"`
+		RevokedAt         *string          `json:"revoked_at,omitempty"`
+		SessionExpiresAt  *string          `json:"session_expires_at,omitempty"`
 	}
 
 	items := make([]agentItem, 0, len(agents))
+	seen := make(map[string]bool)
 	for _, ag := range agents {
+		vaults := make([]agentVaultJSON, 0, len(ag.Vaults))
+		for _, v := range ag.Vaults {
+			vaults = append(vaults, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.VaultRole})
+		}
 		item := agentItem{
-			Name:        ag.Name,
-			VaultID:     ag.VaultID,
-			VaultRole:   ag.VaultRole,
-			Status:      ag.Status,
-			CreatedAt:   ag.CreatedAt.Format(time.RFC3339),
+			Name:      ag.Name,
+			Status:    ag.Status,
+			Vaults:    vaults,
+			CreatedAt: ag.CreatedAt.Format(time.RFC3339),
 		}
 		if ag.RevokedAt != nil {
 			s := ag.RevokedAt.Format(time.RFC3339)
@@ -4604,6 +4663,26 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		items = append(items, item)
+		seen[ag.Name] = true
+	}
+
+	// Include agents with pending invites (not yet redeemed).
+	pendingInvites, _ := s.store.ListInvites(ctx, "pending")
+	for _, inv := range pendingInvites {
+		if seen[inv.AgentName] {
+			continue
+		}
+		vaults := make([]agentVaultJSON, 0, len(inv.Vaults))
+		for _, v := range inv.Vaults {
+			vaults = append(vaults, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.VaultRole})
+		}
+		items = append(items, agentItem{
+			Name:      inv.AgentName,
+			Status:    "pending",
+			Vaults:    vaults,
+			CreatedAt: inv.CreatedAt.Format(time.RFC3339),
+		})
+		seen[inv.AgentName] = true
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -4614,33 +4693,31 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")
 
+	// Any authenticated user can view an agent.
+	sess := sessionFromContext(ctx)
+	if sess == nil {
+		jsonError(w, http.StatusForbidden, "Authentication required")
+		return
+	}
+
 	agent, err := s.store.GetAgentByName(ctx, name)
 	if err != nil {
 		jsonError(w, http.StatusNotFound, "Agent not found")
 		return
 	}
 
-	// Any vault member can view agents in their vault.
-	if _, err := s.requireVaultAccess(w, r, agent.VaultID); err != nil {
-		return
-	}
-
-	// Resolve vault name.
-	ns, _ := s.store.GetVaultByID(ctx, agent.VaultID)
-	nsName := agent.VaultID
-	if ns != nil {
-		nsName = ns.Name
+	vaults := make([]agentVaultJSON, 0, len(agent.Vaults))
+	for _, v := range agent.Vaults {
+		vaults = append(vaults, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.VaultRole})
 	}
 
 	resp := map[string]interface{}{
-		"name":         agent.Name,
-		"vault":        nsName,
-		"vault_id":     agent.VaultID,
-		"vault_role":   agent.VaultRole,
-		"status":       agent.Status,
-		"created_by":   agent.CreatedBy,
-		"created_at":   agent.CreatedAt.Format(time.RFC3339),
-		"updated_at":   agent.UpdatedAt.Format(time.RFC3339),
+		"name":       agent.Name,
+		"status":     agent.Status,
+		"vaults":     vaults,
+		"created_by": agent.CreatedBy,
+		"created_at": agent.CreatedAt.Format(time.RFC3339),
+		"updated_at": agent.UpdatedAt.Format(time.RFC3339),
 	}
 	if agent.RevokedAt != nil {
 		resp["revoked_at"] = agent.RevokedAt.Format(time.RFC3339)
@@ -4661,14 +4738,20 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")
 
+	// Owner or agent's creator can revoke.
+	user, err := s.requireUser(w, r)
+	if err != nil {
+		return
+	}
+
 	agent, err := s.store.GetAgentByName(ctx, name)
 	if err != nil {
 		jsonError(w, http.StatusNotFound, "Agent not found")
 		return
 	}
 
-	// Vault admins can revoke agents in their vault.
-	if _, err := s.requireVaultAdminSession(w, r, agent.VaultID); err != nil {
+	if user.Role != "owner" && agent.CreatedBy != user.ID {
+		jsonError(w, http.StatusForbidden, "Only the owner or agent creator can revoke agents")
 		return
 	}
 	if agent.Status != "active" {
@@ -4689,15 +4772,20 @@ func (s *Server) handleAgentRotate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")
 
+	// Owner or agent's creator can rotate.
+	user, err := s.requireUser(w, r)
+	if err != nil {
+		return
+	}
+
 	agent, err := s.store.GetAgentByName(ctx, name)
 	if err != nil {
 		jsonError(w, http.StatusNotFound, "Agent not found")
 		return
 	}
 
-	// Vault admins can rotate agents in their vault.
-	user, err := s.requireVaultAdmin(w, r, agent.VaultID)
-	if err != nil {
+	if user.Role != "owner" && agent.CreatedBy != user.ID {
+		jsonError(w, http.StatusForbidden, "Only the owner or agent creator can rotate agents")
 		return
 	}
 	if agent.Status != "active" {
@@ -4706,7 +4794,7 @@ func (s *Server) handleAgentRotate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a rotation invite.
-	inv, err := s.store.CreateRotationInvite(ctx, agent.ID, agent.VaultID, user.ID, time.Now().Add(15*time.Minute))
+	inv, err := s.store.CreateRotationInvite(ctx, agent.ID, user.ID, time.Now().Add(15*time.Minute))
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create rotation invite")
 		return
@@ -4737,14 +4825,20 @@ func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")
 
+	// Owner or agent's creator can rename.
+	user, err := s.requireUser(w, r)
+	if err != nil {
+		return
+	}
+
 	agent, err := s.store.GetAgentByName(ctx, name)
 	if err != nil {
 		jsonError(w, http.StatusNotFound, "Agent not found")
 		return
 	}
 
-	// Vault admins can rename agents in their vault.
-	if _, err := s.requireVaultAdminSession(w, r, agent.VaultID); err != nil {
+	if user.Role != "owner" && agent.CreatedBy != user.ID {
+		jsonError(w, http.StatusForbidden, "Only the owner or agent creator can rename agents")
 		return
 	}
 
@@ -4780,18 +4874,219 @@ func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleAgentSetRole(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	name := r.PathValue("name")
+// ---------------------------------------------------------------------------
+// Vault-level agent management endpoints
+// ---------------------------------------------------------------------------
 
-	agent, err := s.store.GetAgentByName(ctx, name)
-	if err != nil {
-		jsonError(w, http.StatusNotFound, "Agent not found")
+func (s *Server) handleVaultAgentList(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	nsName := r.PathValue("name")
+
+	ns, err := s.store.GetVault(ctx, nsName)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", nsName))
 		return
 	}
 
-	// Only vault admins can change agent roles.
-	if _, err := s.requireVaultAdminSession(w, r, agent.VaultID); err != nil {
+	// Any vault member can list agents.
+	if _, err := s.requireVaultAccess(w, r, ns.ID); err != nil {
+		return
+	}
+
+	agents, err := s.store.ListAgents(ctx, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to list vault agents")
+		return
+	}
+
+	type item struct {
+		Name      string `json:"name"`
+		AgentID   string `json:"agent_id"`
+		VaultRole string `json:"vault_role"`
+		Status    string `json:"status"`
+	}
+	items := make([]item, 0, len(agents))
+	seen := make(map[string]bool)
+	for _, ag := range agents {
+		// Find this vault's role from the agent's grants.
+		var role string
+		for _, v := range ag.Vaults {
+			if v.VaultID == ns.ID {
+				role = v.VaultRole
+				break
+			}
+		}
+		items = append(items, item{
+			Name:      ag.Name,
+			AgentID:   ag.ID,
+			VaultRole: role,
+			Status:    ag.Status,
+		})
+		seen[ag.Name] = true
+	}
+
+	// Include pending invite pre-assignments for this vault.
+	pendingInvites, _ := s.store.ListInvitesByVault(ctx, ns.ID, "pending")
+	for _, inv := range pendingInvites {
+		if seen[inv.AgentName] {
+			continue
+		}
+		for _, v := range inv.Vaults {
+			if v.VaultID == ns.ID {
+				items = append(items, item{
+					Name:      inv.AgentName,
+					VaultRole: v.VaultRole,
+					Status:    "pending",
+				})
+				seen[inv.AgentName] = true
+				break
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"agents": items})
+}
+
+func (s *Server) handleVaultAgentAdd(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	nsName := r.PathValue("name")
+
+	ns, err := s.store.GetVault(ctx, nsName)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", nsName))
+		return
+	}
+
+	// Vault admin required.
+	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
+		return
+	}
+
+	var body struct {
+		Name string `json:"name"`
+		Role string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
+		jsonError(w, http.StatusBadRequest, `Request body must include {"name": "agent-name"}`)
+		return
+	}
+	if body.Role == "" {
+		body.Role = "proxy"
+	}
+	if body.Role != "proxy" && body.Role != "member" && body.Role != "admin" {
+		jsonError(w, http.StatusBadRequest, "Role must be one of: proxy, member, admin")
+		return
+	}
+
+	agent, err := s.store.GetAgentByName(ctx, body.Name)
+	if err != nil || agent == nil {
+		// Agent doesn't exist yet — check for a pending invite and add a vault pre-assignment.
+		inv, invErr := s.store.GetPendingInviteByAgentName(ctx, body.Name)
+		if invErr != nil || inv == nil {
+			jsonError(w, http.StatusNotFound, fmt.Sprintf("Agent %q not found", body.Name))
+			return
+		}
+		// Check not already pre-assigned to this vault.
+		for _, v := range inv.Vaults {
+			if v.VaultID == ns.ID {
+				jsonError(w, http.StatusConflict, fmt.Sprintf("Agent %q is already pre-assigned to vault %q", body.Name, nsName))
+				return
+			}
+		}
+		if err := s.store.AddAgentInviteVault(ctx, inv.ID, ns.ID, body.Role); err != nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to add vault pre-assignment to agent invite")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": fmt.Sprintf("agent %q pre-assigned to vault %q with role %q (pending invite acceptance)", body.Name, nsName, body.Role),
+		})
+		return
+	}
+	if agent.Status != "active" {
+		jsonError(w, http.StatusConflict, "Agent is revoked")
+		return
+	}
+
+	// Check not already granted.
+	if _, err := s.store.GetAgentVaultRole(ctx, agent.ID, ns.ID); err == nil {
+		jsonError(w, http.StatusConflict, fmt.Sprintf("Agent %q already has access to vault %q", body.Name, nsName))
+		return
+	}
+
+	if err := s.store.GrantAgentVaultRole(ctx, agent.ID, ns.ID, body.Role); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to add agent to vault")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": fmt.Sprintf("agent %q added to vault %q with role %q", body.Name, nsName, body.Role),
+	})
+}
+
+func (s *Server) handleVaultAgentRemove(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	nsName := r.PathValue("name")
+	agentName := r.PathValue("agentName")
+
+	ns, err := s.store.GetVault(ctx, nsName)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", nsName))
+		return
+	}
+
+	// Vault admin required.
+	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
+		return
+	}
+
+	agent, err := s.store.GetAgentByName(ctx, agentName)
+	if err != nil || agent == nil {
+		// Agent doesn't exist yet — check for a pending invite pre-assignment.
+		inv, invErr := s.store.GetPendingInviteByAgentName(ctx, agentName)
+		if invErr != nil || inv == nil {
+			jsonError(w, http.StatusNotFound, fmt.Sprintf("Agent %q not found", agentName))
+			return
+		}
+		if err := s.store.RemoveAgentInviteVault(ctx, inv.ID, ns.ID); err != nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to remove vault pre-assignment")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": fmt.Sprintf("agent %q pre-assignment removed from vault %q", agentName, nsName),
+		})
+		return
+	}
+
+	if err := s.store.RevokeAgentVaultAccess(ctx, agent.ID, ns.ID); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to remove agent from vault")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": fmt.Sprintf("agent %q removed from vault %q", agentName, nsName),
+	})
+}
+
+func (s *Server) handleVaultAgentSetRole(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	nsName := r.PathValue("name")
+	agentName := r.PathValue("agentName")
+
+	ns, err := s.store.GetVault(ctx, nsName)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", nsName))
+		return
+	}
+
+	// Vault admin required.
+	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
 		return
 	}
 
@@ -4807,16 +5102,53 @@ func (s *Server) handleAgentSetRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.UpdateAgentVaultRole(ctx, agent.ID, body.Role); err != nil {
+	agent, err := s.store.GetAgentByName(ctx, agentName)
+	if err != nil || agent == nil {
+		// Agent doesn't exist yet — check for a pending invite pre-assignment.
+		inv, invErr := s.store.GetPendingInviteByAgentName(ctx, agentName)
+		if invErr != nil || inv == nil {
+			jsonError(w, http.StatusNotFound, fmt.Sprintf("Agent %q not found", agentName))
+			return
+		}
+		// Verify pre-assignment exists for this vault.
+		found := false
+		for _, v := range inv.Vaults {
+			if v.VaultID == ns.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			jsonError(w, http.StatusNotFound, fmt.Sprintf("Agent %q does not have access to vault %q", agentName, nsName))
+			return
+		}
+		if err := s.store.UpdateAgentInviteVaultRole(ctx, inv.ID, ns.ID, body.Role); err != nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to update agent role")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": fmt.Sprintf("agent %q vault %q pre-assignment role updated to %q", agentName, nsName, body.Role),
+		})
+		return
+	}
+
+	// Verify agent has access to this vault.
+	oldRole, err := s.store.GetAgentVaultRole(ctx, agent.ID, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Agent %q does not have access to vault %q", agentName, nsName))
+		return
+	}
+
+	if err := s.store.GrantAgentVaultRole(ctx, agent.ID, ns.ID, body.Role); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to update agent role")
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"message":  fmt.Sprintf("agent %q role updated to %q", name, body.Role),
-		"agent":    name,
-		"old_role": agent.VaultRole,
+		"message":  fmt.Sprintf("agent %q role in vault %q updated to %q", agentName, nsName, body.Role),
+		"old_role": oldRole,
 		"new_role": body.Role,
 	})
 }
@@ -5352,43 +5684,46 @@ func (s *Server) serveSkill(w http.ResponseWriter, r *http.Request, content []by
 }
 
 // ---------------------------------------------------------------------------
-// Invite create endpoint
+// Agent invite create endpoint (instance-level)
 // ---------------------------------------------------------------------------
 
-func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAgentInviteCreate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	type vaultReq struct {
+		VaultName string `json:"vault_name"`
+		VaultRole string `json:"vault_role"`
+	}
 	var req struct {
-		Vault             string `json:"vault"`
-		Persistent        bool   `json:"persistent"`
-		TTLSeconds        int    `json:"ttl_seconds"`
-		AgentName         string `json:"agent_name"`
-		VaultRole         string `json:"vault_role"`
-		SessionTTLSeconds *int   `json:"session_ttl_seconds,omitempty"`
+		Name              string     `json:"name"`
+		TTLSeconds        int        `json:"ttl_seconds"`
+		SessionTTLSeconds *int       `json:"session_ttl_seconds,omitempty"`
+		Vaults            []vaultReq `json:"vaults"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if req.Vault == "" {
-		req.Vault = store.DefaultVault
+
+	// Agent name is required.
+	if req.Name == "" {
+		jsonError(w, http.StatusBadRequest, "Agent name is required")
+		return
 	}
+	if !validateSlug(req.Name) {
+		jsonError(w, http.StatusBadRequest, "Agent name must be 3-64 characters, lowercase alphanumeric and hyphens only")
+		return
+	}
+
 	if req.TTLSeconds <= 0 {
-		req.TTLSeconds = 900 // 15 minutes default
+		req.TTLSeconds = 7 * 24 * 60 * 60 // 7 days default
 	}
-	// Determine if this is a persistent (named agent) invite.
-	// persistent=true or agent_name set → persistent invite.
-	isPersistent := req.Persistent || req.AgentName != ""
-	// Cap invite TTL: 24 hours for temporary, 7 days for persistent.
-	maxTTL := 24 * 60 * 60 // 24 hours
-	if isPersistent {
-		maxTTL = 7 * 24 * 60 * 60 // 7 days
-	}
+	maxTTL := 7 * 24 * 60 * 60
 	if req.TTLSeconds > maxTTL {
 		req.TTLSeconds = maxTTL
 	}
-	// session_ttl_seconds: nil = no expiry, >0 = finite session.
-	// Cap finite session TTL using the same bounds as direct connect sessions.
+
+	// Cap finite session TTL.
 	if req.SessionTTLSeconds != nil && *req.SessionTTLSeconds > 0 {
 		ttl := *req.SessionTTLSeconds
 		if ttl < directSessionMinTTL {
@@ -5399,102 +5734,96 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 			req.SessionTTLSeconds = &ttl
 		}
 	}
-	if req.VaultRole == "" {
-		req.VaultRole = "proxy"
-	}
-	if req.VaultRole != "proxy" && req.VaultRole != "member" && req.VaultRole != "admin" {
-		jsonError(w, http.StatusBadRequest, "Vault_role must be one of: proxy, member, admin")
+
+	// Any authenticated user can create agent invites.
+	user, err := s.requireUser(w, r)
+	if err != nil {
 		return
 	}
 
-	ns, err := s.store.GetVault(ctx, req.Vault)
-	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", req.Vault))
+	// Check for duplicate agent name (existing agent or pending invite).
+	existing, _ := s.store.GetAgentByName(ctx, req.Name)
+	if existing != nil {
+		jsonError(w, http.StatusConflict, fmt.Sprintf("An agent named %q already exists", req.Name))
 		return
 	}
-
-	// Role-based invite enforcement:
-	// - Proxy-role agents cannot invite anyone.
-	// - Members can invite agents but only as proxy.
-	// - Admins (user vault admin or admin agent) can invite with any role.
-	sess := sessionFromContext(ctx)
-	if sess == nil {
-		jsonError(w, http.StatusForbidden, "Authentication required")
+	if hasPending, _ := s.store.HasPendingInviteByAgentName(ctx, req.Name); hasPending {
+		jsonError(w, http.StatusConflict, fmt.Sprintf("A pending invite for agent %q already exists", req.Name))
 		return
 	}
-
-	cappedRole, errMsg := s.capRequestedRole(ctx, sess, ns.ID, req.VaultRole)
-	if errMsg != "" {
-		jsonError(w, http.StatusForbidden, errMsg)
-		return
-	}
-	req.VaultRole = cappedRole
 
 	// Check pending invite limit.
-	count, err := s.store.CountPendingInvites(ctx, ns.ID)
+	count, err := s.store.CountPendingInvites(ctx)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to check pending invites")
 		return
 	}
-	if count >= 10 {
+	if count >= 50 {
 		jsonError(w, http.StatusTooManyRequests, fmt.Sprintf("Too many pending invites (%d) — revoke some before creating new ones", count))
 		return
 	}
 
-	createdBy := "api"
-	if sess.UserID != "" {
-		createdBy = sess.UserID
+	// Validate and resolve vault pre-assignments.
+	var inviteVaults []store.AgentInviteVault
+	for _, v := range req.Vaults {
+		if v.VaultRole == "" {
+			v.VaultRole = "proxy"
+		}
+		if v.VaultRole != "proxy" && v.VaultRole != "member" && v.VaultRole != "admin" {
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid vault role %q for vault %q", v.VaultRole, v.VaultName))
+			return
+		}
+		ns, err := s.store.GetVault(ctx, v.VaultName)
+		if err != nil || ns == nil {
+			jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", v.VaultName))
+			return
+		}
+		// Inviter must be admin of the vault (or instance owner).
+		if user.Role != "owner" {
+			role, err := s.store.GetVaultRole(ctx, user.ID, ns.ID)
+			if err != nil || role != "admin" {
+				jsonError(w, http.StatusForbidden, fmt.Sprintf("You must be an admin of vault %q to pre-assign it", v.VaultName))
+				return
+			}
+		}
+		inviteVaults = append(inviteVaults, store.AgentInviteVault{
+			VaultID:   ns.ID,
+			VaultName: v.VaultName,
+			VaultRole: v.VaultRole,
+		})
 	}
 
-	expiresAt := time.Now().Add(time.Duration(req.TTLSeconds) * time.Second)
-
-	// Resolve session TTL: nil = no expiry (0 stored), pointer = finite.
 	sessionTTL := 0
 	if req.SessionTTLSeconds != nil {
 		sessionTTL = *req.SessionTTLSeconds
 	}
 
-	if isPersistent {
-		// Check for duplicate agent name.
-		if req.AgentName != "" {
-			existing, _ := s.store.GetAgentByName(ctx, req.AgentName)
-			if existing != nil {
-				jsonError(w, http.StatusConflict, fmt.Sprintf("An agent named %q already exists", req.AgentName))
-				return
-			}
-		}
-
-		inv, err := s.store.CreatePersistentInvite(ctx, ns.ID, req.VaultRole, createdBy, req.AgentName, expiresAt)
-		if err != nil {
-			jsonError(w, http.StatusInternalServerError, "Failed to create persistent invite")
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"token":      inv.Token,
-			"persistent": true,
-			"agent_name": req.AgentName,
-			"vault_role": inv.VaultRole,
-			"expires_at": inv.ExpiresAt.Format(time.RFC3339),
-		})
+	expiresAt := time.Now().Add(time.Duration(req.TTLSeconds) * time.Second)
+	inv, err := s.store.CreateAgentInvite(ctx, req.Name, user.ID, expiresAt, sessionTTL, inviteVaults)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to create agent invite")
 		return
 	}
 
-	inv, err := s.store.CreateInvite(ctx, ns.ID, req.VaultRole, createdBy, expiresAt, sessionTTL)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to create invite")
-		return
+	inviteURL := s.baseURL + "/invite/" + inv.Token
+
+	type vaultResp struct {
+		VaultName string `json:"vault_name"`
+		VaultRole string `json:"vault_role"`
+	}
+	vaults := make([]vaultResp, 0, len(inviteVaults))
+	for _, v := range inviteVaults {
+		vaults = append(vaults, vaultResp{VaultName: v.VaultName, VaultRole: v.VaultRole})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"token":      inv.Token,
-		"persistent": false,
-		"vault_role": inv.VaultRole,
-		"expires_at": inv.ExpiresAt.Format(time.RFC3339),
+		"token":       inv.Token,
+		"agent_name":  req.Name,
+		"vaults":      vaults,
+		"invite_link": inviteURL,
+		"expires_at":  inv.ExpiresAt.Format(time.RFC3339),
 	})
 }
 

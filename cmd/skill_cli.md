@@ -37,7 +37,7 @@ You have access to Agent Vault, an HTTP proxy that attaches credentials to your 
 |----------|-------------|
 | `AGENT_VAULT_ADDR` | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
 | `AGENT_VAULT_SESSION_TOKEN` | Bearer token for authenticating with Agent Vault |
-| `AGENT_VAULT_VAULT` | Vault the session is scoped to |
+| `AGENT_VAULT_VAULT` | Vault name (set for user-scoped sessions via `vault run`; instance-level agent sessions use `X-Vault` header instead) |
 
 ## Discover Available Services (Start Here)
 

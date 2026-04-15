@@ -383,57 +383,88 @@ description: "Complete reference for all Agent Vault CLI commands."
   </Accordion>
 </AccordionGroup>
 
-## Agent invites
+## Agents (instance-level)
 
 <AccordionGroup>
-  <Accordion title="agent-vault vault agent invite create">
+  <Accordion title="agent-vault agent invite">
     ```bash
-    agent-vault vault agent invite create [flags]
+    agent-vault agent invite <name> [flags]
     ```
 
-    Create an agent invite and print the onboarding prompt (copies to clipboard). By default creates a one-time invite. Use `--name` to create a persistent (named) agent. Use `--direct` to skip the invite ceremony and mint a session token immediately.
+    Create an agent invite and print the onboarding prompt (copies to clipboard). The agent redeems the invite via HTTP and receives an instance-level session token.
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--vault` | `default` | Target vault |
-    | `--invite-ttl` | `15m` | Invite link expiration time |
-    | `--ttl` | | Session expiry (omit for no expiry; min 5m, max 7d) |
-    | `--direct` | `false` | Mint a session token immediately (skip invite ceremony) |
-    | `--name` | | Agent name (creates a persistent/named agent) |
-    | `--label` | | Optional session label |
-    | `--address` | | Server address override (default: from session) |
-    | `--role` | `proxy` | Vault role for the invited agent: `proxy`, `member`, or `admin` |
+    | `--vault` | | Vault pre-assignment in `name:role` format (repeatable). Role defaults to `proxy`. |
 
-    `--direct` and `--name` are mutually exclusive.
+    ```bash
+    # Invite with vault pre-assignments
+    agent-vault agent invite my-agent --vault default:proxy --vault payments:member
+    ```
   </Accordion>
 
-  <Accordion title="agent-vault vault agent invite list">
+  <Accordion title="agent-vault agent invite list">
     ```bash
-    agent-vault vault agent invite list [flags]
+    agent-vault agent invite list [flags]
     ```
 
-    List agent invites for a vault.
+    List agent invites.
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--vault` | `default` | Target vault |
     | `--status` | | Filter by status (e.g. `pending`) |
   </Accordion>
 
-  <Accordion title="agent-vault vault agent invite revoke">
+  <Accordion title="agent-vault agent invite revoke">
     ```bash
-    agent-vault vault agent invite revoke <token_suffix> [flags]
+    agent-vault agent invite revoke <token_suffix>
     ```
 
     Revoke a pending invite by the last 8 or more characters of the token.
+  </Accordion>
 
-    | Flag | Default | Description |
-    |------|---------|-------------|
-    | `--vault` | `default` | Target vault |
+  <Accordion title="agent-vault agent list">
+    ```bash
+    agent-vault agent list
+    ```
+
+    List all agents across the instance.
+  </Accordion>
+
+  <Accordion title="agent-vault agent info">
+    ```bash
+    agent-vault agent info <name>
+    ```
+
+    Show agent details including vaults, status, and active session count.
+  </Accordion>
+
+  <Accordion title="agent-vault agent revoke">
+    ```bash
+    agent-vault agent revoke <name>
+    ```
+
+    Revoke an agent. Deletes all sessions across all vaults.
+  </Accordion>
+
+  <Accordion title="agent-vault agent rotate">
+    ```bash
+    agent-vault agent rotate <name>
+    ```
+
+    Create a rotation invite to re-issue an agent's session. The old sessions are invalidated when the agent redeems the new invite.
+  </Accordion>
+
+  <Accordion title="agent-vault agent rename">
+    ```bash
+    agent-vault agent rename <name> <new-name>
+    ```
+
+    Rename an agent. Keeps the same vault access.
   </Accordion>
 </AccordionGroup>
 
-## Agents
+## Agents (vault-level)
 
 <AccordionGroup>
   <Accordion title="agent-vault vault agent list">
@@ -441,55 +472,32 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault agent list [flags]
     ```
 
-    List registered agents.
+    List agents in a specific vault.
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
   </Accordion>
 
-  <Accordion title="agent-vault vault agent info">
+  <Accordion title="agent-vault vault agent add">
     ```bash
-    agent-vault vault agent info <name> [flags]
+    agent-vault vault agent add <name> [flags]
     ```
 
-    Show agent details including vault, status, and active sessions.
+    Add an existing instance agent to a vault.
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
+    | `--role` | `proxy` | Vault role: `proxy`, `member`, or `admin` |
   </Accordion>
 
-  <Accordion title="agent-vault vault agent revoke">
+  <Accordion title="agent-vault vault agent remove">
     ```bash
-    agent-vault vault agent revoke <name> [flags]
+    agent-vault vault agent remove <name> [flags]
     ```
 
-    Revoke an agent. Deletes all sessions.
-
-    | Flag | Default | Description |
-    |------|---------|-------------|
-    | `--vault` | `default` | Target vault |
-  </Accordion>
-
-  <Accordion title="agent-vault vault agent rotate">
-    ```bash
-    agent-vault vault agent rotate <name> [flags]
-    ```
-
-    Create a rotation invite to re-issue an agent's session. The old sessions are invalidated when the agent redeems the new invite.
-
-    | Flag | Default | Description |
-    |------|---------|-------------|
-    | `--vault` | `default` | Target vault |
-  </Accordion>
-
-  <Accordion title="agent-vault vault agent rename">
-    ```bash
-    agent-vault vault agent rename <name> <new-name> [flags]
-    ```
-
-    Rename an agent.
+    Remove an agent from a vault.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -501,7 +509,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault agent set-role <name> [flags]
     ```
 
-    Set an agent's vault role.
+    Change an agent's vault role.
 
     | Flag | Default | Description |
     |------|---------|-------------|

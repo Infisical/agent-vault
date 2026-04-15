@@ -17,53 +17,41 @@ If you're using Claude Code, Cursor, or another supported agent, see the [Quicks
 ## Get connection credentials
 
 <Tabs>
-  <Tab title="Web UI">
-    <Steps>
-      <Step title="Open the Agents tab">
-        Navigate to your vault and click the **Agents** tab.
-      </Step>
-      <Step title="Create an invite">
-        Click **Invite agent**, choose **Session**, and configure the role and TTL.
-      </Step>
-      <Step title="Switch to Manual setup">
-        After creating the invite, click the **Manual setup** tab. This shows the environment variables your agent needs.
-      </Step>
-      <Step title="Copy the values">
-        Copy `AGENT_VAULT_ADDR` and `AGENT_VAULT_SESSION_TOKEN` into your agent's environment.
-      </Step>
-    </Steps>
+  <Tab title="vault run (simplest)">
+    For local development, wrap your agent process directly:
+
+    ```bash
+    agent-vault vault run -- my-agent
+    ```
+
+    This sets `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT` in the child process automatically. No invite needed.
   </Tab>
-  <Tab title="CLI">
-    ```bash
-    agent-vault vault agent invite create --direct --vault my-vault
-    ```
-
-    This prints an `export` block you can paste directly into a shell or `.env` file:
+  <Tab title="Agent invite">
+    For CI pipelines, cloud-hosted agents, or when you need the agent to redeem an invite via HTTP:
 
     ```bash
-    export AGENT_VAULT_ADDR="http://127.0.0.1:14321"
-    export AGENT_VAULT_SESSION_TOKEN="..."
-    export AGENT_VAULT_VAULT="my-vault"
+    agent-vault agent invite my-agent --vault default:proxy
     ```
 
-    Use `--ttl` and `--role` to control session lifetime and permissions:
+    This prints an invite prompt. The agent redeems it via `POST {invite_url}` and receives:
+    - `av_addr` — the Agent Vault server URL
+    - `av_session_token` — bearer token for all requests
+    - `vaults` — list of accessible vaults
 
-    ```bash
-    # 4-hour session with member permissions
-    agent-vault vault agent invite create --direct --ttl 4h --role member
-    ```
+    Instance-level sessions require the `X-Vault` header on every vault-scoped request.
   </Tab>
 </Tabs>
 
 ## Environment variables
 
-Your agent needs two values to operate. A third is optional but recommended.
+Your agent needs these values to operate:
 
 | Variable | Required | Description |
 |---|---|---|
 | `AGENT_VAULT_ADDR` | Yes | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
 | `AGENT_VAULT_SESSION_TOKEN` | Yes | Bearer token for authenticating all requests to Agent Vault |
-| `AGENT_VAULT_VAULT` | No | Vault name the session is scoped to (useful for logging/display) |
+
+For instance-level sessions (from agent invites), the agent must also send the `X-Vault` header on every vault-scoped request. For vault-scoped sessions (from `vault run`), the vault is embedded in the session.
 
 ## Make proxied requests
 
@@ -177,7 +165,7 @@ Discovery is optional. If your agent already knows which hosts are configured, i
 
 | Status | Meaning | What to do |
 |---|---|---|
-| 401 | Invalid or expired session token | Re-authenticate. For persistent agents, contact the operator for a new session. |
+| 401 | Invalid or expired session token | Re-authenticate. Contact the operator for a [session rotation](/agents/overview#rotating-a-session). |
 | 403 | Host not allowed | The service isn't configured in the vault. Create a [proposal](/learn/proposals) to request access, or ask the vault admin to add it. The response body includes a `proposal_hint`. |
 | 429 | Too many pending proposals | Wait for existing proposals to be reviewed before creating new ones. |
 | 502 | Missing credential or upstream error | A credential may need to be added to the vault. Inform the user. |
@@ -194,7 +182,7 @@ Discovery is optional. If your agent already knows which hosts are configured, i
   <Card title="Credentials" icon="key" href="/learn/credentials">
     Managing secrets in Agent Vault.
   </Card>
-  <Card title="Persistent agents" icon="rotate" href="/agents/overview#persistent-agents">
-    Long-lived agents that survive session expiry.
+  <Card title="Agents overview" icon="rotate" href="/agents/overview">
+    Agent lifecycle, vault access, and management.
   </Card>
 </CardGroup>
