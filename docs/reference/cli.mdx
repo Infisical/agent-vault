@@ -175,21 +175,71 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     Bind the current directory to a vault by writing an `agent-vault.json` file. This file is meant to be committed to version control so the whole team shares the vault binding.
 
-    When present, `agent-vault.json` is used in vault resolution between the `--vault` flag and the user context: `--vault` flag > `agent-vault.json` > user context > `"default"`.
+    Vault resolution priority: `--vault` flag > `AGENT_VAULT_VAULT` env var > `agent-vault.json` > user context > `"default"`.
 
     Uses an interactive picker if multiple vaults are available. Use `--vault` to skip the picker.
+  </Accordion>
+
+  <Accordion title="agent-vault vault discover">
+    ```bash
+    agent-vault vault discover [flags]
+    ```
+
+    Show available services and credentials for the current vault. Requires a vault-scoped session (via `agent-vault vault run` or `AGENT_VAULT_SESSION_TOKEN` + `AGENT_VAULT_ADDR` env vars).
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--json` | `false` | Output response as JSON |
+  </Accordion>
+
+  <Accordion title="agent-vault vault run">
+    ```bash
+    agent-vault vault run [flags] -- <command>
+    ```
+
+    Wrap a process with Agent Vault environment variables. The child process receives `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT` in its environment.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--address` | | Server address override |
+    | `--role` | `proxy` | Vault role for the session: `proxy`, `member`, or `admin` |
+    | `--ttl` | `0` | Session TTL in seconds (300–604800). Default: server default (24h). |
+  </Accordion>
+
+  <Accordion title="agent-vault vault token">
+    ```bash
+    agent-vault vault token [flags]
+    ```
+
+    Mint a vault-scoped session token and print it to stdout. Useful when you need a scoped token without wrapping a child process via `vault run`.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--address` | | Server address override |
+    | `--role` | `proxy` | Vault role for the session: `proxy`, `member`, or `admin` |
+    | `--ttl` | `0` | Session TTL in seconds (300–604800). Default: server default (24h). |
+
+    ```bash
+    # Export token for use in other commands
+    export AGENT_VAULT_SESSION_TOKEN=$(agent-vault vault token)
+    export AGENT_VAULT_ADDR=http://localhost:14321
+    export AGENT_VAULT_VAULT=default
+
+    # Mint a short-lived token with member role
+    agent-vault vault token --vault myproject --role member --ttl 3600
+    ```
   </Accordion>
 </AccordionGroup>
 
 ## Vault users
 
 <AccordionGroup>
-  <Accordion title="agent-vault vault user invite">
+  <Accordion title="agent-vault vault user add">
     ```bash
-    agent-vault vault user invite <email> [flags]
+    agent-vault vault user add <email> [flags]
     ```
 
-    Invite a user to a vault. Sends an email with an acceptance link if SMTP is configured.
+    Add an existing instance user to a vault (direct grant, no invite needed).
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -202,7 +252,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault user list [flags]
     ```
 
-    List members of a vault.
+    List members of a vault. Includes pending invite pre-assignments with "pending" status.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -232,6 +282,56 @@ description: "Complete reference for all Agent Vault CLI commands."
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
     | `--role` | | Vault role: `admin` or `member` (required) |
+  </Accordion>
+</AccordionGroup>
+
+## Users
+
+<AccordionGroup>
+  <Accordion title="agent-vault user list">
+    ```bash
+    agent-vault user list
+    ```
+
+    List all users in the instance. Owners see vault memberships; members see email, role, and creation date.
+  </Accordion>
+
+  <Accordion title="agent-vault user invite">
+    ```bash
+    agent-vault user invite <email> [flags]
+    ```
+
+    Invite a user to the Agent Vault instance. Sends an HTML email with an acceptance link if SMTP is configured; always returns the `invite_link` in the response. Any authenticated user can create invites. Invites optionally pre-assign vault access.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--role` | `member` | Instance role for the invited user: `owner` or `member` |
+    | `--vault` | | Vault pre-assignment in `name:role` format (repeatable). Role defaults to `member`. |
+
+    ```bash
+    # Invite with vault pre-assignments
+    agent-vault user invite alice@example.com --vault default:admin --vault payments:member
+    ```
+  </Accordion>
+
+  <Accordion title="agent-vault user invite list">
+    ```bash
+    agent-vault user invite list [flags]
+    ```
+
+    List user invites. Owners see all invites; others see invites they created or with pre-assignments to vaults they admin.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--status` | | Filter by status (e.g. `pending`) |
+  </Accordion>
+
+  <Accordion title="agent-vault user invite revoke">
+    ```bash
+    agent-vault user invite revoke <token_suffix>
+    ```
+
+    Revoke a pending user invite by the last 8 or more characters of the token.
   </Accordion>
 </AccordionGroup>
 
@@ -280,9 +380,9 @@ description: "Complete reference for all Agent Vault CLI commands."
 ## Credentials
 
 <AccordionGroup>
-  <Accordion title="agent-vault vault credentials list">
+  <Accordion title="agent-vault vault credential list">
     ```bash
-    agent-vault vault credentials list [flags]
+    agent-vault vault credential list [flags]
     ```
 
     List credential keys in a vault. Alias: `agent-vault vault creds list`.
@@ -290,11 +390,24 @@ description: "Complete reference for all Agent Vault CLI commands."
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
+    | `--reveal` | `false` | Show decrypted credential values (requires member+ role) |
   </Accordion>
 
-  <Accordion title="agent-vault vault credentials set">
+  <Accordion title="agent-vault vault credential get">
     ```bash
-    agent-vault vault credentials set <KEY=VALUE> [KEY2=VALUE2 ...] [flags]
+    agent-vault vault credential get <KEY> [flags]
+    ```
+
+    Print the decrypted value of a single credential to stdout. Pipe-friendly. Requires member+ role. Alias: `agent-vault vault creds get`.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--vault` | `default` | Target vault |
+  </Accordion>
+
+  <Accordion title="agent-vault vault credential set">
+    ```bash
+    agent-vault vault credential set <KEY=VALUE> [KEY2=VALUE2 ...] [flags]
     ```
 
     Store one or more credentials using `KEY=VALUE` format. Alias: `agent-vault vault creds set`.
@@ -304,9 +417,9 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--vault` | `default` | Target vault |
   </Accordion>
 
-  <Accordion title="agent-vault vault credentials delete">
+  <Accordion title="agent-vault vault credential delete">
     ```bash
-    agent-vault vault credentials delete <KEY> [KEY2 ...] [flags]
+    agent-vault vault credential delete <KEY> [KEY2 ...] [flags]
     ```
 
     Delete one or more credentials. Alias: `agent-vault vault creds delete`.
@@ -345,6 +458,45 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--vault` | `default` | Target vault |
   </Accordion>
 
+  <Accordion title="agent-vault vault proposal create">
+    ```bash
+    agent-vault vault proposal create [flags]
+    ```
+
+    Create a proposal to request services or credentials. Supports two modes: flag-driven (for simple single-service proposals) and JSON file (for complex or multi-service proposals).
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--vault` | `default` | Target vault |
+    | `-f`, `--file` | | Path to JSON proposal file (use `-` for stdin) |
+    | `--host` | | Target service host (e.g. `api.stripe.com`) |
+    | `--description` | | Service description |
+    | `--auth-type` | | Auth type: `bearer`, `basic`, or `api-key` |
+    | `--token-key` | | Credential key for bearer auth |
+    | `--username-key` | | Credential key for basic auth username |
+    | `--password-key` | | Credential key for basic auth password |
+    | `--api-key-key` | | Credential key for api-key auth |
+    | `--api-key-header` | | Header name for api-key (default `Authorization`) |
+    | `--api-key-prefix` | | Prefix for api-key value |
+    | `--credential` | | Credential to request: `KEY` or `KEY=description` (repeatable) |
+    | `-m`, `--message` | | Proposal message/reason |
+    | `--user-message` | | Human-facing explanation for the browser approval page |
+    | `--json` | `false` | Output response as JSON |
+
+    ```bash
+    # Flag-driven: request a bearer-auth service with a credential
+    agent-vault vault proposal create \
+      --host api.stripe.com \
+      --auth-type bearer \
+      --token-key STRIPE_KEY \
+      --credential STRIPE_KEY="Stripe secret key" \
+      -m "Need Stripe access for payment processing"
+
+    # JSON file: complex multi-service proposal
+    agent-vault vault proposal create -f proposal.json
+    ```
+  </Accordion>
+
   <Accordion title="agent-vault vault proposal approve">
     ```bash
     agent-vault vault proposal approve <number> [KEY=VALUE ...] [flags]
@@ -355,6 +507,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
+    | `--yes` | `false` | Skip confirmation prompt |
   </Accordion>
 
   <Accordion title="agent-vault vault proposal reject">
@@ -443,12 +596,12 @@ description: "Complete reference for all Agent Vault CLI commands."
     Show agent details including vaults, status, and active session count.
   </Accordion>
 
-  <Accordion title="agent-vault agent revoke">
+  <Accordion title="agent-vault agent delete">
     ```bash
-    agent-vault agent revoke <name>
+    agent-vault agent delete <name>
     ```
 
-    Revoke an agent. Deletes all sessions across all vaults.
+    Delete an agent and all its sessions across all vaults.
   </Accordion>
 
   <Accordion title="agent-vault agent rotate">
@@ -593,29 +746,29 @@ description: "Complete reference for all Agent Vault CLI commands."
     Join a vault as admin. Useful for recovering orphaned vaults. Owner only. Returns 409 if already a member.
   </Accordion>
 
-  <Accordion title="agent-vault owner vault remove">
+  <Accordion title="agent-vault owner vault delete">
     ```bash
-    agent-vault owner vault remove <name>
+    agent-vault owner vault delete <name>
     ```
 
     Delete a vault. Owner only.
   </Accordion>
 </AccordionGroup>
 
-## Owner — settings
+## Owner — config
 
 <AccordionGroup>
-  <Accordion title="agent-vault owner settings get">
+  <Accordion title="agent-vault owner config get">
     ```bash
-    agent-vault owner settings get
+    agent-vault owner config get
     ```
 
     Show current instance settings including `invite_only` and `allowed_email_domains`. Owner only.
   </Accordion>
 
-  <Accordion title="agent-vault owner settings set">
+  <Accordion title="agent-vault owner config set">
     ```bash
-    agent-vault owner settings set [flags]
+    agent-vault owner config set [flags]
     ```
 
     Update instance settings. Owner only.
@@ -630,16 +783,17 @@ description: "Complete reference for all Agent Vault CLI commands."
 ## Utilities
 
 <AccordionGroup>
-  <Accordion title="agent-vault vault run">
+  <Accordion title="agent-vault catalog">
     ```bash
-    agent-vault vault run [flags] -- <command>
+    agent-vault catalog [flags]
     ```
 
-    Wrap a process with Agent Vault environment variables. The child process receives `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT` in its environment.
+    Browse built-in service templates. No authentication required.
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--addr` | | Server address override |
+    | `--json` | `false` | Output response as JSON |
+    | `--address` | | Server address (default: auto-detect) |
   </Accordion>
 
   <Accordion title="agent-vault owner email test">
@@ -652,6 +806,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--to` | Owner's email | Recipient email address |
+    | `--address` | | Server address override |
   </Accordion>
 
   <Accordion title="agent-vault owner reset">

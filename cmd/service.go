@@ -14,12 +14,12 @@ import (
 
 var serviceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "Manage services for a vault",
+	Short: "Manage services in a vault",
 }
 
 var serviceListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List services for the vault",
+	Short: "List services in a vault",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vault := resolveVault(cmd)

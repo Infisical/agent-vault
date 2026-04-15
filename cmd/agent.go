@@ -13,7 +13,7 @@ import (
 // topAgentCmd is the top-level "agent" command for instance-level agent management.
 var topAgentCmd = &cobra.Command{
 	Use:   "agent",
-	Short: "Manage agents (instance-level)",
+	Short: "Manage agents",
 }
 
 var agentListCmd = &cobra.Command{
@@ -63,7 +63,7 @@ var agentListCmd = &cobra.Command{
 
 var agentInfoCmd = &cobra.Command{
 	Use:   "info <name>",
-	Short: "Show details of a registered agent",
+	Short: "Show agent details",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
@@ -119,8 +119,8 @@ var agentInfoCmd = &cobra.Command{
 }
 
 var agentRevokeCmd = &cobra.Command{
-	Use:   "revoke <name>",
-	Short: "Revoke an agent (deletes all sessions)",
+	Use:   "delete <name>",
+	Short: "Delete an agent and all its sessions",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
@@ -134,7 +134,7 @@ var agentRevokeCmd = &cobra.Command{
 			return err
 		}
 
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s Agent %q revoked.\n", successText("✓"), name)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s Agent %q deleted.\n", successText("✓"), name)
 		return nil
 	},
 }
@@ -311,7 +311,7 @@ var vaultAgentRemoveCmd = &cobra.Command{
 
 var vaultAgentSetRoleCmd = &cobra.Command{
 	Use:   "set-role <name>",
-	Short: "Change an agent's vault role",
+	Short: "Set an agent's vault role",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		agentName := args[0]
@@ -346,7 +346,7 @@ var vaultAgentSetRoleCmd = &cobra.Command{
 
 var agentSetRoleCmd = &cobra.Command{
 	Use:   "set-role <name>",
-	Short: "Set an agent's instance-level role",
+	Short: "Set an agent's instance role",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]

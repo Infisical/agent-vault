@@ -61,7 +61,8 @@ Example:
 
 		// 3. Request a vault-scoped session token from the server.
 		role, _ := cmd.Flags().GetString("role")
-		scopedToken, err := requestScopedSession(addr, sess.Token, vault, role)
+		ttl, _ := cmd.Flags().GetInt("ttl")
+		scopedToken, err := requestScopedSession(addr, sess.Token, vault, role, ttl)
 		if err != nil {
 			return err
 		}
@@ -252,10 +253,13 @@ func fetchUserVaults(addr, token string) ([]string, error) {
 
 // requestScopedSession calls the server to create a vault-scoped session
 // and returns the scoped token.
-func requestScopedSession(addr, adminToken, vault, role string) (string, error) {
-	body := map[string]string{"vault": vault}
+func requestScopedSession(addr, adminToken, vault, role string, ttlSeconds int) (string, error) {
+	body := map[string]any{"vault": vault}
 	if role != "" {
 		body["vault_role"] = role
+	}
+	if ttlSeconds > 0 {
+		body["ttl_seconds"] = ttlSeconds
 	}
 	reqBody, err := json.Marshal(body)
 	if err != nil {
@@ -298,6 +302,7 @@ func requestScopedSession(addr, adminToken, vault, role string) (string, error) 
 func init() {
 	runCmd.Flags().String("address", "", "Agent Vault server address (defaults to session address)")
 	runCmd.Flags().String("role", "", "Vault role for the agent session (proxy, member, admin; default: proxy)")
+	runCmd.Flags().Int("ttl", 0, "Session TTL in seconds (300–604800; default: server default 24h)")
 
 	vaultCmd.AddCommand(runCmd)
 }

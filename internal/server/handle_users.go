@@ -336,7 +336,7 @@ func (s *Server) handleUserSetRole(w http.ResponseWriter, r *http.Request) {
 
 const userInviteTTL = 48 * time.Hour
 
-const maxPendingUserInvites = 100
+const maxPendingUserInvites = 50
 
 // userInviteVaultJSON is the JSON response shape for vault pre-assignments on invites.
 type userInviteVaultJSON struct {
@@ -740,6 +740,22 @@ func (s *Server) handleUserInviteReinvite(w http.ResponseWriter, r *http.Request
 	}
 	if existing.Status != "pending" {
 		jsonError(w, http.StatusConflict, "Invite is not pending")
+		return
+	}
+
+	// Authorization: creator, owner, or admin of a pre-assigned vault
+	allowed := existing.CreatedBy == actor.ID || actor.IsOwner()
+	if !allowed {
+		for _, v := range existing.Vaults {
+			role, _ := s.store.GetVaultRole(ctx, actor.ID, v.VaultID)
+			if role == "admin" {
+				allowed = true
+				break
+			}
+		}
+	}
+	if !allowed {
+		jsonError(w, http.StatusForbidden, "You don't have permission to reinvite")
 		return
 	}
 

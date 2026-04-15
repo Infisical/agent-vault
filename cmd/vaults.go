@@ -241,7 +241,7 @@ var vaultUserRemoveCmd = &cobra.Command{
 
 var vaultUserSetRoleCmd = &cobra.Command{
 	Use:   "set-role <email>",
-	Short: "Change a user's vault role",
+	Short: "Set a user's vault role",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		email := args[0]

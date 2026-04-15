@@ -120,7 +120,7 @@ func TestOwnerVaultSubcommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"list", "remove"}
+	expected := []string{"list", "delete"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected owner vault subcommand %q to be registered, but it was not", name)
@@ -382,7 +382,7 @@ func TestTopAgentSubcommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"list", "info", "revoke", "rotate", "rename", "invite"}
+	expected := []string{"list", "info", "delete", "rotate", "rename", "invite"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected agent subcommand %q to be registered, but it was not", name)

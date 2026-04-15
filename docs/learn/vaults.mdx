@@ -111,8 +111,8 @@ agent-vault vault agent rotate my-agent
 # Rename an agent
 agent-vault vault agent rename my-agent new-name
 
-# Revoke an agent (immediate, permanent)
-agent-vault vault agent revoke my-agent
+# Delete an agent from this vault
+agent-vault vault agent remove my-agent
 ```
 
 ## Delete a vault
@@ -143,7 +143,7 @@ agent-vault owner vault list
 agent-vault owner vault join my-vault
 
 # Delete a vault (owner only)
-agent-vault owner vault remove my-vault
+agent-vault owner vault delete my-vault
 ```
 
 Owners see every vault in their vault list. Vaults they have not joined appear in a separate "Other Vaults" section with a **Join** button. Joining grants the owner admin access, letting them manage credentials, approve proposals, and configure services.

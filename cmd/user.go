@@ -12,7 +12,7 @@ import (
 
 var userCmd = &cobra.Command{
 	Use:   "user",
-	Short: "Manage users",
+	Short: "Manage users (owner only)",
 }
 
 var userListCmd = &cobra.Command{
@@ -31,12 +31,16 @@ var userListCmd = &cobra.Command{
 			return err
 		}
 
+		type vaultGrant struct {
+			VaultName string `json:"vault_name"`
+			VaultRole string `json:"vault_role"`
+		}
 		var result struct {
 			Users []struct {
-				Email     string   `json:"email"`
-				Role      string   `json:"role"`
-				Vaults    []string `json:"vaults"`
-				CreatedAt string   `json:"created_at"`
+				Email     string       `json:"email"`
+				Role      string       `json:"role"`
+				Vaults    []vaultGrant `json:"vaults"`
+				CreatedAt string       `json:"created_at"`
 			} `json:"users"`
 		}
 		if err := json.Unmarshal(respBody, &result); err != nil {
@@ -51,7 +55,11 @@ var userListCmd = &cobra.Command{
 		t := newTable(cmd.OutOrStdout())
 		t.AppendHeader(table.Row{"EMAIL", "ROLE", "VAULTS", "CREATED"})
 		for _, u := range result.Users {
-			ns := strings.Join(u.Vaults, ", ")
+			var parts []string
+			for _, v := range u.Vaults {
+				parts = append(parts, v.VaultName+"("+v.VaultRole+")")
+			}
+			ns := strings.Join(parts, ", ")
 			if ns == "" {
 				ns = "-"
 			}
@@ -80,11 +88,15 @@ var userInfoCmd = &cobra.Command{
 			return err
 		}
 
+		type vaultGrant struct {
+			VaultName string `json:"vault_name"`
+			VaultRole string `json:"vault_role"`
+		}
 		var result struct {
-			Email     string   `json:"email"`
-			Role      string   `json:"role"`
-			Vaults    []string `json:"vaults"`
-			CreatedAt string   `json:"created_at"`
+			Email     string       `json:"email"`
+			Role      string       `json:"role"`
+			Vaults    []vaultGrant `json:"vaults"`
+			CreatedAt string       `json:"created_at"`
 		}
 		if err := json.Unmarshal(respBody, &result); err != nil {
 			return fmt.Errorf("parsing response: %w", err)
@@ -92,7 +104,11 @@ var userInfoCmd = &cobra.Command{
 
 		fmt.Fprintf(cmd.OutOrStdout(), "Email:      %s\n", result.Email)
 		fmt.Fprintf(cmd.OutOrStdout(), "Role:       %s\n", result.Role)
-		ns := strings.Join(result.Vaults, ", ")
+		var parts []string
+		for _, v := range result.Vaults {
+			parts = append(parts, v.VaultName+"("+v.VaultRole+")")
+		}
+		ns := strings.Join(parts, ", ")
 		if ns == "" {
 			ns = "(none)"
 		}

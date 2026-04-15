@@ -66,11 +66,11 @@ Agent Vault requires two things before it becomes operational: a **master passwo
     - `agent-vault vault user list [--vault <name>]` -- list vault users (includes pending invite pre-assignments with "pending" status)
     - `agent-vault vault user remove <email> [--vault <name>]` -- remove a user from a vault
     - `agent-vault vault user set-role <email> --role admin|member [--vault <name>]` -- change a user's vault role
-- `agent-vault user invite` -- instance-level user invite commands (any authenticated user)
+- `agent-vault user [list|invite]` -- manage users and invites (any authenticated user)
+  - `agent-vault user list` -- list all users in the instance (owners see vault memberships, members see email/role/created)
   - `agent-vault user invite <email> [--vault <name>:<role> ...]` -- invite a user to the Agent Vault instance with optional vault pre-assignments (repeatable --vault flag, format: `name:role`, role defaults to `member`)
   - `agent-vault user invite list [--status pending]` -- list user invites
   - `agent-vault user invite revoke <token_suffix>` -- revoke a pending invite
-- `agent-vault users` -- list all users in the instance (any authenticated user; owners see vault memberships, members see email/role/created)
 - `agent-vault owner user [list|info|remove|set-role]` -- manage users (owner only, except `info` for self)
   - `agent-vault owner user list` -- list all users
   - `agent-vault owner user info [email]` -- view user info (own info if no email given)
@@ -84,7 +84,7 @@ Agent Vault requires two things before it becomes operational: a **master passwo
 - `agent-vault owner vault [list|join|remove]` -- manage all vaults across the instance (owner only)
   - `agent-vault owner vault list` -- list all vaults
   - `agent-vault owner vault join <name>` -- join a vault as admin (for recovering orphaned vaults)
-  - `agent-vault owner vault remove <name>` -- remove a vault
+  - `agent-vault owner vault delete <name>` -- delete a vault
 - `agent-vault service [--vault] [list|set|clear]` -- manage services per vault
   - `agent-vault service list` -- list configured services as YAML
   - `agent-vault service set` -- interactive service builder (prompts for services, auth config, credentials; requires TTY)
@@ -112,7 +112,7 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault agent invite revoke <token_suffix>` -- revoke a pending agent invite
   - `agent-vault agent list` -- list all agents
   - `agent-vault agent info <name>` -- show agent details (vaults, status, active sessions)
-  - `agent-vault agent revoke <name>` -- revoke an agent (deletes all sessions)
+  - `agent-vault agent delete <name>` -- delete an agent and all its sessions
   - `agent-vault agent rotate <name>` -- create a rotation invite to re-issue an agent's session
   - `agent-vault agent rename <name> <new-name>` -- rename an agent
   - `agent-vault agent set-role <name> --role owner|member` -- change an agent's instance-level role (last owner cannot be demoted)
@@ -124,7 +124,8 @@ Agent Vault requires two things before it becomes operational: a **master passwo
 - `agent-vault email test [--to <email>]` -- send a test email to verify SMTP configuration (owner-only; defaults to sending to the owner's own email)
 - `agent-vault reset [--yes]` -- permanently delete all data and reset the instance to a fresh state (owner-only; requires running server for role verification; auto-stops server before reset)
 - `agent-vault vault discover [--json]` -- show available services and credentials for the current vault. Requires a vault-scoped session (via `agent-vault vault run` or `AGENT_VAULT_SESSION_TOKEN` + `AGENT_VAULT_ADDR` env vars). `--json` for machine-readable output.
-- `agent-vault vault run [--addr] -- <agent>` -- wrap an agent process with Agent Vault access
+- `agent-vault vault run [--address] [--role] [--ttl] -- <agent>` -- wrap an agent process with Agent Vault access
+- `agent-vault vault token [--address] [--role] [--ttl]` -- mint a vault-scoped session token and print it to stdout (pipe-friendly; use with `AGENT_VAULT_SESSION_TOKEN` env var)
 - `agent-vault catalog [--json] [--address <url>]` -- browse built-in service templates. No auth required. Address resolution: `--address` flag > `AGENT_VAULT_ADDR` env > session file > default.
 
 ## Proxy Endpoint
