@@ -1,0 +1,41 @@
+---
+name: Release Agent Vault Node SDK
+run-name: Release Agent Vault Node SDK
+
+on:
+    push:
+        tags:
+            - "*.*.*" # version, e.g. 1.0.0
+
+permissions:
+  contents: write
+  id-token: write  # Required for NPM OIDC auth for releases
+
+defaults:
+  run:
+    working-directory: "./sdks/sdk-typescript"
+
+jobs:
+    npm:
+        name: Publish NPM
+        runs-on: ubuntu-22.04
+        steps:
+            - name: Checkout repo
+              uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+            - name: Setup Node
+              uses: actions/setup-node@8f152de45cc393bb48ce5d89d36b731f54556e65 # v4.0.0
+              with:
+                node-version: '24.14.0'
+                cache: "npm"
+                cache-dependency-path: "sdks/sdk-typescript/package-lock.json"
+                registry-url: "https://registry.npmjs.org"
+
+            - name: Install dependencies
+              run: npm install
+
+            - name: Set NPM version
+              run: npm version ${{ github.ref_name }} --allow-same-version --no-git-tag-version
+
+            - name: Publish NPM
+              run: npm publish --tarball=./infisical-agent-vault-sdk-${{github.ref_name}} --access public

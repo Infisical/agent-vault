@@ -28,3 +28,9 @@ sdks/sdk-typescript/dist/
 *.pfx
 credentials.json
 secrets.yaml
+
+/sdks/sdk-typescript/package/
+
+*.tgz
+
+.DS_Store
