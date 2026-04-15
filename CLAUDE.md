@@ -37,7 +37,7 @@ Agent Vault requires two things before it becomes operational: a **master passwo
 - **Login**: Uses email + password or Google OAuth (owner or member account), not the master password. The master password is only used at server startup for encryption. Login rejects inactive (unverified) accounts.
 - **OAuth (Google)**: When `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_ID` and `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET` env vars are set, "Continue with Google" appears on login/register pages. OAuth uses PKCE (S256), CSRF state, and validates Google ID tokens via JWKS. No automatic account linking from unauthenticated contexts (security: prevents pre-hijack attacks). Users can connect/disconnect Google from account settings. First user must register with email/password. OAuth-only users can set a password from settings for CLI access.
 - **Auth methods**: Users can have password, OAuth (Google), or both. The `oauth_accounts` table tracks OAuth identities. The `handleAuthMe` response includes `has_password` (bool) and `oauth_providers` (string array).
-- **Roles**: Two independent axes, instance-level (`owner` vs `member`) and vault-level (`admin` vs `member` vs `proxy`). See Multi-User Permission Model for details.
+- **Roles**: Two independent axes, instance-level (`owner` vs `member`) and vault-level (`admin` vs `member` vs `proxy`). Both users and agents have instance-level roles. See Multi-User Permission Model for details.
 
 ## CLI Commands
 
@@ -106,8 +106,8 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault proposal approve <number> [KEY=VALUE ...]` -- approve and apply (requires active login session; prompts for missing credentials)
   - `agent-vault proposal reject <number> [--reason "..."]` -- reject a pending proposal (requires active login session)
   - `agent-vault proposal review` -- interactively walk through all pending proposals (approve, reject, skip, or quit each; requires active login session)
-- `agent-vault agent [invite|list|info|revoke|rotate|rename]` -- instance-level agent management
-  - `agent-vault agent invite <name> [--vault name:role ...]` -- invite an agent to the instance with optional vault pre-assignments (repeatable --vault flag, format: `name:role`, role defaults to `proxy`)
+- `agent-vault agent [invite|list|info|revoke|rotate|rename|set-role]` -- instance-level agent management
+  - `agent-vault agent invite <name> [--role owner|member] [--vault name:role ...]` -- invite an agent to the instance with an instance-level role (default `member`) and optional vault pre-assignments (repeatable --vault flag, format: `name:role`, role defaults to `proxy`)
   - `agent-vault agent invite list [--status pending]` -- list agent invites
   - `agent-vault agent invite revoke <token_suffix>` -- revoke a pending agent invite
   - `agent-vault agent list` -- list all agents
@@ -115,6 +115,7 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault agent revoke <name>` -- revoke an agent (deletes all sessions)
   - `agent-vault agent rotate <name>` -- create a rotation invite to re-issue an agent's session
   - `agent-vault agent rename <name> <new-name>` -- rename an agent
+  - `agent-vault agent set-role <name> --role owner|member` -- change an agent's instance-level role (last owner cannot be demoted)
 - `agent-vault vault agent [list|add|remove|set-role]` -- manage vault-level agent access
   - `agent-vault vault agent list` -- list agents in the current vault
   - `agent-vault vault agent add <name> [--role proxy|member|admin]` -- add an existing instance agent to the vault
@@ -249,7 +250,7 @@ OAuth state table (`oauth_states`) stores SHA-256 hashed state params, PKCE code
 
 Agent invites let a human onboard any agent (including cloud-hosted agents like Devin or chat-based agents) by pasting a short prompt into the agent's chat. The agent redeems the invite via a POST request and receives an instance-level session token plus full usage instructions.
 
-- `POST /v1/agents/invites` -- create an agent invite (any authenticated user). Body: `{"name": "my-agent", "vaults": [{"vault_name": "default", "vault_role": "proxy"}]}`. Name is required. Vault pre-assignments are optional.
+- `POST /v1/agents/invites` -- create an agent invite (any authenticated user). Body: `{"name": "my-agent", "role": "member", "vaults": [{"vault_name": "default", "vault_role": "proxy"}]}`. Name is required. `role` sets instance-level role (default `member`). Vault pre-assignments are optional.
 - `GET /v1/agents/invites[?status=pending]` -- list agent invites
 - `DELETE /v1/agents/invites/{token}` -- revoke a pending agent invite
 - `POST /invite/{token}` -- redeem an agent invite. Body: `{}`. Returns `av_session_token`, agent name, vault list, and usage instructions. Creates an instance-level agent session (vault_id = NULL). Also used for rotation invite redemption.
@@ -258,9 +259,10 @@ Invite states: `pending`, `redeemed`, `expired`, or `revoked`. Token format: `av
 
 ## Instance-Level Agent API
 
-Agents are instance-level entities (like users) with multi-vault access via `agent_vault_grants`. Agent sessions are instance-level (vault_id = NULL) and select vaults per-request via the `X-Vault` header.
+Agents are instance-level entities (like users) with instance-level roles (`owner`/`member`) and multi-vault access via the unified `vault_grants` table. Agent sessions are instance-level (vault_id = NULL) and select vaults per-request via the `X-Vault` header.
 
 - **Agent names**: globally unique, 3-64 chars, lowercase alphanumeric + hyphens.
+- **Instance role**: `owner` or `member`, same as users. Owner agents can perform administrative operations.
 - **Session token**: `av_sess_` + 64 hex chars, hashed with SHA-256. Configurable expiry (including no expiry).
 - **Multi-vault**: Agents can be granted access to multiple vaults with independent roles per vault.
 - **X-Vault header**: Instance-level agent sessions must include `X-Vault: {vault_name}` on all vault-scoped requests (proxy, discover, proposals, credentials).
@@ -273,6 +275,7 @@ Agents are instance-level entities (like users) with multi-vault access via `age
 - `DELETE /v1/agents/{name}` -- revoke agent + cascade delete sessions
 - `POST /v1/agents/{name}/rotate` -- create rotation invite, returns invite URL + prompt
 - `POST /v1/agents/{name}/rename` -- rename agent; body: `{"name": "new-name"}`
+- `POST /v1/agents/{name}/role` -- set instance-level role; body: `{"role": "owner"}`. Last owner cannot be demoted.
 
 ### Vault-Level Agent Endpoints
 
@@ -285,7 +288,7 @@ Agents are instance-level entities (like users) with multi-vault access via `age
 
 Agent Vault uses two independent permission axes:
 
-- **Instance-level role** -- `owner` (can manage users, list/delete all vaults, all admin settings) vs `member` (regular user). Owners can see all vaults and join any vault as admin (`POST /v1/vaults/{name}/join`), but are not automatic members — they must explicitly join to access vault contents.
+- **Instance-level role** -- `owner` (can manage users, list/delete all vaults, all admin settings) vs `member` (regular user). Both users and agents have instance-level roles. Owners can see all vaults and join any vault as admin (`POST /v1/vaults/{name}/join`), but are not automatic members — they must explicitly join to access vault contents.
 - **Vault-level role** -- three-tier hierarchy: `proxy` < `member` < `admin`.
   - `proxy` -- proxy requests and discover services, raise proposals; cannot manage credentials, services, or invites
   - `member` -- all proxy capabilities + set/delete credentials, approve/reject proposals, manage vault services, invite agents (as proxy only)

@@ -15,6 +15,7 @@ import type { AuthContext } from "../../router";
 
 interface AgentRow {
   name: string;
+  role: string; // instance-level role: "owner" or "member"
   status: string;
   created_at: string;
   vaults: { vault_name: string; vault_role: string }[];
@@ -30,10 +31,12 @@ interface VaultOption {
 
 function RowActions({
   agent,
+  isOwner,
   onRevoke,
   onDone,
 }: {
   agent: AgentRow;
+  isOwner: boolean;
   onRevoke: (agent: AgentRow) => void;
   onDone: () => void;
 }) {
@@ -60,12 +63,28 @@ function RowActions({
     );
   }
 
+  const items: { label: string; onClick: () => void; variant?: "danger" }[] = [];
+
+  if (isOwner) {
+    const targetRole = agent.role === "owner" ? "member" : "owner";
+    items.push({
+      label: `Set role: ${targetRole}`,
+      onClick: async () => {
+        await apiFetch(
+          `/v1/agents/${encodeURIComponent(agent.name)}/role`,
+          { method: "POST", body: JSON.stringify({ role: targetRole }) }
+        );
+        onDone();
+      },
+    });
+  }
+
+  items.push({ label: "Revoke agent", onClick: () => onRevoke(agent), variant: "danger" });
+
   return (
     <DropdownMenu
       width={192}
-      items={[
-        { label: "Revoke agent", onClick: () => onRevoke(agent), variant: "danger" },
-      ]}
+      items={items}
     />
   );
 }
@@ -92,8 +111,9 @@ export default function AllAgentsTab() {
 
       const agentsData = await agentsResp.json();
       const activeRows: AgentRow[] = (agentsData.agents ?? []).map(
-        (a: { name: string; status: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
+        (a: { name: string; role: string; status: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
           name: a.name,
+          role: a.role || "member",
           status: a.status,
           created_at: a.created_at,
           vaults: a.vaults ?? [],
@@ -109,8 +129,9 @@ export default function AllAgentsTab() {
             inv.status === "pending" && !agentNames.has(inv.agent_name)
           )
           .map(
-            (inv: { id: number; agent_name: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
+            (inv: { id: number; agent_name: string; agent_role?: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
               name: inv.agent_name,
+              role: inv.agent_role || "member",
               status: "pending",
               created_at: inv.created_at,
               vaults: inv.vaults ?? [],
@@ -150,8 +171,8 @@ export default function AllAgentsTab() {
       {
         key: "role",
         header: "Role",
-        render: () => (
-          <span className="text-sm text-text-muted capitalize">agent</span>
+        render: (agent) => (
+          <span className="text-sm text-text-muted capitalize">{agent.role}</span>
         ),
       },
       {
@@ -185,12 +206,12 @@ export default function AllAgentsTab() {
         header: "",
         align: "right" as const,
         render: (agent: AgentRow) => (
-          <RowActions agent={agent} onRevoke={setRevokeTarget} onDone={fetchData} />
+          <RowActions agent={agent} isOwner={auth.is_owner} onRevoke={setRevokeTarget} onDone={fetchData} />
         ),
       },
     ];
     return cols;
-  }, [fetchData]);
+  }, [fetchData, auth.is_owner]);
 
   return (
     <div className="p-8 w-full max-w-[960px]">
@@ -260,6 +281,7 @@ function InviteAgentButton({
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
+  const [agentRole, setAgentRole] = useState<"owner" | "member">("member");
   const [vaultAssignments, setVaultAssignments] = useState<VaultAssignment[]>([]);
   const [availableVaults, setAvailableVaults] = useState<VaultOption[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -282,6 +304,7 @@ function InviteAgentButton({
   function close() {
     setOpen(false);
     setName("");
+    setAgentRole("member");
     setVaultAssignments([]);
     setError("");
     setInviteResult(null);
@@ -311,6 +334,9 @@ function InviteAgentButton({
     setError("");
     try {
       const payload: Record<string, unknown> = { name: name.trim() };
+      if (isOwner && agentRole !== "member") {
+        payload.role = agentRole;
+      }
       if (vaultAssignments.length > 0) {
         payload.vaults = vaultAssignments;
       }
@@ -413,6 +439,23 @@ function InviteAgentButton({
                 autoFocus
               />
             </FormField>
+
+            {isOwner && (
+              <FormField
+                label="Instance role"
+                helperText={agentRole === "owner"
+                  ? "This agent will be able to manage users, vaults, and instance settings."
+                  : "This agent will have standard access, scoped to its assigned vaults."}
+              >
+                <Select
+                  value={agentRole}
+                  onChange={(e) => setAgentRole(e.target.value as "owner" | "member")}
+                >
+                  <option value="member">Member</option>
+                  <option value="owner">Owner</option>
+                </Select>
+              </FormField>
+            )}
 
             <div>
               <div className="flex items-center justify-between mb-2">

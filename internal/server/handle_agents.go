@@ -60,15 +60,8 @@ func (s *Server) handleInviteRedeem(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAgentInviteList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	sess := sessionFromContext(ctx)
-	if sess == nil || sess.UserID == "" {
-		jsonError(w, http.StatusForbidden, "Agent invite list requires a user session")
-		return
-	}
-
-	user, err := s.store.GetUserByID(ctx, sess.UserID)
-	if err != nil || user == nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to load user")
+	actor, err := s.requireActor(w, r)
+	if err != nil {
 		return
 	}
 
@@ -80,14 +73,13 @@ func (s *Server) handleAgentInviteList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Filter: owners see all; others see invites they created or with pre-assignments to vaults they admin.
-	// Pre-load user's vault roles to avoid per-invite queries.
-	var userAdminVaults map[string]bool
-	if user.Role != "owner" {
-		userAdminVaults = make(map[string]bool)
-		if grants, err := s.store.ListUserGrants(ctx, user.ID); err == nil {
+	var actorAdminVaults map[string]bool
+	if !actor.IsOwner() {
+		actorAdminVaults = make(map[string]bool)
+		if grants, err := s.store.ListActorGrants(ctx, actor.ID); err == nil {
 			for _, g := range grants {
 				if g.Role == "admin" {
-					userAdminVaults[g.VaultID] = true
+					actorAdminVaults[g.VaultID] = true
 				}
 			}
 		}
@@ -95,12 +87,12 @@ func (s *Server) handleAgentInviteList(w http.ResponseWriter, r *http.Request) {
 
 	var filtered []store.Invite
 	for _, inv := range invites {
-		if user.Role == "owner" || inv.CreatedBy == user.ID {
+		if actor.IsOwner() || inv.CreatedBy == actor.ID {
 			filtered = append(filtered, inv)
 			continue
 		}
 		for _, v := range inv.Vaults {
-			if userAdminVaults[v.VaultID] {
+			if actorAdminVaults[v.VaultID] {
 				filtered = append(filtered, inv)
 				break
 			}
@@ -111,6 +103,7 @@ func (s *Server) handleAgentInviteList(w http.ResponseWriter, r *http.Request) {
 		ID               int              `json:"id"`
 		Token            string           `json:"token,omitempty"`
 		AgentName        string           `json:"agent_name"`
+		AgentRole        string           `json:"agent_role"`
 		Status           string           `json:"status"`
 		Vaults           []agentVaultJSON `json:"vaults"`
 		CreatedAt        string           `json:"created_at"`
@@ -128,6 +121,7 @@ func (s *Server) handleAgentInviteList(w http.ResponseWriter, r *http.Request) {
 		items[i] = inviteItem{
 			ID:        inv.ID,
 			AgentName: inv.AgentName,
+			AgentRole: inv.AgentRole,
 			Status:    inv.Status,
 			Vaults:    vaults,
 			CreatedAt: inv.CreatedAt.Format(time.RFC3339),
@@ -152,7 +146,7 @@ func (s *Server) handleAgentInviteRevoke(w http.ResponseWriter, r *http.Request)
 	ctx := r.Context()
 	token := r.PathValue("token")
 
-	user, err := s.requireUser(w, r)
+	actor, err := s.requireActor(w, r)
 	if err != nil {
 		return
 	}
@@ -163,7 +157,7 @@ func (s *Server) handleAgentInviteRevoke(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if !s.canRevokeAgentInvite(ctx, user, inv) {
+	if !s.canRevokeAgentInvite(ctx, actor, inv) {
 		jsonError(w, http.StatusForbidden, "You do not have permission to revoke this invite")
 		return
 	}
@@ -184,7 +178,7 @@ func (s *Server) handleAgentInviteRevoke(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleAgentInviteRevokeByID(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	user, err := s.requireUser(w, r)
+	actor, err := s.requireActor(w, r)
 	if err != nil {
 		return
 	}
@@ -202,7 +196,7 @@ func (s *Server) handleAgentInviteRevokeByID(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if !s.canRevokeAgentInvite(ctx, user, inv) {
+	if !s.canRevokeAgentInvite(ctx, actor, inv) {
 		jsonError(w, http.StatusForbidden, "You do not have permission to revoke this invite")
 		return
 	}
@@ -221,12 +215,12 @@ func (s *Server) handleAgentInviteRevokeByID(w http.ResponseWriter, r *http.Requ
 }
 
 // canRevokeAgentInvite checks if the user is the invite creator, an owner, or admin of a pre-assigned vault.
-func (s *Server) canRevokeAgentInvite(ctx context.Context, user *store.User, inv *store.Invite) bool {
-	if user.Role == "owner" || inv.CreatedBy == user.ID {
+func (s *Server) canRevokeAgentInvite(ctx context.Context, actor *Actor, inv *store.Invite) bool {
+	if actor.IsOwner() || inv.CreatedBy == actor.ID {
 		return true
 	}
 	for _, v := range inv.Vaults {
-		if role, err := s.store.GetVaultRole(ctx, user.ID, v.VaultID); err == nil && role == "admin" {
+		if role, err := s.store.GetVaultRole(ctx, actor.ID, v.VaultID); err == nil && role == "admin" {
 			return true
 		}
 	}
@@ -236,17 +230,6 @@ func (s *Server) canRevokeAgentInvite(ctx context.Context, user *store.User, inv
 //go:embed persistent_instructions_admin.txt
 var persistentInstructionsAdmin string
 
-// instructionsForRole returns role-specific instructions for temporary agent invites.
-func instructionsForRole(role string) string {
-	switch role {
-	case "member":
-		return instructionsMember
-	case "admin":
-		return instructionsAdmin
-	default:
-		return instructionsProxy
-	}
-}
 
 // validateSlug checks that a name is 3-64 lowercase alphanumeric + hyphens.
 func validateSlug(name string) bool {
@@ -339,8 +322,8 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Create instance-level agent.
-	agent, err := s.store.CreateAgent(ctx, agentName, inv.CreatedBy)
+	// Create instance-level agent with the invite's instance role.
+	agent, err := s.store.CreateAgent(ctx, agentName, inv.CreatedBy, inv.AgentRole)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			proxyError(w, http.StatusConflict, "name_taken", fmt.Sprintf("An agent named %q already exists", agentName))
@@ -354,7 +337,7 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 	// Apply vault pre-assignments from the invite.
 	var vaultInfos []agentVaultJSON
 	for _, v := range inv.Vaults {
-		if err := s.store.GrantAgentVaultRole(ctx, agent.ID, v.VaultID, v.VaultRole); err != nil {
+		if err := s.store.GrantVaultRole(ctx, agent.ID, "agent", v.VaultID, v.VaultRole); err != nil {
 			jsonError(w, http.StatusInternalServerError, "Failed to grant vault access")
 			return
 		}
@@ -421,7 +404,7 @@ func (s *Server) handleRotationRedeem(w http.ResponseWriter, r *http.Request, in
 
 	var vaultInfos []agentVaultJSON
 	for _, v := range agent.Vaults {
-		vaultInfos = append(vaultInfos, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.VaultRole})
+		vaultInfos = append(vaultInfos, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.Role})
 	}
 
 	baseURL := s.baseURL
@@ -453,40 +436,31 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For non-owner users/agents, filter to agents sharing at least one vault.
-	user, _ := s.userFromSession(ctx, sess)
-	isOwner := user != nil && user.Role == "owner"
+	// For non-owner actors, filter to agents sharing at least one vault.
+	actor, _ := s.actorFromSession(ctx, sess)
+	isOwner := actor != nil && actor.IsOwner()
 	var accessibleVaults map[string]bool
-	if !isOwner {
-		if user != nil {
-			userGrants, _ := s.store.ListUserGrants(ctx, user.ID)
-			accessibleVaults = make(map[string]bool, len(userGrants))
-			for _, g := range userGrants {
-				accessibleVaults[g.VaultID] = true
-			}
-		} else if sess.AgentID != "" {
-			agentGrants, _ := s.store.ListAgentGrants(ctx, sess.AgentID)
-			accessibleVaults = make(map[string]bool, len(agentGrants))
-			for _, g := range agentGrants {
-				accessibleVaults[g.VaultID] = true
-			}
+	if !isOwner && actor != nil {
+		grants, _ := s.store.ListActorGrants(ctx, actor.ID)
+		accessibleVaults = make(map[string]bool, len(grants))
+		for _, g := range grants {
+			accessibleVaults[g.VaultID] = true
 		}
-		if accessibleVaults != nil {
-			var filtered []store.Agent
-			for _, ag := range agents {
-				for _, v := range ag.Vaults {
-					if accessibleVaults[v.VaultID] {
-						filtered = append(filtered, ag)
-						break
-					}
+		var filtered []store.Agent
+		for _, ag := range agents {
+			for _, v := range ag.Vaults {
+				if accessibleVaults[v.VaultID] {
+					filtered = append(filtered, ag)
+					break
 				}
 			}
-			agents = filtered
 		}
+		agents = filtered
 	}
 
 	type agentItem struct {
 		Name             string           `json:"name"`
+		Role             string           `json:"role"`
 		Status           string           `json:"status"`
 		Vaults           []agentVaultJSON `json:"vaults"`
 		CreatedAt        string           `json:"created_at"`
@@ -499,10 +473,11 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 	for _, ag := range agents {
 		vaults := make([]agentVaultJSON, 0, len(ag.Vaults))
 		for _, v := range ag.Vaults {
-			vaults = append(vaults, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.VaultRole})
+			vaults = append(vaults, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.Role})
 		}
 		item := agentItem{
 			Name:      ag.Name,
+			Role:      ag.Role,
 			Status:    ag.Status,
 			Vaults:    vaults,
 			CreatedAt: ag.CreatedAt.Format(time.RFC3339),
@@ -546,6 +521,7 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, agentItem{
 			Name:      inv.AgentName,
+			Role:      inv.AgentRole,
 			Status:    "pending",
 			Vaults:    vaults,
 			CreatedAt: inv.CreatedAt.Format(time.RFC3339),
@@ -575,11 +551,12 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 
 	vaults := make([]agentVaultJSON, 0, len(agent.Vaults))
 	for _, v := range agent.Vaults {
-		vaults = append(vaults, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.VaultRole})
+		vaults = append(vaults, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.Role})
 	}
 
 	resp := map[string]interface{}{
 		"name":       agent.Name,
+		"role":       agent.Role,
 		"status":     agent.Status,
 		"vaults":     vaults,
 		"created_by": agent.CreatedBy,
@@ -605,7 +582,7 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
 	// Owner or agent's creator can revoke.
-	user, err := s.requireUser(w, r)
+	actor, err := s.requireActor(w, r)
 	if err != nil {
 		return
 	}
@@ -616,12 +593,17 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if user.Role != "owner" && agent.CreatedBy != user.ID {
+	if !actor.IsOwner() && agent.CreatedBy != actor.ID {
 		jsonError(w, http.StatusForbidden, "Only the owner or agent creator can revoke agents")
 		return
 	}
 	if agent.Status != "active" {
 		jsonError(w, http.StatusConflict, "Agent is already revoked")
+		return
+	}
+
+	// Safety: cannot revoke the last owner.
+	if agent.Role == "owner" && s.guardLastOwner(ctx, w, "revoke") {
 		return
 	}
 
@@ -638,7 +620,7 @@ func (s *Server) handleAgentRotate(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
 	// Owner or agent's creator can rotate.
-	user, err := s.requireUser(w, r)
+	actor, err := s.requireActor(w, r)
 	if err != nil {
 		return
 	}
@@ -649,7 +631,7 @@ func (s *Server) handleAgentRotate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if user.Role != "owner" && agent.CreatedBy != user.ID {
+	if !actor.IsOwner() && agent.CreatedBy != actor.ID {
 		jsonError(w, http.StatusForbidden, "Only the owner or agent creator can rotate agents")
 		return
 	}
@@ -659,7 +641,7 @@ func (s *Server) handleAgentRotate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a rotation invite.
-	inv, err := s.store.CreateRotationInvite(ctx, agent.ID, user.ID, time.Now().Add(15*time.Minute))
+	inv, err := s.store.CreateRotationInvite(ctx, agent.ID, actor.ID, time.Now().Add(15*time.Minute))
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create rotation invite")
 		return
@@ -690,7 +672,7 @@ func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
 	// Owner or agent's creator can rename.
-	user, err := s.requireUser(w, r)
+	actor, err := s.requireActor(w, r)
 	if err != nil {
 		return
 	}
@@ -701,7 +683,7 @@ func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if user.Role != "owner" && agent.CreatedBy != user.ID {
+	if !actor.IsOwner() && agent.CreatedBy != actor.ID {
 		jsonError(w, http.StatusForbidden, "Only the owner or agent creator can rename agents")
 		return
 	}
@@ -771,7 +753,7 @@ func (s *Server) handleVaultAgentList(w http.ResponseWriter, r *http.Request) {
 		var role string
 		for _, v := range ag.Vaults {
 			if v.VaultID == ns.ID {
-				role = v.VaultRole
+				role = v.Role
 				break
 			}
 		}
@@ -867,12 +849,12 @@ func (s *Server) handleVaultAgentAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check not already granted.
-	if _, err := s.store.GetAgentVaultRole(ctx, agent.ID, ns.ID); err == nil {
+	if has, _ := s.store.HasVaultAccess(ctx, agent.ID, ns.ID); has {
 		jsonError(w, http.StatusConflict, fmt.Sprintf("Agent %q already has access to vault %q", body.Name, nsName))
 		return
 	}
 
-	if err := s.store.GrantAgentVaultRole(ctx, agent.ID, ns.ID, body.Role); err != nil {
+	if err := s.store.GrantVaultRole(ctx, agent.ID, "agent", ns.ID, body.Role); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to add agent to vault")
 		return
 	}
@@ -916,7 +898,7 @@ func (s *Server) handleVaultAgentRemove(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := s.store.RevokeAgentVaultAccess(ctx, agent.ID, ns.ID); err != nil {
+	if err := s.store.RevokeVaultAccess(ctx, agent.ID, ns.ID); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to remove agent from vault")
 		return
 	}
@@ -985,13 +967,13 @@ func (s *Server) handleVaultAgentSetRole(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Verify agent has access to this vault.
-	oldRole, err := s.store.GetAgentVaultRole(ctx, agent.ID, ns.ID)
+	oldRole, err := s.store.GetVaultRole(ctx, agent.ID, ns.ID)
 	if err != nil {
 		jsonError(w, http.StatusNotFound, fmt.Sprintf("Agent %q does not have access to vault %q", agentName, nsName))
 		return
 	}
 
-	if err := s.store.GrantAgentVaultRole(ctx, agent.ID, ns.ID, body.Role); err != nil {
+	if err := s.store.GrantVaultRole(ctx, agent.ID, "agent", ns.ID, body.Role); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to update agent role")
 		return
 	}
@@ -1012,6 +994,7 @@ func (s *Server) handleAgentInviteCreate(w http.ResponseWriter, r *http.Request)
 	}
 	var req struct {
 		Name              string     `json:"name"`
+		Role              string     `json:"role"` // instance-level role: "owner" or "member" (default: "member")
 		TTLSeconds        int        `json:"ttl_seconds"`
 		SessionTTLSeconds *int       `json:"session_ttl_seconds,omitempty"`
 		Vaults            []vaultReq `json:"vaults"`
@@ -1042,17 +1025,17 @@ func (s *Server) handleAgentInviteCreate(w http.ResponseWriter, r *http.Request)
 	// Cap finite session TTL.
 	if req.SessionTTLSeconds != nil && *req.SessionTTLSeconds > 0 {
 		ttl := *req.SessionTTLSeconds
-		if ttl < directSessionMinTTL {
-			ttl = directSessionMinTTL
+		if ttl < scopedSessionMinTTL {
+			ttl = scopedSessionMinTTL
 			req.SessionTTLSeconds = &ttl
-		} else if ttl > directSessionMaxTTL {
-			ttl = directSessionMaxTTL
+		} else if ttl > scopedSessionMaxTTL {
+			ttl = scopedSessionMaxTTL
 			req.SessionTTLSeconds = &ttl
 		}
 	}
 
-	// Any authenticated user can create agent invites.
-	user, err := s.requireUser(w, r)
+	// Any authenticated actor can create agent invites.
+	actor, err := s.requireActor(w, r)
 	if err != nil {
 		return
 	}
@@ -1095,8 +1078,8 @@ func (s *Server) handleAgentInviteCreate(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		// Inviter must be admin of the vault (or instance owner).
-		if user.Role != "owner" {
-			role, err := s.store.GetVaultRole(ctx, user.ID, ns.ID)
+		if !actor.IsOwner() {
+			role, err := s.store.GetVaultRole(ctx, actor.ID, ns.ID)
 			if err != nil || role != "admin" {
 				jsonError(w, http.StatusForbidden, fmt.Sprintf("You must be an admin of vault %q to pre-assign it", v.VaultName))
 				return
@@ -1109,13 +1092,28 @@ func (s *Server) handleAgentInviteCreate(w http.ResponseWriter, r *http.Request)
 		})
 	}
 
+	// Validate and default agent instance role.
+	agentRole := req.Role
+	if agentRole == "" {
+		agentRole = "member"
+	}
+	if agentRole != "owner" && agentRole != "member" {
+		jsonError(w, http.StatusBadRequest, "Role must be one of: owner, member")
+		return
+	}
+	// Only owner actors can create owner-role agent invites.
+	if agentRole == "owner" && !actor.IsOwner() {
+		jsonError(w, http.StatusForbidden, "Only owners can create owner-role agent invites")
+		return
+	}
+
 	sessionTTL := 0
 	if req.SessionTTLSeconds != nil {
 		sessionTTL = *req.SessionTTLSeconds
 	}
 
 	expiresAt := time.Now().Add(time.Duration(req.TTLSeconds) * time.Second)
-	inv, err := s.store.CreateAgentInvite(ctx, req.Name, user.ID, expiresAt, sessionTTL, inviteVaults)
+	inv, err := s.store.CreateAgentInvite(ctx, req.Name, actor.ID, expiresAt, sessionTTL, agentRole, inviteVaults)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create agent invite")
 		return
@@ -1138,5 +1136,54 @@ func (s *Server) handleAgentInviteCreate(w http.ResponseWriter, r *http.Request)
 		"vaults":      vaults,
 		"invite_link": inviteURL,
 		"expires_at":  inv.ExpiresAt.Format(time.RFC3339),
+	})
+}
+
+// handleAgentSetRole changes an agent's instance-level role (owner/member).
+func (s *Server) handleAgentSetRole(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := r.PathValue("name")
+
+	// Only owners can change agent instance roles.
+	if _, err := s.requireOwnerActor(w, r); err != nil {
+		return
+	}
+
+	var body struct {
+		Role string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Role == "" {
+		jsonError(w, http.StatusBadRequest, `Request body must include {"role": "owner|member"}`)
+		return
+	}
+	if body.Role != "owner" && body.Role != "member" {
+		jsonError(w, http.StatusBadRequest, "Role must be one of: owner, member")
+		return
+	}
+
+	agent, err := s.store.GetAgentByName(ctx, name)
+	if err != nil || agent == nil {
+		jsonError(w, http.StatusNotFound, "Agent not found")
+		return
+	}
+	if agent.Status != "active" {
+		jsonError(w, http.StatusConflict, "Agent is revoked")
+		return
+	}
+
+	// Safety: cannot demote the last owner (user or agent).
+	if agent.Role == "owner" && body.Role == "member" && s.guardLastOwner(ctx, w, "demote") {
+		return
+	}
+
+	if err := s.store.UpdateAgentRole(ctx, agent.ID, body.Role); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to update agent role")
+		return
+	}
+
+	jsonOK(w, map[string]string{
+		"agent":    name,
+		"old_role": agent.Role,
+		"new_role": body.Role,
 	})
 }

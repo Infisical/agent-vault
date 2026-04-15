@@ -58,6 +58,7 @@ func (s *Server) handleUserInviteDetails(w http.ResponseWriter, r *http.Request)
 
 	jsonOK(w, map[string]interface{}{
 		"email":         inv.Email,
+		"role":          inv.Role,
 		"vaults":        vaultsToJSON(inv.Vaults),
 		"needs_account": needsAccount,
 	})
@@ -70,7 +71,7 @@ type userCreateRequest struct {
 }
 
 func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.requireOwner(w, r); err != nil {
+	if _, err := s.requireOwnerActor(w, r); err != nil {
 		return
 	}
 
@@ -122,7 +123,7 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, http.StatusBadRequest, fmt.Sprintf("Vault %q not found", nsName))
 			return
 		}
-		if err := s.store.GrantVaultRole(ctx, user.ID, ns.ID, "member"); err != nil {
+		if err := s.store.GrantVaultRole(ctx, user.ID, "user", ns.ID, "member"); err != nil {
 			jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to grant vault %q", nsName))
 			return
 		}
@@ -151,7 +152,7 @@ func (s *Server) buildOwnerUserList(ctx context.Context, users []store.User) []m
 	}
 	items := make([]map[string]interface{}, len(users))
 	for i, u := range users {
-		grants, _ := s.store.ListUserGrants(ctx, u.ID)
+		grants, _ := s.store.ListActorGrants(ctx, u.ID)
 		vaults := make([]vaultEntry, 0, len(grants))
 		for _, g := range grants {
 			if name, ok := vaultNameByID[g.VaultID]; ok {
@@ -169,7 +170,7 @@ func (s *Server) buildOwnerUserList(ctx context.Context, users []store.User) []m
 }
 
 func (s *Server) handleUserList(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.requireOwner(w, r); err != nil {
+	if _, err := s.requireOwnerActor(w, r); err != nil {
 		return
 	}
 
@@ -187,14 +188,8 @@ func (s *Server) handleUserList(w http.ResponseWriter, r *http.Request) {
 // Owners get full data (including vault memberships); members get a reduced view.
 func (s *Server) handlePublicUserList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	sess := sessionFromContext(ctx)
-	if sess == nil {
-		jsonError(w, http.StatusForbidden, "Authentication required")
-		return
-	}
-	user, err := s.userFromSession(ctx, sess)
-	if err != nil || user == nil {
-		jsonError(w, http.StatusForbidden, "User session required")
+	actor, err := s.requireActor(w, r)
+	if err != nil {
 		return
 	}
 
@@ -204,7 +199,7 @@ func (s *Server) handlePublicUserList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if user.Role == "owner" {
+	if actor.IsOwner() {
 		jsonOK(w, map[string]interface{}{"users": s.buildOwnerUserList(ctx, users)})
 		return
 	}
@@ -229,25 +224,22 @@ func (s *Server) handleUserGet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	email := r.PathValue("email")
 
-	sess := sessionFromContext(ctx)
-	if sess == nil || sess.UserID == "" {
-		jsonError(w, http.StatusForbidden, "User session required")
+	actor, err := s.requireActor(w, r)
+	if err != nil {
 		return
 	}
 
-	caller, err := s.userFromSession(ctx, sess)
-	if err != nil || caller == nil {
-		jsonError(w, http.StatusForbidden, "Invalid session")
-		return
-	}
-
-	// Allow "me" as a shorthand for the caller's own email.
+	// Allow "me" as a shorthand for the caller's own email (only for human users).
 	if email == "me" {
-		email = caller.Email
+		if actor.User == nil {
+			jsonError(w, http.StatusBadRequest, "\"me\" shorthand requires a user session")
+			return
+		}
+		email = actor.User.Email
 	}
 
 	// Members can only view themselves.
-	if caller.Role != "owner" && caller.Email != email {
+	if !actor.IsOwner() && (actor.User == nil || actor.User.Email != email) {
 		jsonError(w, http.StatusForbidden, "Owner role required to view other users")
 		return
 	}
@@ -258,12 +250,10 @@ func (s *Server) handleUserGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	grants, _ := s.store.ListUserGrants(ctx, user.ID)
+	grants, _ := s.store.ListActorGrants(ctx, user.ID)
 	nsNames := make([]string, 0, len(grants))
 	for _, g := range grants {
-		if ns, err := s.store.GetVaultByID(ctx, g.VaultID); err == nil && ns != nil {
-			nsNames = append(nsNames, ns.Name)
-		}
+		nsNames = append(nsNames, g.VaultName)
 	}
 
 	jsonOK(w, map[string]interface{}{
@@ -275,7 +265,7 @@ func (s *Server) handleUserGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.requireOwner(w, r); err != nil {
+	if _, err := s.requireOwnerActor(w, r); err != nil {
 		return
 	}
 
@@ -289,16 +279,8 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Prevent deleting the last owner.
-	if user.Role == "owner" {
-		count, err := s.store.CountOwners(ctx)
-		if err != nil {
-			jsonError(w, http.StatusInternalServerError, "Failed to count owners")
-			return
-		}
-		if count <= 1 {
-			jsonError(w, http.StatusConflict, "Cannot remove the last owner")
-			return
-		}
+	if user.Role == "owner" && s.guardLastOwner(ctx, w, "remove") {
+		return
 	}
 
 	// Delete sessions, then user (grants cascade via FK).
@@ -316,7 +298,7 @@ type setRoleRequest struct {
 }
 
 func (s *Server) handleUserSetRole(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.requireOwner(w, r); err != nil {
+	if _, err := s.requireOwnerActor(w, r); err != nil {
 		return
 	}
 
@@ -340,16 +322,8 @@ func (s *Server) handleUserSetRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Prevent demoting the last owner.
-	if user.Role == "owner" && req.Role == "member" {
-		count, err := s.store.CountOwners(ctx)
-		if err != nil {
-			jsonError(w, http.StatusInternalServerError, "Failed to count owners")
-			return
-		}
-		if count <= 1 {
-			jsonError(w, http.StatusConflict, "Cannot demote the last owner")
-			return
-		}
+	if user.Role == "owner" && req.Role == "member" && s.guardLastOwner(ctx, w, "demote") {
+		return
 	}
 
 	if err := s.store.UpdateUserRole(ctx, user.ID, req.Role); err != nil {
@@ -414,13 +388,14 @@ func (s *Server) sendUserInviteEmail(w http.ResponseWriter, recipientEmail, invi
 func (s *Server) handleUserInviteCreate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	user, err := s.requireUser(w, r)
+	actor, err := s.requireActor(w, r)
 	if err != nil {
 		return
 	}
 
 	var req struct {
 		Email  string `json:"email"`
+		Role   string `json:"role"`
 		Vaults []struct {
 			VaultName string `json:"vault_name"`
 			VaultRole string `json:"vault_role"`
@@ -432,6 +407,20 @@ func (s *Server) handleUserInviteCreate(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := auth.ValidateEmail(req.Email); err != nil {
 		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Validate and default instance role.
+	role := req.Role
+	if role == "" {
+		role = "member"
+	}
+	if role != "owner" && role != "member" {
+		jsonError(w, http.StatusBadRequest, "Role must be one of: owner, member")
+		return
+	}
+	if role == "owner" && !actor.IsOwner() {
+		jsonError(w, http.StatusForbidden, "Only owners can create owner-role user invites")
 		return
 	}
 
@@ -480,8 +469,8 @@ func (s *Server) handleUserInviteCreate(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		// Non-owners must be admin of each pre-assigned vault.
-		if user.Role != "owner" {
-			role, _ := s.store.GetVaultRole(ctx, user.ID, vault.ID)
+		if !actor.IsOwner() {
+			role, _ := s.store.GetVaultRole(ctx, actor.ID, vault.ID)
 			if role != "admin" {
 				jsonError(w, http.StatusForbidden, fmt.Sprintf("You must be an admin of vault %q to pre-assign it", v.VaultName))
 				return
@@ -490,7 +479,7 @@ func (s *Server) handleUserInviteCreate(w http.ResponseWriter, r *http.Request) 
 		vaults = append(vaults, store.UserInviteVault{VaultID: vault.ID, VaultName: vault.Name, VaultRole: v.VaultRole})
 	}
 
-	inv, err := s.store.CreateUserInvite(ctx, req.Email, user.ID, time.Now().Add(userInviteTTL), vaults)
+	inv, err := s.store.CreateUserInvite(ctx, req.Email, actor.ID, role, time.Now().Add(userInviteTTL), vaults)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create invite")
 		return
@@ -498,13 +487,14 @@ func (s *Server) handleUserInviteCreate(w http.ResponseWriter, r *http.Request) 
 
 	inviteLink := s.baseURL + "/invite/" + inv.Token
 
-	emailSent := s.sendUserInviteEmail(w, req.Email, user.Email, inviteLink, "You've been invited to Agent Vault", vaults, inv.ExpiresAt)
+	emailSent := s.sendUserInviteEmail(w, req.Email, actor.DisplayLabel(), inviteLink, "You've been invited to Agent Vault", vaults, inv.ExpiresAt)
 	if !emailSent && s.notifier.Enabled() {
 		return // error response already written by sendUserInviteEmail
 	}
 
 	resp := map[string]interface{}{
 		"email":      req.Email,
+		"role":       role,
 		"vaults":     vaultsToJSON(vaults),
 		"email_sent": emailSent,
 		"expires_at": inv.ExpiresAt.Format(time.RFC3339),
@@ -587,7 +577,7 @@ func (s *Server) handleUserInviteAccept(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 
-		newUser, err := s.store.CreateUser(ctx, inv.Email, hash, salt, "member", kdfP.Time, kdfP.Memory, kdfP.Threads)
+		newUser, err := s.store.CreateUser(ctx, inv.Email, hash, salt, inv.Role, kdfP.Time, kdfP.Memory, kdfP.Threads)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "Failed to create user")
 			return
@@ -602,7 +592,7 @@ func (s *Server) handleUserInviteAccept(w http.ResponseWriter, r *http.Request) 
 
 	// Grant pre-assigned vault access.
 	for _, v := range inv.Vaults {
-		if err := s.store.GrantVaultRole(ctx, user.ID, v.VaultID, v.VaultRole); err != nil {
+		if err := s.store.GrantVaultRole(ctx, user.ID, "user", v.VaultID, v.VaultRole); err != nil {
 			jsonError(w, http.StatusInternalServerError, "Failed to grant vault access")
 			return
 		}
@@ -625,7 +615,7 @@ func (s *Server) handleUserInviteAccept(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleUserInviteList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	user, err := s.requireUser(w, r)
+	actor, err := s.requireActor(w, r)
 	if err != nil {
 		return
 	}
@@ -638,10 +628,10 @@ func (s *Server) handleUserInviteList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Non-owners only see invites they created or invites with pre-assignments to vaults they admin.
-	if user.Role != "owner" {
-		userGrants, _ := s.store.ListUserGrants(ctx, user.ID)
+	if !actor.IsOwner() {
+		actorGrants, _ := s.store.ListActorGrants(ctx, actor.ID)
 		adminVaultIDs := map[string]bool{}
-		for _, g := range userGrants {
+		for _, g := range actorGrants {
 			if g.Role == "admin" {
 				adminVaultIDs[g.VaultID] = true
 			}
@@ -649,7 +639,7 @@ func (s *Server) handleUserInviteList(w http.ResponseWriter, r *http.Request) {
 
 		var filtered []store.UserInvite
 		for _, inv := range invites {
-			if inv.CreatedBy == user.ID {
+			if inv.CreatedBy == actor.ID {
 				filtered = append(filtered, inv)
 				continue
 			}
@@ -665,6 +655,7 @@ func (s *Server) handleUserInviteList(w http.ResponseWriter, r *http.Request) {
 
 	type inviteItem struct {
 		Email     string                `json:"email"`
+		Role      string                `json:"role"`
 		Token     string                `json:"token"`
 		Status    string                `json:"status"`
 		CreatedBy string                `json:"created_by"`
@@ -677,6 +668,7 @@ func (s *Server) handleUserInviteList(w http.ResponseWriter, r *http.Request) {
 	for _, inv := range invites {
 		items = append(items, inviteItem{
 			Email:     inv.Email,
+			Role:      inv.Role,
 			Token:     inv.Token,
 			Status:    inv.Status,
 			CreatedBy: inv.CreatedBy,
@@ -692,7 +684,7 @@ func (s *Server) handleUserInviteList(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUserInviteRevoke(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	user, err := s.requireUser(w, r)
+	actor, err := s.requireActor(w, r)
 	if err != nil {
 		return
 	}
@@ -706,10 +698,10 @@ func (s *Server) handleUserInviteRevoke(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Authorization: creator, owner, or admin of a pre-assigned vault
-	allowed := inv.CreatedBy == user.ID || user.Role == "owner"
+	allowed := inv.CreatedBy == actor.ID || actor.IsOwner()
 	if !allowed {
 		for _, v := range inv.Vaults {
-			role, _ := s.store.GetVaultRole(ctx, user.ID, v.VaultID)
+			role, _ := s.store.GetVaultRole(ctx, actor.ID, v.VaultID)
 			if role == "admin" {
 				allowed = true
 				break
@@ -734,7 +726,7 @@ func (s *Server) handleUserInviteRevoke(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleUserInviteReinvite(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	user, err := s.requireUser(w, r)
+	actor, err := s.requireActor(w, r)
 	if err != nil {
 		return
 	}
@@ -758,7 +750,7 @@ func (s *Server) handleUserInviteReinvite(w http.ResponseWriter, r *http.Request
 	}
 
 	// Create a new invite with the same email and vault assignments.
-	inv, err := s.store.CreateUserInvite(ctx, existing.Email, user.ID, time.Now().Add(userInviteTTL), existing.Vaults)
+	inv, err := s.store.CreateUserInvite(ctx, existing.Email, actor.ID, existing.Role, time.Now().Add(userInviteTTL), existing.Vaults)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create new invite")
 		return
@@ -766,7 +758,7 @@ func (s *Server) handleUserInviteReinvite(w http.ResponseWriter, r *http.Request
 
 	inviteLink := s.baseURL + "/invite/" + inv.Token
 
-	emailSent := s.sendUserInviteEmail(w, existing.Email, user.Email, inviteLink, "You've been re-invited to Agent Vault", existing.Vaults, inv.ExpiresAt)
+	emailSent := s.sendUserInviteEmail(w, existing.Email, actor.DisplayLabel(), inviteLink, "You've been re-invited to Agent Vault", existing.Vaults, inv.ExpiresAt)
 	if !emailSent && s.notifier.Enabled() {
 		return // error response already written by sendUserInviteEmail
 	}

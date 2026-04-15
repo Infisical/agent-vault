@@ -16,14 +16,8 @@ func (s *Server) handleVaultContext(w http.ResponseWriter, r *http.Request) {
 	vaultName := r.PathValue("name")
 	ctx := r.Context()
 
-	sess := sessionFromContext(ctx)
-	if sess == nil || sess.UserID == "" {
-		jsonError(w, http.StatusUnauthorized, "Not authenticated")
-		return
-	}
-	user, err := s.userFromSession(ctx, sess)
-	if err != nil || user == nil {
-		jsonError(w, http.StatusUnauthorized, "Not authenticated")
+	actor, err := s.requireActor(w, r)
+	if err != nil {
 		return
 	}
 
@@ -33,13 +27,11 @@ func (s *Server) handleVaultContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	has, err := s.store.HasVaultAccess(ctx, user.ID, vault.ID)
-	if err != nil || !has {
+	vaultRole, err := s.store.GetVaultRole(ctx, actor.ID, vault.ID)
+	if err != nil {
 		jsonError(w, http.StatusForbidden, "No vault access")
 		return
 	}
-
-	vaultRole, _ := s.store.GetVaultRole(ctx, user.ID, vault.ID)
 
 	jsonOK(w, map[string]interface{}{
 		"vault_name": vault.Name,
@@ -61,7 +53,7 @@ func (s *Server) handleVaultUserList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	grants, err := s.store.ListVaultUsers(ctx, vault.ID)
+	grants, err := s.store.ListVaultMembersByType(ctx, vault.ID, "user")
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to list vault users")
 		return
@@ -75,7 +67,7 @@ func (s *Server) handleVaultUserList(w http.ResponseWriter, r *http.Request) {
 
 	var users []userItem
 	for _, g := range grants {
-		u, err := s.store.GetUserByID(ctx, g.UserID)
+		u, err := s.store.GetUserByID(ctx, g.ActorID)
 		if err != nil || u == nil {
 			continue
 		}
@@ -107,7 +99,7 @@ func (s *Server) handleVaultUserAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.requireVaultAdminSession(w, r, vault.ID); err != nil {
+	if _, err := s.requireVaultAdmin(w, r, vault.ID); err != nil {
 		return
 	}
 
@@ -143,7 +135,7 @@ func (s *Server) handleVaultUserAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.GrantVaultRole(ctx, target.ID, vault.ID, req.Role); err != nil {
+	if err := s.store.GrantVaultRole(ctx, target.ID, "user", vault.ID, req.Role); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to grant vault access")
 		return
 	}
@@ -165,7 +157,7 @@ func (s *Server) handleVaultUserRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.requireVaultAdminSession(w, r, vault.ID); err != nil {
+	if _, err := s.requireVaultAdmin(w, r, vault.ID); err != nil {
 		return
 	}
 
@@ -204,7 +196,7 @@ func (s *Server) handleVaultUserSetRole(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if _, err := s.requireVaultAdminSession(w, r, vault.ID); err != nil {
+	if _, err := s.requireVaultAdmin(w, r, vault.ID); err != nil {
 		return
 	}
 
@@ -240,7 +232,7 @@ func (s *Server) handleVaultUserSetRole(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	if err := s.store.GrantVaultRole(ctx, user.ID, vault.ID, req.Role); err != nil {
+	if err := s.store.GrantVaultRole(ctx, user.ID, "user", vault.ID, req.Role); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to update role")
 		return
 	}
@@ -253,15 +245,9 @@ func (s *Server) handleVaultUserSetRole(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
-	// Any auth'd user can create vaults.
-	sess := sessionFromContext(r.Context())
-	if sess == nil {
-		jsonError(w, http.StatusForbidden, "Authentication required")
-		return
-	}
-	user, err := s.userFromSession(r.Context(), sess)
-	if err != nil || user == nil {
-		jsonError(w, http.StatusForbidden, "User session required")
+	// Any authenticated actor can create vaults.
+	actor, err := s.requireActor(w, r)
+	if err != nil {
 		return
 	}
 
@@ -297,7 +283,7 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Creator becomes vault admin.
-	_ = s.store.GrantVaultRole(ctx, user.ID, ns.ID, "admin")
+	_ = s.store.GrantVaultRole(ctx, actor.ID, actor.Type, ns.ID, "admin")
 
 	jsonCreated(w, map[string]interface{}{
 		"id":         ns.ID,
@@ -307,15 +293,9 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
-	// Any auth'd user can list vaults.
-	sess := sessionFromContext(r.Context())
-	if sess == nil {
-		jsonError(w, http.StatusForbidden, "Authentication required")
-		return
-	}
-	user, err := s.userFromSession(r.Context(), sess)
-	if err != nil || user == nil {
-		jsonError(w, http.StatusForbidden, "User session required")
+	// Any authenticated actor can list vaults.
+	actor, err := s.requireActor(w, r)
+	if err != nil {
 		return
 	}
 
@@ -332,7 +312,7 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 
 	var items []nsItem
 
-	if user.Role == "owner" {
+	if actor.IsOwner() {
 		// Owners see all vaults. Vaults they have explicit grants for are
 		// "explicit"; the rest are "implicit" (visible but not yet joined).
 		vaults, err := s.store.ListVaults(ctx)
@@ -342,7 +322,7 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, v := range vaults {
 			pending, _ := s.store.CountPendingProposals(ctx, v.ID)
-			role, _ := s.store.GetVaultRole(ctx, user.ID, v.ID)
+			role, _ := s.store.GetVaultRole(ctx, actor.ID, v.ID)
 			membership := "implicit"
 			if role != "" {
 				membership = "explicit"
@@ -358,7 +338,7 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// Non-owners see only vaults they have explicit grants for.
-		grants, err := s.store.ListUserGrants(ctx, user.ID)
+		grants, err := s.store.ListActorGrants(ctx, actor.ID)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "Failed to list vaults")
 			return
@@ -387,7 +367,7 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminVaultList(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.requireOwner(w, r); err != nil {
+	if _, err := s.requireOwnerActor(w, r); err != nil {
 		return
 	}
 
@@ -433,22 +413,16 @@ func (s *Server) handleVaultDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Vault admin OR instance owner can delete.
-	sess := sessionFromContext(ctx)
-	if sess == nil {
-		jsonError(w, http.StatusForbidden, "Authentication required")
-		return
-	}
-	user, err := s.userFromSession(ctx, sess)
-	if err != nil || user == nil {
-		jsonError(w, http.StatusForbidden, "User session required")
+	actor, err := s.requireActor(w, r)
+	if err != nil {
 		return
 	}
 
 	isVaultAdmin := false
-	if role, _ := s.store.GetVaultRole(ctx, user.ID, ns.ID); role == "admin" {
+	if role, _ := s.store.GetVaultRole(ctx, actor.ID, ns.ID); role == "admin" {
 		isVaultAdmin = true
 	}
-	if !isVaultAdmin && user.Role != "owner" {
+	if !isVaultAdmin && !actor.IsOwner() {
 		jsonError(w, http.StatusForbidden, "Vault admin or instance owner required")
 		return
 	}
@@ -476,22 +450,16 @@ func (s *Server) handleVaultRename(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Vault admin OR instance owner can rename.
-	sess := sessionFromContext(ctx)
-	if sess == nil {
-		jsonError(w, http.StatusForbidden, "Authentication required")
-		return
-	}
-	user, err := s.userFromSession(ctx, sess)
-	if err != nil || user == nil {
-		jsonError(w, http.StatusForbidden, "User session required")
+	actor, err := s.requireActor(w, r)
+	if err != nil {
 		return
 	}
 
 	isVaultAdmin := false
-	if role, _ := s.store.GetVaultRole(ctx, user.ID, ns.ID); role == "admin" {
+	if role, _ := s.store.GetVaultRole(ctx, actor.ID, ns.ID); role == "admin" {
 		isVaultAdmin = true
 	}
-	if !isVaultAdmin && user.Role != "owner" {
+	if !isVaultAdmin && !actor.IsOwner() {
 		jsonError(w, http.StatusForbidden, "Vault admin or instance owner required")
 		return
 	}
@@ -532,7 +500,7 @@ func (s *Server) handleVaultRename(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleVaultJoin(w http.ResponseWriter, r *http.Request) {
-	user, err := s.requireOwner(w, r)
+	actor, err := s.requireOwnerActor(w, r)
 	if err != nil {
 		return
 	}
@@ -545,7 +513,7 @@ func (s *Server) handleVaultJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	has, err := s.store.HasVaultAccess(ctx, user.ID, ns.ID)
+	has, err := s.store.HasVaultAccess(ctx, actor.ID, ns.ID)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to check vault access")
 		return
@@ -555,7 +523,7 @@ func (s *Server) handleVaultJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.GrantVaultRole(ctx, user.ID, ns.ID, "admin"); err != nil {
+	if err := s.store.GrantVaultRole(ctx, actor.ID, actor.Type, ns.ID, "admin"); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to join vault")
 		return
 	}

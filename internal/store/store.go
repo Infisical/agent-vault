@@ -22,11 +22,13 @@ type Vault struct {
 	UpdatedAt time.Time
 }
 
-// VaultGrant represents a user's access to a vault with a specific role.
+// VaultGrant represents an actor's (user or agent) access to a vault with a specific role.
 type VaultGrant struct {
-	UserID    string
+	ActorID   string
+	ActorType string // "user" or "agent"
 	VaultID   string
-	Role      string // "admin" or "member"
+	VaultName string // populated via JOIN on reads (optional)
+	Role      string // "proxy", "member", or "admin"
 	CreatedAt time.Time
 }
 
@@ -124,6 +126,7 @@ type Invite struct {
 	Token             string
 	AgentName         string             // required: agent name (3-64 chars, lowercase alphanumeric + hyphens)
 	AgentID           string             // set for rotation invites (references existing agent)
+	AgentRole         string             // "owner" or "member" — instance role for the agent
 	SessionTTLSeconds int                // desired session lifetime when redeemed (0 = no expiry)
 	Status            string             // pending, redeemed, expired, revoked
 	SessionID         string             // populated after redemption
@@ -143,25 +146,17 @@ type AgentInviteVault struct {
 }
 
 // Agent represents a named, instance-level agent entity.
-// Agents have multi-vault access via AgentVaultGrant records.
+// Agents have multi-vault access via VaultGrant records and an instance-level role.
 type Agent struct {
 	ID        string
 	Name      string
+	Role      string // "owner" or "member" (instance-level role, like users)
 	Status    string // "active" or "revoked"
 	CreatedBy string // user ID of the creator
-	Vaults    []AgentVaultGrant
+	Vaults    []VaultGrant
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	RevokedAt *time.Time
-}
-
-// AgentVaultGrant represents an agent's access to a vault with a specific role.
-type AgentVaultGrant struct {
-	AgentID   string
-	VaultID   string
-	VaultName string // populated via JOIN on reads
-	VaultRole string // "proxy", "member", or "admin"
-	CreatedAt time.Time
 }
 
 // UserInvite represents an instance-level invitation for a new user.
@@ -170,6 +165,7 @@ type UserInvite struct {
 	ID         int
 	Token      string // only populated on creation (not stored in DB)
 	Email      string
+	Role       string // "owner" or "member" — instance role for the invited user
 	Status     string // pending, accepted, expired, revoked
 	CreatedBy  string // user ID of the inviter
 	CreatedAt  time.Time
@@ -260,14 +256,15 @@ type Store interface {
 	CountOwners(ctx context.Context) (int, error)
 	RegisterFirstUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, defaultVaultID string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*User, error)
 
-	// Vault grants
-	GrantVaultRole(ctx context.Context, userID, vaultID, role string) error
-	RevokeVaultAccess(ctx context.Context, userID, vaultID string) error
-	ListUserGrants(ctx context.Context, userID string) ([]VaultGrant, error)
-	HasVaultAccess(ctx context.Context, userID, vaultID string) (bool, error)
-	GetVaultRole(ctx context.Context, userID, vaultID string) (string, error)
+	// Vault grants (unified: actor_id + actor_type)
+	GrantVaultRole(ctx context.Context, actorID, actorType, vaultID, role string) error
+	RevokeVaultAccess(ctx context.Context, actorID, vaultID string) error
+	ListActorGrants(ctx context.Context, actorID string) ([]VaultGrant, error)
+	HasVaultAccess(ctx context.Context, actorID, vaultID string) (bool, error)
+	GetVaultRole(ctx context.Context, actorID, vaultID string) (string, error)
 	CountVaultAdmins(ctx context.Context, vaultID string) (int, error)
-	ListVaultUsers(ctx context.Context, vaultID string) ([]VaultGrant, error)
+	ListVaultMembers(ctx context.Context, vaultID string) ([]VaultGrant, error)
+	ListVaultMembersByType(ctx context.Context, vaultID, actorType string) ([]VaultGrant, error)
 
 	// User activation
 	ActivateUser(ctx context.Context, userID string) error
@@ -301,7 +298,7 @@ type Store interface {
 	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string) error
 
 	// Agent invites (instance-level)
-	CreateAgentInvite(ctx context.Context, agentName, createdBy string, expiresAt time.Time, sessionTTLSeconds int, vaults []AgentInviteVault) (*Invite, error)
+	CreateAgentInvite(ctx context.Context, agentName, createdBy string, expiresAt time.Time, sessionTTLSeconds int, agentRole string, vaults []AgentInviteVault) (*Invite, error)
 	CreateRotationInvite(ctx context.Context, agentID, createdBy string, expiresAt time.Time) (*Invite, error)
 	GetInviteByToken(ctx context.Context, token string) (*Invite, error)
 	ListInvites(ctx context.Context, status string) ([]Invite, error)
@@ -320,7 +317,7 @@ type Store interface {
 	ExpirePendingInvites(ctx context.Context, before time.Time) (int, error)
 
 	// User invites (instance-level)
-	CreateUserInvite(ctx context.Context, email, createdBy string, expiresAt time.Time, vaults []UserInviteVault) (*UserInvite, error)
+	CreateUserInvite(ctx context.Context, email, createdBy, role string, expiresAt time.Time, vaults []UserInviteVault) (*UserInvite, error)
 	GetUserInviteByToken(ctx context.Context, token string) (*UserInvite, error)
 	GetPendingUserInviteByEmail(ctx context.Context, email string) (*UserInvite, error)
 	ListUserInvites(ctx context.Context, status string) ([]UserInvite, error)
@@ -362,24 +359,19 @@ type Store interface {
 	CreateOAuthUserAndAccount(ctx context.Context, email, role, provider, providerUserID, oauthEmail, name, avatarURL string) (*User, *OAuthAccount, error)
 
 	// Agents
-	CreateAgent(ctx context.Context, name, createdBy string) (*Agent, error)
+	CreateAgent(ctx context.Context, name, createdBy, role string) (*Agent, error)
 	GetAgentByID(ctx context.Context, id string) (*Agent, error)
 	GetAgentByName(ctx context.Context, name string) (*Agent, error)
 	ListAgents(ctx context.Context, vaultID string) ([]Agent, error)
 	ListAllAgents(ctx context.Context) ([]Agent, error)
 	RevokeAgent(ctx context.Context, id string) error
 	RenameAgent(ctx context.Context, id string, newName string) error
+	UpdateAgentRole(ctx context.Context, agentID, role string) error
 	CountAgentSessions(ctx context.Context, agentID string) (int, error)
 	GetLatestAgentSessionExpiry(ctx context.Context, agentID string) (*time.Time, error)
 	DeleteAgentSessions(ctx context.Context, agentID string) error
 	CreateAgentSession(ctx context.Context, agentID string, expiresAt *time.Time) (*Session, error)
-
-	// Agent vault grants
-	GrantAgentVaultRole(ctx context.Context, agentID, vaultID, role string) error
-	RevokeAgentVaultAccess(ctx context.Context, agentID, vaultID string) error
-	GetAgentVaultRole(ctx context.Context, agentID, vaultID string) (string, error)
-	ListAgentGrants(ctx context.Context, agentID string) ([]AgentVaultGrant, error)
-	ListVaultAgents(ctx context.Context, vaultID string) ([]AgentVaultGrant, error)
+	CountAllOwners(ctx context.Context) (int, error)
 
 	// Instance settings
 	GetSetting(ctx context.Context, key string) (string, error)

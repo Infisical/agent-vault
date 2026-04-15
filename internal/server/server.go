@@ -23,15 +23,6 @@ import (
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
-//go:embed instructions_proxy.txt
-var instructionsProxy string
-
-//go:embed instructions_member.txt
-var instructionsMember string
-
-//go:embed instructions_admin.txt
-var instructionsAdmin string
-
 //go:embed all:webdist
 var webDistFS embed.FS
 
@@ -80,7 +71,6 @@ type Store interface {
 	UpdateUserPassword(ctx context.Context, userID string, passwordHash, passwordSalt []byte, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) error
 	DeleteUser(ctx context.Context, userID string) error
 	CountUsers(ctx context.Context) (int, error)
-	CountOwners(ctx context.Context) (int, error)
 	RegisterFirstUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, defaultVaultID string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*store.User, error)
 	CreateSession(ctx context.Context, userID string, expiresAt time.Time) (*store.Session, error)
 	CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error)
@@ -96,14 +86,15 @@ type Store interface {
 	DeleteVault(ctx context.Context, name string) error
 	RenameVault(ctx context.Context, oldName string, newName string) error
 
-	// Vault grants
-	GrantVaultRole(ctx context.Context, userID, vaultID, role string) error
-	RevokeVaultAccess(ctx context.Context, userID, vaultID string) error
-	ListUserGrants(ctx context.Context, userID string) ([]store.VaultGrant, error)
-	HasVaultAccess(ctx context.Context, userID, vaultID string) (bool, error)
-	GetVaultRole(ctx context.Context, userID, vaultID string) (string, error)
+	// Vault grants (unified: actor_id + actor_type)
+	GrantVaultRole(ctx context.Context, actorID, actorType, vaultID, role string) error
+	RevokeVaultAccess(ctx context.Context, actorID, vaultID string) error
+	ListActorGrants(ctx context.Context, actorID string) ([]store.VaultGrant, error)
+	HasVaultAccess(ctx context.Context, actorID, vaultID string) (bool, error)
+	GetVaultRole(ctx context.Context, actorID, vaultID string) (string, error)
 	CountVaultAdmins(ctx context.Context, vaultID string) (int, error)
-	ListVaultUsers(ctx context.Context, vaultID string) ([]store.VaultGrant, error)
+	ListVaultMembers(ctx context.Context, vaultID string) ([]store.VaultGrant, error)
+	ListVaultMembersByType(ctx context.Context, vaultID, actorType string) ([]store.VaultGrant, error)
 
 	// User activation
 	ActivateUser(ctx context.Context, userID string) error
@@ -130,7 +121,7 @@ type Store interface {
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
 
 	// Agent invites (instance-level)
-	CreateAgentInvite(ctx context.Context, agentName, createdBy string, expiresAt time.Time, sessionTTLSeconds int, vaults []store.AgentInviteVault) (*store.Invite, error)
+	CreateAgentInvite(ctx context.Context, agentName, createdBy string, expiresAt time.Time, sessionTTLSeconds int, agentRole string, vaults []store.AgentInviteVault) (*store.Invite, error)
 	CreateRotationInvite(ctx context.Context, agentID, createdBy string, expiresAt time.Time) (*store.Invite, error)
 	GetInviteByToken(ctx context.Context, token string) (*store.Invite, error)
 	ListInvites(ctx context.Context, status string) ([]store.Invite, error)
@@ -149,7 +140,7 @@ type Store interface {
 	ExpirePendingInvites(ctx context.Context, before time.Time) (int, error)
 
 	// User invites (instance-level)
-	CreateUserInvite(ctx context.Context, email, createdBy string, expiresAt time.Time, vaults []store.UserInviteVault) (*store.UserInvite, error)
+	CreateUserInvite(ctx context.Context, email, createdBy, role string, expiresAt time.Time, vaults []store.UserInviteVault) (*store.UserInvite, error)
 	GetUserInviteByToken(ctx context.Context, token string) (*store.UserInvite, error)
 	GetPendingUserInviteByEmail(ctx context.Context, email string) (*store.UserInvite, error)
 	ListUserInvites(ctx context.Context, status string) ([]store.UserInvite, error)
@@ -195,24 +186,19 @@ type Store interface {
 	GetAllSettings(ctx context.Context) (map[string]string, error)
 
 	// Agents
-	CreateAgent(ctx context.Context, name, createdBy string) (*store.Agent, error)
+	CreateAgent(ctx context.Context, name, createdBy, role string) (*store.Agent, error)
 	GetAgentByID(ctx context.Context, id string) (*store.Agent, error)
 	GetAgentByName(ctx context.Context, name string) (*store.Agent, error)
 	ListAgents(ctx context.Context, vaultID string) ([]store.Agent, error)
 	ListAllAgents(ctx context.Context) ([]store.Agent, error)
 	RevokeAgent(ctx context.Context, id string) error
 	RenameAgent(ctx context.Context, id string, newName string) error
+	UpdateAgentRole(ctx context.Context, agentID, role string) error
 	CountAgentSessions(ctx context.Context, agentID string) (int, error)
 	GetLatestAgentSessionExpiry(ctx context.Context, agentID string) (*time.Time, error)
 	DeleteAgentSessions(ctx context.Context, agentID string) error
 	CreateAgentSession(ctx context.Context, agentID string, expiresAt *time.Time) (*store.Session, error)
-
-	// Agent vault grants
-	GrantAgentVaultRole(ctx context.Context, agentID, vaultID, role string) error
-	RevokeAgentVaultAccess(ctx context.Context, agentID, vaultID string) error
-	GetAgentVaultRole(ctx context.Context, agentID, vaultID string) (string, error)
-	ListAgentGrants(ctx context.Context, agentID string) ([]store.AgentVaultGrant, error)
-	ListVaultAgents(ctx context.Context, vaultID string) ([]store.AgentVaultGrant, error)
+	CountAllOwners(ctx context.Context) (int, error)
 
 	Close() error
 }
@@ -228,90 +214,120 @@ func sessionFromContext(ctx context.Context) *store.Session {
 	return sess
 }
 
-// userFromSession loads the user for a login session (UserID != "").
-// Returns nil for agent sessions (no UserID).
-func (s *Server) userFromSession(ctx context.Context, sess *store.Session) (*store.User, error) {
-	if sess == nil || sess.UserID == "" {
-		return nil, nil
-	}
-	return s.store.GetUserByID(ctx, sess.UserID)
+// Actor represents an authenticated entity (user or agent) with an instance-level role.
+// All permission checks operate on Actor, making the system role-based rather than type-based.
+type Actor struct {
+	ID    string       // user.ID or agent.ID
+	Type  string       // "user" or "agent"
+	Role  string       // "owner" or "member" (instance-level)
+	User  *store.User  // non-nil for user actors
+	Agent *store.Agent // non-nil for agent actors
 }
 
-// requireOwner checks that the request is from a logged-in owner.
-// Writes a 403 and returns a non-nil error if the check fails.
-func (s *Server) requireOwner(w http.ResponseWriter, r *http.Request) (*store.User, error) {
+// IsOwner returns true if the actor has the instance-level owner role.
+func (a *Actor) IsOwner() bool { return a.Role == "owner" }
+
+// DisplayLabel returns a human-readable label for the actor (email for users, name for agents).
+func (a *Actor) DisplayLabel() string {
+	if a.User != nil {
+		return a.User.Email
+	}
+	if a.Agent != nil {
+		return a.Agent.Name
+	}
+	return a.ID
+}
+
+// actorFromSession resolves any session to an Actor.
+func (s *Server) actorFromSession(ctx context.Context, sess *store.Session) (*Actor, error) {
+	if sess == nil {
+		return nil, fmt.Errorf("no session")
+	}
+	if sess.UserID != "" {
+		user, err := s.store.GetUserByID(ctx, sess.UserID)
+		if err != nil || user == nil {
+			return nil, fmt.Errorf("user not found")
+		}
+		return &Actor{ID: user.ID, Type: "user", Role: user.Role, User: user}, nil
+	}
+	if sess.AgentID != "" {
+		agent, err := s.store.GetAgentByID(ctx, sess.AgentID)
+		if err != nil || agent == nil {
+			return nil, fmt.Errorf("agent not found")
+		}
+		return &Actor{ID: agent.ID, Type: "agent", Role: agent.Role, Agent: agent}, nil
+	}
+	return nil, fmt.Errorf("session has no actor")
+}
+
+// requireActor checks that the request is from any authenticated actor (user or agent).
+func (s *Server) requireActor(w http.ResponseWriter, r *http.Request) (*Actor, error) {
 	sess := sessionFromContext(r.Context())
-	if sess == nil || sess.UserID == "" {
-		jsonError(w, http.StatusForbidden, "Owner session required")
-		return nil, fmt.Errorf("no user session")
+	actor, err := s.actorFromSession(r.Context(), sess)
+	if err != nil {
+		jsonError(w, http.StatusForbidden, "Authentication required")
+		return nil, err
 	}
-	user, err := s.userFromSession(r.Context(), sess)
-	if err != nil || user == nil {
-		jsonError(w, http.StatusForbidden, "Owner session required")
-		return nil, fmt.Errorf("user not found")
+	return actor, nil
+}
+
+// requireOwnerActor checks that the request is from an owner (user OR agent).
+func (s *Server) requireOwnerActor(w http.ResponseWriter, r *http.Request) (*Actor, error) {
+	actor, err := s.requireActor(w, r)
+	if err != nil {
+		return nil, err
 	}
-	if user.Role != "owner" {
+	if !actor.IsOwner() {
 		jsonError(w, http.StatusForbidden, "Owner role required")
 		return nil, fmt.Errorf("not owner")
 	}
-	return user, nil
+	return actor, nil
 }
 
-// requireUser checks that the request is from a logged-in user (any role).
-// Writes a 403 and returns a non-nil error if the check fails.
-func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (*store.User, error) {
-	sess := sessionFromContext(r.Context())
-	if sess == nil || sess.UserID == "" {
-		jsonError(w, http.StatusForbidden, "User session required")
-		return nil, fmt.Errorf("no user session")
+// guardLastOwner checks that removing/demoting an owner would not leave zero owners.
+// Returns true if the operation is blocked (error already written to w).
+func (s *Server) guardLastOwner(ctx context.Context, w http.ResponseWriter, action string) bool {
+	count, err := s.store.CountAllOwners(ctx)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to count owners")
+		return true
 	}
-	user, err := s.userFromSession(r.Context(), sess)
-	if err != nil || user == nil {
-		jsonError(w, http.StatusForbidden, "User session required")
-		return nil, fmt.Errorf("user not found")
+	if count <= 1 {
+		jsonError(w, http.StatusConflict, "Cannot "+action+" the last owner")
+		return true
 	}
-	return user, nil
+	return false
 }
+
 
 // requireVaultAccess checks that the session has access to the given vault.
-// For agent sessions (VaultID set), checks that the session's vault matches.
-// For user sessions: owners have implicit access; members need an explicit grant.
-// Returns the user (nil for agent sessions) or writes an error response.
-func (s *Server) requireVaultAccess(w http.ResponseWriter, r *http.Request, vaultID string) (*store.User, error) {
+// For scoped sessions (VaultID set): checks that the session's vault matches.
+// For instance-level sessions: resolves actor and checks the unified vault_grants table.
+// Returns the actor (nil for scoped sessions) or writes an error response.
+func (s *Server) requireVaultAccess(w http.ResponseWriter, r *http.Request, vaultID string) (*Actor, error) {
 	sess := sessionFromContext(r.Context())
 	if sess == nil {
 		jsonError(w, http.StatusForbidden, "Authentication required")
 		return nil, fmt.Errorf("no session")
 	}
 
-	// Scoped agent session: vault is baked into the session.
+	// Scoped session: vault is baked into the session.
 	if sess.VaultID != "" {
 		if sess.VaultID != vaultID {
 			jsonError(w, http.StatusForbidden, "Session not authorized for this vault")
 			return nil, fmt.Errorf("vault mismatch")
 		}
-		return nil, nil // agent session, no user
+		return nil, nil // scoped session, no actor resolved
 	}
 
-	// Instance-level agent session: check agent vault grants.
-	if sess.AgentID != "" {
-		_, err := s.store.GetAgentVaultRole(r.Context(), sess.AgentID, vaultID)
-		if err != nil {
-			jsonError(w, http.StatusForbidden, "Agent does not have access to this vault")
-			return nil, fmt.Errorf("no agent vault grant")
-		}
-		return nil, nil // agent session, no user
-	}
-
-	// User session: check grants (no implicit owner bypass).
-	user, err := s.userFromSession(r.Context(), sess)
-	if err != nil || user == nil {
+	// Instance-level session: resolve actor, check unified vault_grants.
+	actor, err := s.actorFromSession(r.Context(), sess)
+	if err != nil {
 		jsonError(w, http.StatusForbidden, "Invalid session")
-		return nil, fmt.Errorf("user not found")
+		return nil, err
 	}
 
-	// All users need an explicit grant.
-	has, err := s.store.HasVaultAccess(r.Context(), user.ID, vaultID)
+	has, err := s.store.HasVaultAccess(r.Context(), actor.ID, vaultID)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to check vault access")
 		return nil, err
@@ -321,118 +337,126 @@ func (s *Server) requireVaultAccess(w http.ResponseWriter, r *http.Request, vaul
 		return nil, fmt.Errorf("no grant")
 	}
 
-	return user, nil
+	return actor, nil
 }
 
-// requireVaultAdmin checks that the user has admin role in the given vault.
-func (s *Server) requireVaultAdmin(w http.ResponseWriter, r *http.Request, vaultID string) (*store.User, error) {
-	user, err := s.requireVaultAccess(w, r, vaultID)
-	if err != nil {
-		return nil, err
-	}
-	if user == nil {
-		// Agent session — agents cannot be vault admins.
-		jsonError(w, http.StatusForbidden, "Vault admin role required")
-		return nil, fmt.Errorf("agent session")
-	}
-
-	role, err := s.store.GetVaultRole(r.Context(), user.ID, vaultID)
-	if err != nil || role != "admin" {
-		jsonError(w, http.StatusForbidden, "Vault admin role required")
-		return nil, fmt.Errorf("not vault admin")
-	}
-	return user, nil
-}
-
-// agentRoleSatisfies returns true if agentRole is at least as privileged as requiredRole.
-// Hierarchy: proxy(0) < member(1) < admin(2).
-var roleRank = map[string]int{"proxy": 0, "member": 1, "admin": 2}
-
-func agentRoleSatisfies(agentRole, requiredRole string) bool {
-	return roleRank[agentRole] >= roleRank[requiredRole]
-}
-
-// requireVaultMember checks that the session has member+ access to the vault.
-// For agent/scoped sessions: requires sess.VaultRole is "member" or "admin".
-// For user sessions: requires vault access (user vault role is not checked — any user
-// with vault access is considered at least a member).
-func (s *Server) requireVaultMember(w http.ResponseWriter, r *http.Request, vaultID string) (*store.User, error) {
+// requireVaultAdmin checks that the actor has admin role in the given vault.
+// For scoped sessions: checks sess.VaultRole. For instance-level sessions: checks vault_grants.
+func (s *Server) requireVaultAdmin(w http.ResponseWriter, r *http.Request, vaultID string) (*Actor, error) {
 	sess := sessionFromContext(r.Context())
 	if sess == nil {
 		jsonError(w, http.StatusForbidden, "Authentication required")
 		return nil, fmt.Errorf("no session")
 	}
 
-	// Scoped session (agent or temp invite): check vault_role.
+	// Scoped session: check role from session.
 	if sess.VaultID != "" {
 		if sess.VaultID != vaultID {
 			jsonError(w, http.StatusForbidden, "Session not authorized for this vault")
 			return nil, fmt.Errorf("vault mismatch")
 		}
-		if !agentRoleSatisfies(sess.VaultRole, "member") {
+		if !roleSatisfies(sess.VaultRole, "admin") {
+			jsonError(w, http.StatusForbidden, "Vault admin role required")
+			return nil, fmt.Errorf("insufficient role: %s", sess.VaultRole)
+		}
+		return nil, nil
+	}
+
+	// Instance-level session: single GetVaultRole call (covers both existence and role check).
+	actor, err := s.actorFromSession(r.Context(), sess)
+	if err != nil {
+		jsonError(w, http.StatusForbidden, "Invalid session")
+		return nil, err
+	}
+	role, err := s.store.GetVaultRole(r.Context(), actor.ID, vaultID)
+	if err != nil {
+		jsonError(w, http.StatusForbidden, "No access to this vault")
+		return nil, fmt.Errorf("no vault grant")
+	}
+	if role != "admin" {
+		jsonError(w, http.StatusForbidden, "Vault admin role required")
+		return nil, fmt.Errorf("not vault admin")
+	}
+	return actor, nil
+}
+
+// roleSatisfies returns true if role is at least as privileged as requiredRole.
+// Hierarchy: proxy(0) < member(1) < admin(2).
+var roleRank = map[string]int{"proxy": 0, "member": 1, "admin": 2}
+
+func roleSatisfies(role, requiredRole string) bool {
+	return roleRank[role] >= roleRank[requiredRole]
+}
+
+// requireVaultMember checks that the session has member+ access to the vault.
+// For scoped sessions: requires sess.VaultRole is "member" or "admin".
+// For instance-level sessions: checks the unified vault_grants table.
+func (s *Server) requireVaultMember(w http.ResponseWriter, r *http.Request, vaultID string) (*Actor, error) {
+	sess := sessionFromContext(r.Context())
+	if sess == nil {
+		jsonError(w, http.StatusForbidden, "Authentication required")
+		return nil, fmt.Errorf("no session")
+	}
+
+	// Scoped session: check vault_role from session.
+	if sess.VaultID != "" {
+		if sess.VaultID != vaultID {
+			jsonError(w, http.StatusForbidden, "Session not authorized for this vault")
+			return nil, fmt.Errorf("vault mismatch")
+		}
+		if !roleSatisfies(sess.VaultRole, "member") {
 			jsonError(w, http.StatusForbidden, "Member role required")
 			return nil, fmt.Errorf("insufficient role: %s", sess.VaultRole)
 		}
 		return nil, nil
 	}
 
-	// User session: any user with vault access is a member+.
-	return s.requireVaultAccess(w, r, vaultID)
+	// Instance-level session: check vault grant and role.
+	actor, err := s.actorFromSession(r.Context(), sess)
+	if err != nil {
+		jsonError(w, http.StatusForbidden, "Invalid session")
+		return nil, err
+	}
+
+	role, err := s.store.GetVaultRole(r.Context(), actor.ID, vaultID)
+	if err != nil {
+		jsonError(w, http.StatusForbidden, "No access to this vault")
+		return nil, fmt.Errorf("no vault grant")
+	}
+	if !roleSatisfies(role, "member") {
+		jsonError(w, http.StatusForbidden, "Member role required")
+		return nil, fmt.Errorf("insufficient role: %s", role)
+	}
+	return actor, nil
 }
 
 // requireProposalReview checks proposal approve/reject access.
-// Agent/scoped sessions require admin role (proxy-role agents cannot self-approve).
-// User sessions require any vault access (member or admin — by design).
-func (s *Server) requireProposalReview(w http.ResponseWriter, r *http.Request, vaultID string) (*store.User, error) {
+// Scoped sessions require admin role (proxy-role actors cannot self-approve).
+// Instance-level sessions require any vault access (member or admin — by design).
+func (s *Server) requireProposalReview(w http.ResponseWriter, r *http.Request, vaultID string) (*Actor, error) {
 	sess := sessionFromContext(r.Context())
 	if sess == nil {
 		jsonError(w, http.StatusForbidden, "Authentication required")
 		return nil, fmt.Errorf("no session")
 	}
 
-	// Scoped session (agent or temp invite): require admin role.
+	// Scoped session: require admin role.
 	if sess.VaultID != "" {
 		if sess.VaultID != vaultID {
 			jsonError(w, http.StatusForbidden, "Session not authorized for this vault")
 			return nil, fmt.Errorf("vault mismatch")
 		}
-		if sess.VaultRole != "admin" {
+		if !roleSatisfies(sess.VaultRole, "admin") {
 			jsonError(w, http.StatusForbidden, "Admin role required")
 			return nil, fmt.Errorf("insufficient role: %s", sess.VaultRole)
 		}
 		return nil, nil
 	}
 
-	// User session: any vault member can review proposals.
+	// Instance-level session: any vault member can review proposals.
 	return s.requireVaultAccess(w, r, vaultID)
 }
 
-// requireVaultAdminSession checks that the session has admin access to the vault.
-// For agent/scoped sessions: requires sess.VaultRole == "admin".
-// For user sessions: requires vault admin role.
-func (s *Server) requireVaultAdminSession(w http.ResponseWriter, r *http.Request, vaultID string) (*store.User, error) {
-	sess := sessionFromContext(r.Context())
-	if sess == nil {
-		jsonError(w, http.StatusForbidden, "Authentication required")
-		return nil, fmt.Errorf("no session")
-	}
-
-	// Scoped session (agent or temp invite): check vault_role.
-	if sess.VaultID != "" {
-		if sess.VaultID != vaultID {
-			jsonError(w, http.StatusForbidden, "Session not authorized for this vault")
-			return nil, fmt.Errorf("vault mismatch")
-		}
-		if sess.VaultRole != "admin" {
-			jsonError(w, http.StatusForbidden, "Admin role required")
-			return nil, fmt.Errorf("insufficient role: %s", sess.VaultRole)
-		}
-		return nil, nil
-	}
-
-	// User session: requires vault admin.
-	return s.requireVaultAdmin(w, r, vaultID)
-}
 
 // securityHeaders wraps a handler to set security headers on every response.
 func securityHeaders(next http.Handler) http.Handler {
@@ -499,8 +523,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("POST /v1/auth/login", s.requireInitialized(limitBody(s.handleLogin)))
 	mux.HandleFunc("POST /v1/auth/change-password", s.requireInitialized(s.requireAuth(limitBody(s.handleChangePassword))))
 	mux.HandleFunc("DELETE /v1/auth/account", s.requireInitialized(s.requireAuth(s.handleDeleteAccount)))
-	mux.HandleFunc("POST /v1/sessions/scoped", s.requireInitialized(s.requireAuth(limitBody(s.handleScopedSession))))
-	mux.HandleFunc("POST /v1/sessions/direct", s.requireInitialized(s.requireAuth(limitBody(s.handleDirectSession))))
+	mux.HandleFunc("POST /v1/sessions", s.requireInitialized(s.requireAuth(limitBody(s.handleScopedSession))))
 	mux.HandleFunc("GET /v1/credentials", s.requireInitialized(s.requireAuth(s.handleCredentialsList)))
 	mux.HandleFunc("POST /v1/credentials", s.requireInitialized(s.requireAuth(limitBody(s.handleCredentialsSet))))
 	mux.HandleFunc("DELETE /v1/credentials", s.requireInitialized(s.requireAuth(limitBody(s.handleCredentialsDelete))))
@@ -528,6 +551,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("DELETE /v1/agents/{name}", s.requireInitialized(s.requireAuth(s.handleAgentRevoke)))
 	mux.HandleFunc("POST /v1/agents/{name}/rotate", s.requireInitialized(s.requireAuth(limitBody(s.handleAgentRotate))))
 	mux.HandleFunc("POST /v1/agents/{name}/rename", s.requireInitialized(s.requireAuth(limitBody(s.handleAgentRename))))
+	mux.HandleFunc("POST /v1/agents/{name}/role", s.requireInitialized(s.requireAuth(limitBody(s.handleAgentSetRole))))
 
 	// Vault-level agent management
 	mux.HandleFunc("GET /v1/vaults/{name}/agents", s.requireInitialized(s.requireAuth(s.handleVaultAgentList)))
@@ -841,9 +865,8 @@ func (s *Server) optionalAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 const (
-	directSessionMinTTL = 5 * 60        // 5 minutes
-	directSessionMaxTTL = 7 * 24 * 3600 // 7 days
-	directSessionDefTTL = 24 * 3600     // 24 hours
+	scopedSessionMinTTL = 5 * 60        // 5 minutes
+	scopedSessionMaxTTL = 7 * 24 * 3600 // 7 days
 )
 
 // sessionCookie builds an av_session cookie with all hardening flags set.

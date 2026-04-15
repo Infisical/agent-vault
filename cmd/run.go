@@ -262,7 +262,7 @@ func requestScopedSession(addr, adminToken, vault, role string) (string, error) 
 		return "", err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, addr+"/v1/sessions/scoped", bytes.NewReader(reqBody))
+	req, err := http.NewRequest(http.MethodPost, addr+"/v1/sessions", bytes.NewReader(reqBody))
 	if err != nil {
 		return "", err
 	}

@@ -24,6 +24,7 @@ var agentListCmd = &cobra.Command{
 		type agentListResult struct {
 			Agents []struct {
 				Name      string `json:"name"`
+				Role      string `json:"role"`
 				Status    string `json:"status"`
 				CreatedAt string `json:"created_at"`
 				Vaults    []struct {
@@ -43,7 +44,7 @@ var agentListCmd = &cobra.Command{
 		}
 
 		t := newTable(cmd.OutOrStdout())
-		t.AppendHeader(table.Row{"NAME", "STATUS", "VAULTS", "CREATED"})
+		t.AppendHeader(table.Row{"NAME", "ROLE", "STATUS", "VAULTS", "CREATED"})
 		for _, ag := range result.Agents {
 			var vaultParts []string
 			for _, v := range ag.Vaults {
@@ -53,7 +54,7 @@ var agentListCmd = &cobra.Command{
 			if vaults == "" {
 				vaults = "-"
 			}
-			t.AppendRow(table.Row{ag.Name, statusBadge(ag.Status), vaults, ag.CreatedAt})
+			t.AppendRow(table.Row{ag.Name, ag.Role, statusBadge(ag.Status), vaults, ag.CreatedAt})
 		}
 		t.Render()
 		return nil
@@ -79,6 +80,7 @@ var agentInfoCmd = &cobra.Command{
 
 		var info struct {
 			Name           string `json:"name"`
+			Role           string `json:"role"`
 			Status         string `json:"status"`
 			CreatedBy      string `json:"created_by"`
 			CreatedAt      string `json:"created_at"`
@@ -96,6 +98,7 @@ var agentInfoCmd = &cobra.Command{
 
 		w := cmd.OutOrStdout()
 		_, _ = fmt.Fprintf(w, "%s\n", boldText("Agent: "+info.Name))
+		_, _ = fmt.Fprintf(w, "%s %s\n", fieldLabel("Role:"), info.Role)
 		_, _ = fmt.Fprintf(w, "%s %s\n", fieldLabel("Status:"), statusBadge(info.Status))
 		_, _ = fmt.Fprintf(w, "%s %s\n", fieldLabel("Created:"), info.CreatedAt)
 		_, _ = fmt.Fprintf(w, "%s %s\n", fieldLabel("Updated:"), info.UpdatedAt)
@@ -341,16 +344,49 @@ var vaultAgentSetRoleCmd = &cobra.Command{
 	},
 }
 
+var agentSetRoleCmd = &cobra.Command{
+	Use:   "set-role <name>",
+	Short: "Set an agent's instance-level role",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		role, _ := cmd.Flags().GetString("role")
+		if role == "" {
+			return fmt.Errorf("--role is required (owner or member)")
+		}
+		if role != "owner" && role != "member" {
+			return fmt.Errorf("role must be 'owner' or 'member'")
+		}
+
+		sess, err := ensureSession()
+		if err != nil {
+			return err
+		}
+
+		reqURL := sess.Address + "/v1/agents/" + url.PathEscape(name) + "/role"
+		body, _ := json.Marshal(map[string]string{"role": role})
+		if err := doAdminRequest("POST", reqURL, sess.Token, body); err != nil {
+			return err
+		}
+
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s Agent %q instance role set to %q.\n", successText("✓"), name, role)
+		return nil
+	},
+}
+
 func init() {
 	vaultAgentAddCmd.Flags().String("role", "proxy", "vault role (proxy, member, admin)")
 	vaultAgentSetRoleCmd.Flags().String("role", "", "vault role (proxy, member, admin)")
 
-	// Instance-level agent commands: agent-vault agent [list|info|revoke|rotate|rename]
+	agentSetRoleCmd.Flags().String("role", "", "instance-level role (owner or member)")
+
+	// Instance-level agent commands: agent-vault agent [list|info|revoke|rotate|rename|set-role]
 	topAgentCmd.AddCommand(agentListCmd)
 	topAgentCmd.AddCommand(agentInfoCmd)
 	topAgentCmd.AddCommand(agentRevokeCmd)
 	topAgentCmd.AddCommand(agentRotateCmd)
 	topAgentCmd.AddCommand(agentRenameCmd)
+	topAgentCmd.AddCommand(agentSetRoleCmd)
 	rootCmd.AddCommand(topAgentCmd)
 
 	// Vault-level agent commands: agent-vault vault agent [list|add|remove|set-role]

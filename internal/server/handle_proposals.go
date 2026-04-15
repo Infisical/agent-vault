@@ -74,11 +74,11 @@ func (s *Server) handleProposalApproveDetails(w http.ResponseWriter, r *http.Req
 	if c, err := r.Cookie("av_session"); err == nil && c.Value != "" {
 		sess, err := s.store.GetSession(ctx, c.Value)
 		if err == nil && sess != nil && !sessionExpired(sess) && sess.UserID != "" {
-			user, err := s.userFromSession(ctx, sess)
-			if err == nil && user != nil {
+			actor, err := s.actorFromSession(ctx, sess)
+			if err == nil && actor != nil && actor.User != nil {
 				authenticated = true
-				userEmail = user.Email
-				has, err := s.store.HasVaultAccess(ctx, user.ID, cs.VaultID)
+				userEmail = actor.User.Email
+				has, err := s.store.HasVaultAccess(ctx, actor.ID, cs.VaultID)
 				if err == nil && has {
 					canApprove = true
 				}
@@ -217,14 +217,14 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) notifyProposalCreated(vaultID, vaultName string, proposalID int, message, approvalURL, agentName string) {
 	ctx := context.Background()
 
-	grants, err := s.store.ListVaultUsers(ctx, vaultID)
+	grants, err := s.store.ListVaultMembersByType(ctx, vaultID, "user")
 	if err != nil || len(grants) == 0 {
 		return
 	}
 
 	var emails []string
 	for _, g := range grants {
-		if u, err := s.store.GetUserByID(ctx, g.UserID); err == nil && u != nil {
+		if u, err := s.store.GetUserByID(ctx, g.ActorID); err == nil && u != nil {
 			emails = append(emails, u.Email)
 		}
 	}
@@ -555,7 +555,7 @@ func (s *Server) handleAdminProposalList(w http.ResponseWriter, r *http.Request)
 		if sess.VaultID != "" {
 			isProxy = sess.VaultRole == "proxy"
 		} else if sess.AgentID != "" {
-			if role, err := s.store.GetAgentVaultRole(ctx, sess.AgentID, ns.ID); err == nil {
+			if role, err := s.store.GetVaultRole(ctx, sess.AgentID, ns.ID); err == nil {
 				isProxy = role == "proxy"
 			}
 		}

@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 
 export interface DropdownMenuItem {
   label: string;
-  onClick: () => void;
+  onClick: () => void | Promise<void>;
   variant?: "danger";
 }
 
@@ -68,9 +68,9 @@ export default function DropdownMenu({ items, width = 128 }: DropdownMenuProps) 
             {items.map((item) => (
               <button
                 key={item.label}
-                onClick={() => {
+                onClick={async () => {
                   setOpen(false);
-                  item.onClick();
+                  await item.onClick();
                 }}
                 className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${
                   item.variant === "danger"

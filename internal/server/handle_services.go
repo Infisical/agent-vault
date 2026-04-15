@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,28 +8,6 @@ import (
 	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/catalog"
 )
-
-// buildServiceList returns the services array for a vault (reused by discover and invite redeem).
-func (s *Server) buildServiceList(ctx context.Context, vaultID string) []discoverService {
-	brokerCfg, err := s.store.GetBrokerConfig(ctx, vaultID)
-	if err != nil || brokerCfg == nil {
-		return []discoverService{}
-	}
-
-	var svcList []broker.Service
-	if err := json.Unmarshal([]byte(brokerCfg.ServicesJSON), &svcList); err != nil {
-		return []discoverService{}
-	}
-
-	services := make([]discoverService, len(svcList))
-	for i, svc := range svcList {
-		services[i] = discoverService{
-			Host:        svc.Host,
-			Description: svc.Description,
-		}
-	}
-	return services
-}
 
 func (s *Server) handleServicesGet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

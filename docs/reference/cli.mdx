@@ -395,11 +395,15 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     | Flag | Default | Description |
     |------|---------|-------------|
+    | `--role` | `member` | Instance-level role: `owner` or `member` |
     | `--vault` | | Vault pre-assignment in `name:role` format (repeatable). Role defaults to `proxy`. |
 
     ```bash
     # Invite with vault pre-assignments
     agent-vault agent invite my-agent --vault default:proxy --vault payments:member
+
+    # Invite as an instance owner
+    agent-vault agent invite my-agent --role owner --vault default:admin
     ```
   </Accordion>
 
@@ -461,6 +465,18 @@ description: "Complete reference for all Agent Vault CLI commands."
     ```
 
     Rename an agent. Keeps the same vault access.
+  </Accordion>
+
+  <Accordion title="agent-vault agent set-role">
+    ```bash
+    agent-vault agent set-role <name> [flags]
+    ```
+
+    Change an agent's instance-level role. The last owner (across both users and agents) cannot be demoted.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--role` | | Instance role: `owner` or `member` (required) |
   </Accordion>
 </AccordionGroup>
 

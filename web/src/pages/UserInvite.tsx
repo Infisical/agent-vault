@@ -15,6 +15,7 @@ interface InviteVault {
 interface UserInviteData {
   token?: string;
   email?: string;
+  role?: string;
   vaults?: InviteVault[];
   needs_account?: boolean;
   status?: string;
@@ -48,12 +49,14 @@ export default function UserInvite() {
                 <NewUserForm
                   token={invite.token!}
                   email={invite.email!}
+                  role={invite.role}
                   vaults={invite.vaults ?? []}
                 />
               ) : (
                 <ExistingUserForm
                   token={invite.token!}
                   email={invite.email!}
+                  role={invite.role}
                   vaults={invite.vaults ?? []}
                 />
               )}
@@ -113,11 +116,23 @@ function ErrorSection({ title, message }: { title: string; message: string }) {
   );
 }
 
-function InviteDetails({ vaults }: { vaults: InviteVault[] }) {
-  if (vaults.length === 0) return null;
+function InviteDetails({ role, vaults }: { role?: string; vaults: InviteVault[] }) {
+  if (!role && vaults.length === 0) return null;
 
   return (
     <div className="bg-bg border border-border rounded-lg p-4 mb-6">
+      {role && role !== "member" && (
+        <div className="mb-3">
+          <div className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-1">
+            Instance Role
+          </div>
+          <span className="inline-block px-2.5 py-0.5 bg-primary/10 text-primary text-xs font-semibold rounded-full capitalize">
+            {role}
+          </span>
+        </div>
+      )}
+      {vaults.length === 0 ? null : (
+      <>
       <div className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-2">
         Vault Access
       </div>
@@ -131,6 +146,8 @@ function InviteDetails({ vaults }: { vaults: InviteVault[] }) {
           </div>
         ))}
       </div>
+      </>
+      )}
     </div>
   );
 }
@@ -138,10 +155,12 @@ function InviteDetails({ vaults }: { vaults: InviteVault[] }) {
 function ExistingUserForm({
   token,
   email,
+  role,
   vaults,
 }: {
   token: string;
   email: string;
+  role?: string;
   vaults: InviteVault[];
 }) {
   const [view, setView] = useState<"confirm" | "success">("confirm");
@@ -210,7 +229,7 @@ function ExistingUserForm({
         You've been invited to join as <strong className="text-text">{email}</strong>.
       </p>
 
-      <InviteDetails vaults={vaults} />
+      <InviteDetails role={role} vaults={vaults} />
 
       {formError && <ErrorBanner message={formError} className="mb-4" />}
 
@@ -229,10 +248,12 @@ function ExistingUserForm({
 function NewUserForm({
   token,
   email,
+  role,
   vaults,
 }: {
   token: string;
   email: string;
+  role?: string;
   vaults: InviteVault[];
 }) {
   const [view, setView] = useState<"form" | "success">("form");
@@ -328,7 +349,7 @@ function NewUserForm({
         Create an account to join Agent Vault.
       </p>
 
-      <InviteDetails vaults={vaults} />
+      <InviteDetails role={role} vaults={vaults} />
 
       <DomainNotice className="mb-4" />
 

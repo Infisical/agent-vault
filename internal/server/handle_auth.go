@@ -542,19 +542,31 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAuthMe returns the current authenticated user's info.
+// handleAuthMe returns the current authenticated actor's info.
 func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	sess := sessionFromContext(r.Context())
-	if sess == nil || sess.UserID == "" {
+	if sess == nil {
 		jsonError(w, http.StatusUnauthorized, "Not authenticated")
 		return
 	}
-	user, err := s.userFromSession(r.Context(), sess)
-	if err != nil || user == nil {
+	actor, err := s.actorFromSession(r.Context(), sess)
+	if err != nil || actor == nil {
 		jsonError(w, http.StatusUnauthorized, "Not authenticated")
 		return
 	}
-	// Collect OAuth providers linked to this user.
+
+	if actor.Type == "agent" {
+		jsonOK(w, map[string]interface{}{
+			"type":       "agent",
+			"agent_name": actor.Agent.Name,
+			"role":       actor.Role,
+			"is_owner":   actor.IsOwner(),
+		})
+		return
+	}
+
+	// User actor.
+	user := actor.User
 	var oauthProviders []string
 	oauthAccounts, err := s.store.ListUserOAuthAccounts(r.Context(), user.ID)
 	if err == nil {
@@ -567,6 +579,7 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonOK(w, map[string]interface{}{
+		"type":            "user",
 		"email":           user.Email,
 		"role":            user.Role,
 		"is_owner":        user.Role == "owner",
