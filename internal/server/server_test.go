@@ -672,13 +672,14 @@ func (m *mockStore) ListVaultMembers(_ context.Context, vaultID string) ([]store
 
 func (m *mockStore) ListVaultMembersByType(_ context.Context, vaultID, actorType string) ([]store.VaultGrant, error) {
 	var result []store.VaultGrant
-	if actorType == "user" {
+	switch actorType {
+	case "user":
 		for userID, userGrants := range m.grants {
 			if role, ok := userGrants[vaultID]; ok {
 				result = append(result, store.VaultGrant{ActorID: userID, ActorType: "user", VaultID: vaultID, Role: role})
 			}
 		}
-	} else if actorType == "agent" {
+	case "agent":
 		for _, g := range m.agentVaultGrants {
 			if g.VaultID == vaultID {
 				result = append(result, g)

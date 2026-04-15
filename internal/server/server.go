@@ -23,15 +23,6 @@ import (
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
-//go:embed instructions_proxy.txt
-var instructionsProxy string
-
-//go:embed instructions_member.txt
-var instructionsMember string
-
-//go:embed instructions_admin.txt
-var instructionsAdmin string
-
 //go:embed all:webdist
 var webDistFS embed.FS
 
@@ -308,19 +299,6 @@ func (s *Server) guardLastOwner(ctx context.Context, w http.ResponseWriter, acti
 	return false
 }
 
-// requireHumanUser checks that the request is from a logged-in human user (not an agent).
-// Use only for endpoints that genuinely require a human (password change, OAuth, etc.).
-func (s *Server) requireHumanUser(w http.ResponseWriter, r *http.Request) (*store.User, error) {
-	actor, err := s.requireActor(w, r)
-	if err != nil {
-		return nil, err
-	}
-	if actor.User == nil {
-		jsonError(w, http.StatusForbidden, "User session required")
-		return nil, fmt.Errorf("not a user session")
-	}
-	return actor.User, nil
-}
 
 // requireVaultAccess checks that the session has access to the given vault.
 // For scoped sessions (VaultID set): checks that the session's vault matches.

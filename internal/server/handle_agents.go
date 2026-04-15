@@ -230,17 +230,6 @@ func (s *Server) canRevokeAgentInvite(ctx context.Context, actor *Actor, inv *st
 //go:embed persistent_instructions_admin.txt
 var persistentInstructionsAdmin string
 
-// instructionsForRole returns role-specific instructions for temporary agent invites.
-func instructionsForRole(role string) string {
-	switch role {
-	case "member":
-		return instructionsMember
-	case "admin":
-		return instructionsAdmin
-	default:
-		return instructionsProxy
-	}
-}
 
 // validateSlug checks that a name is 3-64 lowercase alphanumeric + hyphens.
 func validateSlug(name string) bool {
@@ -457,18 +446,16 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 		for _, g := range grants {
 			accessibleVaults[g.VaultID] = true
 		}
-		if accessibleVaults != nil {
-			var filtered []store.Agent
-			for _, ag := range agents {
-				for _, v := range ag.Vaults {
-					if accessibleVaults[v.VaultID] {
-						filtered = append(filtered, ag)
-						break
-					}
+		var filtered []store.Agent
+		for _, ag := range agents {
+			for _, v := range ag.Vaults {
+				if accessibleVaults[v.VaultID] {
+					filtered = append(filtered, ag)
+					break
 				}
 			}
-			agents = filtered
 		}
+		agents = filtered
 	}
 
 	type agentItem struct {
