@@ -83,8 +83,8 @@ ALTER TABLE invites_new RENAME TO invites;
 CREATE INDEX idx_invites_token_hash ON invites(token_hash);
 CREATE INDEX idx_invites_status ON invites(status);
 
--- 7. Rebuild sessions table to allow NULL vault_id for instance-level agent sessions.
---    User scoped sessions still have vault_id set. Agent sessions have vault_id = NULL.
+-- 7. Rebuild sessions table to allow NULL vault_id for instance-level agent tokens.
+--    User scoped sessions still have vault_id set. Agent tokens have vault_id = NULL.
 CREATE TABLE sessions_new (
     id         TEXT PRIMARY KEY,
     expires_at TEXT,

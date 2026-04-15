@@ -114,7 +114,7 @@ type proposalCreateRequest struct {
 func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Enforce scoped session or agent session with X-Vault.
+	// Enforce scoped session or agent token with X-Vault.
 	sess := sessionFromContext(ctx)
 	if sess == nil {
 		jsonError(w, http.StatusForbidden, "Proposals require a vault-scoped session")

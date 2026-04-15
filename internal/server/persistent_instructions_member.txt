@@ -6,11 +6,11 @@ Your vault role is **member**. You can proxy requests, discover services, raise 
 
 ## Token
 
-You received a session token (av_session_token). Use it for all proxy/discover/proposal calls. If your session has no expiry, the token works indefinitely. If it does expire, contact your operator for a new session.
+You received an agent token (av_agent_token). Use it for all proxy/discover/proposal calls. If your token has no expiry, it works indefinitely. If it does expire, contact your operator for a new token.
 
 ## Quick Start
 
-1. Call GET {AGENT_VAULT_ADDR}/discover with Authorization: Bearer {av_session_token} — do this FIRST
+1. Call GET {AGENT_VAULT_ADDR}/discover with Authorization: Bearer {av_agent_token} — do this FIRST
 2. For hosts in the response, route through the proxy: {AGENT_VAULT_ADDR}/proxy/{target_host}/{path}
 3. If a needed service isn't listed, raise a proposal.
 

@@ -9,14 +9,14 @@ Agent Vault agents follow a standard HTTP protocol to interact with the server. 
 Agents must never extract, log, or display credential values. They reference credentials by key name only.
 </Warning>
 
-## Session token
+## Bearer token
 
-Every request an agent makes to Agent Vault requires a session token. How the agent gets one depends on how it connects:
+Every request an agent makes to Agent Vault requires a bearer token. How the agent gets one depends on how it connects:
 
 | Method | How the agent gets a token |
 |---|---|
 | `agent-vault vault run` | Agent Vault sets `AGENT_VAULT_SESSION_TOKEN` on the child process automatically |
-| Agent invite | Agent calls `POST {invite_url}` and receives a session token |
+| Agent invite | Agent calls `POST {invite_url}` and receives an agent token |
 
 Both methods deliver the same core connection details:
 
@@ -30,11 +30,11 @@ Both methods deliver the same core connection details:
 There are two session types:
 
 - **Vault-scoped sessions** — created by `agent-vault vault run`. The vault is embedded in the session. No extra headers needed.
-- **Instance-level sessions** — created via agent invites. The agent must include an `X-Vault` header on every vault-scoped request to select which vault to use.
+- **Instance-level agent tokens** — created via agent invites. The agent must include an `X-Vault` header on every vault-scoped request to select which vault to use.
 
 ### The X-Vault header
 
-Instance-level agent sessions must include `X-Vault: {vault_name}` on all vault-scoped requests (discover, proxy, proposals, credentials):
+Instance-level agent tokens must include `X-Vault: {vault_name}` on all vault-scoped requests (discover, proxy, proposals, credentials):
 
 ```
 GET {AGENT_VAULT_ADDR}/discover
@@ -44,9 +44,9 @@ X-Vault: my-vault
 
 Agents created via `agent-vault vault run` do not need this header — the vault is embedded in the session token.
 
-### Instance-level agent sessions
+### Instance-level agent tokens
 
-Agents invited via `agent-vault agent invite` receive instance-level sessions that can access multiple vaults. The session token can be configured with no expiry (works indefinitely) or a specific TTL. If the session expires, the operator can issue a new one via [rotation](/agents/overview#rotating-a-session).
+Agents invited via `agent-vault agent invite` receive instance-level agent tokens that can access multiple vaults. The agent token can be configured with no expiry (works indefinitely) or a specific TTL. If the token expires, the operator can issue a new one via [rotation](/agents/overview#rotating-an-agent-token).
 
 See [Agents overview](/agents/overview) for the full lifecycle.
 
@@ -61,7 +61,7 @@ X-Vault: my-vault
 ```
 
 <Note>
-The `X-Vault` header is required for instance-level sessions. Vault-scoped sessions (from `vault run`) can omit it.
+The `X-Vault` header is required for instance-level agent tokens. Vault-scoped sessions (from `vault run`) can omit it.
 </Note>
 
 ```json Response
@@ -163,7 +163,7 @@ See [Proposals](/learn/proposals) for the full proposal lifecycle, including sto
 
 | Status | Meaning | What the agent does |
 |---|---|---|
-| 401 | Invalid or expired token | Re-check `AGENT_VAULT_SESSION_TOKEN`. Contact operator for a new session or [rotation](/agents/overview#rotating-a-session). |
+| 401 | Invalid or expired token | Re-check `AGENT_VAULT_SESSION_TOKEN`. Contact operator for a new token or [rotation](/agents/overview#rotating-an-agent-token). |
 | 403 | Host not allowed | Create a proposal to request access. The response includes a `proposal_hint`. |
 | 429 | Too many pending proposals | Wait for existing proposals to be reviewed. |
 | 502 | Missing credential or upstream error | Tell the user a credential may need to be added. |

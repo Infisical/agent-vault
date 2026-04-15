@@ -122,7 +122,7 @@ var proxyClient *http.Client
 
 // resolveVaultForSession resolves the vault ID for the current session.
 // For user scoped sessions (VaultID set), returns the session's vault directly.
-// For agent sessions (VaultID empty), reads vault name from X-Vault header and checks access.
+// For agent tokens (VaultID empty), reads vault name from X-Vault header and checks access.
 // Returns vault, vault role, error. Writes error response to w on failure.
 func (s *Server) resolveVaultForSession(w http.ResponseWriter, r *http.Request, sess *store.Session) (*store.Vault, string, error) {
 	ctx := r.Context()
@@ -137,7 +137,7 @@ func (s *Server) resolveVaultForSession(w http.ResponseWriter, r *http.Request, 
 		return ns, sess.VaultRole, nil
 	}
 
-	// Agent session — resolve vault from X-Vault header.
+	// Agent token — resolve vault from X-Vault header.
 	if sess.AgentID == "" {
 		jsonError(w, http.StatusForbidden, "Session requires vault scope")
 		return nil, "", fmt.Errorf("no vault context")
@@ -145,7 +145,7 @@ func (s *Server) resolveVaultForSession(w http.ResponseWriter, r *http.Request, 
 
 	vaultName := r.Header.Get("X-Vault")
 	if vaultName == "" {
-		jsonError(w, http.StatusBadRequest, "Agent sessions require X-Vault header to specify which vault to use")
+		jsonError(w, http.StatusBadRequest, "Agent tokens require X-Vault header to specify which vault to use")
 		return nil, "", fmt.Errorf("missing X-Vault header")
 	}
 
@@ -188,7 +188,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// 2. Resolve vault — user scoped sessions use session vault, agent sessions use X-Vault header.
+	// 2. Resolve vault — user scoped sessions use session vault, agent tokens use X-Vault header.
 	sess := sessionFromContext(ctx)
 	if sess == nil {
 		proxyError(w, http.StatusForbidden, "forbidden", "Proxy requires an authenticated session")

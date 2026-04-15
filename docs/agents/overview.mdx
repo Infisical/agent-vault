@@ -20,13 +20,13 @@ The agent receives a temporary, vault-scoped session and can immediately make pr
 
 ## Inviting an agent
 
-For agents you can't wrap (cloud-hosted agents, existing sessions, CI pipelines), create an invite. The agent redeems the invite via HTTP and receives a session token.
+For agents you can't wrap (cloud-hosted agents, existing sessions, CI pipelines), create an invite. The agent redeems the invite via HTTP and receives an agent token.
 
 ```bash
 agent-vault agent invite my-agent
 ```
 
-Outputs a prompt with the invite URL. Paste it into the agent's chat. The agent redeems the invite and receives an instance-level session token.
+Outputs a prompt with the invite URL. Paste it into the agent's chat. The agent redeems the invite and receives an instance-level agent token.
 
 ### Instance role
 
@@ -103,13 +103,13 @@ agent-vault vault agent set-role my-agent --role member
 agent-vault vault agent remove my-agent
 ```
 
-### Rotating a session
+### Rotating an agent token
 
 ```bash
 agent-vault agent rotate my-agent
 ```
 
-This creates a rotation invite. Paste the prompt into the agent's chat. The agent redeems it and receives a new session token. Old sessions are invalidated when the rotation invite is redeemed.
+This creates a rotation invite. Paste the prompt into the agent's chat. The agent redeems it and receives a new agent token. Old tokens are invalidated when the rotation invite is redeemed.
 
 ### Managing invites
 
@@ -123,7 +123,7 @@ agent-vault agent invite revoke <token_suffix>
 
 ## The X-Vault header
 
-Instance-level agent sessions are not scoped to a single vault. Instead, agents select a vault per-request using the `X-Vault` header:
+Instance-level agent tokens are not scoped to a single vault. Instead, agents select a vault per-request using the `X-Vault` header:
 
 ```
 GET /discover

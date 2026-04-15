@@ -37,7 +37,7 @@ You have access to Agent Vault, an HTTP proxy that attaches credentials to your 
 |----------|-------------|
 | `AGENT_VAULT_ADDR` | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
 | `AGENT_VAULT_SESSION_TOKEN` | Bearer token for authenticating with Agent Vault |
-| `AGENT_VAULT_VAULT` | Vault name (set for user-scoped sessions via `vault run`; for instance-level agent sessions, use the `X-Vault` header instead) |
+| `AGENT_VAULT_VAULT` | Vault name (set for user-scoped sessions via `vault run`; for instance-level agent tokens, use the `X-Vault` header instead) |
 
 ## Discover Available Services (Start Here)
 
@@ -49,7 +49,7 @@ Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
 X-Vault: {vault_name}
 ```
 
-**Note:** If `AGENT_VAULT_VAULT` is set, the server uses it automatically. Instance-level agent sessions (persistent agents) must include the `X-Vault` header on all vault-scoped requests.
+**Note:** If `AGENT_VAULT_VAULT` is set, the server uses it automatically. Instance-level agent tokens (persistent agents) must include the `X-Vault` header on all vault-scoped requests.
 
 Response includes `vault`, `proxy_url`, `services` (host + description), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots.
 
@@ -171,15 +171,15 @@ Content-Type: application/json
 - Always check `available_credentials` first to avoid proposing duplicates
 - Include `obtain` and `obtain_instructions` to help the human find the credential
 
-## Instance-Level Agent Sessions
+## Instance-Level Agent Tokens
 
-If you were registered as a persistent agent (via an agent invite), your session is instance-level -- it is not scoped to a single vault. You may have access to multiple vaults. Include the `X-Vault` header on all vault-scoped requests (proxy, discover, proposals, credentials) to select which vault to operate on.
+If you were registered as a persistent agent (via an agent invite), your token is instance-level -- it is not scoped to a single vault. You may have access to multiple vaults. Include the `X-Vault` header on all vault-scoped requests (proxy, discover, proposals, credentials) to select which vault to operate on.
 
-If your session has no expiry, the token works indefinitely. If it does expire, contact your operator for a new session.
+If your token has no expiry, it works indefinitely. If it does expire, contact your operator for a new token.
 
 ## Error Handling
 
-- 401: Invalid or expired token -- check `AGENT_VAULT_SESSION_TOKEN` (persistent agents: contact operator for a new session)
+- 401: Invalid or expired token -- check `AGENT_VAULT_SESSION_TOKEN` (persistent agents: contact operator for a new token)
 - 403: Host not allowed -- create a proposal
 - 429: Too many pending proposals -- wait for review
 - 502: Missing credential or upstream unreachable, tell user a credential may need to be added
@@ -190,4 +190,4 @@ If your session has no expiry, the token works indefinitely. If it does expire, 
 - **Never** hardcode tokens -- always read from `AGENT_VAULT_SESSION_TOKEN`
 - **Only** request hosts returned by `/discover` -- if a host isn't listed, create a proposal
 - If you receive a `credential_not_found` error, inform the user which credential is missing
-- Do not modify or forge the `Authorization` header beyond using your session token
+- Do not modify or forge the `Authorization` header beyond using your token

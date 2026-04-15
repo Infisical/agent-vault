@@ -32,7 +32,7 @@ For agents that can't be wrapped with `vault run` (e.g. cloud-hosted or CI pipel
 agent-vault agent invite my-agent --vault default:proxy
 ```
 
-The agent redeems the invite via HTTP and receives a session token. See [Connect a custom agent](/guides/connect-custom-agent) for the full walkthrough.
+The agent redeems the invite via HTTP and receives an agent token. See [Connect a custom agent](/guides/connect-custom-agent) for the full walkthrough.
 
 ## Try it out
 
@@ -75,7 +75,7 @@ console.log(await resp.json());
 If the service isn't configured yet, Agent Vault returns a **403** with a `proposal_hint`. Your agent can use this to create a [proposal](/learn/proposals) requesting access.
 
 <Note>
-Your agent never sees or handles credentials. Agent Vault strips the session token and injects the real API key before forwarding to the target service.
+Your agent never sees or handles credentials. Agent Vault strips the agent's token and injects the real API key before forwarding to the target service.
 </Note>
 
 ## Discover available services

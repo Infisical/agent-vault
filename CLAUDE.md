@@ -146,7 +146,7 @@ The server exposes a generic HTTP proxy at `/proxy/{target_host}/{path}[?query]`
 Agent Vault provides two skill files that teach agents how to interact with it:
 
 - `cmd/skill_cli.md` (`agent-vault-cli`) -- For agents launched via `vault run` that have the `agent-vault` binary on `$PATH`. Covers CLI commands (`discover`, `catalog`, `proposal create`, `credential get`) and the proxy URL pattern.
-- `cmd/skill_http.md` (`agent-vault-http`) -- For agents without the binary (invite-redeemed, remote, instance-level). Covers HTTP endpoints only, including instance-level agent sessions and X-Vault header.
+- `cmd/skill_http.md` (`agent-vault-http`) -- For agents without the binary (invite-redeemed, remote, instance-level). Covers HTTP endpoints only, including instance-level agent tokens and X-Vault header.
 
 Both skills are embedded in the Go binary. `vault run` installs both to `~/.{claude,cursor,agents}/skills/agent-vault-{cli,http}/SKILL.md`. The server serves them at public endpoints:
 - `GET /v1/skills/cli` -- returns CLI skill as text/markdown
@@ -257,26 +257,26 @@ OAuth state table (`oauth_states`) stores SHA-256 hashed state params, PKCE code
 
 ## Agent Invite API
 
-Agent invites let a human onboard any agent (including cloud-hosted agents like Devin or chat-based agents) by pasting a short prompt into the agent's chat. The agent redeems the invite via a POST request and receives an instance-level session token plus full usage instructions.
+Agent invites let a human onboard any agent (including cloud-hosted agents like Devin or chat-based agents) by pasting a short prompt into the agent's chat. The agent redeems the invite via a POST request and receives an instance-level agent token plus full usage instructions.
 
 - `POST /v1/agents/invites` -- create an agent invite (any authenticated user). Body: `{"name": "my-agent", "role": "member", "vaults": [{"vault_name": "default", "vault_role": "proxy"}]}`. Name is required. `role` sets instance-level role (default `member`). Vault pre-assignments are optional.
 - `GET /v1/agents/invites[?status=pending]` -- list agent invites
 - `DELETE /v1/agents/invites/{token}` -- revoke a pending agent invite by token suffix
 - `DELETE /v1/agents/invites/by-id/{id}` -- revoke a pending agent invite by numeric ID
-- `POST /invite/{token}` -- redeem an agent invite. Body: `{}`. Returns `av_session_token`, agent name, vault list, and usage instructions. Creates an instance-level agent session (vault_id = NULL). Also used for rotation invite redemption.
+- `POST /invite/{token}` -- redeem an agent invite. Body: `{}`. Returns `av_agent_token`, agent name, vault list, and usage instructions. Creates an instance-level agent token (vault_id = NULL). Also used for rotation invite redemption.
 
 Invite states: `pending`, `redeemed`, `expired`, or `revoked`. Token format: `av_inv_` + 64 hex chars. Default TTL: 15 minutes.
 
 ## Instance-Level Agent API
 
-Agents are instance-level entities (like users) with instance-level roles (`owner`/`member`) and multi-vault access via the unified `vault_grants` table. Agent sessions are instance-level (vault_id = NULL) and select vaults per-request via the `X-Vault` header.
+Agents are instance-level entities (like users) with instance-level roles (`owner`/`member`) and multi-vault access via the unified `vault_grants` table. Agent tokens are instance-level (vault_id = NULL) and select vaults per-request via the `X-Vault` header.
 
 - **Agent names**: globally unique, 3-64 chars, lowercase alphanumeric + hyphens.
 - **Instance role**: `owner` or `member`, same as users. Owner agents can perform administrative operations.
-- **Session token**: `av_sess_` + 64 hex chars, hashed with SHA-256. Configurable expiry (including no expiry).
+- **Agent token**: `av_agt_` + 64 hex chars, hashed with SHA-256. Configurable expiry (including no expiry).
 - **Multi-vault**: Agents can be granted access to multiple vaults with independent roles per vault.
-- **X-Vault header**: Instance-level agent sessions must include `X-Vault: {vault_name}` on all vault-scoped requests (proxy, discover, proposals, credentials).
-- **Rotation**: `POST /v1/agents/{name}/rotate` creates a rotation invite. The operator pastes the prompt into the agent's chat. The agent POSTs to the invite URL and receives a new session token. Old sessions are invalidated at redemption time (not at invite creation).
+- **X-Vault header**: Instance-level agent tokens must include `X-Vault: {vault_name}` on all vault-scoped requests (proxy, discover, proposals, credentials).
+- **Rotation**: `POST /v1/agents/{name}/rotate` creates a rotation invite. The operator pastes the prompt into the agent's chat. The agent POSTs to the invite URL and receives a new agent token. Old tokens are invalidated at redemption time (not at invite creation).
 
 ### Instance-Level Agent Endpoints
 

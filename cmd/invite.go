@@ -48,7 +48,7 @@ Content-Type: application/json
 
 {}
 
-The response contains your session token and usage instructions.
+The response contains your agent token and usage instructions.
 
 This invite expires in %s and can only be used once.
 `, inviteURL, formatDuration(ttl))

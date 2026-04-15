@@ -1017,7 +1017,7 @@ func (m *mockStore) RenameAgent(_ context.Context, id string, newName string) er
 	return fmt.Errorf("agent not found")
 }
 
-func (m *mockStore) CountAgentSessions(_ context.Context, agentID string) (int, error) {
+func (m *mockStore) CountAgentTokens(_ context.Context, agentID string) (int, error) {
 	count := 0
 	for _, sess := range m.sessions {
 		if sess.AgentID == agentID && (sess.ExpiresAt == nil || time.Now().Before(*sess.ExpiresAt)) {
@@ -1027,7 +1027,7 @@ func (m *mockStore) CountAgentSessions(_ context.Context, agentID string) (int, 
 	return count, nil
 }
 
-func (m *mockStore) GetLatestAgentSessionExpiry(_ context.Context, agentID string) (*time.Time, error) {
+func (m *mockStore) GetLatestAgentTokenExpiry(_ context.Context, agentID string) (*time.Time, error) {
 	var latest *time.Time
 	now := time.Now()
 	for _, sess := range m.sessions {
@@ -1041,7 +1041,7 @@ func (m *mockStore) GetLatestAgentSessionExpiry(_ context.Context, agentID strin
 	return latest, nil
 }
 
-func (m *mockStore) DeleteAgentSessions(_ context.Context, agentID string) error {
+func (m *mockStore) DeleteAgentTokens(_ context.Context, agentID string) error {
 	for id, sess := range m.sessions {
 		if sess.AgentID == agentID {
 			delete(m.sessions, id)
@@ -1050,8 +1050,8 @@ func (m *mockStore) DeleteAgentSessions(_ context.Context, agentID string) error
 	return nil
 }
 
-func (m *mockStore) CreateAgentSession(_ context.Context, agentID string, expiresAt *time.Time) (*store.Session, error) {
-	id := "agent-session-" + agentID + "-" + fmt.Sprintf("%d", len(m.sessions))
+func (m *mockStore) CreateAgentToken(_ context.Context, agentID string, expiresAt *time.Time) (*store.Session, error) {
+	id := "agent-token-" + agentID + "-" + fmt.Sprintf("%d", len(m.sessions))
 	s := &store.Session{
 		ID:        id,
 		AgentID:   agentID,
@@ -2139,7 +2139,7 @@ func TestProxyStripsAuthHeader(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
 		if strings.Contains(auth, "scoped-session") {
-			t.Errorf("agent session token leaked to upstream: %q", auth)
+			t.Errorf("agent token leaked to upstream: %q", auth)
 		}
 		if auth != "Bearer sk_live_xxx" {
 			t.Errorf("expected injected auth, got %q", auth)
@@ -2869,8 +2869,8 @@ func TestHandleInviteRedeem(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp["av_session_token"] == nil || resp["av_session_token"].(string) == "" {
-		t.Fatal("expected non-empty session token")
+	if resp["av_agent_token"] == nil || resp["av_agent_token"].(string) == "" {
+		t.Fatal("expected non-empty agent token")
 	}
 	if resp["agent_name"] != "test-agent" {
 		t.Fatalf("expected agent_name test-agent, got %v", resp["agent_name"])
@@ -3288,8 +3288,8 @@ func TestPersistentInviteRedeemPOST(t *testing.T) {
 	if resp["agent_name"] != "mybot" {
 		t.Fatalf("expected agent_name mybot, got %v", resp["agent_name"])
 	}
-	if resp["av_session_token"] == nil || resp["av_session_token"].(string) == "" {
-		t.Fatal("expected non-empty av_session_token")
+	if resp["av_agent_token"] == nil || resp["av_agent_token"].(string) == "" {
+		t.Fatal("expected non-empty av_agent_token")
 	}
 
 	// Verify agent was created.
@@ -3412,7 +3412,7 @@ func TestDuplicateAgentName409(t *testing.T) {
 	}
 }
 
-// TestAgentSessionMint tests removed — POST /v1/agent/session endpoint was removed
+// TestAgentTokenMint tests removed — POST /v1/agent/session endpoint was removed
 // as part of the unified token model (service tokens no longer issued).
 
 func TestAgentList(t *testing.T) {

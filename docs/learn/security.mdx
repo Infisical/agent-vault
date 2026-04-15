@@ -46,7 +46,8 @@ All tokens are generated from `crypto/rand` (256 bits of entropy) and hashed bef
 
 | Token | Prefix | Storage hash | TTL | Notes |
 | ----- | ------ | ------------ | --- | ----- |
-| Session | `av_sess_` | SHA-256 | Configurable (or no expiry) | Scoped to a vault or user-global |
+| Session | `av_sess_` | SHA-256 | Configurable (or no expiry) | Vault-scoped or user-global |
+| Agent token | `av_agt_` | SHA-256 | Configurable (or no expiry) | Instance-level agent identity |
 | Invite | `av_inv_` | SHA-256 | 15 minutes | Single-use, burned on redemption |
 | Approval | `av_appr_` | SHA-256 | 24 hours | Grants read-only access to a [proposal](/learn/proposals) |
 | Vault invite | `av_uinv_` | SHA-256 | 48 hours | For onboarding human users |
@@ -90,11 +91,11 @@ Agent Vault resolves hostnames to IP addresses, validates every resolved IP agai
 
 ## Transport security
 
-All proxied requests are forwarded over **HTTPS**, regardless of how the agent connects to Agent Vault locally. The agent's `Authorization` header (containing its Agent Vault session token) is stripped before forwarding; real credentials are injected server-side based on the vault's [services](/learn/services).
+All proxied requests are forwarded over **HTTPS**, regardless of how the agent connects to Agent Vault locally. The agent's `Authorization` header (containing its Agent Vault token) is stripped before forwarding; real credentials are injected server-side based on the vault's [services](/learn/services).
 
 This means:
-- Agents authenticate to Agent Vault with a session token that grants no direct access to credentials.
-- The session token never reaches the target service.
+- Agents authenticate to Agent Vault with a token that grants no direct access to credentials.
+- The agent's token never reaches the target service.
 - Credential values only exist in the outbound request headers, never in the agent's address space.
 
 ## Access control

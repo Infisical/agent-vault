@@ -194,10 +194,10 @@ type Store interface {
 	RevokeAgent(ctx context.Context, id string) error
 	RenameAgent(ctx context.Context, id string, newName string) error
 	UpdateAgentRole(ctx context.Context, agentID, role string) error
-	CountAgentSessions(ctx context.Context, agentID string) (int, error)
-	GetLatestAgentSessionExpiry(ctx context.Context, agentID string) (*time.Time, error)
-	DeleteAgentSessions(ctx context.Context, agentID string) error
-	CreateAgentSession(ctx context.Context, agentID string, expiresAt *time.Time) (*store.Session, error)
+	CountAgentTokens(ctx context.Context, agentID string) (int, error)
+	GetLatestAgentTokenExpiry(ctx context.Context, agentID string) (*time.Time, error)
+	DeleteAgentTokens(ctx context.Context, agentID string) error
+	CreateAgentToken(ctx context.Context, agentID string, expiresAt *time.Time) (*store.Session, error)
 	CountAllOwners(ctx context.Context) (int, error)
 
 	Close() error

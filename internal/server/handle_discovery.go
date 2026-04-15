@@ -22,7 +22,7 @@ type discoverResponse struct {
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Require scoped session or agent session with X-Vault.
+	// Require scoped session or agent token with X-Vault.
 	sess := sessionFromContext(ctx)
 	if sess == nil {
 		proxyError(w, http.StatusForbidden, "forbidden", "Discovery requires a vault-scoped session")

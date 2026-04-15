@@ -109,7 +109,7 @@ func (s *Server) handleAgentInviteList(w http.ResponseWriter, r *http.Request) {
 		CreatedAt        string           `json:"created_at"`
 		ExpiresAt        string           `json:"expires_at"`
 		RedeemedAt       *string          `json:"redeemed_at,omitempty"`
-		SessionExpiresAt *string          `json:"session_expires_at,omitempty"`
+		TokenExpiresAt *string          `json:"token_expires_at,omitempty"`
 	}
 
 	items := make([]inviteItem, len(filtered))
@@ -134,7 +134,7 @@ func (s *Server) handleAgentInviteList(w http.ResponseWriter, r *http.Request) {
 		if inv.Status == "redeemed" && inv.SessionID != "" {
 			if session, err := s.store.GetSession(ctx, inv.SessionID); err == nil && session != nil {
 				e := formatExpiresAt(session.ExpiresAt)
-				items[i].SessionExpiresAt = &e
+				items[i].TokenExpiresAt = &e
 			}
 		}
 	}
@@ -344,25 +344,25 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 		vaultInfos = append(vaultInfos, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.VaultRole})
 	}
 
-	// Create instance-level session (no vault_id).
-	var sessExpiry *time.Time
+	// Create instance-level agent token (no vault_id).
+	var tokenExpiry *time.Time
 	if inv.SessionTTLSeconds > 0 {
-		sessExpiry = timePtr(time.Now().Add(time.Duration(inv.SessionTTLSeconds) * time.Second))
+		tokenExpiry = timePtr(time.Now().Add(time.Duration(inv.SessionTTLSeconds) * time.Second))
 	}
-	sess, err := s.store.CreateAgentSession(ctx, agent.ID, sessExpiry)
+	sess, err := s.store.CreateAgentToken(ctx, agent.ID, tokenExpiry)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to create session")
+		jsonError(w, http.StatusInternalServerError, "Failed to create agent token")
 		return
 	}
 
-	// Link session back to invite so invite list can show session expiry.
+	// Link token back to invite so invite list can show token expiry.
 	_ = s.store.UpdateInviteSessionID(ctx, inv.ID, sess.ID)
 
 	baseURL := s.baseURL
 
 	jsonOK(w, map[string]interface{}{
 		"av_addr":          baseURL,
-		"av_session_token": sess.ID,
+		"av_agent_token": sess.ID,
 		"agent_name":       agentName,
 		"proxy_url":        baseURL + "/proxy",
 		"vaults":           vaultInfos,
@@ -386,20 +386,20 @@ func (s *Server) handleRotationRedeem(w http.ResponseWriter, r *http.Request, in
 		return
 	}
 
-	// Invalidate existing sessions for this agent (rotation replaces access).
-	if err := s.store.DeleteAgentSessions(ctx, agent.ID); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to invalidate old sessions")
+	// Invalidate existing tokens for this agent (rotation replaces access).
+	if err := s.store.DeleteAgentTokens(ctx, agent.ID); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to invalidate old agent tokens")
 		return
 	}
 
-	// Create a new instance-level session.
-	sess, err := s.store.CreateAgentSession(ctx, agent.ID, nil)
+	// Create a new instance-level agent token.
+	sess, err := s.store.CreateAgentToken(ctx, agent.ID, nil)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to create session")
+		jsonError(w, http.StatusInternalServerError, "Failed to create agent token")
 		return
 	}
 
-	// Link session back to invite so invite list can show session expiry.
+	// Link token back to invite so invite list can show token expiry.
 	_ = s.store.UpdateInviteSessionID(ctx, inv.ID, sess.ID)
 
 	var vaultInfos []agentVaultJSON
@@ -411,7 +411,7 @@ func (s *Server) handleRotationRedeem(w http.ResponseWriter, r *http.Request, in
 
 	jsonOK(w, map[string]interface{}{
 		"av_addr":          baseURL,
-		"av_session_token": sess.ID,
+		"av_agent_token": sess.ID,
 		"agent_name":       agent.Name,
 		"proxy_url":        baseURL + "/proxy",
 		"vaults":           vaultInfos,
@@ -465,7 +465,7 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 		Vaults           []agentVaultJSON `json:"vaults"`
 		CreatedAt        string           `json:"created_at"`
 		RevokedAt        *string          `json:"revoked_at,omitempty"`
-		SessionExpiresAt *string          `json:"session_expires_at,omitempty"`
+		TokenExpiresAt *string          `json:"token_expires_at,omitempty"`
 	}
 
 	items := make([]agentItem, 0, len(agents))
@@ -487,9 +487,9 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 			item.RevokedAt = &s
 		}
 		if ag.Status == "active" {
-			if expiry, err := s.store.GetLatestAgentSessionExpiry(ctx, ag.ID); err == nil && expiry != nil {
+			if expiry, err := s.store.GetLatestAgentTokenExpiry(ctx, ag.ID); err == nil && expiry != nil {
 				e := expiry.Format(time.RFC3339)
-				item.SessionExpiresAt = &e
+				item.TokenExpiresAt = &e
 			}
 		}
 		items = append(items, item)
@@ -567,11 +567,11 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 		resp["revoked_at"] = agent.RevokedAt.Format(time.RFC3339)
 	}
 
-	// Count active sessions.
-	sessionCount, _ := s.store.CountAgentSessions(ctx, agent.ID)
-	resp["active_sessions"] = sessionCount
-	if expiry, err := s.store.GetLatestAgentSessionExpiry(ctx, agent.ID); err == nil && expiry != nil {
-		resp["session_expires_at"] = expiry.Format(time.RFC3339)
+	// Count active tokens.
+	tokenCount, _ := s.store.CountAgentTokens(ctx, agent.ID)
+	resp["active_tokens"] = tokenCount
+	if expiry, err := s.store.GetLatestAgentTokenExpiry(ctx, agent.ID); err == nil && expiry != nil {
+		resp["token_expires_at"] = expiry.Format(time.RFC3339)
 	}
 
 	jsonOK(w, resp)
@@ -655,7 +655,7 @@ func (s *Server) handleAgentRotate(w http.ResponseWriter, r *http.Request) {
 
   {}
 
-The response contains your new session token and usage instructions.
+The response contains your new agent token and usage instructions.
 
 This link expires in 15 minutes and can only be used once.
 `, inviteURL)

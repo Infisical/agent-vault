@@ -1404,10 +1404,10 @@ func TestRevokeAgent(t *testing.T) {
 
 	ag, _ := s.CreateAgent(ctx, "torevoke", "c", "member")
 
-	// Create a session for this agent.
-	sess, err := s.CreateAgentSession(ctx, ag.ID, tp(time.Now().Add(24*time.Hour)))
+	// Create a token for this agent.
+	sess, err := s.CreateAgentToken(ctx, ag.ID, tp(time.Now().Add(24*time.Hour)))
 	if err != nil {
-		t.Fatalf("CreateAgentSession: %v", err)
+		t.Fatalf("CreateAgentToken: %v", err)
 	}
 
 	// Revoke
@@ -1453,49 +1453,49 @@ func TestRenameAgent(t *testing.T) {
 	}
 }
 
-func TestCountAgentSessions(t *testing.T) {
+func TestCountAgentTokens(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 
 	ag, _ := s.CreateAgent(ctx, "counter", "c", "member")
 
-	count, _ := s.CountAgentSessions(ctx, ag.ID)
+	count, _ := s.CountAgentTokens(ctx, ag.ID)
 	if count != 0 {
-		t.Fatalf("expected 0 sessions, got %d", count)
+		t.Fatalf("expected 0 tokens, got %d", count)
 	}
 
-	s.CreateAgentSession(ctx, ag.ID, tp(time.Now().Add(24*time.Hour)))
-	s.CreateAgentSession(ctx, ag.ID, tp(time.Now().Add(24*time.Hour)))
+	s.CreateAgentToken(ctx, ag.ID, tp(time.Now().Add(24*time.Hour)))
+	s.CreateAgentToken(ctx, ag.ID, tp(time.Now().Add(24*time.Hour)))
 
-	count, _ = s.CountAgentSessions(ctx, ag.ID)
+	count, _ = s.CountAgentTokens(ctx, ag.ID)
 	if count != 2 {
-		t.Fatalf("expected 2 sessions, got %d", count)
+		t.Fatalf("expected 2 tokens, got %d", count)
 	}
 
-	// Expired sessions should not be counted.
-	s.CreateAgentSession(ctx, ag.ID, tp(time.Now().Add(-1*time.Hour)))
-	count, _ = s.CountAgentSessions(ctx, ag.ID)
+	// Expired tokens should not be counted.
+	s.CreateAgentToken(ctx, ag.ID, tp(time.Now().Add(-1*time.Hour)))
+	count, _ = s.CountAgentTokens(ctx, ag.ID)
 	if count != 2 {
-		t.Fatalf("expected 2 active sessions (1 expired), got %d", count)
+		t.Fatalf("expected 2 active tokens (1 expired), got %d", count)
 	}
 }
 
-func TestCreateAgentSession(t *testing.T) {
+func TestCreateAgentToken(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 
 	ag, _ := s.CreateAgent(ctx, "sessbot", "c", "member")
 
-	sess, err := s.CreateAgentSession(ctx, ag.ID, tp(time.Now().Add(24*time.Hour)))
+	sess, err := s.CreateAgentToken(ctx, ag.ID, tp(time.Now().Add(24*time.Hour)))
 	if err != nil {
-		t.Fatalf("CreateAgentSession: %v", err)
+		t.Fatalf("CreateAgentToken: %v", err)
 	}
 	if sess.AgentID != ag.ID {
 		t.Fatalf("expected agent_id %s, got %s", ag.ID, sess.AgentID)
 	}
-	// Instance-level agent sessions have empty VaultID.
+	// Instance-level agent tokens have empty VaultID.
 	if sess.VaultID != "" {
-		t.Fatalf("expected empty vault_id for agent session, got %s", sess.VaultID)
+		t.Fatalf("expected empty vault_id for agent token, got %s", sess.VaultID)
 	}
 
 	// Verify GetSession returns agent_id.
@@ -1571,28 +1571,28 @@ func TestCreateRotationInvite(t *testing.T) {
 	}
 }
 
-func TestDeleteAgentSessions(t *testing.T) {
+func TestDeleteAgentTokens(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 
 	ag, _ := s.CreateAgent(ctx, "delbot", "c", "member")
 
-	s.CreateAgentSession(ctx, ag.ID, tp(time.Now().Add(24*time.Hour)))
-	s.CreateAgentSession(ctx, ag.ID, tp(time.Now().Add(24*time.Hour)))
+	s.CreateAgentToken(ctx, ag.ID, tp(time.Now().Add(24*time.Hour)))
+	s.CreateAgentToken(ctx, ag.ID, tp(time.Now().Add(24*time.Hour)))
 
-	count, _ := s.CountAgentSessions(ctx, ag.ID)
+	count, _ := s.CountAgentTokens(ctx, ag.ID)
 	if count != 2 {
-		t.Fatalf("expected 2 sessions before delete, got %d", count)
+		t.Fatalf("expected 2 tokens before delete, got %d", count)
 	}
 
-	err := s.DeleteAgentSessions(ctx, ag.ID)
+	err := s.DeleteAgentTokens(ctx, ag.ID)
 	if err != nil {
-		t.Fatalf("DeleteAgentSessions: %v", err)
+		t.Fatalf("DeleteAgentTokens: %v", err)
 	}
 
-	count, _ = s.CountAgentSessions(ctx, ag.ID)
+	count, _ = s.CountAgentTokens(ctx, ag.ID)
 	if count != 0 {
-		t.Fatalf("expected 0 sessions after delete, got %d", count)
+		t.Fatalf("expected 0 tokens after delete, got %d", count)
 	}
 }
 

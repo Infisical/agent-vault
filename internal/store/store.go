@@ -59,13 +59,13 @@ type MasterKeyRecord struct {
 
 // Session represents an authenticated session.
 // User sessions: VaultID may be set (scoped) or empty (global login).
-// Agent sessions: VaultID is empty; vault resolved per-request via X-Vault header.
+// Agent tokens: VaultID is empty; vault resolved per-request via X-Vault header.
 type Session struct {
 	ID        string
-	UserID    string     // non-empty for user login sessions, empty for agent sessions
-	VaultID   string     // empty for global/agent sessions, non-empty for user scoped sessions
-	AgentID   string     // non-empty for agent sessions
-	VaultRole string     // set for user scoped sessions; empty for agent sessions (resolved per-request)
+	UserID    string     // non-empty for user login sessions, empty for agent tokens
+	VaultID   string     // empty for global/agent tokens, non-empty for user scoped sessions
+	AgentID   string     // non-empty for agent tokens
+	VaultRole string     // set for user scoped sessions; empty for agent tokens (resolved per-request)
 	ExpiresAt *time.Time // nil = never expires
 	CreatedAt time.Time
 }
@@ -367,10 +367,10 @@ type Store interface {
 	RevokeAgent(ctx context.Context, id string) error
 	RenameAgent(ctx context.Context, id string, newName string) error
 	UpdateAgentRole(ctx context.Context, agentID, role string) error
-	CountAgentSessions(ctx context.Context, agentID string) (int, error)
-	GetLatestAgentSessionExpiry(ctx context.Context, agentID string) (*time.Time, error)
-	DeleteAgentSessions(ctx context.Context, agentID string) error
-	CreateAgentSession(ctx context.Context, agentID string, expiresAt *time.Time) (*Session, error)
+	CountAgentTokens(ctx context.Context, agentID string) (int, error)
+	GetLatestAgentTokenExpiry(ctx context.Context, agentID string) (*time.Time, error)
+	DeleteAgentTokens(ctx context.Context, agentID string) error
+	CreateAgentToken(ctx context.Context, agentID string, expiresAt *time.Time) (*Session, error)
 	CountAllOwners(ctx context.Context) (int, error)
 
 	// Instance settings

@@ -86,7 +86,7 @@ var agentInfoCmd = &cobra.Command{
 			CreatedAt      string `json:"created_at"`
 			UpdatedAt      string `json:"updated_at"`
 			RevokedAt      *string `json:"revoked_at,omitempty"`
-			ActiveSessions int     `json:"active_sessions"`
+			ActiveTokens int     `json:"active_tokens"`
 			Vaults         []struct {
 				VaultName string `json:"vault_name"`
 				VaultRole string `json:"vault_role"`
@@ -105,7 +105,7 @@ var agentInfoCmd = &cobra.Command{
 		if info.RevokedAt != nil {
 			_, _ = fmt.Fprintf(w, "%s %s\n", fieldLabel("Revoked:"), *info.RevokedAt)
 		}
-		_, _ = fmt.Fprintf(w, "%s %d\n", fieldLabel("Active sessions:"), info.ActiveSessions)
+		_, _ = fmt.Fprintf(w, "%s %d\n", fieldLabel("Active tokens:"), info.ActiveTokens)
 		if len(info.Vaults) > 0 {
 			_, _ = fmt.Fprintf(w, "%s\n", fieldLabel("Vaults:"))
 			for _, v := range info.Vaults {
@@ -120,7 +120,7 @@ var agentInfoCmd = &cobra.Command{
 
 var agentRevokeCmd = &cobra.Command{
 	Use:   "delete <name>",
-	Short: "Delete an agent and all its sessions",
+	Short: "Delete an agent and all its tokens",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
@@ -141,7 +141,7 @@ var agentRevokeCmd = &cobra.Command{
 
 var agentRotateCmd = &cobra.Command{
 	Use:   "rotate <name>",
-	Short: "Create a rotation invite to re-issue an agent's session",
+	Short: "Create a rotation invite to re-issue an agent's token",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]

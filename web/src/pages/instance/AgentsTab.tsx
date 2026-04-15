@@ -11,7 +11,7 @@ interface AgentRow {
   vault_name: string;
   status: string;
   created_at: string;
-  session_expires_at?: string;
+  token_expires_at?: string;
 }
 
 function RowActions({
@@ -74,12 +74,12 @@ export default function InstanceAgentsTab() {
     },
     {
       key: "session_expires",
-      header: "Session Expires",
+      header: "Token Expires",
       render: (agent) => {
-        if (!agent.session_expires_at) {
+        if (!agent.token_expires_at) {
           return <span className="text-sm text-text-dim">{"\u2014"}</span>;
         }
-        const label = timeUntil(agent.session_expires_at);
+        const label = timeUntil(agent.token_expires_at);
         const isExpired = label === "Expired";
         return (
           <span className={`text-sm ${isExpired ? "text-danger" : "text-text-muted"}`}>
@@ -128,13 +128,13 @@ export default function InstanceAgentsTab() {
 
       const agentsData = await agentsResp.json();
       const agentRows: AgentRow[] = (agentsData.agents ?? []).map(
-        (a: { name: string; vault_id: string; status: string; created_at: string; session_expires_at?: string }) => ({
+        (a: { name: string; vault_id: string; status: string; created_at: string; token_expires_at?: string }) => ({
           name: a.name,
           vault_id: a.vault_id,
           vault_name: vaultMap[a.vault_id] || a.vault_id,
           status: a.status,
           created_at: a.created_at,
-          session_expires_at: a.session_expires_at,
+          token_expires_at: a.token_expires_at,
         })
       );
 

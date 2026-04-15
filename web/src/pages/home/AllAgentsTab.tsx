@@ -370,7 +370,7 @@ function InviteAgentButton({
       "",
       "{}",
       "",
-      "The response contains your session token and usage instructions.",
+      "The response contains your agent token and usage instructions.",
       "",
       "This invite expires in 15 minutes and can only be used once.",
     ].join("\n");
@@ -561,7 +561,7 @@ function InviteResultView({
         return;
       }
       const data = await resp.json();
-      setSessionToken(data.av_session_token);
+      setSessionToken(data.av_agent_token);
       onRedeemed();
     } catch {
       setRedeemError("Network error.");

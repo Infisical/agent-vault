@@ -842,13 +842,17 @@ func (s *SQLiteStore) GetBrokerConfig(ctx context.Context, vaultID string) (*Bro
 
 const approvalTokenTTL = 24 * time.Hour
 
-func newApprovalToken() string {
+// newPrefixedToken generates a 256-bit cryptographically random token
+// with the given prefix followed by 64 hex characters.
+func newPrefixedToken(prefix string) string {
 	var b [32]byte
 	if _, err := io.ReadFull(rand.Reader, b[:]); err != nil {
 		panic("crypto/rand: " + err.Error())
 	}
-	return "av_appr_" + hex.EncodeToString(b[:])
+	return prefix + hex.EncodeToString(b[:])
 }
+
+func newApprovalToken() string { return newPrefixedToken("av_appr_") }
 
 func (s *SQLiteStore) CreateProposal(ctx context.Context, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error) {
 	now := time.Now().UTC()
@@ -1163,15 +1167,7 @@ func scanBrokerConfig(row *sql.Row) (*BrokerConfig, error) {
 
 // --- Invites ---
 
-// newInviteToken generates a cryptographically random invite token
-// with the av_inv_ prefix followed by 64 hex characters (32 random bytes).
-func newInviteToken() string {
-	var b [32]byte
-	if _, err := io.ReadFull(rand.Reader, b[:]); err != nil {
-		panic("crypto/rand: " + err.Error())
-	}
-	return "av_inv_" + hex.EncodeToString(b[:])
-}
+func newInviteToken() string { return newPrefixedToken("av_inv_") }
 
 func (s *SQLiteStore) CreateAgentInvite(ctx context.Context, agentName, createdBy string, expiresAt time.Time, sessionTTLSeconds int, agentRole string, vaults []AgentInviteVault) (*Invite, error) {
 	now := time.Now().UTC()
@@ -1598,13 +1594,7 @@ func (s *SQLiteStore) loadAgentInviteVaults(ctx context.Context, inviteID int) (
 
 // --- Vault Invites ---
 
-func newUserInviteToken() string {
-	var b [32]byte
-	if _, err := io.ReadFull(rand.Reader, b[:]); err != nil {
-		panic("crypto/rand: " + err.Error())
-	}
-	return "av_uinv_" + hex.EncodeToString(b[:])
-}
+func newUserInviteToken() string { return newPrefixedToken("av_uinv_") }
 
 func (s *SQLiteStore) CreateUserInvite(ctx context.Context, email, createdBy, role string, expiresAt time.Time, vaults []UserInviteVault) (*UserInvite, error) {
 	now := time.Now().UTC()
@@ -2472,10 +2462,10 @@ func (s *SQLiteStore) RevokeAgent(ctx context.Context, id string) error {
 		return sql.ErrNoRows
 	}
 
-	// Cascade: delete all sessions minted by this agent.
+	// Cascade: delete all tokens minted for this agent.
 	_, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE agent_id = ?", id)
 	if err != nil {
-		return fmt.Errorf("deleting agent sessions: %w", err)
+		return fmt.Errorf("deleting agent tokens: %w", err)
 	}
 
 	return tx.Commit()
@@ -2499,7 +2489,7 @@ func (s *SQLiteStore) RenameAgent(ctx context.Context, id string, newName string
 	return nil
 }
 
-func (s *SQLiteStore) CountAgentSessions(ctx context.Context, agentID string) (int, error) {
+func (s *SQLiteStore) CountAgentTokens(ctx context.Context, agentID string) (int, error) {
 	var count int
 	nowStr := nowUTC()
 	err := s.db.QueryRowContext(ctx,
@@ -2509,8 +2499,8 @@ func (s *SQLiteStore) CountAgentSessions(ctx context.Context, agentID string) (i
 	return count, err
 }
 
-func (s *SQLiteStore) GetLatestAgentSessionExpiry(ctx context.Context, agentID string) (*time.Time, error) {
-	// Check for non-expiring sessions first — they represent "never expires".
+func (s *SQLiteStore) GetLatestAgentTokenExpiry(ctx context.Context, agentID string) (*time.Time, error) {
+	// Check for non-expiring tokens first — they represent "never expires".
 	var hasNonExpiring int
 	if err := s.db.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM sessions WHERE agent_id = ? AND expires_at IS NULL",
@@ -2538,16 +2528,16 @@ func (s *SQLiteStore) GetLatestAgentSessionExpiry(ctx context.Context, agentID s
 	return &t, nil
 }
 
-func (s *SQLiteStore) DeleteAgentSessions(ctx context.Context, agentID string) error {
+func (s *SQLiteStore) DeleteAgentTokens(ctx context.Context, agentID string) error {
 	_, err := s.db.ExecContext(ctx, "DELETE FROM sessions WHERE agent_id = ?", agentID)
 	if err != nil {
-		return fmt.Errorf("deleting agent sessions: %w", err)
+		return fmt.Errorf("deleting agent tokens: %w", err)
 	}
 	return nil
 }
 
-func (s *SQLiteStore) CreateAgentSession(ctx context.Context, agentID string, expiresAt *time.Time) (*Session, error) {
-	rawToken := newSessionToken()
+func (s *SQLiteStore) CreateAgentToken(ctx context.Context, agentID string, expiresAt *time.Time) (*Session, error) {
+	rawToken := newAgentToken()
 	tokenHash := hashSessionToken(rawToken)
 	now := time.Now().UTC()
 
@@ -2561,7 +2551,7 @@ func (s *SQLiteStore) CreateAgentSession(ctx context.Context, agentID string, ex
 		tokenHash, agentID, expiresAtStr, now.Format(time.DateTime),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("creating agent session: %w", err)
+		return nil, fmt.Errorf("creating agent token: %w", err)
 	}
 
 	return &Session{ID: rawToken, AgentID: agentID, ExpiresAt: utcTimePtr(expiresAt), CreatedAt: now}, nil
@@ -2719,12 +2709,5 @@ func newUUID() string {
 		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16])
 }
 
-// newSessionToken generates a 256-bit cryptographically random session token
-// with an av_sess_ prefix followed by 64 hex characters.
-func newSessionToken() string {
-	var b [32]byte
-	if _, err := io.ReadFull(rand.Reader, b[:]); err != nil {
-		panic("crypto/rand: " + err.Error())
-	}
-	return "av_sess_" + hex.EncodeToString(b[:])
-}
+func newSessionToken() string { return newPrefixedToken("av_sess_") }
+func newAgentToken() string   { return newPrefixedToken("av_agt_") }

@@ -19,7 +19,7 @@ Agent Vault is an HTTP proxy that attaches credentials to your outbound requests
 
 ## The X-Vault header
 
-If you received your session via an agent invite (instance-level session), you must include `X-Vault: {vault_name}` on all vault-scoped requests (discover, proxy, proposals). If `AGENT_VAULT_VAULT` is set, use that value. Vault-scoped sessions (from `vault run`) do not need this header.
+If you received your token via an agent invite (instance-level agent token), you must include `X-Vault: {vault_name}` on all vault-scoped requests (discover, proxy, proposals). If `AGENT_VAULT_VAULT` is set, use that value. Vault-scoped sessions (from `vault run`) do not need this header.
 
 ## Discover available services
 
@@ -103,4 +103,4 @@ Content-Type: application/json
 - **Never** extract, log, or display credential values
 - **Never** hardcode tokens — always read from `AGENT_VAULT_SESSION_TOKEN`
 - **Only** request hosts returned by `/discover` — if not listed, propose a proposal
-- Do not modify or forge the `Authorization` header beyond using your session token
+- Do not modify or forge the `Authorization` header beyond using your token

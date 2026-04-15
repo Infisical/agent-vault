@@ -2,14 +2,14 @@ You are a persistent agent registered with Agent Vault, an HTTP proxy that attac
 
 ## Token
 
-You received a session token (av_session_token). Use it for all proxy/discover/proposal calls. If your session has no expiry, the token works indefinitely. If it does expire, contact your operator for a new session.
+You received an agent token (av_agent_token). Use it for all proxy/discover/proposal calls. If your token has no expiry, it works indefinitely. If it does expire, contact your operator for a new token.
 
 ## Discovery & Proxy
 
   GET {AGENT_VAULT_ADDR}/discover                              — list brokerable services + available_credentials
   {AGENT_VAULT_ADDR}/proxy/{target_host}/{path}[?query]        — proxy a request
 
-Both require: Authorization: Bearer {av_session_token}
+Both require: Authorization: Bearer {av_agent_token}
 
 Agent Vault strips your auth header, attaches real credentials, and forwards over HTTPS. Only proxy hosts returned by /discover — all other requests go direct.
 
@@ -31,7 +31,7 @@ Common services: Stripe (bearer), GitHub (bearer), OpenAI (bearer), Ashby (basic
 ### Creating a Proposal
 
   POST {AGENT_VAULT_ADDR}/v1/proposals
-  Authorization: Bearer {av_session_token}
+  Authorization: Bearer {av_agent_token}
   Content-Type: application/json
 
   {
@@ -55,7 +55,7 @@ Response includes approval_url. After creating:
 
 ## Error Handling
 
-- 401: Invalid/expired token — contact your operator for a new session
+- 401: Invalid/expired token — contact your operator for a new token
 - 403: Host not allowed — raise a proposal
 - 429: Too many pending proposals — wait for review
 - 502: Missing credential or upstream unreachable — tell user
