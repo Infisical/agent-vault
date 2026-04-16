@@ -38,6 +38,23 @@ const av = new AgentVault({
 });
 ```
 
+## Manage vaults
+
+Create and delete vaults using an instance-level token:
+
+```typescript
+import { AgentVault } from "@infisical/agent-vault-sdk";
+
+const av = new AgentVault({ token: "YOUR_AGENT_TOKEN" });
+
+// Create a vault (caller becomes vault admin)
+const vault = await av.createVault({ name: "my-project" });
+console.log(vault.id, vault.createdAt);
+
+// Delete a vault (requires vault admin or instance owner)
+await av.deleteVault("my-project");
+```
+
 ## Mint a vault-scoped session
 
 Use an instance-level agent token to mint a scoped session token for an agent sandbox:
@@ -69,3 +86,12 @@ const vault = new VaultClient({
   address: "http://localhost:14321",
 });
 ```
+
+## Releasing
+
+Releases are automated via GitHub Actions using [npm OIDC trusted publishing](https://docs.npmjs.com/generating-provenance-statements). To publish a new version:
+
+1. Push a git tag matching the pattern `node-sdk/v<version>` (e.g., `node-sdk/v0.2.0`).
+2. The CI workflow extracts the version from the tag, sets it in `package.json`, and publishes to npm with provenance attestation.
+
+The `version` field in `package.json` is a placeholder — the actual published version is always derived from the git tag.

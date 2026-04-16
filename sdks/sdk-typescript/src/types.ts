@@ -44,3 +44,16 @@ export interface ScopedSession {
   av_addr?: string;
   proxy_url?: string;
 }
+
+/** @internal Wire format for POST /v1/vaults response. */
+export interface VaultCreated {
+  id: string;
+  name: string;
+  created_at: string;
+}
+
+/** @internal Wire format for DELETE /v1/vaults/{name} response. */
+export interface VaultDeleted {
+  name: string;
+  deleted: boolean;
+}
