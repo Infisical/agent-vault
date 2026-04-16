@@ -22,3 +22,20 @@ export type {
   SetCredentialsResult,
   DeleteCredentialsResult,
 } from "./resources/credentials.js";
+
+// Service resource types
+export type {
+  BearerAuth,
+  BasicAuth,
+  ApiKeyAuth,
+  CustomAuth,
+  ServiceAuth,
+  Service,
+  ListServicesResult,
+  SetServicesResult,
+  ReplaceAllServicesResult,
+  ClearServicesResult,
+  RemoveServiceResult,
+  CredentialUsageEntry,
+  CredentialUsageResult,
+} from "./resources/services.js";

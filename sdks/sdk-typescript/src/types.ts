@@ -79,3 +79,69 @@ export interface CredentialsSet {
 export interface CredentialsDeleted {
   deleted: string[];
 }
+
+// ---------------------------------------------------------------------------
+// Services wire types
+// ---------------------------------------------------------------------------
+
+/** @internal Wire format for service auth. */
+export interface WireServiceAuth {
+  type: string;
+  token?: string;
+  username?: string;
+  password?: string;
+  key?: string;
+  header?: string;
+  prefix?: string;
+  headers?: Record<string, string>;
+}
+
+/** @internal Wire format for a service entry. */
+export interface WireService {
+  host: string;
+  description?: string;
+  auth: WireServiceAuth;
+}
+
+/** @internal Wire format for GET /v1/vaults/{name}/services response. */
+export interface ServicesList {
+  vault: string;
+  services: WireService[];
+}
+
+/** @internal Wire format for POST /v1/vaults/{name}/services response. */
+export interface ServicesUpserted {
+  vault: string;
+  upserted: string[];
+  services_count: number;
+}
+
+/** @internal Wire format for PUT /v1/vaults/{name}/services response. */
+export interface ServicesReplaced {
+  vault: string;
+  services_count: number;
+}
+
+/** @internal Wire format for DELETE /v1/vaults/{name}/services response. */
+export interface ServicesCleared {
+  vault: string;
+  cleared: boolean;
+}
+
+/** @internal Wire format for DELETE /v1/vaults/{name}/services/{host} response. */
+export interface ServiceRemoved {
+  vault: string;
+  removed: string;
+  services_count: number;
+}
+
+/** @internal Wire format for credential-usage response entry. */
+export interface WireCredentialUsageEntry {
+  host: string;
+  description?: string;
+}
+
+/** @internal Wire format for GET /v1/vaults/{name}/services/credential-usage response. */
+export interface WireCredentialUsageResult {
+  services: WireCredentialUsageEntry[];
+}

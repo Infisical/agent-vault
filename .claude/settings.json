@@ -18,7 +18,12 @@
       "Bash(python3 -c \":*)",
       "Bash(grep -n 'jsonError.*\"\"\"\"\\)\\)$' internal/server/server.go)",
       "Bash(grep -r direct /Users/tuandang/Desktop/Projects/agent-vault/docs --include=*.mdx)",
-      "Bash(find /Users/tuandang/Desktop/Projects/agent-vault -name CLAUDE.md -o -name quickstart* -type f)"
+      "Bash(find /Users/tuandang/Desktop/Projects/agent-vault -name CLAUDE.md -o -name quickstart* -type f)",
+      "Bash(npm test *)",
+      "Bash(grep -n \"runInteractiveServiceSet\\\\|handleServices\" /Users/tuandang/Desktop/Projects/agent-vault/agent-vault/cmd/*.go)",
+      "Bash(grep -n \"listCredentialKeys\" /Users/tuandang/Desktop/Projects/agent-vault/agent-vault/internal/server/*.go)",
+      "Bash(grep -n \"handleCredentials\\\\|handleDiscover\" /Users/tuandang/Desktop/Projects/agent-vault/agent-vault/internal/server/handle_*.go)",
+      "Bash(grep -E \"\\\\.\\(yaml|yml|json|md\\)$\")"
     ]
   },
   "enabledPlugins": {

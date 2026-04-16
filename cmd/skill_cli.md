@@ -62,6 +62,28 @@ Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
 
 Agent Vault strips your auth header, injects the real credentials, and forwards the request over HTTPS.
 
+## Managing Services Directly
+
+If you have vault admin role, you can add or remove services directly without proposals:
+
+```bash
+# Add or update a service (upsert by host)
+agent-vault vault service add \
+  --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY \
+  --description "Stripe API"
+
+# Add services from a YAML file (upsert, non-destructive)
+agent-vault vault service add -f services.yaml
+
+# Remove a specific service
+agent-vault vault service remove api.stripe.com --yes
+
+# List all configured services
+agent-vault vault service list
+```
+
+Use `service add` when you already have credentials stored and just need to configure the proxy rule. Use proposals when the human needs to provide new credentials.
+
 ## Proposals -- Requesting and Storing Credentials
 
 Proposals are the primary way to exchange credentials with a human operator. Use them whenever you:
