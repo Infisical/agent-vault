@@ -1,17 +1,15 @@
 package server
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/Infisical/agent-vault/internal/broker"
-	"github.com/Infisical/agent-vault/internal/crypto"
+	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/netguard"
 	"github.com/Infisical/agent-vault/internal/store"
 )
@@ -27,79 +25,19 @@ func isSecureRequest(r *http.Request, baseURL string) bool {
 	return strings.HasPrefix(baseURL, "https://")
 }
 
-// proxyForbiddenWithHint writes a 403 with a proposal_hint so agents can
-// programmatically construct a proposal from a denied proxy request.
-func proxyForbiddenWithHint(w http.ResponseWriter, targetHost, nsName string) {
-	w.Header().Set(proxyErrorHeader, "true")
-	jsonStatus(w, http.StatusForbidden, map[string]interface{}{
-		"error":   "forbidden",
-		"message": fmt.Sprintf("No broker service matching host %q in vault %q", targetHost, nsName),
-		"proposal_hint": map[string]interface{}{
-			"host":                 targetHost,
-			"endpoint":             "POST /v1/proposals",
-			"supported_auth_types": broker.SupportedAuthTypes,
-		},
-	})
-}
-
-// hopByHopHeaders are HTTP/1.1 hop-by-hop headers that must not be forwarded by proxies.
-var hopByHopHeaders = map[string]bool{
-	"Connection":          true,
-	"Keep-Alive":          true,
-	"Proxy-Authenticate":  true,
-	"Proxy-Authorization": true,
-	"Te":                  true,
-	"Trailer":             true,
-	"Transfer-Encoding":   true,
-	"Upgrade":             true,
-}
-
-// isHopByHopHeader returns true if the header is a hop-by-hop header.
-func isHopByHopHeader(name string) bool {
-	return hopByHopHeaders[http.CanonicalHeaderKey(name)]
-}
-
 // isValidProxyHost validates that a target host is a safe hostname or host:port.
-// Rejects characters that could cause URL parsing issues (userinfo injection, etc.).
 func isValidProxyHost(host string) bool {
-	if host == "" {
-		return false
-	}
-	// Strip optional port suffix for hostname validation.
 	h := host
 	if idx := strings.LastIndex(host, ":"); idx != -1 {
 		h = host[:idx]
 		port := host[idx+1:]
-		// Port must be numeric.
 		for _, c := range port {
 			if c < '0' || c > '9' {
 				return false
 			}
 		}
 	}
-	if h == "" {
-		return false
-	}
-	// Reject any character that could cause URL parsing issues.
-	for _, c := range h {
-		if c == '@' || c == '?' || c == '#' || c == '/' || c == '\\' || c == ' ' || c == '%' || c < 0x20 || c == 0x7f {
-			return false
-		}
-	}
-	return true
-}
-
-// proxyPassthroughHeaders is the allowlist of headers forwarded from agent
-// requests to upstream services. All other agent headers are dropped.
-var proxyPassthroughHeaders = []string{
-	"Content-Type",
-	"Content-Encoding",
-	"Accept",
-	"Accept-Encoding",
-	"Accept-Language",
-	"User-Agent",
-	"Idempotency-Key",
-	"X-Request-Id",
+	return brokercore.IsValidHost(h)
 }
 
 // newProxyClient creates an HTTP client for outbound proxy requests.
@@ -200,48 +138,16 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return // error already written
 	}
 
-	// 4. Load broker config for this vault.
-	brokerCfg, err := s.store.GetBrokerConfig(ctx, ns.ID)
-	if err != nil || brokerCfg == nil {
-		proxyForbiddenWithHint(w, targetHost, ns.Name)
-		return
-	}
-
-	var services []broker.Service
-	if err := json.Unmarshal([]byte(brokerCfg.ServicesJSON), &services); err != nil {
-		proxyError(w, http.StatusInternalServerError, "internal", "Failed to parse broker services")
-		return
-	}
-
-	// 5. Match host against broker services.
-	// Strip port for matching (services use bare hostnames).
-	matchHost := targetHost
-	if h, _, err := net.SplitHostPort(targetHost); err == nil {
-		matchHost = h
-	}
-	matched := broker.MatchHost(matchHost, services)
-	if matched == nil {
-		proxyForbiddenWithHint(w, targetHost, ns.Name)
-		return
-	}
-
-	// 6. Resolve credentials from matched service's auth config.
-	resolved, err := matched.Auth.Resolve(func(key string) (string, error) {
-		cred, err := s.store.GetCredential(ctx, ns.ID, key)
-		if err != nil {
-			return "", fmt.Errorf("credential %q not found", key)
-		}
-		plaintext, err := crypto.Decrypt(cred.Ciphertext, cred.Nonce, s.encKey)
-		if err != nil {
-			return "", fmt.Errorf("failed to decrypt credential %q", key)
-		}
-		return string(plaintext), nil
-	})
+	// Resolve broker service + inject credentials.
+	inject, err := s.CredentialProvider().Inject(ctx, ns.ID, targetHost)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[agent-vault] credential resolution failed for vault %s: %v\n", ns.ID, err)
-		proxyError(w, http.StatusBadGateway, "credential_not_found", "A required credential could not be resolved; check vault configuration")
+		if errors.Is(err, brokercore.ErrCredentialMissing) {
+			fmt.Fprintf(os.Stderr, "[agent-vault] credential resolution failed for vault %s: %v\n", ns.ID, err)
+		}
+		brokercore.WriteInjectError(w, err, targetHost, ns.Name)
 		return
 	}
+	resolved := inject.Headers
 
 	// 7. Build outbound URL.
 	targetURL := "https://" + targetHost
@@ -260,7 +166,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Copy only safe headers from the agent request (allowlist approach).
-	for _, k := range proxyPassthroughHeaders {
+	for _, k := range brokercore.PassthroughHeaders {
 		if vv := r.Header.Values(k); len(vv) > 0 {
 			for _, v := range vv {
 				outReq.Header.Add(k, v)
@@ -287,7 +193,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// 10. Stream response back to agent (filter unsafe headers).
 	for k, vv := range resp.Header {
 		// Skip hop-by-hop and security-sensitive headers from upstream.
-		if isHopByHopHeader(k) || strings.EqualFold(k, "Set-Cookie") {
+		if brokercore.ShouldStripResponseHeader(k) {
 			continue
 		}
 		for _, v := range vv {
@@ -295,6 +201,6 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	// Limit response body to 100 MB to prevent resource exhaustion.
-	_, _ = io.Copy(w, io.LimitReader(resp.Body, 100<<20))
+	// Limit response body to prevent resource exhaustion.
+	_, _ = io.Copy(w, io.LimitReader(resp.Body, brokercore.MaxResponseBytes))
 }

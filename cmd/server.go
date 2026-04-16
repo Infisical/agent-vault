@@ -114,7 +114,12 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 	if err != nil {
 		return fmt.Errorf("init CA: %w", err)
 	}
-	srv.AttachMITM(mitm.New(net.JoinHostPort(host, strconv.Itoa(mitmPort)), caProv))
+	srv.AttachMITM(mitm.New(
+		net.JoinHostPort(host, strconv.Itoa(mitmPort)),
+		caProv,
+		srv.SessionResolver(),
+		srv.CredentialProvider(),
+	))
 	return nil
 }
 

@@ -7,8 +7,9 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strings"
 	"time"
+
+	"github.com/Infisical/agent-vault/internal/brokercore"
 )
 
 // handleConnect terminates a CONNECT tunnel and serves HTTP/1.1 off the
@@ -24,6 +25,20 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	if !isValidHost(host) {
 		http.Error(w, "invalid host", http.StatusBadRequest)
+		return
+	}
+
+	// Authenticate the CONNECT request via Proxy-Authorization and resolve
+	// the target vault. All error responses must be written BEFORE the
+	// connection is hijacked — once hijacked, no HTTP status can be sent.
+	token, hint, err := brokercore.ParseProxyAuth(r)
+	if err != nil {
+		writeProxyAuthChallenge(w, "Proxy-Authorization required")
+		return
+	}
+	scope, err := p.sessions.ResolveForProxy(r.Context(), token, hint)
+	if err != nil {
+		writeAuthError(w, err)
 		return
 	}
 
@@ -72,7 +87,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// closes the listener so Serve returns.
 	listener := newOneShotListener(tlsConn)
 	srv := &http.Server{
-		Handler:           p.forwardHandler(target),
+		Handler:           p.forwardHandler(target, host, scope),
 		ReadHeaderTimeout: 10 * time.Second,
 		ConnState: func(c net.Conn, state http.ConnState) {
 			if state == http.StateClosed || state == http.StateHijacked {
@@ -83,17 +98,35 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	_ = srv.Serve(listener)
 }
 
-func isValidHost(h string) bool {
-	if h == "" || len(h) > 253 {
-		return false
-	}
-	for _, c := range h {
-		if c == '@' || c == '?' || c == '#' || c == '/' || c == '\\' || c == ' ' || c == '%' || c < 0x20 || c == 0x7f {
-			return false
-		}
-	}
-	return !strings.HasPrefix(h, ".") && !strings.HasSuffix(h, ".")
+// writeProxyAuthChallenge writes a 407 with a Proxy-Authenticate header so
+// well-behaved clients re-issue the CONNECT with credentials.
+func writeProxyAuthChallenge(w http.ResponseWriter, msg string) {
+	w.Header().Set("Proxy-Authenticate", `Basic realm="agent-vault"`)
+	http.Error(w, msg, http.StatusProxyAuthRequired)
 }
+
+// writeAuthError maps a brokercore session-resolution error to an HTTP
+// response. All writes happen before the connection is hijacked.
+func writeAuthError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, brokercore.ErrInvalidSession):
+		writeProxyAuthChallenge(w, "invalid or expired session")
+	case errors.Is(err, brokercore.ErrAgentVaultAmbiguous),
+		errors.Is(err, brokercore.ErrNoVaultContext):
+		http.Error(w, "set vault via HTTPS_PROXY=http://<token>:<vault>@host:port", http.StatusBadRequest)
+	case errors.Is(err, brokercore.ErrVaultHintMismatch),
+		errors.Is(err, brokercore.ErrVaultAccessDenied):
+		http.Error(w, "forbidden", http.StatusForbidden)
+	case errors.Is(err, brokercore.ErrVaultNotFound):
+		http.Error(w, "vault not found", http.StatusNotFound)
+	default:
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}
+}
+
+// isValidHost is a local alias for brokercore.IsValidHost so existing
+// callers and the #nosec G706 justification below stay readable.
+func isValidHost(h string) bool { return brokercore.IsValidHost(h) }
 
 // oneShotListener yields a single net.Conn to http.Serve, then blocks
 // Accept until Close so Serve stays alive while the connection goroutine

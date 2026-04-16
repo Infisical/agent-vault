@@ -6,10 +6,7 @@
 // originally-requested upstream over a fresh TLS connection with strict
 // verification against the system trust store.
 //
-// v1 scope: HTTP/1.1 only (ALPN pinned), no credential injection, no
-// audit hooks. These are the next steps of the transparent-proxy
-// initiative; this package is deliberately shaped so they plug in at
-// well-defined points (forwardHandler in forward.go).
+// v1 scope: HTTP/1.1 only (ALPN pinned).
 package mitm
 
 import (
@@ -20,6 +17,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/ca"
 	"github.com/Infisical/agent-vault/internal/netguard"
 )
@@ -28,14 +26,17 @@ import (
 // reuse across Shutdown is not supported.
 type Proxy struct {
 	ca         ca.Provider
+	sessions   brokercore.SessionResolver
+	creds      brokercore.CredentialProvider
 	httpServer *http.Server
 	upstream   *http.Transport
 }
 
-// New builds a Proxy bound to addr using caProv for leaf certificates.
+// New builds a Proxy bound to addr using caProv for leaf certificates and
+// the brokercore sessions/creds for authentication and credential injection.
 // The returned Proxy does not begin listening until ListenAndServe is
 // called.
-func New(addr string, caProv ca.Provider) *Proxy {
+func New(addr string, caProv ca.Provider, sessions brokercore.SessionResolver, creds brokercore.CredentialProvider) *Proxy {
 	upstream := &http.Transport{
 		DialContext:           netguard.SafeDialContext(netguard.ModeFromEnv()),
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
@@ -48,6 +49,8 @@ func New(addr string, caProv ca.Provider) *Proxy {
 
 	p := &Proxy{
 		ca:       caProv,
+		sessions: sessions,
+		creds:    creds,
 		upstream: upstream,
 	}
 

@@ -2,36 +2,18 @@ package mitm
 
 import (
 	"io"
-	"net"
 	"net/http"
 	"net/url"
+
+	"github.com/Infisical/agent-vault/internal/brokercore"
 )
-
-// maxResponseBytes caps the body returned to the client. Matches the
-// limit used by the existing /proxy handler; credential injection work
-// in the next step should consolidate both constants.
-const maxResponseBytes = 100 << 20
-
-// hopByHopHeaders are HTTP/1.1 hop-by-hop headers that must not be
-// forwarded by a proxy. Duplicated from internal/server to avoid a
-// dependency cycle; if credential injection unifies both paths into a
-// shared package, this should be pulled up alongside it.
-var hopByHopHeaders = map[string]bool{
-	"Connection":          true,
-	"Keep-Alive":          true,
-	"Proxy-Authenticate":  true,
-	"Proxy-Authorization": true,
-	"Te":                  true,
-	"Trailer":             true,
-	"Transfer-Encoding":   true,
-	"Upgrade":             true,
-}
 
 // forwardHandler returns an http.Handler that forwards each request to
 // target (the host:port captured from the original CONNECT line). Using
 // a closed-over target rather than r.Host defeats post-tunnel host
-// rewriting.
-func (p *Proxy) forwardHandler(target string) http.Handler {
+// rewriting. host is the port-stripped form, already validated in
+// handleConnect; scope is the vault context resolved at CONNECT time.
+func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		outURL := &url.URL{
 			Scheme:   "https",
@@ -46,12 +28,25 @@ func (p *Proxy) forwardHandler(target string) http.Handler {
 			http.Error(w, "bad gateway", http.StatusBadGateway)
 			return
 		}
-		if h, _, splitErr := net.SplitHostPort(target); splitErr == nil {
-			outReq.Host = h
-		} else {
-			outReq.Host = target
+		outReq.Host = host
+
+		// Allowlist passthrough: Authorization and Proxy-Authorization are
+		// not on the list, so injected credentials always win and the
+		// client cannot shadow them.
+		for _, k := range brokercore.PassthroughHeaders {
+			for _, v := range r.Header.Values(k) {
+				outReq.Header.Add(k, v)
+			}
 		}
-		copyRequestHeaders(outReq.Header, r.Header)
+
+		inject, err := p.creds.Inject(r.Context(), scope.VaultID, host)
+		if err != nil {
+			brokercore.WriteInjectError(w, err, host, scope.VaultName)
+			return
+		}
+		for k, v := range inject.Headers {
+			outReq.Header.Set(k, v)
+		}
 
 		resp, err := p.upstream.RoundTrip(outReq)
 		if err != nil {
@@ -61,7 +56,7 @@ func (p *Proxy) forwardHandler(target string) http.Handler {
 		defer func() { _ = resp.Body.Close() }()
 
 		for k, vv := range resp.Header {
-			if hopByHopHeaders[http.CanonicalHeaderKey(k)] {
+			if brokercore.ShouldStripResponseHeader(k) {
 				continue
 			}
 			for _, v := range vv {
@@ -69,17 +64,6 @@ func (p *Proxy) forwardHandler(target string) http.Handler {
 			}
 		}
 		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, io.LimitReader(resp.Body, maxResponseBytes))
+		_, _ = io.Copy(w, io.LimitReader(resp.Body, brokercore.MaxResponseBytes))
 	})
-}
-
-func copyRequestHeaders(dst, src http.Header) {
-	for k, vv := range src {
-		if hopByHopHeaders[http.CanonicalHeaderKey(k)] {
-			continue
-		}
-		for _, v := range vv {
-			dst.Add(k, v)
-		}
-	}
 }

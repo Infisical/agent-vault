@@ -16,6 +16,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/mitm"
 	"github.com/Infisical/agent-vault/internal/notify"
@@ -66,6 +67,18 @@ type Server struct {
 // is bound to this Server: Start launches it, and SIGINT/SIGTERM/Shutdown
 // stops it alongside the HTTP server.
 func (s *Server) AttachMITM(p *mitm.Proxy) { s.mitm = p }
+
+// SessionResolver returns a brokercore.SessionResolver backed by this
+// server's store.
+func (s *Server) SessionResolver() brokercore.SessionResolver {
+	return brokercore.NewStoreSessionResolver(s.store)
+}
+
+// CredentialProvider returns a brokercore.CredentialProvider backed by
+// this server's store and encryption key.
+func (s *Server) CredentialProvider() brokercore.CredentialProvider {
+	return brokercore.NewStoreCredentialProvider(s.store, s.encKey)
+}
 
 // Store is the persistence interface used by the server.
 type Store interface {
