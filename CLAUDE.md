@@ -148,7 +148,7 @@ Opt-in second ingress path for clients that respect `HTTPS_PROXY`. Off by defaul
 - Backed by `internal/mitm` (CONNECT + TLS termination) and `internal/ca` (software CA persisted under `~/.agent-vault/ca/`, root key encrypted with the master key). The CA is only initialized when `--mitm-port > 0`.
 - Upstream dials go through `netguard.SafeDialContext` (same SSRF protections as `/proxy`) with strict TLS verification against the system trust store.
 - **v1 scope**: HTTP/1.1 only (ALPN pinned), no credential injection, no audit hooks, no policy. Current behavior is a transparent pass-through that proves the TLS plumbing. Credential injection / audit unification are the next steps — plug into `internal/mitm/forward.go`.
-- Clients must trust the CA root (at `~/.agent-vault/ca/ca.crt.pem`) for the MITM handshake to succeed. An `install-ca` helper is a separate future initiative.
+- Clients must trust the CA root for the MITM handshake to succeed. Fetch it with `agent-vault ca fetch` (pipes raw PEM to stdout; `-o <file>` to save) or `curl -O http://localhost:14321/v1/mitm/ca.pem`. The endpoint `GET /v1/mitm/ca.pem` is public (the cert is safe to expose by design) and returns 404 with a plaintext body when `--mitm-port` is not set. Installing the fetched PEM into trust stores (`security add-trusted-cert`, `update-ca-certificates`, `keytool`) is currently a manual step — an `agent-vault ca install` helper is a future initiative.
 
 ## Discovery Endpoint
 

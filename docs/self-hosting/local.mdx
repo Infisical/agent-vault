@@ -72,6 +72,42 @@ Any CLI command that needs authentication will walk you through registration and
 
 Subsequent users can self-register via `agent-vault auth register`, the web registration page, or be [invited to a vault](/learn/vaults#invite-users-to-a-vault) by a vault admin.
 
+## Transparent proxy (optional)
+
+<Warning>
+  Experimental. HTTP/1.1 only, and credential injection is not yet wired into this path — the MITM proxy currently proves the TLS plumbing without adding auth headers on the way through. Use the regular `/proxy` endpoint for brokered requests.
+</Warning>
+
+Agent Vault can expose a second ingress as a transparent `HTTPS_PROXY`. This lets clients that respect the proxy environment variable (but can't be pointed at a custom base URL) route through Agent Vault. Start the server with `--mitm-port`:
+
+```bash
+agent-vault server --mitm-port 14322
+```
+
+A software-backed root CA is created on first launch under `~/.agent-vault/ca/` (private key encrypted with the master key). Clients must trust this root before the proxied TLS handshake will succeed.
+
+Fetch the root certificate from any machine that can reach the server:
+
+```bash
+# From stdout (pipe into a trust-store installer)
+agent-vault ca fetch > agent-vault-ca.pem
+
+# Save to a file
+agent-vault ca fetch -o /etc/ssl/certs/agent-vault-ca.pem
+
+# Or with curl — the endpoint is public
+curl -O http://localhost:14321/v1/mitm/ca.pem
+```
+
+Then install into the relevant trust store. For example, on macOS:
+
+```bash
+agent-vault ca fetch | sudo security add-trusted-cert -d -r trustRoot \
+    -k /Library/Keychains/System.keychain /dev/stdin
+```
+
+See the [CLI reference](/reference/cli#ca) for all `agent-vault ca fetch` flags.
+
 ## Upgrade
 
 Re-run the same install command — the script detects your existing installation, stops the running server, backs up your database, and installs the latest version:

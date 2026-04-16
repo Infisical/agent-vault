@@ -21,6 +21,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--port` | `14321` | Port to listen on |
     | `-d`, `--detach` | `false` | Run in background (detached) mode |
     | `--password-stdin` | `false` | Read master password from stdin |
+    | `--mitm-port` | `0` | Port for the transparent MITM proxy (experimental). When `> 0`, enables the proxy and initializes the root CA. Clients fetch the root cert with [`agent-vault ca fetch`](#ca). |
 
     **Environment variables:**
 
@@ -46,6 +47,39 @@ description: "Complete reference for all Agent Vault CLI commands."
     ```
 
     Stop a running server. Reads the PID from `~/.agent-vault/agent-vault.pid` and sends SIGTERM.
+  </Accordion>
+</AccordionGroup>
+
+## CA
+
+<AccordionGroup>
+  <Accordion title="agent-vault ca fetch">
+    ```bash
+    agent-vault ca fetch [flags]
+    ```
+
+    Fetch the root CA certificate used by Agent Vault's transparent MITM proxy, in PEM form. Install the output into your client trust store so HTTPS traffic routed through the proxy validates cleanly.
+
+    The server must be running with `--mitm-port` set. The endpoint is public — no authentication required. Returns an error if MITM is not enabled on the target server.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `-o`, `--output` | | Write PEM to file instead of stdout |
+    | `--address` | | Server URL |
+
+    **Examples:**
+
+    ```bash
+    # Print to stdout
+    agent-vault ca fetch > ca.pem
+
+    # Save directly to a file
+    agent-vault ca fetch -o /etc/ssl/certs/agent-vault-ca.pem
+
+    # Pipe into the macOS system keychain
+    agent-vault ca fetch | sudo security add-trusted-cert -d -r trustRoot \
+        -k /Library/Keychains/System.keychain /dev/stdin
+    ```
   </Accordion>
 </AccordionGroup>
 

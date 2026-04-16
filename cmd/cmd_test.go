@@ -25,11 +25,50 @@ func TestCommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"server", "auth", "vault", "owner", "account", "catalog", "user", "agent"}
+	expected := []string{"server", "auth", "vault", "owner", "account", "catalog", "user", "agent", "ca"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected command %q to be registered, but it was not", name)
 		}
+	}
+}
+
+func TestCASubcommandsRegistered(t *testing.T) {
+	caCmd := findSubcommand(rootCmd, "ca")
+	if caCmd == nil {
+		t.Fatal("ca command not found")
+	}
+
+	registered := make(map[string]bool)
+	for _, c := range caCmd.Commands() {
+		registered[c.Name()] = true
+	}
+
+	expected := []string{"fetch"}
+	for _, name := range expected {
+		if !registered[name] {
+			t.Errorf("expected ca subcommand %q to be registered, but it was not", name)
+		}
+	}
+}
+
+func TestCAFetchFlags(t *testing.T) {
+	caCmd := findSubcommand(rootCmd, "ca")
+	if caCmd == nil {
+		t.Fatal("ca command not found")
+	}
+	fetchCmd := findSubcommand(caCmd, "fetch")
+	if fetchCmd == nil {
+		t.Fatal("ca fetch subcommand not found")
+	}
+
+	for _, name := range []string{"output", "address"} {
+		if fetchCmd.Flags().Lookup(name) == nil {
+			t.Errorf("expected ca fetch flag --%s to be registered", name)
+		}
+	}
+	if f := fetchCmd.Flags().ShorthandLookup("o"); f == nil {
+		t.Error("expected ca fetch flag -o shorthand to be registered")
 	}
 }
 

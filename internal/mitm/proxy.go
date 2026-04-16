@@ -65,6 +65,11 @@ func New(addr string, caProv ca.Provider, sessions brokercore.SessionResolver, c
 // Addr returns the listener address the Proxy was configured with.
 func (p *Proxy) Addr() string { return p.httpServer.Addr }
 
+// RootPEM returns the root CA certificate in PEM form. Safe for public
+// distribution — clients install this into trust stores to validate the
+// leaves minted on demand during CONNECT.
+func (p *Proxy) RootPEM() []byte { return p.ca.RootPEM() }
+
 // ListenAndServe starts accepting connections. It blocks until Shutdown
 // is called, returning http.ErrServerClosed in that case.
 func (p *Proxy) ListenAndServe() error {
