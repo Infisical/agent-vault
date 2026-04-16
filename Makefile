@@ -21,12 +21,16 @@ build: web
 # Hot-reload dev: Go backend (air) + React frontend (Vite HMR)
 # Env vars can come from .env file OR `infisical run -- make dev`.
 # Open http://localhost:5173/app/ in browser
+# Defaults AGENT_VAULT_LOG_LEVEL=debug for per-request proxy visibility; an
+# explicit value in the shell env or .env file wins.
 dev: web
 	@echo ""
 	@echo "  ➜ Open http://localhost:5173 in your browser (not 14321)"
 	@echo ""
 	@trap 'kill 0' EXIT; \
+	export AGENT_VAULT_LOG_LEVEL=$${AGENT_VAULT_LOG_LEVEL:-debug}; \
 	if [ -f .env ]; then set -a; . ./.env; set +a; echo "  ✓ Loaded .env"; fi; \
+	echo "  ✓ Log level: $$AGENT_VAULT_LOG_LEVEL"; \
 	$(AIR) & (cd web && npm run dev) & wait
 
 test:

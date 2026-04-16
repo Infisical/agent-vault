@@ -39,11 +39,14 @@ make docker       # Multi-stage Docker image; data persisted at /data/.agent-vau
 - **Types & validation** — broker service/auth shapes in [internal/broker/](internal/broker/); proposal shapes in [internal/proposal/](internal/proposal/).
 - **User-facing operator docs** — [README.md](README.md).
 - **Environment variables** — [.env.example](.env.example) is the canonical list.
+- **Public docs site** — Mintlify source lives under [docs/](docs/). Flag reference: [docs/reference/cli.mdx](docs/reference/cli.mdx). Env var reference: [docs/self-hosting/environment-variables.mdx](docs/self-hosting/environment-variables.mdx).
 - **Go module**: `github.com/Infisical/agent-vault`. CLI framework: [spf13/cobra](https://github.com/spf13/cobra).
 
 ## Conventions
 
 - When the agent-facing surface changes (endpoints, request/response fields, auth behavior), update **both** [cmd/skill_cli.md](cmd/skill_cli.md) and [cmd/skill_http.md](cmd/skill_http.md) together — they are versioned as a pair.
-- When adding an environment variable, update [.env.example](.env.example).
+- When adding an environment variable, update [.env.example](.env.example) **and** the server-config table in [docs/self-hosting/environment-variables.mdx](docs/self-hosting/environment-variables.mdx).
+- When adding or changing a CLI flag, update the flag table in [docs/reference/cli.mdx](docs/reference/cli.mdx) for the affected command.
 - When a change affects operator-facing behavior, update [README.md](README.md).
+- Whenever a new feature lands, scan [docs/](docs/) for pages that need a matching update — quickstart, guides, self-hosting, learn, and reference all mirror runtime behavior and drift fast.
 - When the *mental model* in this file drifts (new core concept, renamed ingress path, changed permission axes), update this file — but don't re-bloat it with reference material that belongs in the skill files or `--help`.

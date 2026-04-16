@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -58,9 +59,10 @@ type Server struct {
 	initialized    bool   // true when at least one owner account exists
 	baseURL        string // externally-reachable base URL (e.g. "https://sb.example.com")
 	oauthProviders map[string]oauth.Provider
-	skillCLI       []byte      // embedded CLI skill content (served at GET /v1/skills/cli)
-	skillHTTP      []byte      // embedded HTTP skill content (served at GET /v1/skills/http)
-	mitm           *mitm.Proxy // transparent MITM proxy; nil only when --mitm-port 0
+	skillCLI       []byte       // embedded CLI skill content (served at GET /v1/skills/cli)
+	skillHTTP      []byte       // embedded HTTP skill content (served at GET /v1/skills/http)
+	mitm           *mitm.Proxy  // transparent MITM proxy; nil only when --mitm-port 0
+	logger         *slog.Logger // structured logger for per-request observability
 }
 
 // AttachMITM registers an optional transparent MITM proxy whose lifecycle
@@ -79,6 +81,11 @@ func (s *Server) SessionResolver() brokercore.SessionResolver {
 func (s *Server) CredentialProvider() brokercore.CredentialProvider {
 	return brokercore.NewStoreCredentialProvider(s.store, s.encKey)
 }
+
+// Logger returns the server's structured logger. Callers (e.g. the MITM
+// proxy constructed outside the server) use this to share a single logger
+// across ingress paths.
+func (s *Server) Logger() *slog.Logger { return s.logger }
 
 // Store is the persistence interface used by the server.
 type Store interface {
@@ -504,7 +511,8 @@ func limitBody(next http.HandlerFunc) http.HandlerFunc {
 // New creates a new Server listening on the given address.
 // The initialized parameter indicates whether at least one owner account exists.
 // When false, all endpoints except /health and POST /v1/init return 503.
-func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string, oauthProviders map[string]oauth.Provider) *Server {
+// logger must be non-nil; tests can pass slog.New(slog.DiscardHandler).
+func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string, oauthProviders map[string]oauth.Provider, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
 
 	// Initialize proxy client once (reads AGENT_VAULT_NETWORK_MODE after env is configured).
@@ -527,6 +535,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 		initialized:    initialized,
 		baseURL:        strings.TrimRight(baseURL, "/"),
 		oauthProviders: oauthProviders,
+		logger:         logger,
 	}
 
 	// Always available (no initialization required)

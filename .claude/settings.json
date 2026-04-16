@@ -7,7 +7,11 @@
       "Bash(go build:*)",
       "Bash(go vet:*)",
       "Bash(npm test:*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(command -v golangci-lint)",
+      "Bash(grep -n \"os.WriteFile\\\\|WriteFile\" cmd/*.go)",
+      "Bash(grep -n \"handleSkill\\\\|handleService\\\\|handleHealth\\\\|writePlaintext\\\\|writeMarkdown\" /Users/tuandang/Desktop/Projects/agent-vault/agent-vault/internal/server/handler*.go)",
+      "WebFetch(domain:www.humanlayer.dev)"
     ]
   },
   "enabledPlugins": {

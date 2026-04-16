@@ -29,7 +29,7 @@ func TestHandleMITMCA(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ca.New: %v", err)
 		}
-		p := mitm.New("127.0.0.1:0", caProv, srv.SessionResolver(), srv.CredentialProvider())
+		p := mitm.New("127.0.0.1:0", caProv, srv.SessionResolver(), srv.CredentialProvider(), srv.Logger())
 		srv.AttachMITM(p)
 
 		// Start the proxy so IsListening() reports true. The handler gates
@@ -111,7 +111,7 @@ func TestHandleMITMCA(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ca.New: %v", err)
 		}
-		p := mitm.New("127.0.0.1:0", caProv, srv.SessionResolver(), srv.CredentialProvider())
+		p := mitm.New("127.0.0.1:0", caProv, srv.SessionResolver(), srv.CredentialProvider(), srv.Logger())
 		srv.AttachMITM(p)
 		// Intentionally do not call Serve — simulates a bind failure.
 
