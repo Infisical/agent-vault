@@ -4534,3 +4534,234 @@ func TestResendVerificationTooManyPending(t *testing.T) {
 		t.Fatalf("expected 3 email verifications, got %d", len(ms.emailVerifications))
 	}
 }
+
+// --- Services Upsert Tests ---
+
+func TestServicesUpsertAddNew(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"services":[{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/services", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["vault"] != "default" {
+		t.Fatalf("expected vault=default, got %v", resp["vault"])
+	}
+	upserted := resp["upserted"].([]interface{})
+	if len(upserted) != 1 || upserted[0] != "api.stripe.com" {
+		t.Fatalf("expected upserted=[api.stripe.com], got %v", upserted)
+	}
+	if resp["services_count"].(float64) != 1 {
+		t.Fatalf("expected services_count=1, got %v", resp["services_count"])
+	}
+}
+
+func TestServicesUpsertReplaceExisting(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	// Pre-seed a service.
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		ID: "bc-1", VaultID: "root-ns-id",
+		ServicesJSON: `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"OLD_KEY"}}]`,
+	}
+	srv := newTestServer(withStore(ms))
+
+	body := `{"services":[{"host":"api.stripe.com","auth":{"type":"bearer","token":"NEW_KEY"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/services", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["services_count"].(float64) != 1 {
+		t.Fatalf("expected services_count=1 (replaced, not appended), got %v", resp["services_count"])
+	}
+
+	// Verify the stored service has the new token key.
+	bc := ms.brokerConfigs["root-ns-id"]
+	if !strings.Contains(bc.ServicesJSON, "NEW_KEY") {
+		t.Fatalf("expected NEW_KEY in stored services, got %s", bc.ServicesJSON)
+	}
+	if strings.Contains(bc.ServicesJSON, "OLD_KEY") {
+		t.Fatalf("expected OLD_KEY to be replaced, got %s", bc.ServicesJSON)
+	}
+}
+
+func TestServicesUpsertBatch(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"services":[
+		{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}},
+		{"host":"api.github.com","auth":{"type":"bearer","token":"GITHUB_TOKEN"}}
+	]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/services", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["services_count"].(float64) != 2 {
+		t.Fatalf("expected services_count=2, got %v", resp["services_count"])
+	}
+	upserted := resp["upserted"].([]interface{})
+	if len(upserted) != 2 {
+		t.Fatalf("expected 2 upserted hosts, got %d", len(upserted))
+	}
+}
+
+func TestServicesUpsertEmptyArray(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"services":[]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/services", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServicesUpsertValidationError(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	// Missing auth type.
+	body := `{"services":[{"host":"api.stripe.com","auth":{}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/services", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServicesUpsertUnauthenticated(t *testing.T) {
+	srv := newTestServer()
+
+	body := `{"services":[{"host":"api.stripe.com","auth":{"type":"bearer","token":"KEY"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/services", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- Services Remove Tests ---
+
+func TestServiceRemoveSuccess(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		ID: "bc-1", VaultID: "root-ns-id",
+		ServicesJSON: `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}},{"host":"api.github.com","auth":{"type":"bearer","token":"GITHUB_TOKEN"}}]`,
+	}
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/vaults/default/services/api.stripe.com", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["removed"] != "api.stripe.com" {
+		t.Fatalf("expected removed=api.stripe.com, got %v", resp["removed"])
+	}
+	if resp["services_count"].(float64) != 1 {
+		t.Fatalf("expected services_count=1, got %v", resp["services_count"])
+	}
+
+	// Verify the remaining service.
+	bc := ms.brokerConfigs["root-ns-id"]
+	if strings.Contains(bc.ServicesJSON, "api.stripe.com") {
+		t.Fatalf("expected api.stripe.com to be removed, got %s", bc.ServicesJSON)
+	}
+	if !strings.Contains(bc.ServicesJSON, "api.github.com") {
+		t.Fatalf("expected api.github.com to remain, got %s", bc.ServicesJSON)
+	}
+}
+
+func TestServiceRemoveNotFound(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		ID: "bc-1", VaultID: "root-ns-id",
+		ServicesJSON: `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`,
+	}
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/vaults/default/services/api.nonexistent.com", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServiceRemoveNoConfig(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/vaults/default/services/api.stripe.com", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for vault with no services, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServiceRemoveUnauthenticated(t *testing.T) {
+	srv := newTestServer()
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/vaults/default/services/api.stripe.com", nil)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}

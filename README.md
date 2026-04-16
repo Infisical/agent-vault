@@ -69,17 +69,14 @@ agent-vault server -d
 # Add a credential
 agent-vault vault credential set GITHUB_TOKEN=ghp_xxx
 
-# Configure a service proxy rule
-agent-vault vault service set -f - <<EOF
-services:
-  - host: api.github.com
-    auth:
-      type: bearer
-      token: GITHUB_TOKEN
-EOF
+# Add a service proxy rule
+agent-vault vault service add \
+  --host api.github.com \
+  --auth-type bearer \
+  --token-key GITHUB_TOKEN
 ```
 
-Any command that needs authentication will walk you through setup automatically. Just run it and follow the prompts. You can also run `agent-vault vault service set` interactively or browse templates with `agent-vault catalog`.
+Any command that needs authentication will walk you through setup automatically. Just run it and follow the prompts. You can also run `agent-vault vault service set` interactively, load from YAML with `agent-vault vault service set -f services.yaml`, or browse templates with `agent-vault catalog`.
 
 The server includes a web UI at `http://localhost:14321` for managing services, credentials, approving proposals, and inviting users and agents.
 

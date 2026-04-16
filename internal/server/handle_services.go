@@ -95,6 +95,149 @@ func (s *Server) handleServicesCredentialUsage(w http.ResponseWriter, r *http.Re
 	jsonOK(w, map[string]interface{}{"services": refs})
 }
 
+func (s *Server) handleServicesUpsert(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := r.PathValue("name")
+
+	ns, err := s.store.GetVault(ctx, name)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
+		return
+	}
+
+	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
+		return
+	}
+
+	var req struct {
+		Services []broker.Service `json:"services"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if len(req.Services) == 0 {
+		jsonError(w, http.StatusBadRequest, "At least one service is required")
+		return
+	}
+
+	// Validate incoming services.
+	incoming := broker.Config{Vault: name, Services: req.Services}
+	if err := broker.Validate(&incoming); err != nil {
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid services: %v", err))
+		return
+	}
+
+	// Load existing services.
+	var existing []broker.Service
+	bc, err := s.store.GetBrokerConfig(ctx, ns.ID)
+	if err == nil && bc != nil {
+		_ = json.Unmarshal([]byte(bc.ServicesJSON), &existing)
+	}
+
+	// Build index of existing services by host for upsert.
+	byHost := make(map[string]int, len(existing))
+	for i, svc := range existing {
+		byHost[svc.Host] = i
+	}
+
+	var upserted []string
+	for _, svc := range req.Services {
+		if idx, ok := byHost[svc.Host]; ok {
+			existing[idx] = svc
+		} else {
+			byHost[svc.Host] = len(existing)
+			existing = append(existing, svc)
+		}
+		upserted = append(upserted, svc.Host)
+	}
+
+	servicesJSON, err := json.Marshal(existing)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to marshal services")
+		return
+	}
+
+	if _, err := s.store.SetBrokerConfig(ctx, ns.ID, string(servicesJSON)); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to set services")
+		return
+	}
+
+	jsonOK(w, map[string]interface{}{
+		"vault":          name,
+		"upserted":       upserted,
+		"services_count": len(existing),
+	})
+}
+
+func (s *Server) handleServiceRemove(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := r.PathValue("name")
+
+	ns, err := s.store.GetVault(ctx, name)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
+		return
+	}
+
+	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
+		return
+	}
+
+	host := r.PathValue("host")
+	if host == "" {
+		jsonError(w, http.StatusBadRequest, "Host is required")
+		return
+	}
+
+	// Load existing services.
+	bc, err := s.store.GetBrokerConfig(ctx, ns.ID)
+	if err != nil || bc == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Service not found for host %q", host))
+		return
+	}
+
+	var services []broker.Service
+	if err := json.Unmarshal([]byte(bc.ServicesJSON), &services); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to parse services")
+		return
+	}
+
+	// Filter out the service with the matching host.
+	found := false
+	filtered := make([]broker.Service, 0, len(services))
+	for _, svc := range services {
+		if svc.Host == host {
+			found = true
+		} else {
+			filtered = append(filtered, svc)
+		}
+	}
+
+	if !found {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Service not found for host %q", host))
+		return
+	}
+
+	servicesJSON, err := json.Marshal(filtered)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to marshal services")
+		return
+	}
+
+	if _, err := s.store.SetBrokerConfig(ctx, ns.ID, string(servicesJSON)); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to update services")
+		return
+	}
+
+	jsonOK(w, map[string]interface{}{
+		"vault":          name,
+		"removed":        host,
+		"services_count": len(filtered),
+	})
+}
+
 func (s *Server) handleServicesSet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")

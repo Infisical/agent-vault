@@ -139,6 +139,70 @@ const { deleted } = await vault.credentials.delete(["STRIPE_KEY", "GITHUB_TOKEN"
 // deleted: ["STRIPE_KEY", "GITHUB_TOKEN"]
 ```
 
+## Manage services
+
+Manage vault services (proxy rules) that define how Agent Vault authenticates to target hosts. Only available via `AgentVault.vault(name)` (requires vault name).
+
+### List services
+
+```typescript
+const vault = av.vault("my-project");
+const { services } = await vault.services.list();
+// services: [{ host: "api.stripe.com", auth: { type: "bearer", token: "STRIPE_KEY" } }, ...]
+```
+
+### Add or update services (upsert by host)
+
+If a service with the same host already exists, it is replaced. Requires admin role:
+
+```typescript
+const { upserted, servicesCount } = await vault.services.set([
+  {
+    host: "api.stripe.com",
+    description: "Stripe API",
+    auth: { type: "bearer", token: "STRIPE_KEY" },
+  },
+]);
+// upserted: ["api.stripe.com"], servicesCount: 5
+```
+
+### Remove a service by host
+
+Requires admin role:
+
+```typescript
+const { removed, servicesCount } = await vault.services.remove("api.stripe.com");
+// removed: "api.stripe.com", servicesCount: 4
+```
+
+### Replace all services
+
+Requires admin role. This is destructive — removes all existing services and sets the provided list:
+
+```typescript
+await vault.services.replaceAll([
+  { host: "api.stripe.com", auth: { type: "bearer", token: "STRIPE_KEY" } },
+  { host: "api.github.com", auth: { type: "bearer", token: "GITHUB_TOKEN" } },
+]);
+```
+
+### Clear all services
+
+Requires admin role:
+
+```typescript
+await vault.services.clear();
+```
+
+### Check credential usage
+
+Find which services reference a given credential key:
+
+```typescript
+const { services } = await vault.services.credentialUsage("STRIPE_KEY");
+// services: [{ host: "api.stripe.com", description: "Stripe API" }]
+```
+
 ## Releasing
 
 Releases are automated via GitHub Actions using [npm OIDC trusted publishing](https://docs.npmjs.com/generating-provenance-statements). To publish a new version:

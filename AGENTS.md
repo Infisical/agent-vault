@@ -44,6 +44,17 @@ Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
 
 Agent Vault strips your auth header, attaches real credentials, and forwards over HTTPS.
 
+## Manage services directly (admin only)
+
+If you have vault admin role, you can add or remove services without proposals:
+
+```
+POST {AGENT_VAULT_ADDR}/v1/vaults/{vault_name}/services    -- upsert services (body: {"services": [...]})
+DELETE {AGENT_VAULT_ADDR}/v1/vaults/{vault_name}/services/{host}  -- remove a service by host
+```
+
+Use these when you already have credentials stored. Use proposals when the human needs to provide new credentials.
+
 ## Request access to new services via proposals
 
 When you get a `403` for a host not in `/discover`, create a proposal to request access. The 403 response includes a `proposal_hint` with the denied host.

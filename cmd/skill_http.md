@@ -72,6 +72,37 @@ Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
 
 Agent Vault strips your auth header, injects the real credentials, and forwards the request over HTTPS.
 
+## Managing Services Directly
+
+If you have vault admin role, you can add or remove services via HTTP without proposals:
+
+**Upsert services (add or replace by host):**
+
+```
+POST {AGENT_VAULT_ADDR}/v1/vaults/{vault_name}/services
+Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Content-Type: application/json
+
+{
+  "services": [
+    {"host": "api.stripe.com", "description": "Stripe API", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}
+  ]
+}
+```
+
+Returns: `{"vault": "...", "upserted": ["api.stripe.com"], "services_count": 5}`
+
+**Remove a service by host:**
+
+```
+DELETE {AGENT_VAULT_ADDR}/v1/vaults/{vault_name}/services/{host}
+Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+```
+
+Returns: `{"vault": "...", "removed": "api.stripe.com", "services_count": 4}` (404 if host not found)
+
+Use these endpoints when you already have credentials stored and just need to configure the proxy rule. Use proposals when the human needs to provide new credentials.
+
 ## Proposals -- Requesting and Storing Credentials
 
 Proposals are the primary way to exchange credentials with a human operator. Use them whenever you:

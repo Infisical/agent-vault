@@ -43,6 +43,11 @@ describe("VaultClient", () => {
       expect(vault.sessions).toBeUndefined();
     });
 
+    it("has undefined services for standalone construction", () => {
+      const vault = new VaultClient({ token: "scoped-token" });
+      expect(vault.services).toBeUndefined();
+    });
+
     it("has credentials resource for standalone construction", () => {
       const vault = new VaultClient({ token: "scoped-token" });
       expect(vault.credentials).toBeDefined();
@@ -60,6 +65,12 @@ describe("VaultClient", () => {
       const av = new AgentVault({ token: "agent-token" });
       const vault = av.vault("production");
       expect(vault.sessions).toBeDefined();
+    });
+
+    it("has services resource wired up", () => {
+      const av = new AgentVault({ token: "agent-token" });
+      const vault = av.vault("production");
+      expect(vault.services).toBeDefined();
     });
 
     it("has credentials resource wired up", () => {

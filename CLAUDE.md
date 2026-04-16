@@ -86,10 +86,13 @@ Agent Vault requires two things before it becomes operational: a **master passwo
   - `agent-vault owner vault list` -- list all vaults
   - `agent-vault owner vault join <name>` -- join a vault as admin (for recovering orphaned vaults)
   - `agent-vault owner vault delete <name>` -- delete a vault
-- `agent-vault vault service [list|set|clear]` -- manage services per vault
+- `agent-vault vault service [list|set|add|remove|clear]` -- manage services per vault
   - `agent-vault vault service list` -- list configured services as YAML
   - `agent-vault vault service set` -- interactive service builder (prompts for services, auth config, credentials; requires TTY)
   - `agent-vault vault service set -f <file>` -- replace services from YAML file
+  - `agent-vault vault service add --host <host> --auth-type <type> [--token-key|--username-key|--api-key-key] [--description "..."]` -- add or update a single service (upsert by host)
+  - `agent-vault vault service add -f <file>` -- upsert services from YAML file (non-destructive, unlike `set -f` which replaces all)
+  - `agent-vault vault service remove <host>` -- remove a specific service by host (prompts for confirmation; use `--yes` to skip)
   - `agent-vault vault service clear` -- remove all services (prompts for confirmation; use `--yes` to skip)
 - `agent-vault vault credential [list|get|set|delete]` -- manage credentials (alias: `creds`)
   - `agent-vault vault credential list [--reveal]` -- list credential keys; with `--reveal`, shows decrypted values in a KEY+VALUE table (requires member+ role)
