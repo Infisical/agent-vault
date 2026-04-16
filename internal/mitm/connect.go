@@ -59,7 +59,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	tlsConn := tls.Server(clientConn, tlsConf)
 	_ = tlsConn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := tlsConn.Handshake(); err != nil {
-		log.Printf("mitm: TLS handshake failed for %s: %v", target, err)
+		log.Printf("mitm: TLS handshake failed for %s: %v", host, err) // #nosec G706 -- host passes isValidHost, which rejects control chars and path separators
 		_ = tlsConn.Close()
 		return
 	}
