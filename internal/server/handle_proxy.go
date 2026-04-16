@@ -129,6 +129,9 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	event.Host = targetHost
+	// Log the upstream path, not the /proxy/{host}/... ingress path, so this
+	// field is directly comparable to the MITM ingress log line.
+	event.Path = "/" + remainingPath
 
 	// Validate targetHost is a safe hostname (no @, ?, #, spaces, control chars).
 	// This prevents userinfo injection (e.g. host@evil.com) in the outbound URL.

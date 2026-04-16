@@ -39,7 +39,7 @@ func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope
 		outReq, err := http.NewRequestWithContext(r.Context(), r.Method, outURL.String(), r.Body)
 		if err != nil {
 			http.Error(w, "bad gateway", http.StatusBadGateway)
-			emit(http.StatusBadGateway, "bad_request")
+			emit(http.StatusBadGateway, "internal")
 			return
 		}
 		outReq.Host = host
