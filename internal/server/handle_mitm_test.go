@@ -80,6 +80,55 @@ func TestHandleMITMCA(t *testing.T) {
 		}
 	})
 
+	// Guards the contract relied on by `vault run`: the listening port must
+	// be advertised so clients can build HTTPS_PROXY pointing at the *real*
+	// port (not the compile-time default) when --mitm-port is non-standard.
+	t.Run("mitm_port_header", func(t *testing.T) {
+		srv := newTestServer()
+
+		masterKey := make([]byte, 32)
+		if _, err := rand.Read(masterKey); err != nil {
+			t.Fatalf("rand: %v", err)
+		}
+		caProv, err := ca.New(masterKey, ca.Options{Dir: t.TempDir()})
+		if err != nil {
+			t.Fatalf("ca.New: %v", err)
+		}
+		// Bind to an explicit non-default port so we can assert the
+		// header reflects the configured Addr rather than any constant.
+		p := mitm.New("127.0.0.1:19322", caProv, srv.SessionResolver(), srv.CredentialProvider(), srv.Logger())
+		srv.AttachMITM(p)
+
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = p.Serve(l)
+		}()
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = p.Shutdown(ctx)
+			wg.Wait()
+		})
+		waitForListening(t, p)
+
+		req := httptest.NewRequest(http.MethodGet, "/v1/mitm/ca.pem", nil)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		if got := rec.Header().Get("X-MITM-Port"); got != "19322" {
+			t.Errorf("X-MITM-Port = %q, want 19322", got)
+		}
+	})
+
 	t.Run("mitm_disabled", func(t *testing.T) {
 		srv := newTestServer()
 
