@@ -60,7 +60,7 @@ type Server struct {
 	oauthProviders map[string]oauth.Provider
 	skillCLI       []byte      // embedded CLI skill content (served at GET /v1/skills/cli)
 	skillHTTP      []byte      // embedded HTTP skill content (served at GET /v1/skills/http)
-	mitm           *mitm.Proxy // optional transparent MITM proxy, nil when --mitm-port unset
+	mitm           *mitm.Proxy // transparent MITM proxy; nil only when --mitm-port 0
 }
 
 // AttachMITM registers an optional transparent MITM proxy whose lifecycle
@@ -690,7 +690,7 @@ func (s *Server) Start() error {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 1)
 	go func() {
 		fmt.Printf("Agent Vault server listening on %s\n", s.baseURL)
 		if !s.initialized {
@@ -705,7 +705,9 @@ func (s *Server) Start() error {
 		go func() {
 			fmt.Printf("Agent Vault transparent proxy listening on %s\n", s.mitm.Addr())
 			if err := s.mitm.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				errCh <- fmt.Errorf("mitm proxy: %w", err)
+				// MITM is best-effort (e.g. default-on port conflict shouldn't
+				// kill the core HTTP server). Log and let the goroutine exit.
+				fmt.Fprintf(os.Stderr, "warning: transparent proxy unavailable: %v\n", err)
 			}
 		}()
 	}

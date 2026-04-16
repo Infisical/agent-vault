@@ -372,10 +372,7 @@ func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bo
 		return fmt.Errorf("opening log file: %w", err)
 	}
 
-	childArgs := []string{"server", "--port", strconv.Itoa(port), "--host", host}
-	if mitmPort > 0 {
-		childArgs = append(childArgs, "--mitm-port", strconv.Itoa(mitmPort))
-	}
+	childArgs := []string{"server", "--port", strconv.Itoa(port), "--host", host, "--mitm-port", strconv.Itoa(mitmPort)}
 	child := exec.Command(exe, childArgs...)
 	child.Stdin = pr
 	child.Stdout = logFile
@@ -507,7 +504,7 @@ func init() {
 	serverCmd.Flags().String("host", DefaultHost, "host to bind to")
 	serverCmd.Flags().BoolP("detach", "d", false, "run server in background after unlocking")
 	serverCmd.Flags().Bool("password-stdin", false, "read master password from stdin (for non-interactive use)")
-	serverCmd.Flags().Int("mitm-port", 0, "enable transparent MITM proxy on this port (0 = disabled)")
+	serverCmd.Flags().Int("mitm-port", DefaultMITMPort, "port for the transparent MITM proxy (0 = disabled)")
 	serverCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(serverCmd)
 }

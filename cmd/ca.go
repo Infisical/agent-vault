@@ -23,8 +23,9 @@ var caFetchCmd = &cobra.Command{
 proxy. Install the returned PEM into your client trust store so HTTPS
 traffic routed through the proxy validates cleanly.
 
-The server must be running with --mitm-port set. The endpoint is public —
-no authentication required.
+The transparent proxy is enabled by default. The endpoint is public —
+no authentication required. If the server was started with --mitm-port 0,
+this command returns an error.
 
 Examples:
   agent-vault ca fetch > ca.pem

@@ -72,16 +72,17 @@ Any CLI command that needs authentication will walk you through registration and
 
 Subsequent users can self-register via `agent-vault auth register`, the web registration page, or be [invited to a vault](/learn/vaults#invite-users-to-a-vault) by a vault admin.
 
-## Transparent proxy (optional)
+## Transparent proxy
 
 <Warning>
-  Experimental. HTTP/1.1 only, and credential injection is not yet wired into this path — the MITM proxy currently proves the TLS plumbing without adding auth headers on the way through. Use the regular `/proxy` endpoint for brokered requests.
+  HTTP/1.1 only today. Clients that negotiate HTTP/2 end-to-end will not proxy through this path — use the explicit `/proxy` endpoint instead.
 </Warning>
 
-Agent Vault can expose a second ingress as a transparent `HTTPS_PROXY`. This lets clients that respect the proxy environment variable (but can't be pointed at a custom base URL) route through Agent Vault. Start the server with `--mitm-port`:
+Agent Vault exposes a second ingress as a transparent `HTTPS_PROXY`. This lets clients that respect the proxy environment variable (but can't be pointed at a custom base URL) route through Agent Vault. It listens on port `14322` by default; pass `--mitm-port 0` to disable, or a different port to change it:
 
 ```bash
-agent-vault server --mitm-port 14322
+agent-vault server               # transparent proxy on 14322 (default)
+agent-vault server --mitm-port 0 # disable
 ```
 
 A software-backed root CA is created on first launch under `~/.agent-vault/ca/` (private key encrypted with the master key). Clients must trust this root before the proxied TLS handshake will succeed.

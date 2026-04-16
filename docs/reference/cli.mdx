@@ -21,7 +21,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--port` | `14321` | Port to listen on |
     | `-d`, `--detach` | `false` | Run in background (detached) mode |
     | `--password-stdin` | `false` | Read master password from stdin |
-    | `--mitm-port` | `0` | Port for the transparent MITM proxy (experimental). When `> 0`, enables the proxy and initializes the root CA. Clients fetch the root cert with [`agent-vault ca fetch`](#ca). |
+    | `--mitm-port` | `14322` | Port for the transparent MITM proxy. Enabled by default; set to `0` to disable. On first launch the root CA is created under `~/.agent-vault/ca/` — clients fetch it with [`agent-vault ca fetch`](#ca). Bind failures are non-fatal. |
 
     **Environment variables:**
 
@@ -60,7 +60,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     Fetch the root CA certificate used by Agent Vault's transparent MITM proxy, in PEM form. Install the output into your client trust store so HTTPS traffic routed through the proxy validates cleanly.
 
-    The server must be running with `--mitm-port` set. The endpoint is public — no authentication required. Returns an error if MITM is not enabled on the target server.
+    The transparent proxy is enabled by default, so this command works out of the box. The endpoint is public — no authentication required. Returns an error only if the server was started with `--mitm-port 0`.
 
     | Flag | Default | Description |
     |------|---------|-------------|
