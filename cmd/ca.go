@@ -56,7 +56,7 @@ Examples:
 		}
 
 		if output != "" {
-			if err := os.WriteFile(output, body, 0644); err != nil {
+			if err := os.WriteFile(output, body, 0o600); err != nil {
 				return fmt.Errorf("writing %s: %w", output, err)
 			}
 			fmt.Fprintf(cmd.ErrOrStderr(), "%s Wrote CA cert to %s\n", successText("✓"), output)
