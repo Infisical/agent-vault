@@ -2,7 +2,7 @@
 
 The official TypeScript SDK for [Agent Vault](https://github.com/Infisical/agent-vault), an open-source credential brokerage layer for AI agents. Agent Vault sits between development agents and target services, proxying requests and injecting credentials so agents never see raw keys or tokens.
 
-The SDK provides a programmatic interface for managing vaults, minting scoped session tokens, and interacting with Agent Vault from TypeScript applications. For more information, see the [documentation](https://agent-vault.infisical.com).
+The SDK provides a programmatic interface for proxying HTTP requests through Agent Vault, managing vaults, minting scoped session tokens, and interacting with Agent Vault from TypeScript applications. For more information, see the [documentation](https://agent-vault.infisical.com).
 
 ## Installation
 
@@ -138,6 +138,102 @@ Requires member+ role:
 const { deleted } = await vault.credentials.delete(["STRIPE_KEY", "GITHUB_TOKEN"]);
 // deleted: ["STRIPE_KEY", "GITHUB_TOKEN"]
 ```
+
+## Proxy requests
+
+Send HTTP requests through the Agent Vault proxy. The broker matches the target host against configured services, injects credentials, and forwards the request to `https://{host}/{path}`. Your agent never sees raw API keys or tokens.
+
+### Basic usage with a vault-scoped token
+
+```typescript
+import { VaultClient } from "@infisical/agent-vault-sdk";
+
+const vault = new VaultClient(); // auto-detects from env vars
+
+// GET request through the proxy
+const res = await vault.proxy.get("api.stripe.com", "/v1/charges", {
+  query: { limit: 10 },
+});
+
+if (res.ok) {
+  const data = await res.json<{ data: { id: string }[] }>();
+  console.log(data.data);
+}
+```
+
+### Instance-level token with vault selection
+
+When using an instance-level agent token, the SDK automatically injects the `X-Vault` header:
+
+```typescript
+import { AgentVault } from "@infisical/agent-vault-sdk";
+
+const av = new AgentVault({ token: "av_agt_..." });
+
+const res = await av.vault("my-project").proxy.post(
+  "api.github.com",
+  "/repos/owner/repo/issues",
+  { body: { title: "Bug report", body: "Repro steps..." } },
+);
+```
+
+### Available methods
+
+```typescript
+vault.proxy.get(host, path?, options?)
+vault.proxy.post(host, path?, options?)
+vault.proxy.put(host, path?, options?)
+vault.proxy.patch(host, path?, options?)
+vault.proxy.delete(host, path?, options?)
+vault.proxy.request(method, host, options?)  // arbitrary HTTP method
+```
+
+### Response
+
+`ProxyResponse` wraps the upstream service's response without auto-parsing. Call `.json()`, `.text()`, or `.arrayBuffer()` to consume the body:
+
+```typescript
+interface ProxyResponse {
+  status: number;
+  statusText: string;
+  ok: boolean;        // true if status is 200-299
+  headers: Headers;
+  json<T>(): Promise<T>;
+  text(): Promise<string>;
+  arrayBuffer(): Promise<ArrayBuffer>;
+  body: ReadableStream<Uint8Array> | null;
+}
+```
+
+### Error handling
+
+The SDK distinguishes between broker errors (thrown as exceptions) and upstream errors (returned as responses):
+
+- **Upstream non-2xx** (e.g. Stripe returns 404): resolves normally with `res.ok === false`. Handle it yourself.
+- **`ProxyForbiddenError`**: thrown when no broker service matches the target host. Includes a `proposalHint` with the information needed to create a proposal.
+- **`ApiError`**: thrown for other broker-level failures (missing credentials, auth errors, bad request).
+
+```typescript
+import { ProxyForbiddenError } from "@infisical/agent-vault-sdk";
+
+try {
+  await vault.proxy.get("api.unknown-service.com", "/");
+} catch (err) {
+  if (err instanceof ProxyForbiddenError) {
+    console.log(err.proposalHint.host);               // "api.unknown-service.com"
+    console.log(err.proposalHint.endpoint);            // "POST /v1/proposals"
+    console.log(err.proposalHint.supportedAuthTypes);  // ["bearer", "basic", ...]
+  }
+}
+```
+
+### Important notes
+
+- **Authorization header**: The broker strips any `Authorization` header you set and replaces it with credentials from the vault's service configuration. Do not pass upstream auth tokens in headers — they will be ignored.
+- **Header allowlist**: Only certain headers are forwarded to the upstream service: `Content-Type`, `Accept`, `User-Agent`, `Idempotency-Key`, `X-Request-Id`, and a few others. Other headers are dropped.
+- **Body encoding**: Plain objects and arrays are automatically JSON-stringified with `Content-Type: application/json`. Pass strings or buffers for other content types.
+- **Timeout**: Defaults to 30 seconds. Override per-request with `timeout` in options. Set `timeout: 0` to disable.
+- **Underlying endpoint**: The proxy is served at `/proxy/{host}/{path}` on the Agent Vault server.
 
 ## Manage services
 

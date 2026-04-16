@@ -1,5 +1,6 @@
 import { HttpClient } from "./http.js";
 import { CredentialsResource } from "./resources/credentials.js";
+import { ProxyResource } from "./resources/proxy.js";
 import { ServicesResource } from "./resources/services.js";
 import { SessionsResource } from "./resources/sessions.js";
 import type { VaultClientConfig } from "./types.js";
@@ -56,6 +57,13 @@ export class VaultClient {
    */
   readonly credentials: CredentialsResource;
 
+  /**
+   * Proxy resource for sending HTTP requests through the Agent Vault proxy.
+   * The broker matches the target host against configured services, injects
+   * credentials, and forwards the request to the upstream service.
+   */
+  readonly proxy: ProxyResource;
+
   constructor(config?: VaultClientConfig | InternalArgs) {
     if (config && "marker" in config && config.marker === INTERNAL) {
       this._httpClient = config.httpClient;
@@ -63,12 +71,14 @@ export class VaultClient {
       this.sessions = new SessionsResource(config.httpClient, config.vaultName);
       this.services = new ServicesResource(config.httpClient, config.vaultName);
       this.credentials = new CredentialsResource(config.httpClient, config.vaultName);
+      this.proxy = new ProxyResource(config.httpClient);
     } else {
       this._httpClient = HttpClient.fromConfig(config as VaultClientConfig | undefined);
       this.name = undefined;
       this.sessions = undefined;
       this.services = undefined;
       this.credentials = new CredentialsResource(this._httpClient, undefined);
+      this.proxy = new ProxyResource(this._httpClient);
     }
   }
 

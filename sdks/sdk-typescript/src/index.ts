@@ -3,7 +3,8 @@ export { AgentVault } from "./client.js";
 export { VaultClient } from "./vault.js";
 
 // Errors
-export { AgentVaultError, ApiError } from "./errors.js";
+export { AgentVaultError, ApiError, ProxyForbiddenError } from "./errors.js";
+export type { ProposalHint } from "./errors.js";
 
 // Config types
 export type { AgentVaultConfig, VaultClientConfig, ClientConfig } from "./types.js";
@@ -22,6 +23,12 @@ export type {
   SetCredentialsResult,
   DeleteCredentialsResult,
 } from "./resources/credentials.js";
+
+// Proxy resource types
+export type {
+  ProxyRequestOptions,
+  ProxyResponse,
+} from "./resources/proxy.js";
 
 // Service resource types
 export type {

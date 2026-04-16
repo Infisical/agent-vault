@@ -1,13 +1,24 @@
 import { AgentVaultError, ApiError } from "./errors.js";
 import type { ClientConfig } from "./types.js";
 
-export type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+export type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD";
 
 export interface RequestOptions {
   body?: unknown;
   headers?: Record<string, string>;
-  query?: Record<string, string>;
+  query?: Record<string, string | number | boolean>;
   signal?: AbortSignal;
+}
+
+/** Body types accepted by `raw()`. Compatible with Node and browser runtimes. */
+export type RawRequestBody = string | ArrayBuffer | Buffer | Uint8Array | ReadableStream;
+
+export interface RawRequestOptions {
+  headers?: Record<string, string>;
+  query?: Record<string, string | number | boolean>;
+  body?: RawRequestBody | null;
+  signal?: AbortSignal;
+  timeout?: number;
 }
 
 export interface HttpClientConfig {
@@ -84,18 +95,13 @@ export class HttpClient {
     });
   }
 
-  async request<T>(
-    method: HttpMethod,
-    path: string,
-    options?: RequestOptions,
-  ): Promise<T> {
+  private buildUrl(path: string, query?: Record<string, string | number | boolean>): string {
     let url = `${this.baseUrl}${path}`;
-
-    if (options?.query) {
+    if (query) {
       const params = new URLSearchParams();
-      for (const [key, value] of Object.entries(options.query)) {
+      for (const [key, value] of Object.entries(query)) {
         if (value !== undefined) {
-          params.set(key, value);
+          params.set(key, String(value));
         }
       }
       const qs = params.toString();
@@ -103,22 +109,37 @@ export class HttpClient {
         url += `?${qs}`;
       }
     }
+    return url;
+  }
 
-    const hasBody = options?.body !== undefined;
-    const headers: Record<string, string> = {
+  private buildHeaders(
+    callerHeaders?: Record<string, string>,
+  ): Record<string, string> {
+    // Authorization and User-Agent are protected — callers cannot override them.
+    return {
+      ...this.defaultHeaders,
+      ...callerHeaders,
       "User-Agent": USER_AGENT,
       Authorization: `Bearer ${this.token}`,
-      ...(hasBody ? { "Content-Type": "application/json" } : {}),
-      ...this.defaultHeaders,
-      ...options?.headers,
     };
+  }
 
+  private async doFetch(opts: {
+    method: string;
+    url: string;
+    headers: Record<string, string>;
+    body?: RawRequestBody | string | null;
+    signal?: AbortSignal;
+    timeoutMs: number;
+    label: string;
+  }): Promise<Response> {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+    const useTimeout = opts.timeoutMs > 0 && isFinite(opts.timeoutMs);
+    const timeoutId = useTimeout
+      ? setTimeout(() => controller.abort(), opts.timeoutMs)
+      : undefined;
 
-    // If the caller provided a signal, forward its abort to our controller
-    // so both timeout and caller cancellation go through one AbortController.
-    const callerSignal = options?.signal;
+    const callerSignal = opts.signal;
     const onCallerAbort = () => controller.abort();
     if (callerSignal) {
       if (callerSignal.aborted) {
@@ -128,33 +149,80 @@ export class HttpClient {
       }
     }
 
-    let response: Response;
     try {
-      response = await this.fetchFn(url, {
-        method,
-        headers,
-        body: hasBody ? JSON.stringify(options.body) : undefined,
+      return await this.fetchFn(opts.url, {
+        method: opts.method,
+        headers: opts.headers,
+        body: opts.body,
         signal: controller.signal,
       });
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         throw new AgentVaultError(
-          `Request timed out after ${this.timeout}ms: ${method} ${path}`,
+          `Request timed out after ${opts.timeoutMs}ms: ${opts.label}`,
         );
       }
       throw new AgentVaultError(
         `Network error: ${err instanceof Error ? err.message : String(err)}`,
       );
     } finally {
-      clearTimeout(timeoutId);
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
       callerSignal?.removeEventListener("abort", onCallerAbort);
     }
+  }
+
+  async request<T>(
+    method: HttpMethod,
+    path: string,
+    options?: RequestOptions,
+  ): Promise<T> {
+    const url = this.buildUrl(path, options?.query);
+    const hasBody = options?.body !== undefined;
+    const callerHeaders = hasBody
+      ? { ...options?.headers, "Content-Type": "application/json" }
+      : options?.headers;
+    const headers = this.buildHeaders(callerHeaders);
+
+    const response = await this.doFetch({
+      method,
+      url,
+      headers,
+      body: hasBody ? JSON.stringify(options.body) : undefined,
+      signal: options?.signal,
+      timeoutMs: this.timeout,
+      label: `${method} ${path}`,
+    });
 
     if (!response.ok) {
       throw await ApiError.fromResponse(response);
     }
 
     return (await response.json()) as T;
+  }
+
+  /**
+   * Perform an HTTP request and return the raw Response without parsing or
+   * throwing on non-2xx. Used by ProxyResource where the response body format
+   * is determined by the upstream service, not Agent Vault.
+   */
+  async raw(
+    method: string,
+    path: string,
+    options?: RawRequestOptions,
+  ): Promise<Response> {
+    const url = this.buildUrl(path, options?.query);
+    const headers = this.buildHeaders(options?.headers);
+    const timeoutMs = options?.timeout ?? this.timeout;
+
+    return this.doFetch({
+      method,
+      url,
+      headers,
+      body: options?.body,
+      signal: options?.signal,
+      timeoutMs,
+      label: `${method} ${path}`,
+    });
   }
 
   async get<T>(path: string, options?: Omit<RequestOptions, "body">): Promise<T> {

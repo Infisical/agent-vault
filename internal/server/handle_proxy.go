@@ -30,6 +30,7 @@ func isSecureRequest(r *http.Request, baseURL string) bool {
 // proxyForbiddenWithHint writes a 403 with a proposal_hint so agents can
 // programmatically construct a proposal from a denied proxy request.
 func proxyForbiddenWithHint(w http.ResponseWriter, targetHost, nsName string) {
+	w.Header().Set(proxyErrorHeader, "true")
 	jsonStatus(w, http.StatusForbidden, map[string]interface{}{
 		"error":   "forbidden",
 		"message": fmt.Sprintf("No broker service matching host %q in vault %q", targetHost, nsName),
