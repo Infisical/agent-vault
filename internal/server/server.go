@@ -611,6 +611,11 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/skills/cli", s.requireInitialized(s.handleSkillCLI))
 	mux.HandleFunc("GET /v1/skills/http", s.requireInitialized(s.handleSkillHTTP))
 
+	// Public: transparent-proxy root CA. Safe to expose; clients need it to
+	// trust the minted leaves. Not wrapped in requireInitialized — the CA
+	// lifecycle is tied to --mitm-port, not owner registration.
+	mux.HandleFunc("GET /v1/mitm/ca.pem", s.handleMITMCA)
+
 	// Instance-level user invites
 	mux.HandleFunc("POST /v1/users/invites", s.requireInitialized(s.requireAuth(limitBody(s.handleUserInviteCreate))))
 	mux.HandleFunc("GET /v1/users/invites", s.requireInitialized(s.requireAuth(s.handleUserInviteList)))
