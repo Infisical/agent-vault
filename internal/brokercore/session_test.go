@@ -214,7 +214,7 @@ func TestResolveForProxy_ExpiredSession(t *testing.T) {
 	f.putVault("v1", "default")
 	f.sessions["tok"] = &store.Session{UserID: "u1", VaultID: "v1", VaultRole: "admin", ExpiresAt: &past}
 
-	r := &StoreSessionResolver{Store: f, Now: func() time.Time { return time.Now() }}
+	r := &StoreSessionResolver{Store: f, Now: time.Now}
 	_, err := r.ResolveForProxy(context.Background(), "tok", "")
 	if !errors.Is(err, ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)

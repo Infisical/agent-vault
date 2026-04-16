@@ -212,6 +212,7 @@ func TestMITMMissingProxyAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusProxyAuthRequired {
 		t.Fatalf("status = %d, want 407", resp.StatusCode)
 	}
@@ -239,6 +240,7 @@ func TestMITMInvalidSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusProxyAuthRequired {
 		t.Fatalf("status = %d, want 407", resp.StatusCode)
 	}
@@ -263,6 +265,7 @@ func TestMITMAmbiguousAgentVault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
@@ -291,6 +294,7 @@ func TestMITMVaultHintMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", resp.StatusCode)
 	}

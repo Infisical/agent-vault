@@ -7,8 +7,6 @@ import (
 	"github.com/Infisical/agent-vault/internal/brokercore"
 )
 
-const proxyErrorHeader = brokercore.ProxyErrorHeader
-
 // jsonOK writes a 200 JSON response.
 func jsonOK(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")
