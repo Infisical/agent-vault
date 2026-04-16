@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/Infisical/agent-vault/internal/crypto"
+	"github.com/Infisical/agent-vault/internal/mitm"
 	"github.com/Infisical/agent-vault/internal/notify"
 	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/pidfile"
@@ -56,9 +57,15 @@ type Server struct {
 	initialized    bool   // true when at least one owner account exists
 	baseURL        string // externally-reachable base URL (e.g. "https://sb.example.com")
 	oauthProviders map[string]oauth.Provider
-	skillCLI       []byte // embedded CLI skill content (served at GET /v1/skills/cli)
-	skillHTTP      []byte // embedded HTTP skill content (served at GET /v1/skills/http)
+	skillCLI       []byte      // embedded CLI skill content (served at GET /v1/skills/cli)
+	skillHTTP      []byte      // embedded HTTP skill content (served at GET /v1/skills/http)
+	mitm           *mitm.Proxy // optional transparent MITM proxy, nil when --mitm-port unset
 }
+
+// AttachMITM registers an optional transparent MITM proxy whose lifecycle
+// is bound to this Server: Start launches it, and SIGINT/SIGTERM/Shutdown
+// stops it alongside the HTTP server.
+func (s *Server) AttachMITM(p *mitm.Proxy) { s.mitm = p }
 
 // Store is the persistence interface used by the server.
 type Store interface {
@@ -665,7 +672,7 @@ func (s *Server) Start() error {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		fmt.Printf("Agent Vault server listening on %s\n", s.baseURL)
 		if !s.initialized {
@@ -674,8 +681,16 @@ func (s *Server) Start() error {
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
-		close(errCh)
 	}()
+
+	if s.mitm != nil {
+		go func() {
+			fmt.Printf("Agent Vault transparent proxy listening on %s\n", s.mitm.Addr())
+			if err := s.mitm.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				errCh <- fmt.Errorf("mitm proxy: %w", err)
+			}
+		}()
+	}
 
 	if err := pidfile.Write(os.Getpid()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write PID file: %v\n", err)
@@ -692,6 +707,11 @@ func (s *Server) Start() error {
 	defer cancel()
 
 	fmt.Println("shutting down server...")
+	if s.mitm != nil {
+		if err := s.mitm.Shutdown(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: mitm proxy shutdown: %v\n", err)
+		}
+	}
 	if err := s.httpServer.Shutdown(ctx); err != nil {
 		return fmt.Errorf("server shutdown: %w", err)
 	}

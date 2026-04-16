@@ -140,6 +140,16 @@ The server exposes a generic HTTP proxy at `/proxy/{target_host}/{path}[?query]`
 - Agent Vault validates the session, matches the target host against broker services, resolves auth config into headers, strips the agent's auth header, injects credentials, and forwards to `https://{target_host}/{path}`
 - Environment variables injected by `agent-vault vault run`: `AGENT_VAULT_ADDR` (server base URL), `AGENT_VAULT_SESSION_TOKEN`, `AGENT_VAULT_VAULT`
 
+## Transparent Proxy (MITM) — experimental
+
+Opt-in second ingress path for clients that respect `HTTPS_PROXY`. Off by default.
+
+- Enable with `agent-vault server --mitm-port 14322`. Binds to the same `--host` as the HTTP server (loopback by default).
+- Backed by `internal/mitm` (CONNECT + TLS termination) and `internal/ca` (software CA persisted under `~/.agent-vault/ca/`, root key encrypted with the master key). The CA is only initialized when `--mitm-port > 0`.
+- Upstream dials go through `netguard.SafeDialContext` (same SSRF protections as `/proxy`) with strict TLS verification against the system trust store.
+- **v1 scope**: HTTP/1.1 only (ALPN pinned), no credential injection, no audit hooks, no policy. Current behavior is a transparent pass-through that proves the TLS plumbing. Credential injection / audit unification are the next steps — plug into `internal/mitm/forward.go`.
+- Clients must trust the CA root (at `~/.agent-vault/ca/ca.crt.pem`) for the MITM handshake to succeed. An `install-ca` helper is a separate future initiative.
+
 ## Discovery Endpoint
 
 `GET /discover` -- returns the list of brokerable services and available credential key names for the session's vault. Requires a scoped session token. Response includes vault name, proxy URL, services (host + optional description), and `available_credentials` (credential key names only, values are never exposed). Agents use `available_credentials` to reference existing credentials in proposals.

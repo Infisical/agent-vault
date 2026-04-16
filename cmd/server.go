@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,7 +16,9 @@ import (
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/auth"
+	"github.com/Infisical/agent-vault/internal/ca"
 	"github.com/Infisical/agent-vault/internal/crypto"
+	"github.com/Infisical/agent-vault/internal/mitm"
 	"github.com/Infisical/agent-vault/internal/notify"
 	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/pidfile"
@@ -33,11 +36,12 @@ var serverCmd = &cobra.Command{
 		port, _ := cmd.Flags().GetInt("port")
 		host, _ := cmd.Flags().GetString("host")
 		detach, _ := cmd.Flags().GetBool("detach")
+		mitmPort, _ := cmd.Flags().GetInt("mitm-port")
 		addr := fmt.Sprintf("%s:%d", host, port)
 
 		// --- Detached child path: read master key + initialized flag from stdin pipe ---
 		if os.Getenv("_AGENT_VAULT_DETACHED") == "1" {
-			return runDetachedChild(addr)
+			return runDetachedChild(host, addr, mitmPort)
 		}
 
 		dbPath, err := store.DefaultDBPath()
@@ -77,7 +81,7 @@ var serverCmd = &cobra.Command{
 		}
 
 		if detach {
-			return spawnDetached(cmd, masterKey, initialized, host, port, addr)
+			return spawnDetached(cmd, masterKey, initialized, host, port, mitmPort, addr)
 		}
 
 		// --- Foreground path ---
@@ -92,8 +96,26 @@ var serverCmd = &cobra.Command{
 		oauthProviders := loadOAuthProviders(baseURL)
 		srv := server.New(addr, db, masterKey.Key(), notifier, initialized, baseURL, oauthProviders)
 		srv.SetSkills(skillCLI, skillHTTP)
+		if err := attachMITMIfEnabled(srv, host, mitmPort, masterKey.Key()); err != nil {
+			return err
+		}
 		return srv.Start()
 	},
+}
+
+// attachMITMIfEnabled initializes the CA and attaches a transparent MITM
+// proxy to srv when mitmPort > 0. The CA is loaded or created under the
+// standard ~/.agent-vault/ca/ directory, encrypted with the master key.
+func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKey []byte) error {
+	if mitmPort <= 0 {
+		return nil
+	}
+	caProv, err := ca.New(masterKey, ca.Options{})
+	if err != nil {
+		return fmt.Errorf("init CA: %w", err)
+	}
+	srv.AttachMITM(mitm.New(net.JoinHostPort(host, strconv.Itoa(mitmPort)), caProv))
+	return nil
 }
 
 // promptOwnerSetup interactively creates the owner account.
@@ -276,7 +298,7 @@ func readPasswordFromStdin() ([]byte, error) {
 
 // runDetachedChild is the entry point for the detached child process.
 // It reads 33 bytes from stdin: 32-byte master key + 1-byte initialized flag.
-func runDetachedChild(addr string) error {
+func runDetachedChild(host, addr string, mitmPort int) error {
 	buf := make([]byte, 33)
 	if _, err := io.ReadFull(os.Stdin, buf); err != nil {
 		return fmt.Errorf("reading master key from pipe: %w", err)
@@ -305,11 +327,14 @@ func runDetachedChild(addr string) error {
 	oauthProviders := loadOAuthProviders(baseURL)
 	srv := server.New(addr, db, key, notifier, initialized, baseURL, oauthProviders)
 	srv.SetSkills(skillCLI, skillHTTP)
+	if err := attachMITMIfEnabled(srv, host, mitmPort, key); err != nil {
+		return err
+	}
 	return srv.Start()
 }
 
 // spawnDetached re-execs the server as a background process, passing the master key + initialized flag via a pipe.
-func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bool, host string, port int, addr string) error {
+func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bool, host string, port, mitmPort int, addr string) error {
 	defer masterKey.Wipe()
 
 	// Check if a server is already running.
@@ -342,7 +367,11 @@ func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bo
 		return fmt.Errorf("opening log file: %w", err)
 	}
 
-	child := exec.Command(exe, "server", "--port", strconv.Itoa(port), "--host", host)
+	childArgs := []string{"server", "--port", strconv.Itoa(port), "--host", host}
+	if mitmPort > 0 {
+		childArgs = append(childArgs, "--mitm-port", strconv.Itoa(mitmPort))
+	}
+	child := exec.Command(exe, childArgs...)
 	child.Stdin = pr
 	child.Stdout = logFile
 	child.Stderr = logFile
@@ -473,6 +502,7 @@ func init() {
 	serverCmd.Flags().String("host", DefaultHost, "host to bind to")
 	serverCmd.Flags().BoolP("detach", "d", false, "run server in background after unlocking")
 	serverCmd.Flags().Bool("password-stdin", false, "read master password from stdin (for non-interactive use)")
+	serverCmd.Flags().Int("mitm-port", 0, "enable transparent MITM proxy on this port (0 = disabled)")
 	serverCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(serverCmd)
 }
