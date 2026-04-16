@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -105,23 +104,40 @@ func (s *Server) resolveVaultForSession(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	event := brokercore.ProxyEvent{
+		Ingress: "explicit",
+		Method:  r.Method,
+		Path:    r.URL.Path,
+	}
+	emit := func(status int, errCode string) {
+		event.Emit(s.logger, start, status, errCode)
+	}
+
 	// 1. Parse target host and path from /proxy/{target_host}/{path...}
 	trimmed := strings.TrimPrefix(r.URL.Path, "/proxy/")
 	if trimmed == "" {
 		proxyError(w, http.StatusBadRequest, "bad_request", "Missing target host in proxy URL")
+		emit(http.StatusBadRequest, "bad_request")
 		return
 	}
 	// Split into host and remaining path.
 	targetHost, remainingPath, _ := strings.Cut(trimmed, "/")
 	if targetHost == "" {
 		proxyError(w, http.StatusBadRequest, "bad_request", "Missing target host in proxy URL")
+		emit(http.StatusBadRequest, "bad_request")
 		return
 	}
+	event.Host = targetHost
+	// Log the upstream path, not the /proxy/{host}/... ingress path, so this
+	// field is directly comparable to the MITM ingress log line.
+	event.Path = "/" + remainingPath
 
 	// Validate targetHost is a safe hostname (no @, ?, #, spaces, control chars).
 	// This prevents userinfo injection (e.g. host@evil.com) in the outbound URL.
 	if !isValidProxyHost(targetHost) {
 		proxyError(w, http.StatusBadRequest, "bad_request", "Invalid target host")
+		emit(http.StatusBadRequest, "bad_request")
 		return
 	}
 
@@ -131,20 +147,31 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	sess := sessionFromContext(ctx)
 	if sess == nil {
 		proxyError(w, http.StatusForbidden, "forbidden", "Proxy requires an authenticated session")
+		emit(http.StatusForbidden, "forbidden")
 		return
 	}
 	ns, _, err := s.resolveVaultForSession(w, r, sess)
 	if err != nil {
+		emit(0, "vault_error")
 		return // error already written
 	}
 
 	// Resolve broker service + inject credentials.
 	inject, err := s.CredentialProvider().Inject(ctx, ns.ID, targetHost)
+	if inject != nil {
+		event.MatchedService = inject.MatchedHost
+		event.CredentialKeys = inject.CredentialKeys
+	}
 	if err != nil {
+		errCode := "no_match"
+		status := http.StatusForbidden
 		if errors.Is(err, brokercore.ErrCredentialMissing) {
-			fmt.Fprintf(os.Stderr, "[agent-vault] credential resolution failed for vault %s: %v\n", ns.ID, err)
+			errCode = "credential_not_found"
+			status = http.StatusBadGateway
+			brokercore.LogCredentialMissing(s.logger, ns.ID, event.MatchedService, event.CredentialKeys)
 		}
 		brokercore.WriteInjectError(w, err, targetHost, ns.Name)
+		emit(status, errCode)
 		return
 	}
 	resolved := inject.Headers
@@ -162,6 +189,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	outReq, err := http.NewRequestWithContext(ctx, r.Method, targetURL, r.Body)
 	if err != nil {
 		proxyError(w, http.StatusInternalServerError, "internal", "Failed to create outbound request")
+		emit(http.StatusInternalServerError, "internal")
 		return
 	}
 
@@ -186,6 +214,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		// Sanitize error — do not leak internal IPs or hostnames to the agent.
 		proxyError(w, http.StatusBadGateway, "upstream_error",
 			fmt.Sprintf("Failed to reach %s", targetHost))
+		emit(http.StatusBadGateway, "upstream_error")
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -203,4 +232,5 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	// Limit response body to prevent resource exhaustion.
 	_, _ = io.Copy(w, io.LimitReader(resp.Body, brokercore.MaxResponseBytes))
+	emit(resp.StatusCode, "")
 }

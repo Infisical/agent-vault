@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"sync/atomic"
@@ -32,13 +33,14 @@ type Proxy struct {
 	httpServer  *http.Server
 	upstream    *http.Transport
 	isListening atomic.Bool
+	logger      *slog.Logger
 }
 
 // New builds a Proxy bound to addr using caProv for leaf certificates and
 // the brokercore sessions/creds for authentication and credential injection.
 // The returned Proxy does not begin listening until ListenAndServe is
-// called.
-func New(addr string, caProv ca.Provider, sessions brokercore.SessionResolver, creds brokercore.CredentialProvider) *Proxy {
+// called. logger must be non-nil; tests can pass slog.New(slog.DiscardHandler).
+func New(addr string, caProv ca.Provider, sessions brokercore.SessionResolver, creds brokercore.CredentialProvider, logger *slog.Logger) *Proxy {
 	upstream := &http.Transport{
 		DialContext:           netguard.SafeDialContext(netguard.ModeFromEnv()),
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
@@ -54,6 +56,7 @@ func New(addr string, caProv ca.Provider, sessions brokercore.SessionResolver, c
 		sessions: sessions,
 		creds:    creds,
 		upstream: upstream,
+		logger:   logger,
 	}
 
 	p.httpServer = &http.Server{

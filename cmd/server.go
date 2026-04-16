@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -29,6 +30,33 @@ import (
 
 const maxPasswordAttempts = 3
 
+// resolveLogLevel turns the --log-level flag (or AGENT_VAULT_LOG_LEVEL env
+// fallback) into a slog.Level. Flag wins if explicitly set. Accepts "info"
+// and "debug" only — anything else is rejected with a clear error.
+// flagChanged indicates whether the user passed --log-level explicitly.
+func resolveLogLevel(flagValue string, flagChanged bool) (slog.Level, error) {
+	value := flagValue
+	if !flagChanged {
+		if env := os.Getenv("AGENT_VAULT_LOG_LEVEL"); env != "" {
+			value = env
+		}
+	}
+	switch strings.ToLower(value) {
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "debug":
+		return slog.LevelDebug, nil
+	default:
+		return 0, fmt.Errorf("invalid log level %q (accepted: info, debug)", value)
+	}
+}
+
+// buildLogger constructs the process-wide slog logger. Text handler to
+// stderr keeps it readable in a terminal without a dependency bump.
+func buildLogger(level slog.Level) *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+}
+
 var serverCmd = &cobra.Command{
 	Use:   "server",
 	Short: "Start an Agent Vault server",
@@ -37,11 +65,19 @@ var serverCmd = &cobra.Command{
 		host, _ := cmd.Flags().GetString("host")
 		detach, _ := cmd.Flags().GetBool("detach")
 		mitmPort, _ := cmd.Flags().GetInt("mitm-port")
+		logLevelFlag, _ := cmd.Flags().GetString("log-level")
+		logLevelChanged := cmd.Flags().Changed("log-level")
 		addr := fmt.Sprintf("%s:%d", host, port)
+
+		logLevel, err := resolveLogLevel(logLevelFlag, logLevelChanged)
+		if err != nil {
+			return err
+		}
+		logger := buildLogger(logLevel)
 
 		// --- Detached child path: read master key + initialized flag from stdin pipe ---
 		if os.Getenv("_AGENT_VAULT_DETACHED") == "1" {
-			return runDetachedChild(host, addr, mitmPort)
+			return runDetachedChild(host, addr, mitmPort, logger)
 		}
 
 		dbPath, err := store.DefaultDBPath()
@@ -81,7 +117,11 @@ var serverCmd = &cobra.Command{
 		}
 
 		if detach {
-			return spawnDetached(cmd, masterKey, initialized, host, port, mitmPort, addr)
+			var explicitLogLevel *string
+			if logLevelChanged {
+				explicitLogLevel = &logLevelFlag
+			}
+			return spawnDetached(cmd, masterKey, initialized, host, port, mitmPort, addr, explicitLogLevel)
 		}
 
 		// --- Foreground path ---
@@ -94,7 +134,7 @@ var serverCmd = &cobra.Command{
 		_ = os.Unsetenv("AGENT_VAULT_SMTP_PASSWORD")
 		notifier := notify.New(smtpCfg)
 		oauthProviders := loadOAuthProviders(baseURL)
-		srv := server.New(addr, db, masterKey.Key(), notifier, initialized, baseURL, oauthProviders)
+		srv := server.New(addr, db, masterKey.Key(), notifier, initialized, baseURL, oauthProviders, logger)
 		srv.SetSkills(skillCLI, skillHTTP)
 		if err := attachMITMIfEnabled(srv, host, mitmPort, masterKey.Key()); err != nil {
 			return err
@@ -125,6 +165,7 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 		caProv,
 		srv.SessionResolver(),
 		srv.CredentialProvider(),
+		srv.Logger(),
 	))
 	return nil
 }
@@ -309,7 +350,7 @@ func readPasswordFromStdin() ([]byte, error) {
 
 // runDetachedChild is the entry point for the detached child process.
 // It reads 33 bytes from stdin: 32-byte master key + 1-byte initialized flag.
-func runDetachedChild(host, addr string, mitmPort int) error {
+func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger) error {
 	buf := make([]byte, 33)
 	if _, err := io.ReadFull(os.Stdin, buf); err != nil {
 		return fmt.Errorf("reading master key from pipe: %w", err)
@@ -336,7 +377,7 @@ func runDetachedChild(host, addr string, mitmPort int) error {
 	_ = os.Unsetenv("AGENT_VAULT_SMTP_PASSWORD")
 	notifier := notify.New(smtpCfg)
 	oauthProviders := loadOAuthProviders(baseURL)
-	srv := server.New(addr, db, key, notifier, initialized, baseURL, oauthProviders)
+	srv := server.New(addr, db, key, notifier, initialized, baseURL, oauthProviders, logger)
 	srv.SetSkills(skillCLI, skillHTTP)
 	if err := attachMITMIfEnabled(srv, host, mitmPort, key); err != nil {
 		return err
@@ -345,7 +386,9 @@ func runDetachedChild(host, addr string, mitmPort int) error {
 }
 
 // spawnDetached re-execs the server as a background process, passing the master key + initialized flag via a pipe.
-func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bool, host string, port, mitmPort int, addr string) error {
+// explicitLogLevel, when non-nil, forwards the parent's --log-level flag to the child so a flag-only
+// invocation (no env var) still takes effect after re-exec.
+func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bool, host string, port, mitmPort int, addr string, explicitLogLevel *string) error {
 	defer masterKey.Wipe()
 
 	// Check if a server is already running.
@@ -379,6 +422,9 @@ func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bo
 	}
 
 	childArgs := []string{"server", "--port", strconv.Itoa(port), "--host", host, "--mitm-port", strconv.Itoa(mitmPort)}
+	if explicitLogLevel != nil {
+		childArgs = append(childArgs, "--log-level", *explicitLogLevel)
+	}
 	child := exec.Command(exe, childArgs...)
 	child.Stdin = pr
 	child.Stdout = logFile
@@ -511,6 +557,7 @@ func init() {
 	serverCmd.Flags().BoolP("detach", "d", false, "run server in background after unlocking")
 	serverCmd.Flags().Bool("password-stdin", false, "read master password from stdin (for non-interactive use)")
 	serverCmd.Flags().Int("mitm-port", DefaultMITMPort, "port for the transparent MITM proxy (0 = disabled)")
+	serverCmd.Flags().String("log-level", "info", "log level: info (default) or debug (per-request proxy logs)")
 	serverCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(serverCmd)
 }

@@ -731,3 +731,83 @@ func TestCatalogFlagsRegistered(t *testing.T) {
 		t.Error("expected --address flag on catalog command")
 	}
 }
+
+func TestServerLogLevelFlag(t *testing.T) {
+	srvCmd := findSubcommand(rootCmd, "server")
+	if srvCmd == nil {
+		t.Fatal("server command not found")
+	}
+	f := srvCmd.Flags().Lookup("log-level")
+	if f == nil {
+		t.Fatal("expected --log-level flag on server command")
+	}
+	if f.DefValue != "info" {
+		t.Errorf("expected --log-level default to be info, got %q", f.DefValue)
+	}
+	if f.Shorthand != "" {
+		t.Errorf("expected no shorthand for --log-level, got %q", f.Shorthand)
+	}
+}
+
+func TestResolveLogLevel(t *testing.T) {
+	// Isolate from any ambient env var in the developer's shell.
+	t.Setenv("AGENT_VAULT_LOG_LEVEL", "")
+
+	cases := []struct {
+		name        string
+		flag        string
+		changed     bool
+		env         string
+		wantLevel   string // "info" | "debug"
+		wantErr     bool
+	}{
+		{name: "default", flag: "info", changed: false, wantLevel: "info"},
+		{name: "flag_debug", flag: "debug", changed: true, wantLevel: "debug"},
+		{name: "flag_info_explicit", flag: "info", changed: true, wantLevel: "info"},
+		{name: "env_debug_no_flag", flag: "info", changed: false, env: "debug", wantLevel: "debug"},
+		{name: "env_info_no_flag", flag: "info", changed: false, env: "info", wantLevel: "info"},
+		{name: "flag_wins_over_env", flag: "info", changed: true, env: "debug", wantLevel: "info"},
+		{name: "case_insensitive", flag: "info", changed: false, env: "DEBUG", wantLevel: "debug"},
+		{name: "invalid_flag", flag: "verbose", changed: true, wantErr: true},
+		{name: "invalid_env", flag: "info", changed: false, env: "trace", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AGENT_VAULT_LOG_LEVEL", tc.env)
+			got, err := resolveLogLevel(tc.flag, tc.changed)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got level=%v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			gotName := "info"
+			if got.String() == "DEBUG" {
+				gotName = "debug"
+			}
+			if gotName != tc.wantLevel {
+				t.Errorf("got level %s, want %s", gotName, tc.wantLevel)
+			}
+		})
+	}
+}
+
+// Verify the cobra-level --log-level validation surfaces the error before
+// the command tries to open the DB or touch the master key.
+func TestServerLogLevelInvalidSurface(t *testing.T) {
+	_, err := executeCommand("server", "--log-level", "verbose")
+	if err == nil {
+		t.Fatal("expected error for invalid --log-level")
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte("log level")) {
+		t.Errorf("expected error to mention log level, got %v", err)
+	}
+	// Reset cobra state for the next test; the rootCmd retains flag values.
+	if sc := findSubcommand(rootCmd, "server"); sc != nil {
+		_ = sc.Flags().Set("log-level", "info")
+	}
+}

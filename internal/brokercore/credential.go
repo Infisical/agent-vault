@@ -16,8 +16,18 @@ import (
 type InjectResult struct {
 	// Headers is the map of header name → value to overlay on the outbound
 	// request. Caller must Set (not Add) to ensure injected values win over
-	// any client-supplied duplicates.
+	// any client-supplied duplicates. Values are SECRET — never log.
 	Headers map[string]string
+
+	// MatchedHost is the broker service host pattern that matched the
+	// target (e.g. "api.github.com"). Safe to log.
+	MatchedHost string
+
+	// CredentialKeys are the upper-snake-case credential key names the
+	// matched service references. These are names, not values — safe to
+	// log. Populated before credential resolution, so a credential-missing
+	// failure still carries this metadata.
+	CredentialKeys []string
 }
 
 // CredentialProvider resolves a broker service for targetHost inside vaultID
@@ -69,6 +79,13 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 		return nil, ErrServiceNotFound
 	}
 
+	// Capture non-secret metadata up front so a downstream credential-missing
+	// error still carries it for the caller (e.g. for debug logging).
+	result := &InjectResult{
+		MatchedHost:    matched.Host,
+		CredentialKeys: matched.Auth.CredentialKeys(),
+	}
+
 	headers, err := matched.Auth.Resolve(func(key string) (string, error) {
 		cred, err := p.Store.GetCredential(ctx, vaultID, key)
 		if err != nil || cred == nil {
@@ -81,8 +98,9 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 		return string(plaintext), nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrCredentialMissing, err)
+		return result, fmt.Errorf("%w: %v", ErrCredentialMissing, err)
 	}
 
-	return &InjectResult{Headers: headers}, nil
+	result.Headers = headers
+	return result, nil
 }

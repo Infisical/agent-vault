@@ -80,6 +80,8 @@ agent-vault vault service add \
 
 The transparent MITM proxy binds `127.0.0.1:14322` by default so clients configured with `HTTPS_PROXY=http://localhost:14322` route through Agent Vault without code changes — install the root CA with `agent-vault ca fetch`, or disable the proxy entirely with `--mitm-port 0`.
 
+For local debugging, start the server with `--log-level debug` (or set `AGENT_VAULT_LOG_LEVEL=debug`) to emit one structured line per proxied request on stderr — method, host, path, matched broker service, injected credential key names, upstream status, duration. Credential *values* are never logged.
+
 Any command that needs authentication will walk you through setup automatically. Just run it and follow the prompts. You can also run `agent-vault vault service set` interactively, load from YAML with `agent-vault vault service set -f services.yaml`, or browse templates with `agent-vault catalog`.
 
 The server includes a web UI at `http://localhost:14321` for managing services, credentials, approving proposals, and inviting users and agents.

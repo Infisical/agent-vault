@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -96,7 +97,7 @@ func setupProxy(t *testing.T, sr brokercore.SessionResolver, cp brokercore.Crede
 		t.Fatal("failed to load CA root PEM into pool")
 	}
 
-	p = New("127.0.0.1:0", caProv, sr, cp)
+	p = New("127.0.0.1:0", caProv, sr, cp, slog.New(slog.DiscardHandler))
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
