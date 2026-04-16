@@ -346,7 +346,10 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 	if err := os.MkdirAll(filepath.Dir(caPath), 0o700); err != nil {
 		return env, 0, false, fmt.Errorf("create CA dir: %w", err)
 	}
-	if err := os.WriteFile(caPath, pem, 0o644); err != nil {
+	// The parent directory is already 0o700 so anyone with read access to
+	// the file is also the file owner — 0o600 adds no real restriction,
+	// but keeps gosec G306 happy.
+	if err := os.WriteFile(caPath, pem, 0o600); err != nil {
 		return env, 0, false, fmt.Errorf("write CA: %w", err)
 	}
 
