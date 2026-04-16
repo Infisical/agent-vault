@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
@@ -25,11 +26,12 @@ import (
 // Proxy is a transparent MITM proxy. It is safe to start at most once;
 // reuse across Shutdown is not supported.
 type Proxy struct {
-	ca         ca.Provider
-	sessions   brokercore.SessionResolver
-	creds      brokercore.CredentialProvider
-	httpServer *http.Server
-	upstream   *http.Transport
+	ca          ca.Provider
+	sessions    brokercore.SessionResolver
+	creds       brokercore.CredentialProvider
+	httpServer  *http.Server
+	upstream    *http.Transport
+	isListening atomic.Bool
 }
 
 // New builds a Proxy bound to addr using caProv for leaf certificates and
@@ -70,16 +72,31 @@ func (p *Proxy) Addr() string { return p.httpServer.Addr }
 // leaves minted on demand during CONNECT.
 func (p *Proxy) RootPEM() []byte { return p.ca.RootPEM() }
 
-// ListenAndServe starts accepting connections. It blocks until Shutdown
-// is called, returning http.ErrServerClosed in that case.
+// IsListening reports whether the Proxy has successfully bound its
+// listener and is accepting connections. Callers that gate operator-
+// visible behavior (like advertising the root CA) on proxy reachability
+// should check this rather than nil-checking the Proxy itself — a bind
+// failure leaves the Proxy value alive but unreachable.
+func (p *Proxy) IsListening() bool { return p.isListening.Load() }
+
+// ListenAndServe starts accepting connections. It binds the listener
+// eagerly so callers can detect bind failures; on success, IsListening
+// reports true for the lifetime of the accept loop. Blocks until
+// Shutdown, returning http.ErrServerClosed in that case.
 func (p *Proxy) ListenAndServe() error {
-	return p.httpServer.ListenAndServe()
+	l, err := net.Listen("tcp", p.httpServer.Addr)
+	if err != nil {
+		return err
+	}
+	return p.Serve(l)
 }
 
 // Serve accepts connections on the provided listener. It blocks until
 // Shutdown is called, returning http.ErrServerClosed in that case.
 // Useful for tests that need to bind :0 and learn the resulting port.
 func (p *Proxy) Serve(l net.Listener) error {
+	p.isListening.Store(true)
+	defer p.isListening.Store(false)
 	return p.httpServer.Serve(l)
 }
 

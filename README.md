@@ -46,8 +46,10 @@ Supports macOS (Intel + Apple Silicon) and Linux (x86_64 + ARM64).
 ### [Docker](https://docs.agent-vault.dev/self-hosting/docker)
 
 ```bash
-docker run -it -p 14321:14321 -v agent-vault-data:/data infisical/agent-vault
+docker run -it -p 14321:14321 -p 14322:14322 -v agent-vault-data:/data infisical/agent-vault
 ```
+
+Port `14322` exposes the transparent HTTPS proxy (on by default) — omit the mapping or pass `--mitm-port 0` to the server if you only need the explicit `/proxy/{host}/{path}` API on `14321`.
 
 ### From source
 
@@ -63,7 +65,7 @@ sudo mv agent-vault /usr/local/bin/
 ## Quickstart
 
 ```bash
-# Start the server (runs on localhost:14321 by default)
+# Start the server (HTTP on 14321, transparent HTTPS proxy on 14322)
 agent-vault server -d
 
 # Add a credential
@@ -75,6 +77,8 @@ agent-vault vault service add \
   --auth-type bearer \
   --token-key GITHUB_TOKEN
 ```
+
+The transparent MITM proxy binds `127.0.0.1:14322` by default so clients configured with `HTTPS_PROXY=http://localhost:14322` route through Agent Vault without code changes — install the root CA with `agent-vault ca fetch`, or disable the proxy entirely with `--mitm-port 0`.
 
 Any command that needs authentication will walk you through setup automatically. Just run it and follow the prompts. You can also run `agent-vault vault service set` interactively, load from YAML with `agent-vault vault service set -f services.yaml`, or browse templates with `agent-vault catalog`.
 

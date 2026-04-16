@@ -106,13 +106,19 @@ var serverCmd = &cobra.Command{
 // attachMITMIfEnabled initializes the CA and attaches a transparent MITM
 // proxy to srv when mitmPort > 0. The CA is loaded or created under the
 // standard ~/.agent-vault/ca/ directory, encrypted with the master key.
+//
+// CA init failures are non-fatal, matching the behavior for bind failures
+// in server.Start: since the MITM proxy is default-on, environments that
+// cannot create ~/.agent-vault/ca/ (read-only FS, containers without HOME,
+// corrupted state) must still be able to run the core HTTP server.
 func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKey []byte) error {
 	if mitmPort <= 0 {
 		return nil
 	}
 	caProv, err := ca.New(masterKey, ca.Options{})
 	if err != nil {
-		return fmt.Errorf("init CA: %w", err)
+		fmt.Fprintf(os.Stderr, "warning: transparent proxy disabled (CA init failed: %v); pass --mitm-port 0 to suppress\n", err)
+		return nil
 	}
 	srv.AttachMITM(mitm.New(
 		net.JoinHostPort(host, strconv.Itoa(mitmPort)),

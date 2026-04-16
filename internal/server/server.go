@@ -703,11 +703,16 @@ func (s *Server) Start() error {
 
 	if s.mitm != nil {
 		go func() {
-			fmt.Printf("Agent Vault transparent proxy listening on %s\n", s.mitm.Addr())
-			if err := s.mitm.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			l, err := net.Listen("tcp", s.mitm.Addr())
+			if err != nil {
 				// MITM is best-effort (e.g. default-on port conflict shouldn't
 				// kill the core HTTP server). Log and let the goroutine exit.
 				fmt.Fprintf(os.Stderr, "warning: transparent proxy unavailable: %v\n", err)
+				return
+			}
+			fmt.Printf("Agent Vault transparent proxy listening on %s\n", s.mitm.Addr())
+			if err := s.mitm.Serve(l); err != nil && err != http.ErrServerClosed {
+				fmt.Fprintf(os.Stderr, "warning: transparent proxy stopped: %v\n", err)
 			}
 		}()
 	}

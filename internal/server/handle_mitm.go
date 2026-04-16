@@ -5,8 +5,14 @@ import "net/http"
 // handleMITMCA serves the transparent-proxy root CA certificate in PEM form.
 // Public (no auth): the CA is world-readable by design — clients install it
 // into local trust stores to validate proxy-minted leaves.
+//
+// Gated on IsListening, not just non-nil: when the proxy fails to bind
+// (port conflict with default-on MITM), s.mitm is still attached but
+// nothing is accepting connections. Returning a PEM in that state would
+// lead operators to install a cert and configure HTTPS_PROXY for a port
+// that silently refuses connections.
 func (s *Server) handleMITMCA(w http.ResponseWriter, _ *http.Request) {
-	if s.mitm == nil {
+	if s.mitm == nil || !s.mitm.IsListening() {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte("MITM proxy is not enabled on this server\n"))
