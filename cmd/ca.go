@@ -6,33 +6,43 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 )
 
 // fetchMITMCA requests the transparent-proxy root CA from the local server.
-// Returns (pem, true, nil) on 200, (nil, false, nil) on 404 (MITM disabled),
-// or an error for any other failure. Body is always drained before returning
-// so the underlying connection can be pooled.
-func fetchMITMCA(addr string) ([]byte, bool, error) {
+// Returns (pem, port, true, nil) on 200 where port is the MITM listener
+// port advertised by the server (0 if the server omitted the header, e.g.
+// an older build — callers should fall back to DefaultMITMPort in that
+// case). Returns (nil, 0, false, nil) on 404 (MITM disabled), or an error
+// for any other failure. Body is always drained before returning so the
+// underlying connection can be pooled.
+func fetchMITMCA(addr string) ([]byte, int, bool, error) {
 	resp, err := httpClient.Get(addr + "/v1/mitm/ca.pem")
 	if err != nil {
-		return nil, false, fmt.Errorf("could not reach server at %s: %w", addr, err)
+		return nil, 0, false, fmt.Errorf("could not reach server at %s: %w", addr, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, false, fmt.Errorf("reading response: %w", err)
+		return nil, 0, false, fmt.Errorf("reading response: %w", err)
 	}
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return body, true, nil
+		port := 0
+		if raw := resp.Header.Get("X-MITM-Port"); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n > 0 && n < 65536 {
+				port = n
+			}
+		}
+		return body, port, true, nil
 	case http.StatusNotFound:
-		return nil, false, nil
+		return nil, 0, false, nil
 	default:
-		return nil, false, fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, 0, false, fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 }
 
@@ -62,7 +72,7 @@ Examples:
 		addr := resolveAddress(cmd)
 		output, _ := cmd.Flags().GetString("output")
 
-		pem, enabled, err := fetchMITMCA(addr)
+		pem, _, enabled, err := fetchMITMCA(addr)
 		if err != nil {
 			return err
 		}

@@ -38,12 +38,13 @@ Environment variables always set on the child:
   AGENT_VAULT_VAULT          — vault the session is scoped to
 
 When the server's transparent MITM proxy is reachable (default), the child
-also inherits HTTPS_PROXY / HTTP_PROXY / NO_PROXY plus the root CA trust
-variables (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE,
-CURL_CA_BUNDLE, GIT_SSL_CAINFO) so standard HTTPS clients transparently
-route through the broker. The root CA PEM is written to
-~/.agent-vault/mitm-ca.pem. Pass --no-mitm to disable injection and rely
-solely on the explicit /proxy/{host}/{path} endpoint.
+also inherits HTTPS_PROXY / NO_PROXY plus the root CA trust variables
+(SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE,
+GIT_SSL_CAINFO) so standard HTTPS clients transparently route through the
+broker. HTTP_PROXY is intentionally not set — the MITM proxy only handles
+HTTPS (CONNECT) and would 405 any plain http:// request. The root CA PEM
+is written to ~/.agent-vault/mitm-ca.pem. Pass --no-mitm to disable
+injection and rely solely on the explicit /proxy/{host}/{path} endpoint.
 
 Example:
   agent-vault vault run -- claude
@@ -94,7 +95,7 @@ Example:
 		// 6. Route the child's HTTPS traffic through the transparent MITM
 		//    proxy. Explicit /proxy stays available as a fallback.
 		if noMITM, _ := cmd.Flags().GetBool("no-mitm"); !noMITM {
-			newEnv, ok, err := augmentEnvWithMITM(env, addr, scopedToken, vault, "")
+			newEnv, mitmPort, ok, err := augmentEnvWithMITM(env, addr, scopedToken, vault, "")
 			switch {
 			case err != nil:
 				fmt.Fprintf(os.Stderr, "agent-vault: MITM setup failed (%v); continuing with explicit proxy only\n", err)
@@ -102,7 +103,7 @@ Example:
 				fmt.Fprintln(os.Stderr, "agent-vault: MITM proxy disabled on server; using explicit proxy only")
 			default:
 				env = newEnv
-				fmt.Fprintf(os.Stderr, "%s routing HTTPS through MITM proxy (127.0.0.1:%d)\n", successText("agent-vault:"), DefaultMITMPort)
+				fmt.Fprintf(os.Stderr, "%s routing HTTPS through MITM proxy (127.0.0.1:%d)\n", successText("agent-vault:"), mitmPort)
 			}
 		}
 
@@ -277,30 +278,76 @@ func fetchUserVaults(addr, token string) ([]string, error) {
 	return names, nil
 }
 
+// mitmInjectedKeys is the set of env keys augmentEnvWithMITM manages on
+// the child. Any pre-existing occurrence inherited from os.Environ() must
+// be stripped before the new values are appended — POSIX getenv returns
+// the *first* match in C code paths (glibc, curl, libcurl-backed Python),
+// so a stale corporate HTTPS_PROXY from the parent shell would otherwise
+// silently win and the MITM route would be bypassed entirely.
+var mitmInjectedKeys = map[string]struct{}{
+	"HTTPS_PROXY":         {},
+	"NO_PROXY":            {},
+	"SSL_CERT_FILE":       {},
+	"NODE_EXTRA_CA_CERTS": {},
+	"REQUESTS_CA_BUNDLE":  {},
+	"CURL_CA_BUNDLE":      {},
+	"GIT_SSL_CAINFO":      {},
+}
+
+// stripEnvKeys returns env with every entry whose key (the part before
+// '=') appears in keys removed. Case-sensitive, matching how the kernel
+// stores envp and how POSIX getenv looks keys up.
+func stripEnvKeys(env []string, keys map[string]struct{}) []string {
+	out := env[:0:len(env)]
+	for _, kv := range env {
+		i := strings.IndexByte(kv, '=')
+		if i < 0 {
+			out = append(out, kv)
+			continue
+		}
+		if _, drop := keys[kv[:i]]; drop {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // augmentEnvWithMITM extends env so the child transparently routes HTTPS
-// through the broker. Returns (env, false, nil) when the server has MITM
-// disabled. caPath is a test seam — pass "" for the default location.
-func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]string, bool, error) {
-	pem, enabled, err := fetchMITMCA(addr)
+// through the broker. Returns (env, 0, false, nil) when the server has
+// MITM disabled. The second return value is the port the server reported;
+// callers log it so operators see the actual listen port (not a constant).
+// caPath is a test seam — pass "" for the default location.
+//
+// Only HTTPS_PROXY is injected — not HTTP_PROXY. The MITM proxy handles
+// HTTP CONNECT only and returns 405 for every other method, so setting
+// HTTP_PROXY would route plain http:// requests into a dead end.
+func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]string, int, bool, error) {
+	pem, port, enabled, err := fetchMITMCA(addr)
 	if err != nil {
-		return env, false, err
+		return env, 0, false, err
 	}
 	if !enabled {
-		return env, false, nil
+		return env, 0, false, nil
+	}
+	if port == 0 {
+		// Older server that didn't advertise X-MITM-Port. Fall back to
+		// the compile-time default so upgrade paths don't hard-break.
+		port = DefaultMITMPort
 	}
 
 	if caPath == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return env, false, fmt.Errorf("resolve home dir: %w", err)
+			return env, 0, false, fmt.Errorf("resolve home dir: %w", err)
 		}
 		caPath = filepath.Join(home, ".agent-vault", "mitm-ca.pem")
 	}
 	if err := os.MkdirAll(filepath.Dir(caPath), 0o700); err != nil {
-		return env, false, fmt.Errorf("create CA dir: %w", err)
+		return env, 0, false, fmt.Errorf("create CA dir: %w", err)
 	}
 	if err := os.WriteFile(caPath, pem, 0o644); err != nil {
-		return env, false, fmt.Errorf("write CA: %w", err)
+		return env, 0, false, fmt.Errorf("write CA: %w", err)
 	}
 
 	mitmHost := "127.0.0.1"
@@ -312,12 +359,12 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 	proxyURL := (&url.URL{
 		Scheme: "http",
 		User:   url.UserPassword(token, vault),
-		Host:   fmt.Sprintf("%s:%d", mitmHost, DefaultMITMPort),
+		Host:   fmt.Sprintf("%s:%d", mitmHost, port),
 	}).String()
 
+	env = stripEnvKeys(env, mitmInjectedKeys)
 	env = append(env,
 		"HTTPS_PROXY="+proxyURL,
-		"HTTP_PROXY="+proxyURL,
 		"NO_PROXY=localhost,127.0.0.1",
 		"SSL_CERT_FILE="+caPath,
 		"NODE_EXTRA_CA_CERTS="+caPath,
@@ -325,7 +372,7 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 		"CURL_CA_BUNDLE="+caPath,
 		"GIT_SSL_CAINFO="+caPath,
 	)
-	return env, true, nil
+	return env, port, true, nil
 }
 
 // requestScopedSession calls the server to create a vault-scoped session
