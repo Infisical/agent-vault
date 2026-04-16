@@ -11,6 +11,31 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// fetchMITMCA requests the transparent-proxy root CA from the local server.
+// Returns (pem, true, nil) on 200, (nil, false, nil) on 404 (MITM disabled),
+// or an error for any other failure. Body is always drained before returning
+// so the underlying connection can be pooled.
+func fetchMITMCA(addr string) ([]byte, bool, error) {
+	resp, err := httpClient.Get(addr + "/v1/mitm/ca.pem")
+	if err != nil {
+		return nil, false, fmt.Errorf("could not reach server at %s: %w", addr, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, false, fmt.Errorf("reading response: %w", err)
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return body, true, nil
+	case http.StatusNotFound:
+		return nil, false, nil
+	default:
+		return nil, false, fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+}
+
 var caCmd = &cobra.Command{
 	Use:   "ca",
 	Short: "Manage the transparent-proxy root CA certificate",
@@ -37,33 +62,22 @@ Examples:
 		addr := resolveAddress(cmd)
 		output, _ := cmd.Flags().GetString("output")
 
-		url := fmt.Sprintf("%s/v1/mitm/ca.pem", addr)
-		resp, err := httpClient.Get(url)
+		pem, enabled, err := fetchMITMCA(addr)
 		if err != nil {
-			return fmt.Errorf("could not reach server at %s: %w", addr, err)
+			return err
 		}
-		defer func() { _ = resp.Body.Close() }()
-
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("reading response: %w", err)
-		}
-
-		if resp.StatusCode == http.StatusNotFound {
-			return errors.New(strings.TrimSpace(string(body)))
-		}
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
+		if !enabled {
+			return errors.New("MITM proxy is not enabled on this server")
 		}
 
 		if output != "" {
-			if err := os.WriteFile(output, body, 0o600); err != nil {
+			if err := os.WriteFile(output, pem, 0o600); err != nil {
 				return fmt.Errorf("writing %s: %w", output, err)
 			}
 			fmt.Fprintf(cmd.ErrOrStderr(), "%s Wrote CA cert to %s\n", successText("✓"), output)
 			return nil
 		}
-		_, _ = cmd.OutOrStdout().Write(body)
+		_, _ = cmd.OutOrStdout().Write(pem)
 		return nil
 	},
 }

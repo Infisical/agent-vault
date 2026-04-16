@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,14 +32,23 @@ var runCmd = &cobra.Command{
 	Long: `Start an agent process (e.g. claude, agent, codex) with an Agent Vault session.
 Everything after -- is treated as the command to execute.
 
-The following environment variables are set on the child process:
+Environment variables always set on the child:
   AGENT_VAULT_SESSION_TOKEN  — vault-scoped bearer token for the Agent Vault server
-  AGENT_VAULT_ADDR           — base URL of the Agent Vault proxy endpoint
+  AGENT_VAULT_ADDR           — base URL of the Agent Vault HTTP control server
   AGENT_VAULT_VAULT          — vault the session is scoped to
+
+When the server's transparent MITM proxy is reachable (default), the child
+also inherits HTTPS_PROXY / HTTP_PROXY / NO_PROXY plus the root CA trust
+variables (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE,
+CURL_CA_BUNDLE, GIT_SSL_CAINFO) so standard HTTPS clients transparently
+route through the broker. The root CA PEM is written to
+~/.agent-vault/mitm-ca.pem. Pass --no-mitm to disable injection and rely
+solely on the explicit /proxy/{host}/{path} endpoint.
 
 Example:
   agent-vault vault run -- claude
-  agent-vault vault run --vault myproject -- claude`,
+  agent-vault vault run --vault myproject -- claude
+  agent-vault vault run --no-mitm -- claude`,
 	Args:                  cobra.MinimumNArgs(1),
 	DisableFlagsInUseLine: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -80,7 +90,23 @@ Example:
 			"AGENT_VAULT_ADDR="+addr,
 			"AGENT_VAULT_VAULT="+vault,
 		)
-		// 6. If the target command is a supported agent, offer to install the
+
+		// 6. Route the child's HTTPS traffic through the transparent MITM
+		//    proxy. Explicit /proxy stays available as a fallback.
+		if noMITM, _ := cmd.Flags().GetBool("no-mitm"); !noMITM {
+			newEnv, ok, err := augmentEnvWithMITM(env, addr, scopedToken, vault, "")
+			switch {
+			case err != nil:
+				fmt.Fprintf(os.Stderr, "agent-vault: MITM setup failed (%v); continuing with explicit proxy only\n", err)
+			case !ok:
+				fmt.Fprintln(os.Stderr, "agent-vault: MITM proxy disabled on server; using explicit proxy only")
+			default:
+				env = newEnv
+				fmt.Fprintf(os.Stderr, "%s routing HTTPS through MITM proxy (127.0.0.1:%d)\n", successText("agent-vault:"), DefaultMITMPort)
+			}
+		}
+
+		// 7. If the target command is a supported agent, offer to install the
 		//    Agent Vault skill (only when not already present).
 		if isClaudeCommand(args[0]) {
 			maybeInstallSkills("Claude Code", ".claude")
@@ -90,7 +116,7 @@ Example:
 			maybeInstallSkills("Codex", ".agents")
 		}
 
-		// 7. Confirm, then exec — replaces this process entirely so the child
+		// 8. Confirm, then exec — replaces this process entirely so the child
 		//    (e.g. Claude Code) gets direct terminal control.
 		fmt.Fprintf(os.Stderr, "%s agent-vault connected. Starting %s...\n\n", successText("agent-vault:"), boldText(args[0]))
 		return syscall.Exec(binary, args, env)
@@ -251,6 +277,57 @@ func fetchUserVaults(addr, token string) ([]string, error) {
 	return names, nil
 }
 
+// augmentEnvWithMITM extends env so the child transparently routes HTTPS
+// through the broker. Returns (env, false, nil) when the server has MITM
+// disabled. caPath is a test seam — pass "" for the default location.
+func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]string, bool, error) {
+	pem, enabled, err := fetchMITMCA(addr)
+	if err != nil {
+		return env, false, err
+	}
+	if !enabled {
+		return env, false, nil
+	}
+
+	if caPath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return env, false, fmt.Errorf("resolve home dir: %w", err)
+		}
+		caPath = filepath.Join(home, ".agent-vault", "mitm-ca.pem")
+	}
+	if err := os.MkdirAll(filepath.Dir(caPath), 0o700); err != nil {
+		return env, false, fmt.Errorf("create CA dir: %w", err)
+	}
+	if err := os.WriteFile(caPath, pem, 0o644); err != nil {
+		return env, false, fmt.Errorf("write CA: %w", err)
+	}
+
+	mitmHost := "127.0.0.1"
+	if u, err := url.Parse(addr); err == nil {
+		if h := u.Hostname(); h != "" {
+			mitmHost = h
+		}
+	}
+	proxyURL := (&url.URL{
+		Scheme: "http",
+		User:   url.UserPassword(token, vault),
+		Host:   fmt.Sprintf("%s:%d", mitmHost, DefaultMITMPort),
+	}).String()
+
+	env = append(env,
+		"HTTPS_PROXY="+proxyURL,
+		"HTTP_PROXY="+proxyURL,
+		"NO_PROXY=localhost,127.0.0.1",
+		"SSL_CERT_FILE="+caPath,
+		"NODE_EXTRA_CA_CERTS="+caPath,
+		"REQUESTS_CA_BUNDLE="+caPath,
+		"CURL_CA_BUNDLE="+caPath,
+		"GIT_SSL_CAINFO="+caPath,
+	)
+	return env, true, nil
+}
+
 // requestScopedSession calls the server to create a vault-scoped session
 // and returns the scoped token.
 func requestScopedSession(addr, adminToken, vault, role string, ttlSeconds int) (string, error) {
@@ -303,6 +380,7 @@ func init() {
 	runCmd.Flags().String("address", "", "Agent Vault server address (defaults to session address)")
 	runCmd.Flags().String("role", "", "Vault role for the agent session (proxy, member, admin; default: proxy)")
 	runCmd.Flags().Int("ttl", 0, "Session TTL in seconds (300–604800; default: server default 24h)")
+	runCmd.Flags().Bool("no-mitm", false, "Skip HTTPS_PROXY/CA env injection for the child (explicit /proxy only)")
 
 	vaultCmd.AddCommand(runCmd)
 }
