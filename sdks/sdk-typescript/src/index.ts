@@ -10,3 +10,6 @@ export type { AgentVaultConfig, VaultClientConfig, ClientConfig } from "./types.
 
 // Session resource types
 export type { CreateSessionOptions, Session } from "./resources/sessions.js";
+
+// Vault types (instance-level operations)
+export type { CreateVaultOptions, Vault, DeleteVaultResult } from "./client.js";
