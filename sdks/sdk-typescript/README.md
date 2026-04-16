@@ -87,6 +87,58 @@ const vault = new VaultClient({
 });
 ```
 
+## Manage credentials
+
+Read, write, and delete credentials (secrets) stored in a vault. Available on both instance-level and vault-scoped clients.
+
+```typescript
+// Via instance-level client
+const vault = av.vault("my-project");
+
+// Or via standalone vault-scoped client
+const vault = new VaultClient();
+```
+
+### List credential keys
+
+```typescript
+const { keys } = await vault.credentials.list();
+// keys: ["STRIPE_KEY", "GITHUB_TOKEN"]
+```
+
+### Reveal credential values
+
+Requires member+ role:
+
+```typescript
+const { credentials } = await vault.credentials.list({ reveal: true });
+// credentials: [{ key: "STRIPE_KEY", value: "sk_live_..." }, ...]
+
+// Filter to a single credential
+const { credentials } = await vault.credentials.list({ reveal: true, key: "STRIPE_KEY" });
+```
+
+### Set credentials
+
+Keys must be SCREAMING_SNAKE_CASE. Existing credentials with the same key are overwritten. Requires member+ role:
+
+```typescript
+const { set } = await vault.credentials.set({
+  STRIPE_KEY: "sk_live_abc",
+  GITHUB_TOKEN: "ghp_xyz",
+});
+// set: ["STRIPE_KEY", "GITHUB_TOKEN"]
+```
+
+### Delete credentials
+
+Requires member+ role:
+
+```typescript
+const { deleted } = await vault.credentials.delete(["STRIPE_KEY", "GITHUB_TOKEN"]);
+// deleted: ["STRIPE_KEY", "GITHUB_TOKEN"]
+```
+
 ## Releasing
 
 Releases are automated via GitHub Actions using [npm OIDC trusted publishing](https://docs.npmjs.com/generating-provenance-statements). To publish a new version:

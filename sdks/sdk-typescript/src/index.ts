@@ -13,3 +13,12 @@ export type { CreateSessionOptions, Session } from "./resources/sessions.js";
 
 // Vault types (instance-level operations)
 export type { CreateVaultOptions, Vault, DeleteVaultResult } from "./client.js";
+
+// Credential resource types
+export type {
+  ListCredentialsOptions,
+  Credential,
+  ListCredentialsResult,
+  SetCredentialsResult,
+  DeleteCredentialsResult,
+} from "./resources/credentials.js";
