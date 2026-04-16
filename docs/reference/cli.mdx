@@ -363,6 +363,41 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `-f` | | Path to a YAML services file |
   </Accordion>
 
+  <Accordion title="agent-vault vault service add">
+    ```bash
+    agent-vault vault service add [flags]
+    ```
+
+    Add or update a single service (upsert by host). Use `-f` to upsert services from a YAML file non-destructively (unlike `set -f`, which replaces all).
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--vault` | `default` | Target vault |
+    | `-f` | | Path to a YAML services file (upsert mode) |
+    | `--host` | | Target service host (e.g. `api.stripe.com`) |
+    | `--description` | | Service description |
+    | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, `custom` |
+    | `--token-key` | | Credential key for bearer auth |
+    | `--username-key` | | Credential key for basic auth username |
+    | `--password-key` | | Credential key for basic auth password |
+    | `--api-key-key` | | Credential key for api-key auth |
+    | `--api-key-header` | `Authorization` | Header name for api-key |
+    | `--api-key-prefix` | | Prefix for api-key value |
+  </Accordion>
+
+  <Accordion title="agent-vault vault service remove">
+    ```bash
+    agent-vault vault service remove <host> [flags]
+    ```
+
+    Remove a specific service by host. Prompts for confirmation unless `--yes` is passed.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--vault` | `default` | Target vault |
+    | `--yes` | `false` | Skip confirmation prompt |
+  </Accordion>
+
   <Accordion title="agent-vault vault service clear">
     ```bash
     agent-vault vault service clear [flags]
