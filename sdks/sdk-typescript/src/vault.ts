@@ -1,4 +1,5 @@
 import { HttpClient } from "./http.js";
+import { CredentialsResource } from "./resources/credentials.js";
 import { SessionsResource } from "./resources/sessions.js";
 import type { VaultClientConfig } from "./types.js";
 
@@ -41,15 +42,23 @@ export class VaultClient {
    */
   readonly sessions: SessionsResource | undefined;
 
+  /**
+   * Credentials resource for managing vault credentials (secrets).
+   * Available on all VaultClient instances — both via `AgentVault.vault(name)` and standalone.
+   */
+  readonly credentials: CredentialsResource;
+
   constructor(config?: VaultClientConfig | InternalArgs) {
     if (config && "marker" in config && config.marker === INTERNAL) {
       this._httpClient = config.httpClient;
       this.name = config.vaultName;
       this.sessions = new SessionsResource(config.httpClient, config.vaultName);
+      this.credentials = new CredentialsResource(config.httpClient, config.vaultName);
     } else {
       this._httpClient = HttpClient.fromConfig(config as VaultClientConfig | undefined);
       this.name = undefined;
       this.sessions = undefined;
+      this.credentials = new CredentialsResource(this._httpClient, undefined);
     }
   }
 

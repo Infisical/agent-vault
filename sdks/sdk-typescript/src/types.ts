@@ -57,3 +57,25 @@ export interface VaultDeleted {
   name: string;
   deleted: boolean;
 }
+
+/** @internal Wire entry in GET /v1/credentials response. */
+export interface CredentialEntry {
+  key: string;
+  value?: string;
+}
+
+/** @internal Wire format for GET /v1/credentials response. */
+export interface CredentialsList {
+  keys: string[];
+  credentials?: CredentialEntry[];
+}
+
+/** @internal Wire format for POST /v1/credentials response. */
+export interface CredentialsSet {
+  set: string[];
+}
+
+/** @internal Wire format for DELETE /v1/credentials response. */
+export interface CredentialsDeleted {
+  deleted: string[];
+}
