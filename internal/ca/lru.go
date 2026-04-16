@@ -53,7 +53,3 @@ func (c *lru) add(key string, value *tls.Certificate) {
 		}
 	}
 }
-
-func (c *lru) len() int {
-	return c.ll.Len()
-}
