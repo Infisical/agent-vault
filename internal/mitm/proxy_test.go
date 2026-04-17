@@ -239,6 +239,11 @@ func TestMITMPassthroughForwardsClientAuthorization(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer upstream-token")
 	req.Header.Set("Cookie", "session=abc")
 	req.Header.Set("X-Trace-Id", "trace-123")
+	// Set Proxy-Authorization on the tunneled request explicitly. Go's
+	// http.Transport only emits Proxy-Authorization on the CONNECT
+	// handshake (via url.User), not on in-tunnel requests, so without
+	// this assignment the strip assertion below would be vacuous.
+	req.Header.Set("Proxy-Authorization", "Basic c2hvdWxkLWJlLXN0cmlwcGVk")
 
 	resp, err := client.Do(req)
 	if err != nil {

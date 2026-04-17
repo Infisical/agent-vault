@@ -110,7 +110,12 @@ passthrough -- forward client headers, inject nothing  {"auth": {"type": "passth
 
 Common services: Stripe (bearer), GitHub (bearer), OpenAI (bearer), Ashby (basic -- API key as username), Jira (basic -- email + token), Anthropic (api-key, header: x-api-key). If unlisted, check the API docs.
 
-**Passthrough** allowlists a host but does not store or inject a credential — the client's `Authorization` and other request headers flow through unchanged. Use it only when the operator has decided their client already holds the credential and wants netguard / audit / MITM coverage without putting the secret in the vault. For the default case (agent needs the credential from the vault), use one of the credentialed types above.
+**Passthrough** allowlists a host but does not store or inject a credential. Use it only when the operator has decided their client already holds the credential and wants netguard / audit / MITM coverage without putting the secret in the vault. For the default case (agent needs the credential from the vault), use one of the credentialed types above.
+
+Header handling on passthrough depends on the ingress the client uses:
+
+- **Explicit `/proxy/{host}/{path}` ingress:** hop-by-hop, `X-Vault`, **and** `Authorization` are stripped before the request is forwarded. `Authorization` carries the Agent Vault session token on this ingress, so clients cannot use it to carry an upstream credential. Client headers the target accepts via `Cookie` or a custom header still flow through.
+- **MITM (`HTTPS_PROXY`) ingress:** hop-by-hop and `Proxy-Authorization` are stripped. `Authorization` and all other client headers flow through unchanged — use this ingress if you need to forward an upstream `Authorization: Bearer <target-token>` through a passthrough service.
 
 ### Creating a Proposal
 
@@ -148,7 +153,7 @@ Other flags: `--description` (service description), `--user-message` (shown on b
 
 Key fields (JSON mode):
 - `services[].action` -- `"set"` (upsert, needs `host` + `auth`) or `"delete"` (needs `host` only)
-- `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates)
+- `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates), `passthrough` (no credential fields)
 - `credentials[].action` -- `"set"` (omit `value` for human to supply; include `value` to store back) or `"delete"`
 - `credentials` -- only declare credentials not already in `available_credentials`. Every credential referenced in auth configs must resolve to a slot or existing credential (400 otherwise)
 - `message` -- developer-facing explanation; `user_message` -- shown on the browser approval page

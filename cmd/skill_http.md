@@ -129,7 +129,12 @@ passthrough -- forward client headers, inject nothing  {"auth": {"type": "passth
 
 Common services: Stripe (bearer), GitHub (bearer), OpenAI (bearer), Ashby (basic -- API key as username), Jira (basic -- email + token), Anthropic (api-key, header: x-api-key). If unlisted, check the API docs.
 
-**Passthrough** allowlists a host but does not store or inject a credential — the client's `Authorization` and other request headers flow through unchanged (hop-by-hop headers, `X-Vault`, and `Proxy-Authorization` are still stripped). Use it only when the operator has decided their client already holds the credential and wants netguard / audit / MITM coverage without putting the secret in the vault. For the default case (agent needs the credential from the vault), use one of the credentialed types above. Passthrough auth entries reject all credential fields (`token`, `username`, `password`, `key`, `header`, `prefix`, `headers`).
+**Passthrough** allowlists a host but does not store or inject a credential. Use it only when the operator has decided their client already holds the credential and wants netguard / audit / MITM coverage without putting the secret in the vault. For the default case (agent needs the credential from the vault), use one of the credentialed types above. Passthrough auth entries reject all credential fields (`token`, `username`, `password`, `key`, `header`, `prefix`, `headers`).
+
+Header handling on passthrough depends on the ingress:
+
+- **Explicit `/proxy/{host}/{path}` (this doc):** hop-by-hop, `X-Vault`, **and** `Authorization` are stripped before the request is forwarded. `Authorization` carries your session token on this ingress, so it cannot be repurposed to carry an upstream credential. Any client headers the target accepts via `Cookie` or a custom header (e.g. `X-Api-Key`) still flow through. **If you need to forward an upstream `Authorization: Bearer <target-token>` through passthrough, you must use the MITM ingress (`HTTPS_PROXY=http://localhost:14322`) instead** — there, `Proxy-Authorization` is the broker-scoped credential and `Authorization` passes through unchanged.
+- **MITM (`HTTPS_PROXY`) ingress:** hop-by-hop and `Proxy-Authorization` are stripped. `Authorization` and all other client headers flow through unchanged.
 
 ### Creating a Proposal
 
