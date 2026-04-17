@@ -24,7 +24,7 @@ const AUTH_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "basic", label: "HTTP Basic Auth" },
   { value: "api-key", label: "API key" },
   { value: "custom", label: "Custom headers" },
-  { value: "passthrough", label: "Passthrough (no credential injected)" },
+  { value: "passthrough", label: "Passthrough" },
 ];
 
 export default function ServicesTab() {
