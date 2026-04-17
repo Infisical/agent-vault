@@ -212,11 +212,17 @@ func WriteInjectError(w http.ResponseWriter, err error, targetHost, vaultName, b
 	case errors.Is(err, ErrServiceNotFound):
 		WriteForbiddenHint(w, targetHost, vaultName, baseURL)
 	case errors.Is(err, ErrCredentialMissing):
-		msg := "A required credential could not be resolved; check vault configuration"
-		if baseURL != "" {
-			msg += ". " + helpLinks(baseURL)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(ProxyErrorHeader, "true")
+		w.WriteHeader(http.StatusBadGateway)
+		body := map[string]interface{}{
+			"error":   "credential_not_found",
+			"message": "A required credential could not be resolved; check vault configuration",
 		}
-		WriteProxyError(w, http.StatusBadGateway, "credential_not_found", msg)
+		if baseURL != "" {
+			body["help"] = helpLinks(baseURL)
+		}
+		_ = json.NewEncoder(w).Encode(body)
 	default:
 		WriteProxyError(w, http.StatusInternalServerError, "internal",
 			"Failed to resolve broker services")
