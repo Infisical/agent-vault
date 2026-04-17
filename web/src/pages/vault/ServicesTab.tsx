@@ -116,14 +116,6 @@ export default function ServicesTab() {
       header: "Auth",
       render: (service) => {
         const label = AUTH_TYPE_LABELS[service.auth?.type] || service.auth?.type || "\u2014";
-        if (service.auth?.type === "passthrough") {
-          return (
-            <span className="inline-flex items-center gap-1 rounded-full border border-border bg-surface-raised px-2 py-0.5 text-xs font-medium text-text-muted">
-              <span className="h-1.5 w-1.5 rounded-full bg-text-muted/70" />
-              {label}
-            </span>
-          );
-        }
         return (
           <div className="text-sm text-text">
             {label}
