@@ -87,6 +87,10 @@ func (s *Server) CredentialProvider() brokercore.CredentialProvider {
 // across ingress paths.
 func (s *Server) Logger() *slog.Logger { return s.logger }
 
+// BaseURL returns the externally-reachable base URL of the server
+// (e.g. "http://127.0.0.1:14321").
+func (s *Server) BaseURL() string { return s.baseURL }
+
 // Store is the persistence interface used by the server.
 type Store interface {
 	GetMasterKeyRecord(ctx context.Context) (*store.MasterKeyRecord, error)

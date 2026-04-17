@@ -33,14 +33,17 @@ type Proxy struct {
 	httpServer  *http.Server
 	upstream    *http.Transport
 	isListening atomic.Bool
+	baseURL     string // externally-reachable control-plane URL for help links
 	logger      *slog.Logger
 }
 
 // New builds a Proxy bound to addr using caProv for leaf certificates and
 // the brokercore sessions/creds for authentication and credential injection.
+// baseURL is the externally-reachable control-plane URL (e.g.
+// "http://127.0.0.1:14321") used to build help links in error responses.
 // The returned Proxy does not begin listening until ListenAndServe is
 // called. logger must be non-nil; tests can pass slog.New(slog.DiscardHandler).
-func New(addr string, caProv ca.Provider, sessions brokercore.SessionResolver, creds brokercore.CredentialProvider, logger *slog.Logger) *Proxy {
+func New(addr string, caProv ca.Provider, sessions brokercore.SessionResolver, creds brokercore.CredentialProvider, baseURL string, logger *slog.Logger) *Proxy {
 	upstream := &http.Transport{
 		DialContext:           netguard.SafeDialContext(netguard.ModeFromEnv()),
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
@@ -56,6 +59,7 @@ func New(addr string, caProv ca.Provider, sessions brokercore.SessionResolver, c
 		sessions: sessions,
 		creds:    creds,
 		upstream: upstream,
+		baseURL:  baseURL,
 		logger:   logger,
 	}
 

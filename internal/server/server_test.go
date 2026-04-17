@@ -2082,6 +2082,11 @@ func TestProxyNoMatchingRule(t *testing.T) {
 	if hint["endpoint"] != "POST /v1/proposals" {
 		t.Fatalf("expected proposal_hint endpoint, got %q", hint["endpoint"])
 	}
+	// Verify help field with actionable URLs is present.
+	help, ok := resp["help"].(string)
+	if !ok || help == "" {
+		t.Fatal("expected help field with actionable URLs in 403 response")
+	}
 }
 
 func TestProxyPassthroughForwardsClientHeaders(t *testing.T) {

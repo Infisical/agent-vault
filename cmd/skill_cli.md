@@ -9,7 +9,7 @@ description: >-
 compatibility: Requires a running Agent Vault server, the agent-vault binary on $PATH, and AGENT_VAULT_SESSION_TOKEN environment variable
 metadata:
   author: dangtony98
-  version: "0.3.0"
+  version: "0.4.0"
 ---
 
 # Agent Vault (CLI)
@@ -37,9 +37,9 @@ You have access to Agent Vault, a transparent HTTPS proxy that injects credentia
 |----------|-------------|
 | `AGENT_VAULT_ADDR` | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
 | `AGENT_VAULT_SESSION_TOKEN` | Bearer token for authenticating with Agent Vault's control-plane endpoints (`discover`, proposals, etc.) |
-| `AGENT_VAULT_VAULT` | Vault name (set for user-scoped sessions via `vault run`; instance-level agent tokens use `X-Vault` header instead) |
+| `AGENT_VAULT_VAULT` | Vault name (set for user-scoped sessions via `vault run`) |
 
-`vault run` also pre-configures `HTTPS_PROXY`, `NO_PROXY`, and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`) so HTTPS calls from your process route through the broker transparently. You don't manage these yourself.
+`vault run` also pre-configures `HTTPS_PROXY`, `NO_PROXY`, and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) so HTTPS calls from your process route through the broker transparently. You don't manage these yourself.
 
 ## Discover Available Services (Start Here)
 
@@ -49,7 +49,7 @@ You have access to Agent Vault, a transparent HTTPS proxy that injects credentia
 agent-vault vault discover --json
 ```
 
-Response includes `vault`, `services` (host + description), `available_credentials` (key names only, values are never exposed), and `proxy_url` (only needed for the explicit-proxy fallback below). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots.
+Response includes `vault`, `services` (host + description), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots.
 
 **Browse service templates:** `agent-vault catalog --json` lists built-in service templates with suggested credential keys and auth types. No auth needed.
 
@@ -63,43 +63,6 @@ curl https://api.github.com/user
 ```
 
 Your code can leave the upstream auth header blank or set it to a placeholder — Agent Vault attaches the real credential at the proxy boundary, so the value in your env can be anything (or absent). Standard HTTP clients (curl, fetch, requests, axios, the Go stdlib, etc.) honor `HTTPS_PROXY` automatically.
-
-### Fallback: explicit `/proxy/{host}/{path}`
-
-Use the explicit proxy URL only when transparent MITM isn't viable:
-
-- The HTTP client doesn't honor `HTTPS_PROXY` (rare)
-- You weren't launched via `vault run`, so your environment lacks the broker's CA trust
-- The operator started the server with `--mitm-port 0`, or you with `--no-mitm`
-
-```
-{AGENT_VAULT_ADDR}/proxy/{target_host}/{path}[?query]
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-```
-
-Agent Vault strips your `Authorization` header (it carried your session token), injects the real credentials, and forwards over HTTPS. Same credential injection as the transparent path — just URL-rewritten.
-
-## Managing Services Directly
-
-If you have vault admin role, you can add or remove services directly without proposals:
-
-```bash
-# Add or update a service (upsert by host)
-agent-vault vault service add \
-  --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY \
-  --description "Stripe API"
-
-# Add services from a YAML file (upsert, non-destructive)
-agent-vault vault service add -f services.yaml
-
-# Remove a specific service
-agent-vault vault service remove api.stripe.com --yes
-
-# List all configured services
-agent-vault vault service list
-```
-
-Use `service add` when you already have credentials stored and just need to configure the proxy rule. Use proposals when the human needs to provide new credentials.
 
 ## Proposals -- Requesting and Storing Credentials
 
@@ -128,11 +91,6 @@ passthrough -- forward client headers, inject nothing  {"auth": {"type": "passth
 Common services: Stripe (bearer), GitHub (bearer), OpenAI (bearer), Ashby (basic -- API key as username), Jira (basic -- email + token), Anthropic (api-key, header: x-api-key). If unlisted, check the API docs.
 
 **Passthrough** allowlists a host but does not store or inject a credential. Use it only when the operator has decided their client already holds the credential and wants netguard / audit / MITM coverage without putting the secret in the vault. For the default case (agent needs the credential from the vault), use one of the credentialed types above.
-
-Header handling on passthrough depends on the ingress the client uses:
-
-- **Transparent MITM (`HTTPS_PROXY`, the default under `vault run`):** hop-by-hop and `Proxy-Authorization` are stripped. `Authorization` and all other client headers flow through unchanged — use this ingress if you need to forward an upstream `Authorization: Bearer <target-token>` through a passthrough service.
-- **Explicit `/proxy/{host}/{path}` fallback:** hop-by-hop, `X-Vault`, **and** `Authorization` are stripped before the request is forwarded. `Authorization` carries the Agent Vault session token on this ingress, so clients cannot use it to carry an upstream credential. Client headers the target accepts via `Cookie` or a custom header still flow through.
 
 ### Creating a Proposal
 

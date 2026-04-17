@@ -8,7 +8,7 @@ description: >-
 compatibility: Requires a running Agent Vault server and AGENT_VAULT_SESSION_TOKEN environment variable
 metadata:
   author: dangtony98
-  version: "0.3.0"
+  version: "0.4.0"
 ---
 
 # Agent Vault (HTTP)
@@ -36,9 +36,9 @@ You have access to Agent Vault, a transparent HTTPS proxy that injects credentia
 |----------|-------------|
 | `AGENT_VAULT_ADDR` | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
 | `AGENT_VAULT_SESSION_TOKEN` | Bearer token for authenticating with Agent Vault's control-plane endpoints (`/discover`, proposals, etc.) |
-| `AGENT_VAULT_VAULT` | Vault name (set for user-scoped sessions via `vault run`; for instance-level agent tokens, use the `X-Vault` header instead) |
+| `AGENT_VAULT_VAULT` | Vault name (set for user-scoped sessions via `vault run`) |
 
-`vault run` also pre-configures `HTTPS_PROXY`, `NO_PROXY`, and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`) so HTTPS calls from your process route through the broker transparently. You don't manage these yourself.
+`vault run` also pre-configures `HTTPS_PROXY`, `NO_PROXY`, and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) so HTTPS calls from your process route through the broker transparently. You don't manage these yourself.
 
 ## Discover Available Services (Start Here)
 
@@ -52,7 +52,7 @@ X-Vault: {vault_name}
 
 **Note:** If `AGENT_VAULT_VAULT` is set, the server uses it automatically. Instance-level agent tokens (persistent agents) must include the `X-Vault` header on all vault-scoped requests.
 
-Response includes `vault`, `services` (host + description), `available_credentials` (key names only, values are never exposed), and `proxy_url` (only needed for the explicit-proxy fallback below). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots.
+Response includes `vault`, `services` (host + description), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots.
 
 **Browse service templates:**
 
@@ -72,52 +72,6 @@ GET https://api.github.com/user
 ```
 
 Your code can leave the upstream auth header blank or set it to a placeholder — Agent Vault attaches the real credential at the proxy boundary, so the value in your env can be anything (or absent). Standard HTTP clients (curl, fetch, requests, axios, the Go stdlib, etc.) honor `HTTPS_PROXY` automatically.
-
-### Fallback: explicit `/proxy/{host}/{path}`
-
-Use the explicit proxy URL only when transparent MITM isn't viable:
-
-- The HTTP client doesn't honor `HTTPS_PROXY` (rare)
-- You weren't launched via `vault run`, so your environment lacks the broker's CA trust
-- The operator started the server with `--mitm-port 0`, or you with `--no-mitm`
-
-```
-{AGENT_VAULT_ADDR}/proxy/{target_host}/{path}[?query]
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-```
-
-Agent Vault strips your `Authorization` header (it carried your session token), injects the real credentials, and forwards over HTTPS. Same credential injection as the transparent path — just URL-rewritten.
-
-## Managing Services Directly
-
-If you have vault admin role, you can add or remove services via HTTP without proposals:
-
-**Upsert services (add or replace by host):**
-
-```
-POST {AGENT_VAULT_ADDR}/v1/vaults/{vault_name}/services
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-Content-Type: application/json
-
-{
-  "services": [
-    {"host": "api.stripe.com", "description": "Stripe API", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}
-  ]
-}
-```
-
-Returns: `{"vault": "...", "upserted": ["api.stripe.com"], "services_count": 5}`
-
-**Remove a service by host:**
-
-```
-DELETE {AGENT_VAULT_ADDR}/v1/vaults/{vault_name}/services/{host}
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-```
-
-Returns: `{"vault": "...", "removed": "api.stripe.com", "services_count": 4}` (404 if host not found)
-
-Use these endpoints when you already have credentials stored and just need to configure the proxy rule. Use proposals when the human needs to provide new credentials.
 
 ## Proposals -- Requesting and Storing Credentials
 
@@ -146,11 +100,6 @@ passthrough -- forward client headers, inject nothing  {"auth": {"type": "passth
 Common services: Stripe (bearer), GitHub (bearer), OpenAI (bearer), Ashby (basic -- API key as username), Jira (basic -- email + token), Anthropic (api-key, header: x-api-key). If unlisted, check the API docs.
 
 **Passthrough** allowlists a host but does not store or inject a credential. Use it only when the operator has decided their client already holds the credential and wants netguard / audit / MITM coverage without putting the secret in the vault. For the default case (agent needs the credential from the vault), use one of the credentialed types above. Passthrough auth entries reject all credential fields (`token`, `username`, `password`, `key`, `header`, `prefix`, `headers`).
-
-Header handling on passthrough depends on the ingress:
-
-- **Transparent MITM (`HTTPS_PROXY`, the default under `vault run`):** hop-by-hop and `Proxy-Authorization` are stripped. `Authorization` and all other client headers flow through unchanged — use this ingress if you need to forward an upstream `Authorization: Bearer <target-token>`.
-- **Explicit `/proxy/{host}/{path}` fallback:** hop-by-hop, `X-Vault`, **and** `Authorization` are stripped before the request is forwarded. `Authorization` carries your session token on this ingress, so it cannot be repurposed to carry an upstream credential. Client headers the target accepts via `Cookie` or a custom header (e.g. `X-Api-Key`) still flow through.
 
 ### Creating a Proposal
 
@@ -226,15 +175,9 @@ Content-Type: application/json
 - Always check `available_credentials` first to avoid proposing duplicates
 - Include `obtain` and `obtain_instructions` to help the human find the credential
 
-## Instance-Level Agent Tokens
-
-If you were registered as a persistent agent (via an agent invite), your token is instance-level -- it is not scoped to a single vault. You may have access to multiple vaults. Include the `X-Vault` header on all vault-scoped requests (proxy, discover, proposals, credentials) to select which vault to operate on.
-
-If your token has no expiry, it works indefinitely. If it does expire, contact your operator for a new token.
-
 ## Error Handling
 
-- 401: Invalid or expired token -- check `AGENT_VAULT_SESSION_TOKEN` (persistent agents: contact operator for a new token)
+- 401: Invalid or expired token -- check `AGENT_VAULT_SESSION_TOKEN`
 - 403: Host not allowed -- create a proposal
 - 429: Too many pending proposals -- wait for review
 - 502: Missing credential or upstream unreachable, tell user a credential may need to be added

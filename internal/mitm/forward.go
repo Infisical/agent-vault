@@ -57,7 +57,7 @@ func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope
 				status = http.StatusBadGateway
 				brokercore.LogCredentialMissing(p.logger, scope.VaultID, event.MatchedService, event.CredentialKeys)
 			}
-			brokercore.WriteInjectError(w, err, host, scope.VaultName)
+			brokercore.WriteInjectError(w, err, host, scope.VaultName, p.baseURL)
 			emit(status, errCode)
 			return
 		}

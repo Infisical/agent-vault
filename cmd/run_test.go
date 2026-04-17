@@ -107,6 +107,7 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 		"REQUESTS_CA_BUNDLE":  caPath,
 		"CURL_CA_BUNDLE":      caPath,
 		"GIT_SSL_CAINFO":      caPath,
+		"DENO_CERT":           caPath,
 	}
 	vars := envMap(env)
 	for k, v := range want {
@@ -196,6 +197,7 @@ func TestAugmentEnvWithMITM_DedupesParentEnv(t *testing.T) {
 		"REQUESTS_CA_BUNDLE=/etc/ssl/corp-ca.pem",
 		"CURL_CA_BUNDLE=/etc/ssl/corp-ca.pem",
 		"GIT_SSL_CAINFO=/etc/ssl/corp-ca.pem",
+		"DENO_CERT=/etc/ssl/corp-ca.pem",
 		"UNRELATED=keep-me",
 	}
 	env, _, ok, err := augmentEnvWithMITM(parentEnv, srv.URL, "tok", "v", caPath)
@@ -211,7 +213,7 @@ func TestAugmentEnvWithMITM_DedupesParentEnv(t *testing.T) {
 			counts[kv[:i]]++
 		}
 	}
-	for _, k := range []string{"HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO"} {
+	for _, k := range []string{"HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "DENO_CERT"} {
 		if counts[k] != 1 {
 			t.Errorf("%s appears %d times in env, want exactly 1 (POSIX getenv returns first match)", k, counts[k])
 		}

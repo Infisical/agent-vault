@@ -29,7 +29,7 @@ var skillHTTP string
 var runCmd = &cobra.Command{
 	Use:   "run [flags] -- <command> [args...]",
 	Short: "Wrap an agent process with Agent Vault access",
-	Long: `Start an agent process (e.g. claude, agent, codex) with an Agent Vault session.
+	Long: `Start an agent process (e.g. claude, agent, codex, hermes) with an Agent Vault session.
 Everything after -- is treated as the command to execute.
 
 Environment variables always set on the child:
@@ -40,7 +40,7 @@ Environment variables always set on the child:
 When the server's transparent MITM proxy is reachable (default), the child
 also inherits HTTPS_PROXY / NO_PROXY plus the root CA trust variables
 (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE,
-GIT_SSL_CAINFO) so standard HTTPS clients transparently route through the
+GIT_SSL_CAINFO, DENO_CERT) so standard HTTPS clients transparently route through the
 broker. HTTP_PROXY is intentionally not set — the MITM proxy only handles
 HTTPS (CONNECT) and would 405 any plain http:// request. The root CA PEM
 is written to ~/.agent-vault/mitm-ca.pem. Pass --no-mitm to disable
@@ -109,12 +109,8 @@ Example:
 
 		// 7. If the target command is a supported agent, offer to install the
 		//    Agent Vault skill (only when not already present).
-		if isClaudeCommand(args[0]) {
-			maybeInstallSkills("Claude Code", ".claude")
-		} else if isCursorCommand(args[0]) {
-			maybeInstallSkills("Cursor", ".cursor")
-		} else if isCodexCommand(args[0]) {
-			maybeInstallSkills("Codex", ".agents")
+		if name, dir, ok := agentSkillDir(args[0]); ok {
+			maybeInstallSkills(name, dir)
 		}
 
 		// 8. Confirm, then exec — replaces this process entirely so the child
@@ -124,23 +120,32 @@ Example:
 	},
 }
 
-// isClaudeCommand returns true if the command name is "claude"
-// (ignoring any path prefix). args[0] is always the base command;
-// flags like --dangerously-skip-permissions are separate args.
-func isClaudeCommand(cmd string) bool {
-	return filepath.Base(cmd) == "claude"
+// knownAgents maps CLI binary base-names to the (agentName, skillsDir)
+// pair used by maybeInstallSkills. Multiple base-names can map to the
+// same entry (e.g. "cursor" and "agent" both target ".cursor").
+var knownAgents = []struct {
+	bases     []string
+	agentName string
+	baseDir   string
+}{
+	{[]string{"claude"}, "Claude Code", ".claude"},
+	{[]string{"cursor", "agent"}, "Cursor", ".cursor"},
+	{[]string{"codex"}, "Codex", ".agents"},
+	{[]string{"hermes"}, "Hermes", ".hermes"},
 }
 
-// isCursorCommand returns true if the command name is "cursor" or "agent"
-// (Cursor's CLI binary).
-func isCursorCommand(cmd string) bool {
+// agentSkillDir returns the display name and skills base directory for a
+// known agent command, or ok=false if the command is not recognized.
+func agentSkillDir(cmd string) (agentName, baseDir string, ok bool) {
 	base := filepath.Base(cmd)
-	return base == "cursor" || base == "agent"
-}
-
-// isCodexCommand returns true if the command name is "codex".
-func isCodexCommand(cmd string) bool {
-	return filepath.Base(cmd) == "codex"
+	for _, a := range knownAgents {
+		for _, b := range a.bases {
+			if base == b {
+				return a.agentName, a.baseDir, true
+			}
+		}
+	}
+	return "", "", false
 }
 
 // maybeInstallSkills installs both Agent Vault skills (CLI and HTTP) under
@@ -292,6 +297,7 @@ var mitmInjectedKeys = map[string]struct{}{
 	"REQUESTS_CA_BUNDLE":  {},
 	"CURL_CA_BUNDLE":      {},
 	"GIT_SSL_CAINFO":      {},
+	"DENO_CERT":           {},
 }
 
 // stripEnvKeys returns env with every entry whose key (the part before
@@ -374,6 +380,7 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 		"REQUESTS_CA_BUNDLE="+caPath,
 		"CURL_CA_BUNDLE="+caPath,
 		"GIT_SSL_CAINFO="+caPath,
+		"DENO_CERT="+caPath,
 	)
 	return env, port, true, nil
 }

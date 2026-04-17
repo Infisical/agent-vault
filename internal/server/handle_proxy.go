@@ -170,7 +170,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusBadGateway
 			brokercore.LogCredentialMissing(s.logger, ns.ID, event.MatchedService, event.CredentialKeys)
 		}
-		brokercore.WriteInjectError(w, err, targetHost, ns.Name)
+		brokercore.WriteInjectError(w, err, targetHost, ns.Name, s.baseURL)
 		emit(status, errCode)
 		return
 	}

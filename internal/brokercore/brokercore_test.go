@@ -129,7 +129,7 @@ func TestCopyPassthroughRequestHeaders_ExtraStrip(t *testing.T) {
 }
 
 func TestForbiddenHintBody(t *testing.T) {
-	body := ForbiddenHintBody("api.example.com", "default")
+	body := ForbiddenHintBody("api.example.com", "default", "http://127.0.0.1:14321")
 	if body["error"] != "forbidden" {
 		t.Fatalf("error = %v", body["error"])
 	}
@@ -148,8 +148,27 @@ func TestForbiddenHintBody(t *testing.T) {
 		t.Fatalf("hint endpoint = %v", hint["endpoint"])
 	}
 
+	// help field must contain actionable URLs.
+	help, ok := body["help"].(string)
+	if !ok {
+		t.Fatal("expected help field in body")
+	}
+	if !strings.Contains(help, "http://127.0.0.1:14321/discover") {
+		t.Fatalf("help missing discover URL: %s", help)
+	}
+	if !strings.Contains(help, "http://127.0.0.1:14321/v1/skills/http") {
+		t.Fatalf("help missing skills URL: %s", help)
+	}
+
 	// Must be JSON-serializable (used by both ingresses as response body).
 	if _, err := json.Marshal(body); err != nil {
 		t.Fatalf("marshal: %v", err)
+	}
+}
+
+func TestForbiddenHintBody_EmptyBaseURL(t *testing.T) {
+	body := ForbiddenHintBody("api.example.com", "default", "")
+	if _, ok := body["help"]; ok {
+		t.Fatal("help field should be absent when baseURL is empty")
 	}
 }

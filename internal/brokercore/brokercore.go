@@ -142,11 +142,23 @@ func ApplyInjection(src, dst http.Header, inject *InjectResult, extraStrip ...st
 	}
 }
 
+// helpLinks returns the standard "see available services / usage instructions"
+// suffix appended to broker-layer error messages when baseURL is known.
+func helpLinks(baseURL string) string {
+	return fmt.Sprintf(
+		"To see available services, GET %s/discover. For usage instructions including how to create a proposal, GET %s/v1/skills/http",
+		baseURL, baseURL,
+	)
+}
+
 // ForbiddenHintBody returns the JSON-shaped body for a 403 response when
 // the target host is not matched by any broker service in the vault. Both
 // ingresses emit identical bytes so agents can uniformly parse the hint.
-func ForbiddenHintBody(targetHost, vaultName string) map[string]interface{} {
-	return map[string]interface{}{
+// baseURL is the externally-reachable control-plane URL used to build
+// actionable help links so agents without the skill file pre-loaded can
+// self-discover available services and usage instructions.
+func ForbiddenHintBody(targetHost, vaultName, baseURL string) map[string]interface{} {
+	body := map[string]interface{}{
 		"error":   "forbidden",
 		"message": fmt.Sprintf("No broker service matching host %q in vault %q", targetHost, vaultName),
 		"proposal_hint": map[string]interface{}{
@@ -155,6 +167,10 @@ func ForbiddenHintBody(targetHost, vaultName string) map[string]interface{} {
 			"supported_auth_types": broker.SupportedAuthTypes,
 		},
 	}
+	if baseURL != "" {
+		body["help"] = "This request was intercepted by Agent Vault. " + helpLinks(baseURL)
+	}
+	return body
 }
 
 // ShouldStripResponseHeader reports whether an upstream response header
@@ -179,24 +195,28 @@ func WriteProxyError(w http.ResponseWriter, status int, code, message string) {
 // WriteForbiddenHint writes a 403 with the shared proposal_hint body so
 // both ingress paths emit identical bytes for the "host not brokerable"
 // case.
-func WriteForbiddenHint(w http.ResponseWriter, targetHost, vaultName string) {
+func WriteForbiddenHint(w http.ResponseWriter, targetHost, vaultName, baseURL string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set(ProxyErrorHeader, "true")
 	w.WriteHeader(http.StatusForbidden)
-	_ = json.NewEncoder(w).Encode(ForbiddenHintBody(targetHost, vaultName))
+	_ = json.NewEncoder(w).Encode(ForbiddenHintBody(targetHost, vaultName, baseURL))
 }
 
 // WriteInjectError maps a CredentialProvider.Inject error to the standard
-// HTTP response for both ingress paths. Callers that want to log before
+// HTTP response for both ingress paths. baseURL is the externally-reachable
+// control-plane URL for help links. Callers that want to log before
 // responding (e.g. the /proxy path logs credential-resolution failures)
 // should do so before calling this helper.
-func WriteInjectError(w http.ResponseWriter, err error, targetHost, vaultName string) {
+func WriteInjectError(w http.ResponseWriter, err error, targetHost, vaultName, baseURL string) {
 	switch {
 	case errors.Is(err, ErrServiceNotFound):
-		WriteForbiddenHint(w, targetHost, vaultName)
+		WriteForbiddenHint(w, targetHost, vaultName, baseURL)
 	case errors.Is(err, ErrCredentialMissing):
-		WriteProxyError(w, http.StatusBadGateway, "credential_not_found",
-			"A required credential could not be resolved; check vault configuration")
+		msg := "A required credential could not be resolved; check vault configuration"
+		if baseURL != "" {
+			msg += ". " + helpLinks(baseURL)
+		}
+		WriteProxyError(w, http.StatusBadGateway, "credential_not_found", msg)
 	default:
 		WriteProxyError(w, http.StatusInternalServerError, "internal",
 			"Failed to resolve broker services")

@@ -165,6 +165,7 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 		caProv,
 		srv.SessionResolver(),
 		srv.CredentialProvider(),
+		srv.BaseURL(),
 		srv.Logger(),
 	))
 	return nil
