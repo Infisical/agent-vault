@@ -1,20 +1,19 @@
 ---
 name: agent-vault-http
 description: >-
-  Agent Vault HTTP: interact with Agent Vault's authenticated HTTP proxy for
-  external services (Linear, GitHub, Stripe, Slack, Jira, etc.) using only
-  HTTP requests. Use when the task involves any third-party API or service
-  that requires credentials, or when writing code that needs environment
-  variables for secrets/API keys.
+  Agent Vault HTTP: a transparent HTTPS proxy that injects credentials for
+  external services (Linear, GitHub, Stripe, Slack, Jira, etc.). Use when the
+  task involves any third-party API or service that requires credentials, or
+  when writing code that needs environment variables for secrets/API keys.
 compatibility: Requires a running Agent Vault server and AGENT_VAULT_SESSION_TOKEN environment variable
 metadata:
   author: dangtony98
-  version: "0.2.0"
+  version: "0.3.0"
 ---
 
 # Agent Vault (HTTP)
 
-You have access to Agent Vault, an HTTP proxy that attaches credentials to your outbound requests. You never see or handle credentials directly -- route authenticated requests through Agent Vault and it authenticates on your behalf.
+You have access to Agent Vault, a transparent HTTPS proxy that injects credentials into your outbound calls. You never see or handle credentials directly -- make API calls to the real host as normal and Agent Vault attaches the real credentials at the proxy boundary.
 
 ## CRITICAL: Always Check Agent Vault First
 
@@ -22,26 +21,28 @@ You have access to Agent Vault, an HTTP proxy that attaches credentials to your 
 
 **Your workflow for ANY external service interaction:**
 1. Check that `AGENT_VAULT_SESSION_TOKEN` is set
-2. Call `GET {AGENT_VAULT_ADDR}/discover` to see what services are available
-3. If the service is listed, route your request through the Agent Vault proxy -- done
-4. If the service is NOT listed, create a proposal (the user can approve and provide credentials)
+2. Call `GET {AGENT_VAULT_ADDR}/discover` to see which hosts have credentials configured
+3. If the host is listed, **just make the request to the real API URL** -- Agent Vault transparently injects the credential
+4. If the host is NOT listed, create a proposal (the user approves and provides credentials)
 5. Only tell the user you cannot access a service if Agent Vault is not available at all (no session token)
 
 **Never say "I don't have access to X" without checking /discover first.** Agent Vault may already have credentials configured for the service you need.
 
-**Not every HTTP request needs to go through Agent Vault.** Unauthenticated requests or requests to services not configured in Agent Vault should be made directly.
+**Not every HTTP request needs Agent Vault credentials.** Unauthenticated requests or requests to hosts not configured in Agent Vault still pass through the proxy unmodified -- no special handling required.
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `AGENT_VAULT_ADDR` | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
-| `AGENT_VAULT_SESSION_TOKEN` | Bearer token for authenticating with Agent Vault |
+| `AGENT_VAULT_SESSION_TOKEN` | Bearer token for authenticating with Agent Vault's control-plane endpoints (`/discover`, proposals, etc.) |
 | `AGENT_VAULT_VAULT` | Vault name (set for user-scoped sessions via `vault run`; for instance-level agent tokens, use the `X-Vault` header instead) |
+
+`vault run` also pre-configures `HTTPS_PROXY`, `NO_PROXY`, and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`) so HTTPS calls from your process route through the broker transparently. You don't manage these yourself.
 
 ## Discover Available Services (Start Here)
 
-**Always call this first** to learn which services have credentials configured:
+**Always call this first** to learn which hosts have credentials configured:
 
 ```
 GET {AGENT_VAULT_ADDR}/discover
@@ -51,7 +52,7 @@ X-Vault: {vault_name}
 
 **Note:** If `AGENT_VAULT_VAULT` is set, the server uses it automatically. Instance-level agent tokens (persistent agents) must include the `X-Vault` header on all vault-scoped requests.
 
-Response includes `vault`, `proxy_url`, `services` (host + description), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots.
+Response includes `vault`, `services` (host + description), `available_credentials` (key names only, values are never exposed), and `proxy_url` (only needed for the explicit-proxy fallback below). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots.
 
 **Browse service templates:**
 
@@ -61,16 +62,31 @@ GET {AGENT_VAULT_ADDR}/v1/service-catalog
 
 Returns built-in service templates with suggested credential keys and auth types. No auth required.
 
-## Making Requests Through Agent Vault
+## Making Requests
 
-For hosts returned by `/discover`, route requests through Agent Vault's proxy:
+**Just call the real API URL.** When you were launched via `agent-vault vault run`, your HTTPS traffic already routes through Agent Vault transparently — `HTTPS_PROXY` and the broker's CA cert are pre-configured in your environment. Agent Vault intercepts the call, looks up the host in the vault's services, injects the credential, and forwards over HTTPS.
+
+```
+GET https://api.stripe.com/v1/charges
+GET https://api.github.com/user
+```
+
+Your code can leave the upstream auth header blank or set it to a placeholder — Agent Vault attaches the real credential at the proxy boundary, so the value in your env can be anything (or absent). Standard HTTP clients (curl, fetch, requests, axios, the Go stdlib, etc.) honor `HTTPS_PROXY` automatically.
+
+### Fallback: explicit `/proxy/{host}/{path}`
+
+Use the explicit proxy URL only when transparent MITM isn't viable:
+
+- The HTTP client doesn't honor `HTTPS_PROXY` (rare)
+- You weren't launched via `vault run`, so your environment lacks the broker's CA trust
+- The operator started the server with `--mitm-port 0`, or you with `--no-mitm`
 
 ```
 {AGENT_VAULT_ADDR}/proxy/{target_host}/{path}[?query]
 Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
 ```
 
-Agent Vault strips your auth header, injects the real credentials, and forwards the request over HTTPS.
+Agent Vault strips your `Authorization` header (it carried your session token), injects the real credentials, and forwards over HTTPS. Same credential injection as the transparent path — just URL-rewritten.
 
 ## Managing Services Directly
 
@@ -133,8 +149,8 @@ Common services: Stripe (bearer), GitHub (bearer), OpenAI (bearer), Ashby (basic
 
 Header handling on passthrough depends on the ingress:
 
-- **Explicit `/proxy/{host}/{path}` (this doc):** hop-by-hop, `X-Vault`, **and** `Authorization` are stripped before the request is forwarded. `Authorization` carries your session token on this ingress, so it cannot be repurposed to carry an upstream credential. Any client headers the target accepts via `Cookie` or a custom header (e.g. `X-Api-Key`) still flow through. **If you need to forward an upstream `Authorization: Bearer <target-token>` through passthrough, you must use the MITM ingress (`HTTPS_PROXY=http://localhost:14322`) instead** — there, `Proxy-Authorization` is the broker-scoped credential and `Authorization` passes through unchanged.
-- **MITM (`HTTPS_PROXY`) ingress:** hop-by-hop and `Proxy-Authorization` are stripped. `Authorization` and all other client headers flow through unchanged.
+- **Transparent MITM (`HTTPS_PROXY`, the default under `vault run`):** hop-by-hop and `Proxy-Authorization` are stripped. `Authorization` and all other client headers flow through unchanged — use this ingress if you need to forward an upstream `Authorization: Bearer <target-token>`.
+- **Explicit `/proxy/{host}/{path}` fallback:** hop-by-hop, `X-Vault`, **and** `Authorization` are stripped before the request is forwarded. `Authorization` carries your session token on this ingress, so it cannot be repurposed to carry an upstream credential. Client headers the target accepts via `Cookie` or a custom header (e.g. `X-Api-Key`) still flow through.
 
 ### Creating a Proposal
 
