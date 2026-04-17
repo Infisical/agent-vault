@@ -101,13 +101,16 @@ When you get a `403` for a host not in discover, the response includes a `propos
 Agent Vault auth types:
 
 ```
-bearer    -- Authorization: Bearer <token>          {"auth": {"type": "bearer", "token": "SECRET_KEY"}}
-basic     -- HTTP Basic (user, optional password)    {"auth": {"type": "basic", "username": "API_KEY"}}
-api-key   -- key in a named header, optional prefix  {"auth": {"type": "api-key", "key": "SECRET", "header": "x-api-key"}}
-custom    -- freeform header templates               {"auth": {"type": "custom", "headers": {"X-Key": "{{ SECRET }}"}}}
+bearer      -- Authorization: Bearer <token>          {"auth": {"type": "bearer", "token": "SECRET_KEY"}}
+basic       -- HTTP Basic (user, optional password)    {"auth": {"type": "basic", "username": "API_KEY"}}
+api-key     -- key in a named header, optional prefix  {"auth": {"type": "api-key", "key": "SECRET", "header": "x-api-key"}}
+custom      -- freeform header templates               {"auth": {"type": "custom", "headers": {"X-Key": "{{ SECRET }}"}}}
+passthrough -- forward client headers, inject nothing  {"auth": {"type": "passthrough"}}
 ```
 
 Common services: Stripe (bearer), GitHub (bearer), OpenAI (bearer), Ashby (basic -- API key as username), Jira (basic -- email + token), Anthropic (api-key, header: x-api-key). If unlisted, check the API docs.
+
+**Passthrough** allowlists a host but does not store or inject a credential — the client's `Authorization` and other request headers flow through unchanged. Use it only when the operator has decided their client already holds the credential and wants netguard / audit / MITM coverage without putting the secret in the vault. For the default case (agent needs the credential from the vault), use one of the credentialed types above.
 
 ### Creating a Proposal
 
@@ -139,6 +142,7 @@ Flag-driven auth flags by type:
 - **bearer**: `--auth-type bearer --token-key CREDENTIAL_KEY`
 - **basic**: `--auth-type basic --username-key USER_KEY [--password-key PASS_KEY]`
 - **api-key**: `--auth-type api-key --api-key-key KEY [--api-key-header x-api-key] [--api-key-prefix "ApiKey "]`
+- **passthrough**: `--auth-type passthrough` (no credential flags; any credential flag is rejected)
 
 Other flags: `--description` (service description), `--user-message` (shown on browser approval page), `--credential KEY=description` (repeatable).
 

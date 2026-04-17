@@ -350,3 +350,67 @@ func TestValidateConfigInvalidAuth(t *testing.T) {
 		t.Fatal("expected error for invalid auth")
 	}
 }
+
+// --- Passthrough tests ---
+
+func TestAuthValidatePassthrough(t *testing.T) {
+	a := Auth{Type: "passthrough"}
+	if err := a.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAuthValidatePassthroughRejectsCredentialFields(t *testing.T) {
+	cases := []struct {
+		name string
+		auth Auth
+	}{
+		{"token", Auth{Type: "passthrough", Token: "FOO"}},
+		{"username", Auth{Type: "passthrough", Username: "FOO"}},
+		{"password", Auth{Type: "passthrough", Password: "FOO"}},
+		{"key", Auth{Type: "passthrough", Key: "FOO"}},
+		{"header", Auth{Type: "passthrough", Header: "X-Foo"}},
+		{"prefix", Auth{Type: "passthrough", Prefix: "Bearer "}},
+		{"headers", Auth{Type: "passthrough", Headers: map[string]string{"X-Foo": "bar"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.auth.Validate(); err == nil {
+				t.Fatalf("expected error for %s on passthrough auth", tc.name)
+			}
+		})
+	}
+}
+
+func TestAuthCredentialKeysPassthrough(t *testing.T) {
+	a := Auth{Type: "passthrough"}
+	if keys := a.CredentialKeys(); keys != nil {
+		t.Fatalf("expected nil, got %v", keys)
+	}
+}
+
+func TestAuthResolvePassthrough(t *testing.T) {
+	a := Auth{Type: "passthrough"}
+	resolved, err := a.Resolve(func(key string) (string, error) {
+		t.Fatalf("getCredential should not be called for passthrough, got %q", key)
+		return "", nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved != nil {
+		t.Fatalf("expected nil headers, got %v", resolved)
+	}
+}
+
+func TestValidateConfigPassthrough(t *testing.T) {
+	cfg := &Config{
+		Vault: "default",
+		Services: []Service{
+			{Host: "api.example.com", Auth: Auth{Type: "passthrough"}},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

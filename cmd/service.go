@@ -317,7 +317,7 @@ func init() {
 	serviceAddCmd.Flags().StringP("file", "f", "", "Path to services YAML file (upsert mode)")
 	serviceAddCmd.Flags().String("host", "", "Target service host (e.g. api.stripe.com)")
 	serviceAddCmd.Flags().String("description", "", "Service description")
-	serviceAddCmd.Flags().String("auth-type", "", "Auth type: bearer, basic, api-key, custom")
+	serviceAddCmd.Flags().String("auth-type", "", "Auth type: bearer, basic, api-key, custom, passthrough")
 	serviceAddCmd.Flags().String("token-key", "", "Credential key for bearer auth")
 	serviceAddCmd.Flags().String("username-key", "", "Credential key for basic auth username")
 	serviceAddCmd.Flags().String("password-key", "", "Credential key for basic auth password")

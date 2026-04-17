@@ -24,6 +24,7 @@ const AUTH_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "basic", label: "HTTP Basic Auth" },
   { value: "api-key", label: "API key" },
   { value: "custom", label: "Custom headers" },
+  { value: "passthrough", label: "Passthrough (no credential injected)" },
 ];
 
 export default function ServicesTab() {
@@ -115,6 +116,14 @@ export default function ServicesTab() {
       header: "Auth",
       render: (service) => {
         const label = AUTH_TYPE_LABELS[service.auth?.type] || service.auth?.type || "\u2014";
+        if (service.auth?.type === "passthrough") {
+          return (
+            <span className="inline-flex items-center gap-1 rounded-full border border-border bg-surface-raised px-2 py-0.5 text-xs font-medium text-text-muted">
+              <span className="h-1.5 w-1.5 rounded-full bg-text-muted/70" />
+              {label}
+            </span>
+          );
+        }
         return (
           <div className="text-sm text-text">
             {label}
@@ -288,6 +297,8 @@ function ServiceModal({
         return !!apiKey.trim();
       case "custom":
         return customHeaders.length > 0 && customHeaders.every((h) => h.name.trim() && h.value.trim());
+      case "passthrough":
+        return true;
       default:
         return false;
     }
@@ -315,6 +326,8 @@ function ServiceModal({
         }
         return { type: "custom", headers };
       }
+      case "passthrough":
+        return { type: "passthrough" };
       default:
         return { type: authType };
     }
@@ -469,6 +482,17 @@ function ServiceModal({
               />
             </FormField>
           </>
+        )}
+
+        {authType === "passthrough" && (
+          <div className="rounded-lg border border-border bg-bg p-3 text-sm text-text-muted leading-relaxed">
+            Passthrough forwards your client's request headers unchanged to
+            the target. Agent Vault will not look up or inject a credential,
+            and will strip only hop-by-hop headers and broker-scoped headers
+            (<span className="font-mono">X-Vault</span>,{" "}
+            <span className="font-mono">Proxy-Authorization</span>). Use this
+            when the agent already holds the credential.
+          </div>
         )}
 
         {authType === "custom" && (

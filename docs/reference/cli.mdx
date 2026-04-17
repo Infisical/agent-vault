@@ -413,13 +413,15 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `-f` | | Path to a YAML services file (upsert mode) |
     | `--host` | | Target service host (e.g. `api.stripe.com`) |
     | `--description` | | Service description |
-    | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, `custom` |
+    | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, `custom`, `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
     | `--username-key` | | Credential key for basic auth username |
     | `--password-key` | | Credential key for basic auth password |
     | `--api-key-key` | | Credential key for api-key auth |
     | `--api-key-header` | `Authorization` | Header name for api-key |
     | `--api-key-prefix` | | Prefix for api-key value |
+
+    The `passthrough` auth type accepts no credential flags; Agent Vault allowlists the host and forwards the client's request headers unchanged, stripping only hop-by-hop and broker-scoped headers (`X-Vault`, `Proxy-Authorization`).
   </Accordion>
 
   <Accordion title="agent-vault vault service remove">
@@ -543,7 +545,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `-f`, `--file` | | Path to JSON proposal file (use `-` for stdin) |
     | `--host` | | Target service host (e.g. `api.stripe.com`) |
     | `--description` | | Service description |
-    | `--auth-type` | | Auth type: `bearer`, `basic`, or `api-key` |
+    | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, or `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
     | `--username-key` | | Credential key for basic auth username |
     | `--password-key` | | Credential key for basic auth password |

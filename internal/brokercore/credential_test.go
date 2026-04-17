@@ -16,7 +16,9 @@ import (
 type fakeCredStore struct {
 	brokerCfg map[string]*store.BrokerConfig // vaultID → config
 	creds     map[string]*store.Credential   // key = vaultID+"|"+key
-	missKey   string                          // if set, GetCredential for this key returns nil/err
+	missKey   string                         // if set, GetCredential for this key returns nil/err
+
+	getCredentialCalls int // call count — used by passthrough tests to assert no lookup
 }
 
 func newFakeCredStore() *fakeCredStore {
@@ -34,6 +36,7 @@ func (f *fakeCredStore) GetBrokerConfig(_ context.Context, vaultID string) (*sto
 	return c, nil
 }
 func (f *fakeCredStore) GetCredential(_ context.Context, vaultID, key string) (*store.Credential, error) {
+	f.getCredentialCalls++
 	if key == f.missKey {
 		return nil, errors.New("missing")
 	}
@@ -251,5 +254,50 @@ func TestInject_DecryptFails(t *testing.T) {
 	_, err := p.Inject(context.Background(), "v1", "api.example.com")
 	if !errors.Is(err, ErrCredentialMissing) {
 		t.Fatalf("expected ErrCredentialMissing, got %v", err)
+	}
+}
+
+func TestInject_Passthrough(t *testing.T) {
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "api.example.com",
+		Auth: broker.Auth{Type: "passthrough"},
+	}})
+
+	p := NewStoreCredentialProvider(f, make32(0xCC))
+	res, err := p.Inject(context.Background(), "v1", "api.example.com")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !res.Passthrough {
+		t.Fatal("expected Passthrough=true")
+	}
+	if res.Headers != nil {
+		t.Fatalf("expected nil Headers, got %v", res.Headers)
+	}
+	if res.MatchedHost != "api.example.com" {
+		t.Fatalf("MatchedHost = %q, want %q", res.MatchedHost, "api.example.com")
+	}
+	if len(res.CredentialKeys) != 0 {
+		t.Fatalf("expected no CredentialKeys, got %v", res.CredentialKeys)
+	}
+	if f.getCredentialCalls != 0 {
+		t.Fatalf("expected GetCredential to NOT be called, got %d calls", f.getCredentialCalls)
+	}
+}
+
+func TestInject_PassthroughPortStripped(t *testing.T) {
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "api.example.com",
+		Auth: broker.Auth{Type: "passthrough"},
+	}})
+	p := NewStoreCredentialProvider(f, make32(0xDD))
+	res, err := p.Inject(context.Background(), "v1", "api.example.com:443")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !res.Passthrough {
+		t.Fatal("expected Passthrough=true for host:port match")
 	}
 }

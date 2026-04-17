@@ -8,7 +8,7 @@ A `Service` is a per-[vault](/learn/vaults) configuration that defines which hos
 Each service contains:
 
 - **Host**: The target hostname. Supports exact match (e.g. `api.stripe.com`) or wildcard patterns (e.g. `*.github.com`).
-- **Auth config**: How Agent Vault authenticates to the host. Four types are supported: `bearer`, `basic`, `api-key`, and `custom`.
+- **Auth config**: How Agent Vault authenticates to the host. Five types are supported: `bearer`, `basic`, `api-key`, `custom`, and `passthrough` (opt out of injection).
 - **Description**: An optional human-readable label shown in `/discover` responses.
 
 <Tip>
@@ -39,7 +39,7 @@ services:
 agent-vault vault service set -f stripe-services.yaml --vault my-vault
 ```
 
-The `host` tells Agent Vault which requests this service applies to. The `auth` block tells Agent Vault how to authenticate, referencing [credential](/learn/credentials) keys by name (not the actual credential values). The following section covers all four auth types.
+The `host` tells Agent Vault which requests this service applies to. The `auth` block tells Agent Vault how to authenticate, referencing [credential](/learn/credentials) keys by name (not the actual credential values). The following section covers all five auth types.
 
 ## Auth types
 
@@ -126,11 +126,34 @@ services:
         X-Tenant-ID: "{{ ACME_TENANT }}"
 ```
 
+### Passthrough
+
+Allowlists the host without injecting a credential. The client's request headers (including `Authorization` and `Cookie`) flow through to the target unchanged; Agent Vault strips only hop-by-hop headers and broker-scoped headers (`X-Vault`, `Proxy-Authorization`). No credential is stored, read, or attached.
+
+```yaml
+services:
+  - host: api.example.com
+    description: Client already holds the credential
+    auth:
+      type: passthrough
+```
+
+Use passthrough when the operator has decided their client already holds the credential (for example, an existing tool that manages its own token) and wants Agent Vault to provide the host allowlist, [netguard](/learn/security), TLS interception, and audit logging without putting the secret in the vault. All the other auth types are the default — reach for passthrough only when you explicitly want Agent Vault *not* to broker the credential.
+
+<Warning>
+  Passthrough auth configs reject every credential field (`token`, `username`,
+  `password`, `key`, `header`, `prefix`, `headers`). Setting any of them
+  returns a validation error — if you want Agent Vault to inject a credential,
+  use one of the credentialed auth types instead.
+</Warning>
+
 <Warning>
   Every credential key referenced in an auth config (whether directly or via `
   {{ KEY }}` templates) must resolve to either an existing
   [credential](/learn/credentials) in the vault or a credential slot in the same
   [proposal](/learn/proposals). Agent Vault returns `400` if a key is missing.
+  This does not apply to `passthrough` services, which reference no
+  credentials.
 </Warning>
 
 ## Host matching

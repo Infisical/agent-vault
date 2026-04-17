@@ -17,6 +17,7 @@ type InjectResult struct {
 	// Headers is the map of header name → value to overlay on the outbound
 	// request. Caller must Set (not Add) to ensure injected values win over
 	// any client-supplied duplicates. Values are SECRET — never log.
+	// Nil for passthrough services.
 	Headers map[string]string
 
 	// MatchedHost is the broker service host pattern that matched the
@@ -26,8 +27,15 @@ type InjectResult struct {
 	// CredentialKeys are the upper-snake-case credential key names the
 	// matched service references. These are names, not values — safe to
 	// log. Populated before credential resolution, so a credential-missing
-	// failure still carries this metadata.
+	// failure still carries this metadata. Empty for passthrough services.
 	CredentialKeys []string
+
+	// Passthrough indicates the matched service opts out of credential
+	// injection. The ingress should forward client request headers via
+	// the denylist (CopyPassthroughRequestHeaders) rather than the
+	// PassthroughHeaders allowlist, and must not perform the injection
+	// merge step.
+	Passthrough bool
 }
 
 // CredentialProvider resolves a broker service for targetHost inside vaultID
@@ -77,6 +85,16 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	matched := broker.MatchHost(matchHost, services)
 	if matched == nil {
 		return nil, ErrServiceNotFound
+	}
+
+	// Passthrough services opt out of credential injection entirely. No
+	// vault read, no CredentialKeys (nothing to resolve). The ingress
+	// branches on Passthrough to forward client headers via the denylist.
+	if matched.Auth.Type == "passthrough" {
+		return &InjectResult{
+			MatchedHost: matched.Host,
+			Passthrough: true,
+		}, nil
 	}
 
 	// Capture non-secret metadata up front so a downstream credential-missing

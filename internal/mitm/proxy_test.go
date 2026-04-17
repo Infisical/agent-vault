@@ -195,6 +195,78 @@ func TestMITMInjectsCredentials(t *testing.T) {
 	}
 }
 
+func TestMITMPassthroughForwardsClientAuthorization(t *testing.T) {
+	// On the MITM ingress, Proxy-Authorization is the broker-scoped credential
+	// and Authorization is the client's own upstream header — it must flow
+	// through unchanged for passthrough services. Proxy-Authorization and
+	// hop-by-hop headers must still be stripped.
+	var sawAuth, sawCookie, sawTrace, sawProxyAuth string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuth = r.Header.Get("Authorization")
+		sawCookie = r.Header.Get("Cookie")
+		sawTrace = r.Header.Get("X-Trace-Id")
+		sawProxyAuth = r.Header.Get("Proxy-Authorization")
+		_, _ = io.WriteString(w, "passthrough-ok")
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{
+			MatchedHost: upstreamHost,
+			Passthrough: true,
+		}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    upstreamRoots,
+	}
+
+	client := newTrustingClient(proxyURL, url.User("av_sess_ok"), clientRoots)
+
+	req, err := http.NewRequest("GET", upstream.URL+"/data", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer upstream-token")
+	req.Header.Set("Cookie", "session=abc")
+	req.Header.Set("X-Trace-Id", "trace-123")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "passthrough-ok" {
+		t.Fatalf("body = %q", body)
+	}
+	if sawAuth != "Bearer upstream-token" {
+		t.Fatalf("upstream Authorization = %q, want passthrough of client value", sawAuth)
+	}
+	if sawCookie != "session=abc" {
+		t.Fatalf("upstream Cookie = %q, want passthrough", sawCookie)
+	}
+	if sawTrace != "trace-123" {
+		t.Fatalf("upstream X-Trace-Id = %q, want passthrough", sawTrace)
+	}
+	if sawProxyAuth != "" {
+		t.Fatalf("upstream saw Proxy-Authorization %q; must be stripped on passthrough", sawProxyAuth)
+	}
+}
+
 func TestMITMMissingProxyAuth(t *testing.T) {
 	sr := errResolver(brokercore.ErrInvalidSession)
 	cp := &fakeCredProvider{}

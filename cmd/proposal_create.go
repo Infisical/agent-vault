@@ -229,11 +229,35 @@ func buildAuthFromFlags(cmd *cobra.Command, authType string) (*broker.Auth, erro
 	case "custom":
 		return nil, fmt.Errorf("custom auth type requires JSON mode (-f); use flags for bearer, basic, or api-key")
 
+	case "passthrough":
+		if err := rejectCredentialFlags(cmd, "passthrough"); err != nil {
+			return nil, err
+		}
+
 	default:
 		return nil, fmt.Errorf("unsupported auth type %q (supported: %s)", authType, strings.Join(broker.SupportedAuthTypes, ", "))
 	}
 
 	return a, nil
+}
+
+// rejectCredentialFlags returns an error if any credential-related flag was
+// provided. Used by auth types like passthrough that accept no credentials.
+func rejectCredentialFlags(cmd *cobra.Command, authType string) error {
+	credFlags := []string{
+		"token-key",
+		"username-key",
+		"password-key",
+		"api-key-key",
+		"api-key-header",
+		"api-key-prefix",
+	}
+	for _, f := range credFlags {
+		if v, _ := cmd.Flags().GetString(f); v != "" {
+			return fmt.Errorf("--%s is not accepted for %s auth (no credential is injected)", f, authType)
+		}
+	}
+	return nil
 }
 
 func init() {
@@ -243,7 +267,7 @@ func init() {
 	// Flag-driven mode.
 	proposalCreateCmd.Flags().String("host", "", "target service host (e.g. api.stripe.com)")
 	proposalCreateCmd.Flags().String("description", "", "service description")
-	proposalCreateCmd.Flags().String("auth-type", "", "auth type: bearer, basic, api-key")
+	proposalCreateCmd.Flags().String("auth-type", "", "auth type: bearer, basic, api-key, passthrough")
 	proposalCreateCmd.Flags().String("token-key", "", "credential key for bearer auth")
 	proposalCreateCmd.Flags().String("username-key", "", "credential key for basic auth username")
 	proposalCreateCmd.Flags().String("password-key", "", "credential key for basic auth password")

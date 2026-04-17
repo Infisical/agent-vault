@@ -62,6 +62,7 @@ export const AUTH_TYPE_LABELS: Record<string, string> = {
   basic: "HTTP Basic Auth",
   "api-key": "API key",
   custom: "Custom headers",
+  passthrough: "Passthrough",
 };
 
 function AuthDisplay({ auth }: { auth: Auth }) {
@@ -73,6 +74,11 @@ function AuthDisplay({ auth }: { auth: Auth }) {
         Authentication
       </div>
       <div className="text-xs font-mono text-text mb-1">{label}</div>
+      {auth.type === "passthrough" && (
+        <div className="text-xs text-text-muted leading-relaxed">
+          No credential injected — client headers are forwarded unchanged.
+        </div>
+      )}
       {auth.type === "custom" &&
         auth.headers &&
         Object.keys(auth.headers).length > 0 && (

@@ -65,9 +65,14 @@ func IsValidHost(h string) bool {
 }
 
 // PassthroughHeaders is the allowlist of headers forwarded from agent
-// requests to upstream services. All other agent headers are dropped;
-// in particular Authorization is NOT on this list so injected credentials
-// always win over any client-supplied value.
+// requests to upstream services for credentialed (non-passthrough) auth
+// types. All other agent headers are dropped; in particular Authorization
+// is NOT on this list so injected credentials always win over any
+// client-supplied value.
+//
+// Passthrough services use CopyPassthroughRequestHeaders instead, which
+// is a denylist — the client's request is forwarded unchanged apart from
+// hop-by-hop headers and broker-scoped headers.
 var PassthroughHeaders = []string{
 	"Content-Type",
 	"Content-Encoding",
@@ -77,6 +82,64 @@ var PassthroughHeaders = []string{
 	"User-Agent",
 	"Idempotency-Key",
 	"X-Request-Id",
+}
+
+// brokerScopedRequestHeaders are headers that authenticate the client to
+// Agent Vault itself (explicit /proxy ingress uses X-Vault;
+// HTTPS_PROXY-compatible ingress uses Proxy-Authorization). They must
+// never traverse the broker → target hop, even on passthrough services.
+var brokerScopedRequestHeaders = map[string]bool{
+	"X-Vault":             true,
+	"Proxy-Authorization": true,
+}
+
+// IsBrokerScopedRequestHeader reports whether a request header
+// authenticates the client to Agent Vault itself and must be stripped
+// before forwarding to the target service.
+func IsBrokerScopedRequestHeader(name string) bool {
+	return brokerScopedRequestHeaders[http.CanonicalHeaderKey(name)]
+}
+
+// CopyPassthroughRequestHeaders forwards headers from src to dst for
+// passthrough services: everything except hop-by-hop, broker-scoped
+// (X-Vault, Proxy-Authorization), and any extra names in extraStrip.
+// Callers pass the header that authenticates the client to Agent Vault
+// on their ingress so that credential never reaches the target.
+func CopyPassthroughRequestHeaders(src, dst http.Header, extraStrip ...string) {
+	strip := make(map[string]bool, len(extraStrip))
+	for _, s := range extraStrip {
+		strip[http.CanonicalHeaderKey(s)] = true
+	}
+	for k, vv := range src {
+		ck := http.CanonicalHeaderKey(k)
+		if IsHopByHop(ck) || IsBrokerScopedRequestHeader(ck) || strip[ck] {
+			continue
+		}
+		for _, v := range vv {
+			dst.Add(ck, v)
+		}
+	}
+}
+
+// ApplyInjection writes the outbound request headers for a resolved
+// InjectResult. Passthrough services forward client headers via the
+// denylist (hop-by-hop + broker-scoped + extraStrip); credentialed
+// services copy the PassthroughHeaders allowlist and then overlay
+// injected credentials. Used by both ingress paths so header handling
+// for the two branches stays in lockstep.
+func ApplyInjection(src, dst http.Header, inject *InjectResult, extraStrip ...string) {
+	if inject.Passthrough {
+		CopyPassthroughRequestHeaders(src, dst, extraStrip...)
+		return
+	}
+	for _, k := range PassthroughHeaders {
+		for _, v := range src.Values(k) {
+			dst.Add(k, v)
+		}
+	}
+	for k, v := range inject.Headers {
+		dst.Set(k, v)
+	}
 }
 
 // ForbiddenHintBody returns the JSON-shaped body for a 403 response when

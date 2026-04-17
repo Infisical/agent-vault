@@ -44,15 +44,6 @@ func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope
 		}
 		outReq.Host = host
 
-		// Allowlist passthrough: Authorization and Proxy-Authorization are
-		// not on the list, so injected credentials always win and the
-		// client cannot shadow them.
-		for _, k := range brokercore.PassthroughHeaders {
-			for _, v := range r.Header.Values(k) {
-				outReq.Header.Add(k, v)
-			}
-		}
-
 		inject, err := p.creds.Inject(r.Context(), scope.VaultID, host)
 		if inject != nil {
 			event.MatchedService = inject.MatchedHost
@@ -70,9 +61,11 @@ func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope
 			emit(status, errCode)
 			return
 		}
-		for k, v := range inject.Headers {
-			outReq.Header.Set(k, v)
-		}
+
+		// No extraStrip: Proxy-Authorization (the broker-scoped credential
+		// on this ingress) is already filtered by the denylist, and
+		// Authorization is the client's own upstream header.
+		brokercore.ApplyInjection(r.Header, outReq.Header, inject)
 
 		resp, err := p.upstream.RoundTrip(outReq)
 		if err != nil {

@@ -23,8 +23,13 @@ type Service struct {
 
 // Auth describes how credentials are attached for a broker service.
 // Each service must specify a Type and the fields relevant to that type.
+//
+// The "passthrough" type is a special case: no credential is looked up
+// and no credential is injected. The host is allowlisted, and the
+// client's request headers flow through (minus broker-scoped headers
+// like X-Vault and Proxy-Authorization, and hop-by-hop headers).
 type Auth struct {
-	Type string `yaml:"type" json:"type"` // "bearer", "basic", "api-key", "custom"
+	Type string `yaml:"type" json:"type"` // "bearer", "basic", "api-key", "custom", "passthrough"
 
 	// type: bearer — token credential key
 	Token string `yaml:"token,omitempty" json:"token,omitempty"`
@@ -43,7 +48,7 @@ type Auth struct {
 }
 
 // SupportedAuthTypes lists the valid auth type values.
-var SupportedAuthTypes = []string{"bearer", "basic", "api-key", "custom"}
+var SupportedAuthTypes = []string{"bearer", "basic", "api-key", "custom", "passthrough"}
 
 // CredentialKeyPattern validates credential key names: UPPER_SNAKE_CASE.
 var CredentialKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
@@ -116,6 +121,11 @@ func (a *Auth) Validate() error {
 		}
 		return nil
 
+	case "passthrough":
+		// Passthrough forwards client headers unchanged and injects nothing.
+		// No credential fields are permitted.
+		return checkUnexpectedFields(a, "passthrough")
+
 	default:
 		return fmt.Errorf("auth: unsupported type %q (supported: %s)", a.Type, strings.Join(SupportedAuthTypes, ", "))
 	}
@@ -152,6 +162,10 @@ func checkUnexpectedFields(a *Auth, authType string, allowed ...string) error {
 
 	for _, c := range checks {
 		if c.isSet && !allowedSet[c.name] {
+			if len(allowed) == 0 {
+				return fmt.Errorf("auth: unexpected field %q for %s auth (no credential fields are permitted)",
+					c.name, authType)
+			}
 			return fmt.Errorf("auth: unexpected field %q for %s auth (only %s)",
 				c.name, authType, strings.Join(allowed, ", "))
 		}
@@ -160,6 +174,7 @@ func checkUnexpectedFields(a *Auth, authType string, allowed ...string) error {
 }
 
 // CredentialKeys returns all credential key names referenced by this auth config.
+// Passthrough services reference no credentials and return nil.
 func (a *Auth) CredentialKeys() []string {
 	switch a.Type {
 	case "bearer":
@@ -174,6 +189,8 @@ func (a *Auth) CredentialKeys() []string {
 		return []string{a.Key}
 	case "custom":
 		return credentialKeysFromHeaders(a.Headers)
+	case "passthrough":
+		return nil
 	default:
 		return nil
 	}
@@ -234,6 +251,11 @@ func (a *Auth) Resolve(getCredential func(key string) (string, error)) (map[stri
 
 	case "custom":
 		return resolveHeaders(a.Headers, getCredential)
+
+	case "passthrough":
+		// Passthrough injects nothing. Callers should branch on the service
+		// type before reaching Resolve; this return is defensive.
+		return nil, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported auth type %q", a.Type)

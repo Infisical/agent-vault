@@ -174,8 +174,6 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		emit(status, errCode)
 		return
 	}
-	resolved := inject.Headers
-
 	// 7. Build outbound URL.
 	targetURL := "https://" + targetHost
 	if remainingPath != "" {
@@ -192,21 +190,13 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		emit(http.StatusInternalServerError, "internal")
 		return
 	}
-
-	// Copy only safe headers from the agent request (allowlist approach).
-	for _, k := range brokercore.PassthroughHeaders {
-		if vv := r.Header.Values(k); len(vv) > 0 {
-			for _, v := range vv {
-				outReq.Header.Add(k, v)
-			}
-		}
-	}
 	outReq.Host = targetHost
 
-	// Merge injected headers (injected wins on conflict).
-	for k, v := range resolved {
-		outReq.Header.Set(k, v)
-	}
+	// Authorization carries the Agent Vault session token on this ingress;
+	// strip it on passthrough so the session credential never reaches the
+	// target. Clients needing to forward an upstream Authorization should
+	// use the MITM ingress, where Proxy-Authorization is broker-scoped.
+	brokercore.ApplyInjection(r.Header, outReq.Header, inject, "Authorization")
 
 	// 9. Forward request to target.
 	resp, err := proxyClient.Do(outReq)

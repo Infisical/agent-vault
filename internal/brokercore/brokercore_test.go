@@ -2,6 +2,7 @@ package brokercore
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,100 @@ func TestPassthroughHeadersExcludesAuthorization(t *testing.T) {
 		if strings.EqualFold(h, "Proxy-Authorization") {
 			t.Fatalf("PassthroughHeaders must not include Proxy-Authorization")
 		}
+	}
+}
+
+func TestIsBrokerScopedRequestHeader(t *testing.T) {
+	cases := map[string]bool{
+		"X-Vault":             true,
+		"x-vault":             true,
+		"Proxy-Authorization": true,
+		"proxy-authorization": true,
+		"Authorization":       false,
+		"Cookie":              false,
+		"Content-Type":        false,
+		"X-Request-Id":        false,
+	}
+	for name, want := range cases {
+		if got := IsBrokerScopedRequestHeader(name); got != want {
+			t.Errorf("IsBrokerScopedRequestHeader(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestCopyPassthroughRequestHeaders_ForwardsClientCredentials(t *testing.T) {
+	src := http.Header{}
+	src.Set("Authorization", "Bearer client-token")
+	src.Set("Cookie", "session=abc")
+	src.Set("X-Trace-Id", "trace-123")
+	src.Set("Content-Type", "application/json")
+	src.Set("User-Agent", "client/1.0")
+
+	dst := http.Header{}
+	CopyPassthroughRequestHeaders(src, dst)
+
+	for _, h := range []string{"Authorization", "Cookie", "X-Trace-Id", "Content-Type", "User-Agent"} {
+		if dst.Get(h) != src.Get(h) {
+			t.Errorf("header %q: got %q, want %q", h, dst.Get(h), src.Get(h))
+		}
+	}
+}
+
+func TestCopyPassthroughRequestHeaders_StripsBrokerScoped(t *testing.T) {
+	src := http.Header{}
+	src.Set("Authorization", "Bearer client-token")
+	src.Set("X-Vault", "default")
+	src.Set("Proxy-Authorization", "Basic xxx")
+	src.Set("Connection", "keep-alive")
+	src.Set("Te", "trailers")
+
+	dst := http.Header{}
+	CopyPassthroughRequestHeaders(src, dst)
+
+	if dst.Get("Authorization") == "" {
+		t.Error("Authorization should be forwarded on passthrough")
+	}
+	for _, h := range []string{"X-Vault", "Proxy-Authorization", "Connection", "Te"} {
+		if dst.Get(h) != "" {
+			t.Errorf("header %q should have been stripped, got %q", h, dst.Get(h))
+		}
+	}
+}
+
+func TestCopyPassthroughRequestHeaders_PreservesMultipleValues(t *testing.T) {
+	src := http.Header{}
+	src.Add("X-Multi", "a")
+	src.Add("X-Multi", "b")
+	src.Add("X-Multi", "c")
+
+	dst := http.Header{}
+	CopyPassthroughRequestHeaders(src, dst)
+
+	got := dst.Values("X-Multi")
+	if len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
+		t.Fatalf("X-Multi values = %v, want [a b c]", got)
+	}
+}
+
+func TestCopyPassthroughRequestHeaders_ExtraStrip(t *testing.T) {
+	// Explicit /proxy ingress passes "Authorization" as extra strip so the
+	// Agent Vault session token never leaks upstream.
+	src := http.Header{}
+	src.Set("Authorization", "Bearer session-token")
+	src.Set("Cookie", "session=abc")
+	src.Set("X-Trace-Id", "trace-123")
+
+	dst := http.Header{}
+	CopyPassthroughRequestHeaders(src, dst, "Authorization")
+
+	if got := dst.Get("Authorization"); got != "" {
+		t.Errorf("Authorization should be stripped when listed in extraStrip, got %q", got)
+	}
+	if dst.Get("Cookie") != "session=abc" {
+		t.Error("Cookie should still pass through")
+	}
+	if dst.Get("X-Trace-Id") != "trace-123" {
+		t.Error("X-Trace-Id should still pass through")
 	}
 }
 

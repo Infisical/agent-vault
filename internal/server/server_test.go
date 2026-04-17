@@ -2084,6 +2084,95 @@ func TestProxyNoMatchingRule(t *testing.T) {
 	}
 }
 
+func TestProxyPassthroughForwardsClientHeaders(t *testing.T) {
+	// Upstream asserts: client-supplied Cookie and X-Trace-Id flow through,
+	// but broker-scoped X-Vault and the session-token Authorization are
+	// stripped (the session token must never reach the target).
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("Authorization on explicit /proxy ingress should be stripped (it is the session token), got %q", got)
+		}
+		if got := r.Header.Get("Cookie"); got != "session=abc" {
+			t.Errorf("Cookie: got %q, want %q", got, "session=abc")
+		}
+		if got := r.Header.Get("X-Trace-Id"); got != "trace-123" {
+			t.Errorf("X-Trace-Id: got %q, want %q", got, "trace-123")
+		}
+		if got := r.Header.Get("X-Vault"); got != "" {
+			t.Errorf("X-Vault should have been stripped, got %q", got)
+		}
+		w.Header().Set("X-Upstream", "true")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`passthrough-ok`))
+	}))
+	defer upstream.Close()
+
+	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
+	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
+	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"}}]`, serviceHost)
+	ms, token, encKey := setupProxyTest(t, services)
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+
+	origClient := proxyClient
+	proxyClient = upstream.Client()
+	defer func() { proxyClient = origClient }()
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/data", nil)
+	req.Header.Set("Authorization", "Bearer "+token) // session auth — must not leak
+	req.Header.Set("Cookie", "session=abc")
+	req.Header.Set("X-Trace-Id", "trace-123")
+	req.Header.Set("X-Vault", "should-be-stripped")
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("X-Upstream") != "true" {
+		t.Fatal("expected X-Upstream header from upstream")
+	}
+	body, _ := io.ReadAll(rec.Body)
+	if string(body) != "passthrough-ok" {
+		t.Fatalf("unexpected body: %s", body)
+	}
+}
+
+func TestProxyPassthroughDoesNotReadCredentials(t *testing.T) {
+	// Passthrough must not perform any credential lookup, even if the service
+	// name collides with a stored credential key. Use a credential provider
+	// that explodes on any read to catch it.
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
+	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
+	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"}}]`, serviceHost)
+	ms, token, encKey := setupProxyTest(t, services)
+
+	// Sabotage: mark the only credential as unreachable. If the handler ever
+	// tried to read it, decryption or lookup would fail and the request
+	// would return 502.
+	delete(ms.credentials, "root-ns-id:STRIPE_KEY")
+
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+	origClient := proxyClient
+	proxyClient = upstream.Client()
+	defer func() { proxyClient = origClient }()
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/data", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 (no credential lookup for passthrough), got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestProxyMissingCredential(t *testing.T) {
 	services := `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"nonexistent_key"}}]`
 	ms, token, encKey := setupProxyTest(t, services)

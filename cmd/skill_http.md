@@ -120,13 +120,16 @@ When you get a `403` for a host not in `/discover`, the response includes a `pro
 Agent Vault auth types:
 
 ```
-bearer    -- Authorization: Bearer <token>          {"auth": {"type": "bearer", "token": "SECRET_KEY"}}
-basic     -- HTTP Basic (user, optional password)    {"auth": {"type": "basic", "username": "API_KEY"}}
-api-key   -- key in a named header, optional prefix  {"auth": {"type": "api-key", "key": "SECRET", "header": "x-api-key"}}
-custom    -- freeform header templates               {"auth": {"type": "custom", "headers": {"X-Key": "{{ SECRET }}"}}}
+bearer      -- Authorization: Bearer <token>          {"auth": {"type": "bearer", "token": "SECRET_KEY"}}
+basic       -- HTTP Basic (user, optional password)    {"auth": {"type": "basic", "username": "API_KEY"}}
+api-key     -- key in a named header, optional prefix  {"auth": {"type": "api-key", "key": "SECRET", "header": "x-api-key"}}
+custom      -- freeform header templates               {"auth": {"type": "custom", "headers": {"X-Key": "{{ SECRET }}"}}}
+passthrough -- forward client headers, inject nothing  {"auth": {"type": "passthrough"}}
 ```
 
 Common services: Stripe (bearer), GitHub (bearer), OpenAI (bearer), Ashby (basic -- API key as username), Jira (basic -- email + token), Anthropic (api-key, header: x-api-key). If unlisted, check the API docs.
+
+**Passthrough** allowlists a host but does not store or inject a credential — the client's `Authorization` and other request headers flow through unchanged (hop-by-hop headers, `X-Vault`, and `Proxy-Authorization` are still stripped). Use it only when the operator has decided their client already holds the credential and wants netguard / audit / MITM coverage without putting the secret in the vault. For the default case (agent needs the credential from the vault), use one of the credentialed types above. Passthrough auth entries reject all credential fields (`token`, `username`, `password`, `key`, `header`, `prefix`, `headers`).
 
 ### Creating a Proposal
 
@@ -145,7 +148,7 @@ Content-Type: application/json
 
 Key fields:
 - `services[].action` -- `"set"` (upsert, needs `host` + `auth`) or `"delete"` (needs `host` only)
-- `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates)
+- `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates), `passthrough` (no credential fields)
 - `credentials[].action` -- `"set"` (omit `value` for human to supply; include `value` to store back) or `"delete"`
 - `credentials` -- only declare credentials not already in `available_credentials`. Every credential referenced in auth configs must resolve to a slot or existing credential (400 otherwise)
 - `message` -- developer-facing explanation; `user_message` -- shown on the browser approval page
