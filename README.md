@@ -64,66 +64,56 @@ sudo mv agent-vault /usr/local/bin/
 
 ## Quickstart
 
+### 1. Start the server
+
 ```bash
-# Start the server (HTTP on 14321, transparent HTTPS proxy on 14322)
 agent-vault server -d
-
-# Add a credential
-agent-vault vault credential set GITHUB_TOKEN=ghp_xxx
-
-# Add a service proxy rule
-agent-vault vault service add \
-  --host api.github.com \
-  --auth-type bearer \
-  --token-key GITHUB_TOKEN
 ```
 
-The transparent MITM proxy binds `127.0.0.1:14322` by default so clients configured with `HTTPS_PROXY=http://localhost:14322` route through Agent Vault without code changes — install the root CA with `agent-vault ca fetch`, or disable the proxy entirely with `--mitm-port 0`.
-
-For local debugging, start the server with `--log-level debug` (or set `AGENT_VAULT_LOG_LEVEL=debug`) to emit one structured line per proxied request on stderr — method, host, path, matched broker service, injected credential key names, upstream status, duration. Credential *values* are never logged.
-
-Any command that needs authentication will walk you through setup automatically. Just run it and follow the prompts. You can also run `agent-vault vault service set` interactively, load from YAML with `agent-vault vault service set -f services.yaml`, or browse templates with `agent-vault catalog`.
-
-The server includes a web UI at `http://localhost:14321` for managing services, credentials, approving proposals, and inviting users and agents.
-
-### Building custom agents
-
-Mint a session token and pass it to your agent process. The agent authenticates every request through the proxy. No credentials in its environment.
+### 2. Add a credential and service
 
 ```bash
-# Mint a scoped session token
-export AGENT_VAULT_SESSION_TOKEN=$(agent-vault vault token)
-export AGENT_VAULT_ADDR=http://localhost:14321
+agent-vault vault credential set GITHUB_TOKEN=ghp_xxx
+agent-vault vault service add --host api.github.com --auth-type bearer --token-key GITHUB_TOKEN
 ```
 
-From your agent code, proxy requests through Agent Vault:
+### 3. Connect an agent
+
+#### Coding agents (Claude Code, Cursor, Codex)
+
+```bash
+agent-vault vault run -- claude
+```
+
+#### Sandboxed agents (Docker, Daytona, E2B)
 
 ```typescript
-const vault = process.env.AGENT_VAULT_ADDR;
-const token = process.env.AGENT_VAULT_SESSION_TOKEN;
+import { AgentVault, buildProxyEnv } from "@infisical/agent-vault-sdk";
 
-// Proxy an authenticated request (Agent Vault injects the credentials)
-const resp = await fetch(`${vault}/proxy/api.github.com/user/repos`, {
-  headers: { Authorization: `Bearer ${token}` },
-});
+const av = new AgentVault({ token: "YOUR_TOKEN", address: "http://localhost:14321" });
+const session = await av.vault("default").sessions.create({ vaultRole: "proxy" });
+const env = buildProxyEnv(session.containerConfig!, "/etc/ssl/agent-vault-ca.pem");
+// Pass env + session.containerConfig.caCertificate to your container runtime
 ```
 
-If a service isn't configured yet, the agent can [propose access](https://docs.agent-vault.dev/learn/proposals) via `POST /v1/proposals`. You approve in your browser and the agent retries.
-
-### Using with coding agents
-
-Wrap your coding agent with `vault run` for automatic session management:
+#### CLI
 
 ```bash
-agent-vault vault run -- claude    # Claude Code
-agent-vault vault run -- cursor    # Cursor
-agent-vault vault run -- codex     # Codex
-
-# Or create an invite for any agent
-agent-vault agent invite my-agent
+export AGENT_VAULT_SESSION_TOKEN=$(agent-vault vault token)
+curl https://api.github.com/user/repos  # routed through Agent Vault automatically
 ```
 
-`vault run` injects `AGENT_VAULT_SESSION_TOKEN`, `AGENT_VAULT_ADDR`, and `AGENT_VAULT_VAULT` into the child process. The agent discovers services, proxies requests, and proposes access for anything missing.
+The agent never sees credentials. Agent Vault intercepts HTTPS traffic via its transparent proxy, matches the host, and injects the right credential before forwarding upstream.
+
+If a service isn't configured yet, the agent can [propose access](https://docs.agent-vault.dev/learn/proposals) — you approve in the web UI at `http://localhost:14321` and the agent retries.
+
+### SDK
+
+```bash
+npm install @infisical/agent-vault-sdk
+```
+
+See the [TypeScript SDK README](sdks/sdk-typescript/README.md) for full documentation.
 
 ## Development
 
