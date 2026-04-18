@@ -26,13 +26,14 @@ description: "Deploy Agent Vault to Fly.io with persistent storage"
 
   <Step title="Set secrets">
     ```bash
+    # Optional — omit for passwordless mode (DEK stored unwrapped on volume)
     fly secrets set AGENT_VAULT_MASTER_PASSWORD=your-password
     fly secrets set AGENT_VAULT_ADDR=https://your-app.fly.dev
     ```
 
     | Variable | Required | Description |
     |----------|----------|-------------|
-    | `AGENT_VAULT_MASTER_PASSWORD` | **Yes** | Master key for encrypting credentials at rest. |
+    | `AGENT_VAULT_MASTER_PASSWORD` | No | Derives a KEK that wraps the data encryption key. Omit for passwordless mode. |
     | `AGENT_VAULT_ADDR` | Recommended | Externally-reachable base URL. Used for generating links in emails, invites, and discovery responses. |
 
     <Tip>
@@ -76,6 +77,6 @@ description: "Deploy Agent Vault to Fly.io with persistent storage"
 - **Storage**: Persistent volume `agent_vault_data` mounted at `/data` -- all state is in a single SQLite file
 - **Cold starts**: `min_machines_running` defaults to `0`, so the app scales to zero when idle. The first request after sleep incurs a few seconds of cold-start latency. Set it to `1` in `fly.toml` if you need always-on availability.
 
-<Warning>
-  Use a consistent master password across deploys. Changing it makes existing encrypted credentials unreadable. If you need to rotate, export your data first.
-</Warning>
+<Tip>
+  Changing the master password re-wraps the data encryption key without re-encrypting credentials. Use `agent-vault master-password change` while the server is stopped.
+</Tip>

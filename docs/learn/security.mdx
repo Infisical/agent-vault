@@ -21,25 +21,33 @@ This page covers the cryptographic primitives, token model, network protections,
 
 All [credentials](/learn/credentials) stored in a [vault](/learn/vaults) are encrypted using **AES-256-GCM**, an authenticated encryption scheme that provides both confidentiality and tamper detection.
 
-The encryption key is derived from the **master password** you set at server startup using **Argon2id**, a memory-hard key derivation function resistant to GPU and ASIC attacks.
+Agent Vault uses a **KEK/DEK key-wrapping architecture**:
+
+1. A random 256-bit **DEK** (Data Encryption Key) is generated on first boot. This key encrypts all credentials and the CA private key.
+2. If a **master password** is set, Argon2id derives a **KEK** (Key Encryption Key) that wraps the DEK. The KEK is never stored — it is derived in memory, used to unwrap the DEK, then wiped.
+3. If no master password is set (**passwordless mode**), the DEK is stored in plaintext in the database. Security depends on filesystem access controls — suitable for PaaS platforms where the platform manages volume isolation.
 
 | Parameter | Value |
 | --------- | ----- |
-| Algorithm | AES-256-GCM |
-| KDF | Argon2id |
+| Data encryption | AES-256-GCM |
+| Key wrapping | AES-256-GCM |
+| KDF (for KEK) | Argon2id |
 | Time cost | 3 iterations |
 | Memory cost | 64 MiB |
 | Parallelism | 4 threads |
-| Key length | 256 bits |
+| DEK length | 256 bits (random, `crypto/rand`) |
+| KEK length | 256 bits (Argon2id output) |
 | Salt length | 128 bits (random per setup) |
 
 Each encryption operation uses a fresh random nonce generated from `crypto/rand`. Credential values are decrypted in memory only at proxy time to resolve auth headers, then discarded.
 
+**Password changes are lightweight**: changing the master password re-wraps the DEK under a new KEK — a single database update with zero credential re-encryption. You can also add a password to a passwordless instance or remove a password entirely using `agent-vault master-password set|change|remove`.
+
 <Note>
   The master password is **never stored on disk**. If set via the
   `AGENT_VAULT_MASTER_PASSWORD` environment variable, Agent Vault unsets it from the process
-  immediately after reading. A sentinel value (encrypted at setup) is used to
-  verify the password on subsequent startups without storing it.
+  immediately after reading. The KEK derived from the password is wiped from
+  memory after unwrapping the DEK.
 </Note>
 
 ## Password hashing
@@ -163,6 +171,7 @@ A summary of how each category of sensitive data is stored:
 | Credentials | AES-256-GCM ciphertext + nonce | Yes, by vault members and admins via CLI (`credential get`, `credential list --reveal`). Proxy-role agents cannot read values. |
 | User passwords | Argon2id hash + salt + params | No |
 | Session tokens | SHA-256 hash | No (raw returned once at creation) |
-| Master password | Not stored | N/A (derived key held in memory only) |
+| DEK (data encryption key) | Wrapped by KEK (password mode) or plaintext (passwordless mode) in `master_key` table | Yes, in memory while server runs |
+| Master password | Not stored | N/A (KEK derived in memory, wiped after DEK unwrap) |
 
 Key material is zeroed after use via `WipeBytes()` on a best-effort basis. Sensitive byte slices are never converted to strings (Go strings are immutable and cannot be wiped from memory).

@@ -8,7 +8,7 @@ description: "All environment variables used to configure Agent Vault"
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `14321` | Server listen port. Respected by most PaaS platforms (Fly.io, Cloud Run, Heroku). The `--port` flag takes precedence when set. |
-| `AGENT_VAULT_MASTER_PASSWORD` | (unset) | Master key for encrypting credentials at rest (AES-256-GCM / Argon2id). Read at startup, then immediately unset from the process. |
+| `AGENT_VAULT_MASTER_PASSWORD` | (unset) | Derives a KEK (Key Encryption Key) via Argon2id that wraps the data encryption key (DEK). If omitted, the DEK is stored unwrapped (passwordless mode). Read at startup, then immediately unset from the process. |
 | `AGENT_VAULT_ADDR` | (auto) | Externally-reachable base URL. Used for generating links in emails, invites, and discovery responses. Falls back to `https://<FLY_APP_NAME>.fly.dev` on Fly.io, then `http://{host}:{port}`. |
 | `FLY_APP_NAME` | (set by Fly.io) | When `AGENT_VAULT_ADDR` is unset and this variable is present, the base URL is automatically derived as `https://<FLY_APP_NAME>.fly.dev`. Set automatically by the Fly.io platform — you should not need to set this manually. |
 | `AGENT_VAULT_NETWORK_MODE` | `public` | Proxy network restriction mode. `public` blocks connections to private/reserved IP ranges (RFC-1918, link-local, cloud metadata). `private` allows all outbound connections including private ranges — use this for local/private deployments where the proxy needs to reach internal services. |

@@ -11,9 +11,9 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault server [flags]
     ```
 
-    Start the Agent Vault server. Default port is 14321. On a fresh install, prompts for a master password interactively unless provided via environment variable or stdin.
+    Start the Agent Vault server. Default port is 14321. On a fresh install, generates a random data encryption key (DEK) and optionally wraps it with a master password.
 
-    Password resolution order: `AGENT_VAULT_MASTER_PASSWORD` env var, then `--password-stdin`, then interactive prompt. The env var is unset from the process immediately after reading.
+    Password resolution order: `AGENT_VAULT_MASTER_PASSWORD` env var, then `--password-stdin`, then interactive prompt. If no password is provided, runs in passwordless mode (DEK stored unwrapped). The env var is unset from the process immediately after reading.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -29,7 +29,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | Variable | Description |
     |----------|-------------|
     | `PORT` | Server listen port (default `14321`). The `--port` flag takes precedence. |
-    | `AGENT_VAULT_MASTER_PASSWORD` | Master password for encrypting credentials at rest |
+    | `AGENT_VAULT_MASTER_PASSWORD` | Derives a KEK that wraps the data encryption key. Omit for passwordless mode. |
     | `AGENT_VAULT_LOG_LEVEL` | Fallback for `--log-level` when the flag is not set. Accepts `info` or `debug`. |
     | `AGENT_VAULT_ADDR` | Externally-reachable base URL (e.g. `https://agent-vault.example.com`). Used for links in emails, invites, and discovery. Falls back to `https://<FLY_APP_NAME>.fly.dev` on Fly.io, then `http://{host}:{port}`. |
     | `FLY_APP_NAME` | Auto-detected on Fly.io. When `AGENT_VAULT_ADDR` is unset, derives the base URL as `https://<FLY_APP_NAME>.fly.dev`. |
@@ -856,6 +856,36 @@ description: "Complete reference for all Agent Vault CLI commands."
     |------|---------|-------------|
     | `--invite-only` | | Enable or disable invite-only registration (`true` or `false`) |
     | `--allowed-domains` | | Comma-separated list of allowed email domains (empty to clear) |
+  </Accordion>
+</AccordionGroup>
+
+## Master password
+
+Manage the master password that wraps the data encryption key (DEK). All commands require the server to be stopped.
+
+<AccordionGroup>
+  <Accordion title="agent-vault master-password set">
+    ```bash
+    agent-vault master-password set
+    ```
+
+    Set a master password on a passwordless instance. Wraps the existing DEK under a new KEK derived from the password. No credentials are re-encrypted.
+  </Accordion>
+
+  <Accordion title="agent-vault master-password change">
+    ```bash
+    agent-vault master-password change
+    ```
+
+    Change the master password. Re-wraps the DEK under a new KEK. No credentials are re-encrypted.
+  </Accordion>
+
+  <Accordion title="agent-vault master-password remove">
+    ```bash
+    agent-vault master-password remove
+    ```
+
+    Remove the master password, switching to passwordless mode. The DEK is stored in plaintext — security depends on filesystem access controls.
   </Accordion>
 </AccordionGroup>
 

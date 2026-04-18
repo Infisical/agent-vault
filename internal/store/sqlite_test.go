@@ -404,17 +404,22 @@ func TestGetMasterKeyRecordEmpty(t *testing.T) {
 	}
 }
 
-func TestMasterKeyRecordRoundTrip(t *testing.T) {
+func TestMasterKeyRecordRoundTripWithPassword(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 
+	kdfTime := uint32(3)
+	kdfMemory := uint32(65536)
+	kdfThreads := uint8(4)
 	in := &MasterKeyRecord{
-		Salt:       []byte("test-salt-16byte"),
-		Sentinel:   []byte("encrypted-sentinel"),
-		Nonce:      []byte("test-nonce-12"),
-		KDFTime:    3,
-		KDFMemory:  65536,
-		KDFThreads: 4,
+		Sentinel:      []byte("encrypted-sentinel"),
+		SentinelNonce: []byte("sentinel-nonce"),
+		DEKCiphertext: []byte("wrapped-dek-ciphertext"),
+		DEKNonce:      []byte("dek-nonce-12b"),
+		Salt:          []byte("test-salt-16byte"),
+		KDFTime:       &kdfTime,
+		KDFMemory:     &kdfMemory,
+		KDFThreads:    &kdfThreads,
 	}
 	if err := s.SetMasterKeyRecord(ctx, in); err != nil {
 		t.Fatalf("SetMasterKeyRecord: %v", err)
@@ -424,13 +429,83 @@ func TestMasterKeyRecordRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMasterKeyRecord: %v", err)
 	}
-	if string(got.Salt) != string(in.Salt) ||
-		string(got.Sentinel) != string(in.Sentinel) ||
-		string(got.Nonce) != string(in.Nonce) ||
-		got.KDFTime != in.KDFTime ||
-		got.KDFMemory != in.KDFMemory ||
-		got.KDFThreads != in.KDFThreads {
+	if string(got.Sentinel) != string(in.Sentinel) ||
+		string(got.SentinelNonce) != string(in.SentinelNonce) ||
+		string(got.DEKCiphertext) != string(in.DEKCiphertext) ||
+		string(got.DEKNonce) != string(in.DEKNonce) ||
+		string(got.Salt) != string(in.Salt) ||
+		*got.KDFTime != *in.KDFTime ||
+		*got.KDFMemory != *in.KDFMemory ||
+		*got.KDFThreads != *in.KDFThreads {
 		t.Fatalf("round-trip mismatch: got %+v", got)
+	}
+	if got.DEKPlaintext != nil {
+		t.Fatal("expected DEKPlaintext to be nil for password-protected record")
+	}
+}
+
+func TestMasterKeyRecordRoundTripPasswordless(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	in := &MasterKeyRecord{
+		Sentinel:      []byte("encrypted-sentinel"),
+		SentinelNonce: []byte("sentinel-nonce"),
+		DEKPlaintext:  []byte("plaintext-dek-32-bytes-here!!!!"),
+	}
+	if err := s.SetMasterKeyRecord(ctx, in); err != nil {
+		t.Fatalf("SetMasterKeyRecord: %v", err)
+	}
+
+	got, err := s.GetMasterKeyRecord(ctx)
+	if err != nil {
+		t.Fatalf("GetMasterKeyRecord: %v", err)
+	}
+	if string(got.Sentinel) != string(in.Sentinel) ||
+		string(got.SentinelNonce) != string(in.SentinelNonce) ||
+		string(got.DEKPlaintext) != string(in.DEKPlaintext) {
+		t.Fatalf("round-trip mismatch: got %+v", got)
+	}
+	if got.DEKCiphertext != nil || got.Salt != nil || got.KDFTime != nil {
+		t.Fatal("expected KEK fields to be nil for passwordless record")
+	}
+}
+
+func TestMasterKeyRecordUpdate(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	// Start passwordless.
+	in := &MasterKeyRecord{
+		Sentinel:      []byte("sentinel"),
+		SentinelNonce: []byte("nonce"),
+		DEKPlaintext:  []byte("plaintext-dek"),
+	}
+	if err := s.SetMasterKeyRecord(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+
+	// Update to password-protected (simulating "set password").
+	kdfTime := uint32(1)
+	kdfMemory := uint32(1024)
+	kdfThreads := uint8(1)
+	in.DEKCiphertext = []byte("wrapped-dek")
+	in.DEKNonce = []byte("dek-nonce")
+	in.DEKPlaintext = nil
+	in.Salt = []byte("salt")
+	in.KDFTime = &kdfTime
+	in.KDFMemory = &kdfMemory
+	in.KDFThreads = &kdfThreads
+	if err := s.UpdateMasterKeyRecord(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.GetMasterKeyRecord(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.DEKCiphertext) != "wrapped-dek" || got.DEKPlaintext != nil {
+		t.Fatalf("update mismatch: got %+v", got)
 	}
 }
 
@@ -439,8 +514,8 @@ func TestMasterKeyRecordSingleton(t *testing.T) {
 	ctx := context.Background()
 
 	rec := &MasterKeyRecord{
-		Salt: []byte("s"), Sentinel: []byte("e"), Nonce: []byte("n"),
-		KDFTime: 1, KDFMemory: 1024, KDFThreads: 1,
+		Sentinel: []byte("e"), SentinelNonce: []byte("n"),
+		DEKPlaintext: []byte("dek"),
 	}
 	if err := s.SetMasterKeyRecord(ctx, rec); err != nil {
 		t.Fatal(err)

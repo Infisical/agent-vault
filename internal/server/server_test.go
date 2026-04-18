@@ -1167,29 +1167,47 @@ func testKDFParams() crypto.KDFParams {
 	return crypto.KDFParams{Time: 1, Memory: 64, Threads: 1, KeyLen: 32, SaltLen: 16}
 }
 
-// setupMockStoreWithPassword creates a mock store with a master key record
-// derived from the given password using fast test KDF params.
+// setupMockStoreWithPassword creates a mock store with a KEK/DEK master key
+// record derived from the given password using fast test KDF params.
 func setupMockStoreWithPassword(t *testing.T, password string) *mockStore {
 	t.Helper()
 	ms := newMockStore()
 	params := testKDFParams()
+
+	// Generate a random DEK.
+	dek, err := crypto.GenerateSalt(32)
+	if err != nil {
+		t.Fatalf("GenerateSalt (DEK): %v", err)
+	}
+
+	// Encrypt sentinel with DEK.
+	sentinel := []byte("agent-vault-master-key-check")
+	sentinelCT, sentinelNonce, err := crypto.Encrypt(sentinel, dek)
+	if err != nil {
+		t.Fatalf("Encrypt sentinel: %v", err)
+	}
+
+	// Derive KEK from password and wrap the DEK.
 	salt, err := crypto.GenerateSalt(int(params.SaltLen))
 	if err != nil {
-		t.Fatalf("GenerateSalt: %v", err)
+		t.Fatalf("GenerateSalt (KEK salt): %v", err)
 	}
-	key := crypto.DeriveKey([]byte(password), salt, params)
-	sentinel := []byte("agent-vault-master-key-check")
-	ciphertext, nonce, err := crypto.Encrypt(sentinel, key)
+	kek := crypto.DeriveKey([]byte(password), salt, params)
+	dekCT, dekNonce, err := crypto.Encrypt(dek, kek)
 	if err != nil {
-		t.Fatalf("Encrypt: %v", err)
+		t.Fatalf("Encrypt DEK: %v", err)
 	}
+	crypto.WipeBytes(kek)
+
 	ms.masterKeyRecord = &store.MasterKeyRecord{
-		Salt:       salt,
-		Sentinel:   ciphertext,
-		Nonce:      nonce,
-		KDFTime:    params.Time,
-		KDFMemory:  params.Memory,
-		KDFThreads: params.Threads,
+		Sentinel:      sentinelCT,
+		SentinelNonce: sentinelNonce,
+		DEKCiphertext: dekCT,
+		DEKNonce:      dekNonce,
+		Salt:          salt,
+		KDFTime:       &params.Time,
+		KDFMemory:     &params.Memory,
+		KDFThreads:    &params.Threads,
 	}
 	return ms
 }

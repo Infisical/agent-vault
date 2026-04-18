@@ -21,7 +21,7 @@ The final image runs as non-root user `agentvault` (UID 65532) and includes a bu
 
 ## Configuration
 
-Pass the master password via environment variable to skip the interactive prompt:
+Pass the master password via environment variable to wrap the data encryption key (DEK):
 
 ```bash
 docker run -it -p 14321:14321 \
@@ -31,9 +31,11 @@ docker run -it -p 14321:14321 \
   infisical/agent-vault
 ```
 
+Omit `AGENT_VAULT_MASTER_PASSWORD` for **passwordless mode** — the DEK is stored unwrapped, relying on volume access controls for security.
+
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `AGENT_VAULT_MASTER_PASSWORD` | **Yes** | Master key for encrypting credentials at rest. |
+| `AGENT_VAULT_MASTER_PASSWORD` | No | Derives a KEK that wraps the data encryption key. If omitted, runs in passwordless mode. |
 | `AGENT_VAULT_ADDR` | Recommended | Externally-reachable base URL. Defaults to `http://localhost:14321`. Used for generating links in emails, invites, and discovery responses. |
 
 <Warning>
@@ -81,6 +83,6 @@ docker compose up -d
 
 All state lives in a single SQLite database at `/data/.agent-vault/agent-vault.db`. The Docker image declares `VOLUME /data`, so data survives container restarts as long as you mount a named volume or host path.
 
-<Warning>
-  Use a consistent master password across container restarts. Changing it makes existing encrypted credentials unreadable.
-</Warning>
+<Tip>
+  Changing the master password re-wraps the data encryption key without re-encrypting credentials. Use `agent-vault master-password change` while the server is stopped.
+</Tip>

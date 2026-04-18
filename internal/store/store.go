@@ -45,16 +45,21 @@ type Credential struct {
 	UpdatedAt  time.Time
 }
 
-// MasterKeyRecord holds the KDF salt and encrypted sentinel used to verify
-// the master password on subsequent server startups.
+// MasterKeyRecord holds the KEK/DEK key-wrapping artifacts.
+// The sentinel is always encrypted with the DEK for verification.
+// In password-protected mode: DEKCiphertext/DEKNonce hold the KEK-wrapped DEK.
+// In passwordless mode: DEKPlaintext holds the unwrapped DEK.
 type MasterKeyRecord struct {
-	Salt       []byte
-	Sentinel   []byte
-	Nonce      []byte
-	KDFTime    uint32
-	KDFMemory  uint32
-	KDFThreads uint8
-	CreatedAt  time.Time
+	Sentinel      []byte // sentinel ciphertext (encrypted with DEK)
+	SentinelNonce []byte // sentinel GCM nonce
+	DEKCiphertext []byte // wrapped DEK (nil in passwordless mode)
+	DEKNonce      []byte // DEK wrapping nonce (nil in passwordless mode)
+	DEKPlaintext  []byte // unwrapped DEK (nil when password-protected)
+	Salt          []byte // KDF salt (nil in passwordless mode)
+	KDFTime       *uint32
+	KDFMemory     *uint32
+	KDFThreads    *uint8
+	CreatedAt     time.Time
 }
 
 // Session represents an authenticated session.
@@ -285,6 +290,7 @@ type Store interface {
 	// Master key
 	GetMasterKeyRecord(ctx context.Context) (*MasterKeyRecord, error)
 	SetMasterKeyRecord(ctx context.Context, record *MasterKeyRecord) error
+	UpdateMasterKeyRecord(ctx context.Context, record *MasterKeyRecord) error
 
 	// Proposals
 	CreateProposal(ctx context.Context, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error)

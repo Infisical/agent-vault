@@ -223,8 +223,9 @@ func promptOwnerSetup(cmd *cobra.Command, db *store.SQLiteStore, masterPassword 
 	return nil
 }
 
-// unlockOrSetup prompts for the master password and returns the derived key.
+// unlockOrSetup resolves the master password and returns the DEK.
 // Priority: AGENT_VAULT_MASTER_PASSWORD envvar > --password-stdin > interactive prompt.
+// When no password is provided (envvar empty, no --password-stdin), sets up in passwordless mode.
 func unlockOrSetup(cmd *cobra.Command, db *store.SQLiteStore, passwordStdin bool) (*auth.MasterKey, error) {
 	// 1. AGENT_VAULT_MASTER_PASSWORD envvar (highest priority, for containerized/cloud deployments)
 	if envPw := os.Getenv("AGENT_VAULT_MASTER_PASSWORD"); envPw != "" {
@@ -249,10 +250,10 @@ func unlockOrSetup(cmd *cobra.Command, db *store.SQLiteStore, passwordStdin bool
 	}
 
 	if record == nil {
-		// First-time setup — prompt with confirmation
-		fmt.Fprintln(cmd.OutOrStderr(), boldText("No master password set. Setting up for the first time."))
+		// First-time setup — prompt with confirmation, allow empty for passwordless
+		fmt.Fprintln(cmd.OutOrStderr(), boldText("Setting up for the first time."))
 		pw, err := auth.PromptNewPassword(
-			"Enter master password: ",
+			"Enter master password (leave empty for passwordless): ",
 			"Confirm master password: ",
 		)
 		if err != nil {
@@ -261,7 +262,17 @@ func unlockOrSetup(cmd *cobra.Command, db *store.SQLiteStore, passwordStdin bool
 		return setupMasterKey(db, pw)
 	}
 
-	// Interactive unlock — up to 3 attempts
+	// Existing record — check if passwordless
+	if record.DEKPlaintext != nil {
+		verRec := buildVerificationRecord(record)
+		mk, err := auth.UnlockPasswordless(verRec)
+		if err != nil {
+			return nil, fmt.Errorf("unlocking (passwordless): %w", err)
+		}
+		return mk, nil
+	}
+
+	// Password-protected — interactive unlock, up to 3 attempts
 	verRec := buildVerificationRecord(record)
 	fmt.Fprintln(cmd.OutOrStderr(), boldText("Agent Vault is locked. Enter master password to unlock."))
 
@@ -287,7 +298,7 @@ func unlockOrSetup(cmd *cobra.Command, db *store.SQLiteStore, passwordStdin bool
 	return nil, fmt.Errorf("too many failed attempts")
 }
 
-// unlockOrSetupWithPassword derives the master key from a known password (no prompting, no retry).
+// unlockOrSetupWithPassword resolves the DEK using a known password (no prompting, no retry).
 // Used by the AGENT_VAULT_MASTER_PASSWORD envvar and --password-stdin code paths.
 func unlockOrSetupWithPassword(db *store.SQLiteStore, password []byte) (*auth.MasterKey, error) {
 	ctx := context.Background()
@@ -300,7 +311,18 @@ func unlockOrSetupWithPassword(db *store.SQLiteStore, password []byte) (*auth.Ma
 		return setupMasterKey(db, password)
 	}
 
-	// Unlock — single attempt, no retry
+	// Passwordless instance — password is ignored, unlock without it
+	if record.DEKPlaintext != nil {
+		crypto.WipeBytes(password)
+		verRec := buildVerificationRecord(record)
+		mk, err := auth.UnlockPasswordless(verRec)
+		if err != nil {
+			return nil, fmt.Errorf("unlocking (passwordless): %w", err)
+		}
+		return mk, nil
+	}
+
+	// Password-protected — single attempt, no retry
 	verRec := buildVerificationRecord(record)
 	mk, err := auth.Unlock(password, verRec)
 	crypto.WipeBytes(password)
@@ -310,22 +332,24 @@ func unlockOrSetupWithPassword(db *store.SQLiteStore, password []byte) (*auth.Ma
 	return mk, nil
 }
 
-// setupMasterKey runs first-time master key setup with the given password.
+// setupMasterKey runs first-time DEK generation and KEK wrapping.
+// If password is empty, sets up in passwordless mode.
 func setupMasterKey(db *store.SQLiteStore, password []byte) (*auth.MasterKey, error) {
-	mk, rec, err := auth.Setup(password)
-	crypto.WipeBytes(password)
+	var mk *auth.MasterKey
+	var rec *auth.VerificationRecord
+	var err error
+
+	if len(password) == 0 {
+		mk, rec, err = auth.SetupPasswordless()
+	} else {
+		mk, rec, err = auth.SetupWithPassword(password)
+		crypto.WipeBytes(password)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("setting up master key: %w", err)
 	}
 
-	storeRec := &store.MasterKeyRecord{
-		Salt:       rec.Salt,
-		Sentinel:   rec.Sentinel,
-		Nonce:      rec.Nonce,
-		KDFTime:    rec.Params.Time,
-		KDFMemory:  rec.Params.Memory,
-		KDFThreads: rec.Params.Threads,
-	}
+	storeRec := verificationToStoreRecord(rec)
 	if err := db.SetMasterKeyRecord(context.Background(), storeRec); err != nil {
 		mk.Wipe()
 		return nil, fmt.Errorf("persisting master key record: %w", err)
@@ -333,20 +357,45 @@ func setupMasterKey(db *store.SQLiteStore, password []byte) (*auth.MasterKey, er
 	return mk, nil
 }
 
+// verificationToStoreRecord converts an auth VerificationRecord to a store MasterKeyRecord.
+func verificationToStoreRecord(rec *auth.VerificationRecord) *store.MasterKeyRecord {
+	r := &store.MasterKeyRecord{
+		Sentinel:      rec.Sentinel,
+		SentinelNonce: rec.SentinelNonce,
+		DEKCiphertext: rec.DEKCiphertext,
+		DEKNonce:      rec.DEKNonce,
+		DEKPlaintext:  rec.DEKPlaintext,
+		Salt:          rec.Salt,
+	}
+	if rec.Params.Time > 0 {
+		r.KDFTime = &rec.Params.Time
+		r.KDFMemory = &rec.Params.Memory
+		r.KDFThreads = &rec.Params.Threads
+	}
+	return r
+}
+
 // buildVerificationRecord converts a store record to an auth verification record.
 func buildVerificationRecord(record *store.MasterKeyRecord) *auth.VerificationRecord {
-	return &auth.VerificationRecord{
-		Salt:     record.Salt,
-		Sentinel: record.Sentinel,
-		Nonce:    record.Nonce,
-		Params: crypto.KDFParams{
-			Time:    record.KDFTime,
-			Memory:  record.KDFMemory,
-			Threads: record.KDFThreads,
-			KeyLen:  32,
-			SaltLen: 16,
-		},
+	vr := &auth.VerificationRecord{
+		Sentinel:      record.Sentinel,
+		SentinelNonce: record.SentinelNonce,
+		DEKCiphertext: record.DEKCiphertext,
+		DEKNonce:      record.DEKNonce,
+		DEKPlaintext:  record.DEKPlaintext,
+		Salt:          record.Salt,
 	}
+	if record.KDFTime != nil {
+		defaults := crypto.DefaultKDFParams()
+		vr.Params = crypto.KDFParams{
+			Time:    *record.KDFTime,
+			Memory:  *record.KDFMemory,
+			Threads: *record.KDFThreads,
+			KeyLen:  defaults.KeyLen,
+			SaltLen: defaults.SaltLen,
+		}
+	}
+	return vr
 }
 
 // readPasswordFromStdin reads a single line from stdin for non-interactive password input.
@@ -455,19 +504,13 @@ func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bo
 	copy(payload, masterKey.Key())
 	payload[32] = initByte
 	if _, err := pw.Write(payload); err != nil {
-		// Wipe payload before returning.
-		for i := range payload {
-			payload[i] = 0
-		}
+		crypto.WipeBytes(payload)
 		_ = pw.Close()
 		_ = pr.Close()
 		_ = logFile.Close()
 		return fmt.Errorf("sending master key to child: %w", err)
 	}
-	// Wipe the payload copy of the master key.
-	for i := range payload {
-		payload[i] = 0
-	}
+	crypto.WipeBytes(payload)
 	_ = pw.Close()
 	_ = pr.Close()
 	_ = logFile.Close()

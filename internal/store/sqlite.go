@@ -778,12 +778,19 @@ func (s *SQLiteStore) DeleteSession(ctx context.Context, rawToken string) error 
 
 func (s *SQLiteStore) GetMasterKeyRecord(ctx context.Context) (*MasterKeyRecord, error) {
 	row := s.db.QueryRowContext(ctx,
-		"SELECT salt, sentinel, nonce, kdf_time, kdf_memory, kdf_threads, created_at FROM master_key WHERE id = 1",
+		`SELECT sentinel, sentinel_nonce, dek_ciphertext, dek_nonce, dek_plaintext,
+		        salt, kdf_time, kdf_memory, kdf_threads, created_at
+		 FROM master_key WHERE id = 1`,
 	)
 
 	var rec MasterKeyRecord
 	var createdAt string
-	err := row.Scan(&rec.Salt, &rec.Sentinel, &rec.Nonce, &rec.KDFTime, &rec.KDFMemory, &rec.KDFThreads, &createdAt)
+	err := row.Scan(
+		&rec.Sentinel, &rec.SentinelNonce,
+		&rec.DEKCiphertext, &rec.DEKNonce, &rec.DEKPlaintext,
+		&rec.Salt, &rec.KDFTime, &rec.KDFMemory, &rec.KDFThreads,
+		&createdAt,
+	)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -796,11 +803,31 @@ func (s *SQLiteStore) GetMasterKeyRecord(ctx context.Context) (*MasterKeyRecord,
 
 func (s *SQLiteStore) SetMasterKeyRecord(ctx context.Context, record *MasterKeyRecord) error {
 	_, err := s.db.ExecContext(ctx,
-		"INSERT INTO master_key (id, salt, sentinel, nonce, kdf_time, kdf_memory, kdf_threads) VALUES (1, ?, ?, ?, ?, ?, ?)",
-		record.Salt, record.Sentinel, record.Nonce, record.KDFTime, record.KDFMemory, record.KDFThreads,
+		`INSERT INTO master_key (id, sentinel, sentinel_nonce, dek_ciphertext, dek_nonce, dek_plaintext, salt, kdf_time, kdf_memory, kdf_threads)
+		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		record.Sentinel, record.SentinelNonce,
+		record.DEKCiphertext, record.DEKNonce, record.DEKPlaintext,
+		record.Salt, record.KDFTime, record.KDFMemory, record.KDFThreads,
 	)
 	if err != nil {
 		return fmt.Errorf("setting master key record: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) UpdateMasterKeyRecord(ctx context.Context, record *MasterKeyRecord) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE master_key SET
+		    sentinel = ?, sentinel_nonce = ?,
+		    dek_ciphertext = ?, dek_nonce = ?, dek_plaintext = ?,
+		    salt = ?, kdf_time = ?, kdf_memory = ?, kdf_threads = ?
+		 WHERE id = 1`,
+		record.Sentinel, record.SentinelNonce,
+		record.DEKCiphertext, record.DEKNonce, record.DEKPlaintext,
+		record.Salt, record.KDFTime, record.KDFMemory, record.KDFThreads,
+	)
+	if err != nil {
+		return fmt.Errorf("updating master key record: %w", err)
 	}
 	return nil
 }
