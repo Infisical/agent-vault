@@ -10,7 +10,8 @@ export type { ProposalHint } from "./errors.js";
 export type { AgentVaultConfig, VaultClientConfig, ClientConfig } from "./types.js";
 
 // Session resource types
-export type { CreateSessionOptions, Session } from "./resources/sessions.js";
+export type { CreateSessionOptions, Session, ContainerConfig } from "./resources/sessions.js";
+export { buildProxyEnv } from "./resources/sessions.js";
 
 // Vault types (instance-level operations)
 export type { CreateVaultOptions, Vault, DeleteVaultResult } from "./client.js";

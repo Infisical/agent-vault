@@ -81,6 +81,11 @@ export class HttpClient {
     });
   }
 
+  /** Returns the base URL this client is configured to talk to. */
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
   /**
    * Returns a new HttpClient with additional default headers merged in.
    * The original instance is not modified.
