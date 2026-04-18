@@ -48,6 +48,14 @@ Supports macOS (Intel + Apple Silicon) and Linux (x86_64 + ARM64).
 docker run -it -p 14321:14321 -p 14322:14322 -v agent-vault-data:/data infisical/agent-vault
 ```
 
+For non-interactive environments (Docker Compose, CI, detached mode), pass the master password as an env var:
+
+```bash
+docker run -d -p 14321:14321 -p 14322:14322 \
+  -e AGENT_VAULT_MASTER_PASSWORD=your-password \
+  -v agent-vault-data:/data infisical/agent-vault
+```
+
 ### From source
 
 Requires [Go 1.25+](https://go.dev/dl/) and [Node.js 22+](https://nodejs.org/).
