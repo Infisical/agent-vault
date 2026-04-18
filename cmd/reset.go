@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Infisical/agent-vault/internal/pidfile"
-	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/Infisical/agent-vault/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -69,25 +67,12 @@ it will be stopped automatically before the reset.`,
 			return err
 		}
 
-		// 5. Resolve data directory and delete CA first (crash-safe ordering:
-		//    if interrupted after CA removal but before DB removal, the existing
-		//    DEK is still intact and the server regenerates a fresh CA on restart).
+		// 5. Secure-wipe database files (best-effort overwrite before removal).
 		dbPath, err := store.DefaultDBPath()
 		if err != nil {
 			return fmt.Errorf("resolving database path: %w", err)
 		}
-
-		dataDir := filepath.Dir(dbPath)
-		caDir := filepath.Join(dataDir, "ca")
-		if err := os.RemoveAll(caDir); err != nil {
-			return fmt.Errorf("removing CA directory: %w", err)
-		}
-
-		// 6. Delete database, WAL, SHM, and journal files
-		paths := []string{dbPath, dbPath + "-wal", dbPath + "-shm", dbPath + "-journal"}
-
-		// Overwrite before removing (best-effort secure wipe).
-		for _, p := range paths {
+		for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm", dbPath + "-journal"} {
 			if f, err := os.OpenFile(p, os.O_WRONLY, 0); err == nil {
 				if info, err := f.Stat(); err == nil {
 					zeros := make([]byte, 4096)
@@ -106,19 +91,12 @@ it will be stopped automatically before the reset.`,
 			}
 		}
 
-		for _, p := range paths {
-			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("removing %s: %w", p, err)
-			}
+		// 6. Remove the entire data directory (~/.agent-vault/).
+		//    This covers the database, CA keys, backups, session, logs, and PID file.
+		dataDir := filepath.Dir(dbPath)
+		if err := os.RemoveAll(dataDir); err != nil {
+			return fmt.Errorf("removing data directory: %w", err)
 		}
-
-		// 7. Clear session
-		if err := session.Clear(); err != nil {
-			return fmt.Errorf("clearing session: %w", err)
-		}
-
-		// 8. Remove PID file
-		_ = pidfile.Remove()
 
 		fmt.Fprintf(cmd.OutOrStdout(), "%s Instance reset. Run 'agent-vault server' to start fresh.\n", successText("✓"))
 		return nil
