@@ -192,6 +192,19 @@ func WriteProxyError(w http.ResponseWriter, status int, code, message string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "message": message})
 }
 
+// writeProxyErrorWithHelp is like WriteProxyError but appends an optional
+// help field when baseURL is non-empty.
+func writeProxyErrorWithHelp(w http.ResponseWriter, status int, code, message, baseURL string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(ProxyErrorHeader, "true")
+	w.WriteHeader(status)
+	body := map[string]interface{}{"error": code, "message": message}
+	if baseURL != "" {
+		body["help"] = helpLinks(baseURL)
+	}
+	_ = json.NewEncoder(w).Encode(body)
+}
+
 // WriteForbiddenHint writes a 403 with the shared proposal_hint body so
 // both ingress paths emit identical bytes for the "host not brokerable"
 // case.
@@ -212,17 +225,8 @@ func WriteInjectError(w http.ResponseWriter, err error, targetHost, vaultName, b
 	case errors.Is(err, ErrServiceNotFound):
 		WriteForbiddenHint(w, targetHost, vaultName, baseURL)
 	case errors.Is(err, ErrCredentialMissing):
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set(ProxyErrorHeader, "true")
-		w.WriteHeader(http.StatusBadGateway)
-		body := map[string]interface{}{
-			"error":   "credential_not_found",
-			"message": "A required credential could not be resolved; check vault configuration",
-		}
-		if baseURL != "" {
-			body["help"] = helpLinks(baseURL)
-		}
-		_ = json.NewEncoder(w).Encode(body)
+		writeProxyErrorWithHelp(w, http.StatusBadGateway, "credential_not_found",
+			"A required credential could not be resolved; check vault configuration", baseURL)
 	default:
 		WriteProxyError(w, http.StatusInternalServerError, "internal",
 			"Failed to resolve broker services")

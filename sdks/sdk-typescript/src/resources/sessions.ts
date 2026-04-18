@@ -61,6 +61,7 @@ export function buildProxyEnv(
   config: ContainerConfig,
   certPath: string,
 ): Record<string, string> {
+  // CA trust variables must stay in sync with augmentEnvWithMITM() in cmd/run.go.
   return {
     HTTPS_PROXY: config.env.HTTPS_PROXY,
     NO_PROXY: config.env.NO_PROXY,
@@ -73,11 +74,21 @@ export function buildProxyEnv(
   };
 }
 
+/** Cached MITM metadata (CA cert, host, port) — static for the server's lifetime. */
+interface MitmInfo {
+  caCertificate: string;
+  host: string;
+  port: number;
+}
+
 /**
  * Resource for minting vault-scoped session tokens.
  * Maps to `POST /v1/sessions`.
  */
 export class SessionsResource {
+  /** Cached MITM info promise — fetched once, reused across create() calls. */
+  private mitmInfoCache: Promise<MitmInfo | null> | null = null;
+
   constructor(
     private readonly httpClient: HttpClient,
     private readonly vaultName: string,
@@ -95,20 +106,25 @@ export class SessionsResource {
    * `containerConfig` is `null` when the server has MITM disabled.
    */
   async create(options?: CreateSessionOptions): Promise<Session> {
-    const [res, containerConfig] = await Promise.all([
+    const [res, mitmInfo] = await Promise.all([
       this.httpClient.post<ScopedSession>("/v1/sessions", {
         vault: this.vaultName,
         vault_role: options?.vaultRole,
         ttl_seconds: options?.ttlSeconds,
       }),
-      this.fetchContainerConfig(),
+      this.getMitmInfo(),
     ]);
 
-    if (containerConfig) {
-      // Rebuild HTTPS_PROXY with the scoped token from the session response.
-      const proxyUrl = new URL(containerConfig.env.HTTPS_PROXY);
-      proxyUrl.username = encodeURIComponent(res.token);
-      containerConfig.env.HTTPS_PROXY = proxyUrl.toString();
+    let containerConfig: ContainerConfig | null = null;
+    if (mitmInfo) {
+      const proxyUrl = `http://${encodeURIComponent(res.token)}:${encodeURIComponent(this.vaultName)}@${mitmInfo.host}:${mitmInfo.port}`;
+      containerConfig = {
+        env: {
+          HTTPS_PROXY: proxyUrl,
+          NO_PROXY: "localhost,127.0.0.1",
+        },
+        caCertificate: mitmInfo.caCertificate,
+      };
     }
 
     return {
@@ -119,17 +135,21 @@ export class SessionsResource {
     };
   }
 
-  /**
-   * Fetch the MITM CA certificate and build a preliminary container config.
-   * The HTTPS_PROXY URL uses a placeholder token that `create()` replaces
-   * with the real scoped token once the session response arrives.
-   */
-  private async fetchContainerConfig(): Promise<ContainerConfig | null> {
-    const resp = await this.httpClient.raw("GET", "/v1/mitm/ca.pem");
-    if (resp.status === 404) {
-      return null;
+  /** Return cached MITM info, fetching once on first call. */
+  private getMitmInfo(): Promise<MitmInfo | null> {
+    if (!this.mitmInfoCache) {
+      this.mitmInfoCache = this.fetchMitmInfo();
     }
-    if (!resp.ok) {
+    return this.mitmInfoCache;
+  }
+
+  /**
+   * Fetch the MITM CA certificate and extract host/port metadata.
+   * Returns null when MITM is disabled on the server.
+   */
+  private async fetchMitmInfo(): Promise<MitmInfo | null> {
+    const resp = await this.httpClient.raw("GET", "/v1/mitm/ca.pem");
+    if (resp.status === 404 || !resp.ok) {
       return null;
     }
 
@@ -144,27 +164,17 @@ export class SessionsResource {
       }
     }
 
-    // Extract the host from the server address for the proxy URL.
     const baseUrl = this.httpClient.getBaseUrl();
-    let mitmHost = "127.0.0.1";
+    let host = "127.0.0.1";
     try {
       const u = new URL(baseUrl);
       if (u.hostname) {
-        mitmHost = u.hostname;
+        host = u.hostname;
       }
     } catch {
       // fall back to 127.0.0.1
     }
 
-    // Use a placeholder token — create() replaces it with the real scoped token.
-    const proxyUrl = `http://__TOKEN__:${encodeURIComponent(this.vaultName)}@${mitmHost}:${port}`;
-
-    return {
-      env: {
-        HTTPS_PROXY: proxyUrl,
-        NO_PROXY: "localhost,127.0.0.1",
-      },
-      caCertificate,
-    };
+    return { caCertificate, host, port };
   }
 }

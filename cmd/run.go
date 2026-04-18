@@ -374,6 +374,8 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 	}).String()
 
 	env = stripEnvKeys(env, mitmInjectedKeys)
+	// CA trust variables must stay in sync with buildProxyEnv() in
+	// sdks/sdk-typescript/src/resources/sessions.ts.
 	env = append(env,
 		"HTTPS_PROXY="+proxyURL,
 		"NO_PROXY=localhost,127.0.0.1",
