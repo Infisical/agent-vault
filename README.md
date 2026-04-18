@@ -35,10 +35,9 @@ See the [installation guide](https://docs.agent-vault.dev/installation) for full
 
 ### Script (macOS / Linux)
 
-Auto-detects your OS and architecture, downloads the latest release, and installs. Works for both fresh installs and upgrades (backs up your database before upgrading).
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Infisical/agent-vault/main/install.sh | sh
+agent-vault server -d
 ```
 
 Supports macOS (Intel + Apple Silicon) and Linux (x86_64 + ARM64).
@@ -49,8 +48,6 @@ Supports macOS (Intel + Apple Silicon) and Linux (x86_64 + ARM64).
 docker run -it -p 14321:14321 -p 14322:14322 -v agent-vault-data:/data infisical/agent-vault
 ```
 
-Port `14322` exposes the transparent HTTPS proxy (on by default) — omit the mapping or pass `--mitm-port 0` to the server if you only need the explicit `/proxy/{host}/{path}` API on `14321`.
-
 ### From source
 
 Requires [Go 1.25+](https://go.dev/dl/) and [Node.js 22+](https://nodejs.org/).
@@ -60,7 +57,10 @@ git clone https://github.com/Infisical/agent-vault.git
 cd agent-vault
 make build
 sudo mv agent-vault /usr/local/bin/
+agent-vault server -d
 ```
+
+The server starts the HTTP API on port `14321` and a transparent HTTPS proxy on port `14322`. A web UI is available at `http://localhost:14321`.
 
 ## Quickstart
 
