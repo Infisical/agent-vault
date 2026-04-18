@@ -64,28 +64,13 @@ sudo mv agent-vault /usr/local/bin/
 
 ## Quickstart
 
-### 1. Start the server
-
-```bash
-agent-vault server -d
-```
-
-### 2. Add a credential and service
-
-```bash
-agent-vault vault credential set GITHUB_TOKEN=ghp_xxx
-agent-vault vault service add --host api.github.com --auth-type bearer --token-key GITHUB_TOKEN
-```
-
-### 3. Connect an agent
-
-#### Coding agents (Claude Code, Cursor, Codex)
+### Coding agents (Claude Code, Cursor, Codex)
 
 ```bash
 agent-vault vault run -- claude
 ```
 
-#### Sandboxed agents (Docker, Daytona, E2B)
+### Sandboxed agents (Docker, Daytona, E2B)
 
 ```typescript
 import { AgentVault, buildProxyEnv } from "@infisical/agent-vault-sdk";
@@ -96,18 +81,16 @@ const env = buildProxyEnv(session.containerConfig!, "/etc/ssl/agent-vault-ca.pem
 // Pass env + session.containerConfig.caCertificate to your container runtime
 ```
 
-#### CLI
+### API
 
 ```bash
-export AGENT_VAULT_SESSION_TOKEN=$(agent-vault vault token)
-curl https://api.github.com/user/repos  # routed through Agent Vault automatically
+curl https://api.github.com/user/repos \
+  -x http://localhost:14322
 ```
 
-The agent never sees credentials. Agent Vault intercepts HTTPS traffic via its transparent proxy, matches the host, and injects the right credential before forwarding upstream.
+The agent never sees credentials. Agent Vault intercepts HTTPS traffic via its transparent proxy, matches the host, and injects the right credential before forwarding upstream. If a service isn't configured yet, the agent can [propose access](https://docs.agent-vault.dev/learn/proposals) — you approve in the web UI and the agent retries.
 
-If a service isn't configured yet, the agent can [propose access](https://docs.agent-vault.dev/learn/proposals) — you approve in the web UI at `http://localhost:14321` and the agent retries.
-
-### SDK
+## SDK
 
 ```bash
 npm install @infisical/agent-vault-sdk
