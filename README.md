@@ -80,14 +80,37 @@ agent-vault vault run -- claude
 
 ### Sandboxed agents (Docker, Daytona, E2B)
 
+Install the SDK in your orchestrator (the backend that launches sandboxes):
+
+```bash
+npm install @infisical/agent-vault-sdk
+```
+
+Mint a session and configure the sandbox. The SDK returns the proxy env vars and a CA certificate — pass them into your container so the agent's HTTPS traffic routes through Agent Vault transparently:
+
 ```typescript
 import { AgentVault, buildProxyEnv } from "@infisical/agent-vault-sdk";
+import { writeFileSync } from "fs";
+import { execSync } from "child_process";
 
 const av = new AgentVault({ token: "YOUR_TOKEN", address: "http://localhost:14321" });
 const session = await av.vault("default").sessions.create({ vaultRole: "proxy" });
-const env = buildProxyEnv(session.containerConfig!, "/etc/ssl/agent-vault-ca.pem");
-// Pass env + session.containerConfig.caCertificate to your container runtime
+
+// Build env vars with CA trust paths for the container
+const certPath = "/etc/ssl/agent-vault-ca.pem";
+const env = buildProxyEnv(session.containerConfig!, certPath);
+
+// Write the CA cert to a temp file and mount it into the container
+writeFileSync("/tmp/av-ca.pem", session.containerConfig!.caCertificate);
+
+const envFlags = Object.entries(env).map(([k, v]) => `-e ${k}=${v}`).join(" ");
+execSync(`docker run --rm ${envFlags} -v /tmp/av-ca.pem:${certPath}:ro my-agent-image`);
+
+// Inside the container, the agent just calls fetch("https://api.github.com/...")
+// normally — no SDK, no credentials, no special configuration needed.
 ```
+
+See the [TypeScript SDK README](sdks/sdk-typescript/README.md) for full documentation.
 
 ### API
 
@@ -97,14 +120,6 @@ curl https://api.github.com/user/repos \
 ```
 
 The agent never sees credentials. Agent Vault intercepts HTTPS traffic via its transparent proxy, matches the host, and injects the right credential before forwarding upstream. If a service isn't configured yet, the agent can [propose access](https://docs.agent-vault.dev/learn/proposals) — you approve in the web UI and the agent retries.
-
-## SDK
-
-```bash
-npm install @infisical/agent-vault-sdk
-```
-
-See the [TypeScript SDK README](sdks/sdk-typescript/README.md) for full documentation.
 
 ## Development
 
