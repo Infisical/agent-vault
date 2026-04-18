@@ -31,7 +31,8 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `PORT` | Server listen port (default `14321`). The `--port` flag takes precedence. |
     | `AGENT_VAULT_MASTER_PASSWORD` | Master password for encrypting credentials at rest |
     | `AGENT_VAULT_LOG_LEVEL` | Fallback for `--log-level` when the flag is not set. Accepts `info` or `debug`. |
-    | `AGENT_VAULT_ADDR` | Externally-reachable base URL (e.g. `https://agent-vault.example.com`). Used for links in emails, invites, and discovery. Falls back to `http://{host}:{port}` if unset. |
+    | `AGENT_VAULT_ADDR` | Externally-reachable base URL (e.g. `https://agent-vault.example.com`). Used for links in emails, invites, and discovery. Falls back to `https://<FLY_APP_NAME>.fly.dev` on Fly.io, then `http://{host}:{port}`. |
+    | `FLY_APP_NAME` | Auto-detected on Fly.io. When `AGENT_VAULT_ADDR` is unset, derives the base URL as `https://<FLY_APP_NAME>.fly.dev`. |
     | `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_ID` | Google OAuth client ID. When both this and the client secret are set, Google OAuth is enabled. |
     | `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
     | `AGENT_VAULT_SMTP_HOST` | SMTP server host. If unset, email notifications are silently disabled. |

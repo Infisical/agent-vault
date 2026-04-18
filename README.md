@@ -56,6 +56,10 @@ docker run -d -p 14321:14321 -p 14322:14322 \
   -v agent-vault-data:/data infisical/agent-vault
 ```
 
+### PaaS (Fly.io, Cloud Run, Heroku)
+
+Agent Vault respects the standard `PORT` env var injected by most PaaS platforms — no `--port` flag needed. On Fly.io, the externally-reachable base URL is automatically derived from `FLY_APP_NAME`, so `AGENT_VAULT_ADDR` is optional. Set `AGENT_VAULT_ADDR` explicitly if you use a custom domain.
+
 ### From source
 
 Requires [Go 1.25+](https://go.dev/dl/) and [Node.js 22+](https://nodejs.org/).
