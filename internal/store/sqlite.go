@@ -816,7 +816,7 @@ func (s *SQLiteStore) SetMasterKeyRecord(ctx context.Context, record *MasterKeyR
 }
 
 func (s *SQLiteStore) UpdateMasterKeyRecord(ctx context.Context, record *MasterKeyRecord) error {
-	_, err := s.db.ExecContext(ctx,
+	res, err := s.db.ExecContext(ctx,
 		`UPDATE master_key SET
 		    sentinel = ?, sentinel_nonce = ?,
 		    dek_ciphertext = ?, dek_nonce = ?, dek_plaintext = ?,
@@ -828,6 +828,9 @@ func (s *SQLiteStore) UpdateMasterKeyRecord(ctx context.Context, record *MasterK
 	)
 	if err != nil {
 		return fmt.Errorf("updating master key record: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
 	}
 	return nil
 }
