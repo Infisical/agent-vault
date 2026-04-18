@@ -72,54 +72,45 @@ The server starts the HTTP API on port `14321` and a transparent HTTPS proxy on 
 
 ## Quickstart
 
-### Coding agents (Claude Code, Cursor, Codex)
+### CLI — local agents (Claude Code, Cursor, Codex, OpenClaw, Hermes)
+
+Wrap any local agent process with `vault run`. Agent Vault creates a scoped session, sets `HTTPS_PROXY` and CA-trust env vars, and launches the agent — all HTTPS traffic is transparently proxied and authenticated:
 
 ```bash
 agent-vault vault run -- claude
 ```
 
-### Sandboxed agents (Docker, Daytona, E2B)
+The agent calls APIs normally (e.g. `fetch("https://api.github.com/...")`). Agent Vault intercepts the request, injects the credential, and forwards it upstream. The agent never sees secrets.
 
-Install the SDK in your orchestrator (the backend that launches sandboxes):
+### SDK — sandboxed agents (Docker, Daytona, E2B)
+
+For agents running inside containers, use the SDK from your orchestrator to mint a session and pass proxy config into the sandbox:
 
 ```bash
 npm install @infisical/agent-vault-sdk
 ```
 
-Mint a session and configure the sandbox. The SDK returns the proxy env vars and a CA certificate — pass them into your container so the agent's HTTPS traffic routes through Agent Vault transparently:
-
 ```typescript
 import { AgentVault, buildProxyEnv } from "@infisical/agent-vault-sdk";
-import { writeFileSync } from "fs";
-import { execSync } from "child_process";
 
 const av = new AgentVault({ token: "YOUR_TOKEN", address: "http://localhost:14321" });
 const session = await av.vault("default").sessions.create({ vaultRole: "proxy" });
 
-// Build env vars with CA trust paths for the container
+// certPath is where you'll mount the CA certificate inside the sandbox.
 const certPath = "/etc/ssl/agent-vault-ca.pem";
+
+// env: { HTTPS_PROXY, NO_PROXY, SSL_CERT_FILE, NODE_EXTRA_CA_CERTS,
+//         REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE, GIT_SSL_CAINFO, DENO_CERT }
 const env = buildProxyEnv(session.containerConfig!, certPath);
+const caCert = session.containerConfig!.caCertificate;
 
-// Write the CA cert to a temp file and mount it into the container
-writeFileSync("/tmp/av-ca.pem", session.containerConfig!.caCertificate);
-
-const envFlags = Object.entries(env).map(([k, v]) => `-e ${k}=${v}`).join(" ");
-execSync(`docker run --rm ${envFlags} -v /tmp/av-ca.pem:${certPath}:ro my-agent-image`);
-
-// Inside the container, the agent just calls fetch("https://api.github.com/...")
-// normally — no SDK, no credentials, no special configuration needed.
+// Pass `env` as environment variables and mount `caCert` at `certPath`
+// in your sandbox — Docker, Daytona, E2B, Firecracker, or any other runtime.
+// Once configured, the agent inside just calls APIs normally:
+//   fetch("https://api.github.com/...") — no SDK, no credentials needed.
 ```
 
 See the [TypeScript SDK README](sdks/sdk-typescript/README.md) for full documentation.
-
-### API
-
-```bash
-curl https://api.github.com/user/repos \
-  -x http://localhost:14322
-```
-
-The agent never sees credentials. Agent Vault intercepts HTTPS traffic via its transparent proxy, matches the host, and injects the right credential before forwarding upstream. If a service isn't configured yet, the agent can [propose access](https://docs.agent-vault.dev/learn/proposals) — you approve in the web UI and the agent retries.
 
 ## Development
 

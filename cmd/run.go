@@ -38,10 +38,11 @@ Environment variables always set on the child:
   AGENT_VAULT_VAULT          — vault the session is scoped to
 
 When the server's transparent MITM proxy is reachable (default), the child
-also inherits HTTPS_PROXY / NO_PROXY plus the root CA trust variables
-(SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE,
+also inherits HTTPS_PROXY / NO_PROXY / NODE_USE_ENV_PROXY plus the root CA trust
+variables (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE,
 GIT_SSL_CAINFO, DENO_CERT) so standard HTTPS clients transparently route through the
-broker. HTTP_PROXY is intentionally not set — the MITM proxy only handles
+broker. NODE_USE_ENV_PROXY=1 enables Node.js built-in proxy support (v22.21.0+) so
+fetch() and https.get() honor HTTPS_PROXY natively. HTTP_PROXY is intentionally not set — the MITM proxy only handles
 HTTPS (CONNECT) and would 405 any plain http:// request. The root CA PEM
 is written to ~/.agent-vault/mitm-ca.pem. Pass --no-mitm to disable
 injection and rely solely on the explicit /proxy/{host}/{path} endpoint.
@@ -292,6 +293,7 @@ func fetchUserVaults(addr, token string) ([]string, error) {
 var mitmInjectedKeys = map[string]struct{}{
 	"HTTPS_PROXY":         {},
 	"NO_PROXY":            {},
+	"NODE_USE_ENV_PROXY":  {},
 	"SSL_CERT_FILE":       {},
 	"NODE_EXTRA_CA_CERTS": {},
 	"REQUESTS_CA_BUNDLE":  {},
@@ -375,6 +377,7 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 	env = append(env,
 		"HTTPS_PROXY="+proxyURL,
 		"NO_PROXY=localhost,127.0.0.1",
+		"NODE_USE_ENV_PROXY=1",
 		"SSL_CERT_FILE="+caPath,
 		"NODE_EXTRA_CA_CERTS="+caPath,
 		"REQUESTS_CA_BUNDLE="+caPath,

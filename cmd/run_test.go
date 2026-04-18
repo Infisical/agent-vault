@@ -102,6 +102,7 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 	want := map[string]string{
 		"HTTPS_PROXY":         "", // checked separately below
 		"NO_PROXY":            "localhost,127.0.0.1",
+		"NODE_USE_ENV_PROXY":  "1",
 		"SSL_CERT_FILE":       caPath,
 		"NODE_EXTRA_CA_CERTS": caPath,
 		"REQUESTS_CA_BUNDLE":  caPath,
@@ -213,7 +214,7 @@ func TestAugmentEnvWithMITM_DedupesParentEnv(t *testing.T) {
 			counts[kv[:i]]++
 		}
 	}
-	for _, k := range []string{"HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "DENO_CERT"} {
+	for _, k := range []string{"HTTPS_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "DENO_CERT"} {
 		if counts[k] != 1 {
 			t.Errorf("%s appears %d times in env, want exactly 1 (POSIX getenv returns first match)", k, counts[k])
 		}
