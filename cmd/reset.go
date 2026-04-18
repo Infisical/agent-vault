@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/Infisical/agent-vault/internal/pidfile"
@@ -99,6 +100,13 @@ it will be stopped automatically before the reset.`,
 			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("removing %s: %w", p, err)
 			}
+		}
+
+		// 5b. Delete CA directory (key is encrypted with the old DEK)
+		dataDir := filepath.Dir(dbPath)
+		caDir := filepath.Join(dataDir, "ca")
+		if err := os.RemoveAll(caDir); err != nil {
+			return fmt.Errorf("removing CA directory: %w", err)
 		}
 
 		// 6. Clear session
