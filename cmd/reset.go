@@ -69,11 +69,21 @@ it will be stopped automatically before the reset.`,
 			return err
 		}
 
-		// 5. Delete database, WAL, SHM, and journal files
+		// 5. Resolve data directory and delete CA first (crash-safe ordering:
+		//    if interrupted after CA removal but before DB removal, the existing
+		//    DEK is still intact and the server regenerates a fresh CA on restart).
 		dbPath, err := store.DefaultDBPath()
 		if err != nil {
 			return fmt.Errorf("resolving database path: %w", err)
 		}
+
+		dataDir := filepath.Dir(dbPath)
+		caDir := filepath.Join(dataDir, "ca")
+		if err := os.RemoveAll(caDir); err != nil {
+			return fmt.Errorf("removing CA directory: %w", err)
+		}
+
+		// 6. Delete database, WAL, SHM, and journal files
 		paths := []string{dbPath, dbPath + "-wal", dbPath + "-shm", dbPath + "-journal"}
 
 		// Overwrite before removing (best-effort secure wipe).
@@ -102,19 +112,12 @@ it will be stopped automatically before the reset.`,
 			}
 		}
 
-		// 5b. Delete CA directory (key is encrypted with the old DEK)
-		dataDir := filepath.Dir(dbPath)
-		caDir := filepath.Join(dataDir, "ca")
-		if err := os.RemoveAll(caDir); err != nil {
-			return fmt.Errorf("removing CA directory: %w", err)
-		}
-
-		// 6. Clear session
+		// 7. Clear session
 		if err := session.Clear(); err != nil {
 			return fmt.Errorf("clearing session: %w", err)
 		}
 
-		// 7. Remove PID file
+		// 8. Remove PID file
 		_ = pidfile.Remove()
 
 		fmt.Fprintf(cmd.OutOrStdout(), "%s Instance reset. Run 'agent-vault server' to start fresh.\n", successText("✓"))
