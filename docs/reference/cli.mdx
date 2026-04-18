@@ -233,7 +233,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault run [flags] -- <command>
     ```
 
-    Wrap a process with Agent Vault environment variables. The child process always receives `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT`. When the server's transparent MITM proxy is reachable (default), it also receives `HTTPS_PROXY` / `NO_PROXY` plus CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) pointing at `~/.agent-vault/mitm-ca.pem`, so standard HTTPS clients transparently route through the broker.
+    Wrap a process with Agent Vault environment variables. The child process always receives `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT`. When the server's transparent MITM proxy is reachable (default), it also receives `HTTPS_PROXY` / `NO_PROXY` / `NODE_USE_ENV_PROXY` plus CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) pointing at `~/.agent-vault/mitm-ca.pem`, so standard HTTPS clients transparently route through the broker.
 
     | Flag | Default | Description |
     |------|---------|-------------|

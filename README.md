@@ -99,8 +99,9 @@ const session = await av.vault("default").sessions.create({ vaultRole: "proxy" }
 // certPath is where you'll mount the CA certificate inside the sandbox.
 const certPath = "/etc/ssl/agent-vault-ca.pem";
 
-// env: { HTTPS_PROXY, NO_PROXY, SSL_CERT_FILE, NODE_EXTRA_CA_CERTS,
-//         REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE, GIT_SSL_CAINFO, DENO_CERT }
+// env: { HTTPS_PROXY, NO_PROXY, NODE_USE_ENV_PROXY, SSL_CERT_FILE,
+//         NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE,
+//         GIT_SSL_CAINFO, DENO_CERT }
 const env = buildProxyEnv(session.containerConfig!, certPath);
 const caCert = session.containerConfig!.caCertificate;
 

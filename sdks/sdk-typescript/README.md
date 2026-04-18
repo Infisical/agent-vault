@@ -47,7 +47,7 @@ const env = buildProxyEnv(session.containerConfig!, certPath);
 | `env.NO_PROXY` | Bypass list (`localhost,127.0.0.1`) |
 | `caCertificate` | Root CA PEM content — mount this into the container |
 
-`buildProxyEnv()` expands the config with CA trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) all pointing at `certPath`.
+`buildProxyEnv()` expands the config with `NODE_USE_ENV_PROXY=1` (for Node.js v22.21.0+ native proxy support) and CA trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) all pointing at `certPath`.
 
 `containerConfig` is `null` when the server has MITM disabled (`--mitm-port 0`).
 

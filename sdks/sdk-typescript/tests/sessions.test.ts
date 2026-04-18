@@ -208,6 +208,7 @@ describe("buildProxyEnv()", () => {
 
     expect(env.HTTPS_PROXY).toBe("http://tok:vault@127.0.0.1:14322");
     expect(env.NO_PROXY).toBe("localhost,127.0.0.1");
+    expect(env.NODE_USE_ENV_PROXY).toBe("1");
     expect(env.SSL_CERT_FILE).toBe("/etc/ssl/agent-vault-ca.pem");
     expect(env.NODE_EXTRA_CA_CERTS).toBe("/etc/ssl/agent-vault-ca.pem");
     expect(env.REQUESTS_CA_BUNDLE).toBe("/etc/ssl/agent-vault-ca.pem");

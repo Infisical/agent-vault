@@ -61,10 +61,11 @@ export function buildProxyEnv(
   config: ContainerConfig,
   certPath: string,
 ): Record<string, string> {
-  // CA trust variables must stay in sync with augmentEnvWithMITM() in cmd/run.go.
+  // Proxy and CA trust variables must stay in sync with augmentEnvWithMITM() in cmd/run.go.
   return {
     HTTPS_PROXY: config.env.HTTPS_PROXY,
     NO_PROXY: config.env.NO_PROXY,
+    NODE_USE_ENV_PROXY: "1",
     SSL_CERT_FILE: certPath,
     NODE_EXTRA_CA_CERTS: certPath,
     REQUESTS_CA_BUNDLE: certPath,
