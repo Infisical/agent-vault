@@ -51,6 +51,18 @@ func resolveLogLevel(flagValue string, flagChanged bool) (slog.Level, error) {
 	}
 }
 
+// resolveBaseURL returns the externally-reachable base URL for the server.
+// Priority: AGENT_VAULT_ADDR env var > FLY_APP_NAME-derived URL > http://{addr}.
+func resolveBaseURL(addr string) string {
+	if v := os.Getenv("AGENT_VAULT_ADDR"); v != "" {
+		return v
+	}
+	if app := os.Getenv("FLY_APP_NAME"); app != "" {
+		return "https://" + app + ".fly.dev"
+	}
+	return "http://" + addr
+}
+
 // buildLogger constructs the process-wide slog logger. Text handler to
 // stderr keeps it readable in a terminal without a dependency bump.
 func buildLogger(level slog.Level) *slog.Logger {
@@ -126,10 +138,7 @@ var serverCmd = &cobra.Command{
 
 		// --- Foreground path ---
 		defer masterKey.Wipe()
-		baseURL := os.Getenv("AGENT_VAULT_ADDR")
-		if baseURL == "" {
-			baseURL = "http://" + addr
-		}
+		baseURL := resolveBaseURL(addr)
 		smtpCfg := notify.LoadSMTPConfig()
 		_ = os.Unsetenv("AGENT_VAULT_SMTP_PASSWORD")
 		notifier := notify.New(smtpCfg)
@@ -370,10 +379,7 @@ func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger) erro
 	}
 	defer func() { _ = db.Close() }()
 
-	baseURL := os.Getenv("AGENT_VAULT_ADDR")
-	if baseURL == "" {
-		baseURL = "http://" + addr
-	}
+	baseURL := resolveBaseURL(addr)
 	smtpCfg := notify.LoadSMTPConfig()
 	_ = os.Unsetenv("AGENT_VAULT_SMTP_PASSWORD")
 	notifier := notify.New(smtpCfg)
@@ -553,7 +559,7 @@ func loadOAuthProviders(baseURL string) map[string]oauth.Provider {
 }
 
 func init() {
-	serverCmd.Flags().IntP("port", "p", DefaultPort, "port to listen on")
+	serverCmd.Flags().IntP("port", "p", defaultPort(), "port to listen on (also respects PORT env var)")
 	serverCmd.Flags().String("host", DefaultHost, "host to bind to")
 	serverCmd.Flags().BoolP("detach", "d", false, "run server in background after unlocking")
 	serverCmd.Flags().Bool("password-stdin", false, "read master password from stdin (for non-interactive use)")
