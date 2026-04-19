@@ -298,6 +298,7 @@ func TestMITMMissingProxyAuth(t *testing.T) {
 	proxyURL, clientRoots, _ := setupProxy(t, sr, cp)
 
 	resp := rawConnect(t, proxyURL, clientRoots, "")
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusProxyAuthRequired {
 		t.Fatalf("status = %d, want 407", resp.StatusCode)
 	}
@@ -313,6 +314,7 @@ func TestMITMInvalidSession(t *testing.T) {
 
 	auth := base64.StdEncoding.EncodeToString([]byte("bad-token:"))
 	resp := rawConnect(t, proxyURL, clientRoots, fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth))
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusProxyAuthRequired {
 		t.Fatalf("status = %d, want 407", resp.StatusCode)
 	}
@@ -325,6 +327,7 @@ func TestMITMAmbiguousAgentVault(t *testing.T) {
 
 	auth := base64.StdEncoding.EncodeToString([]byte("av_agt_multi:"))
 	resp := rawConnect(t, proxyURL, clientRoots, fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth))
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
@@ -341,6 +344,7 @@ func TestMITMVaultHintMismatch(t *testing.T) {
 
 	auth := base64.StdEncoding.EncodeToString([]byte("scoped-token:prod"))
 	resp := rawConnect(t, proxyURL, clientRoots, fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth))
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", resp.StatusCode)
 	}
