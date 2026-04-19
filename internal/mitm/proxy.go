@@ -60,21 +60,6 @@ func New(addr string, caProv ca.Provider, sessions brokercore.SessionResolver, c
 		ResponseHeaderTimeout: 30 * time.Second,
 	}
 
-	// Resolve the fallback SNI for the listener's own TLS certificate.
-	// When clients connect via IP (no SNI per RFC 6066), the bind-address
-	// host is used. Unspecified addresses (0.0.0.0, ::) fall back to
-	// 127.0.0.1 so the cert SAN matches what localhost clients expect.
-	listenHost, _, _ := net.SplitHostPort(addr)
-	if listenHost == "" {
-		listenHost = "127.0.0.1"
-	} else if ip := net.ParseIP(listenHost); ip != nil && ip.IsUnspecified() {
-		if ip.To4() == nil {
-			listenHost = "::1" // IPv6 unspecified (::) → IPv6 loopback
-		} else {
-			listenHost = "127.0.0.1" // IPv4 unspecified (0.0.0.0) → IPv4 loopback
-		}
-	}
-
 	p := &Proxy{
 		ca:       caProv,
 		sessions: sessions,
@@ -89,7 +74,15 @@ func New(addr string, caProv ca.Provider, sessions brokercore.SessionResolver, c
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			sni := hello.ServerName
 			if sni == "" {
-				sni = listenHost
+				// No SNI (IP-literal connection per RFC 6066). Use the
+				// actual local address the client connected to so the
+				// cert SAN matches regardless of IPv4/IPv6 or which
+				// interface was used on a wildcard bind.
+				if host, _, err := net.SplitHostPort(hello.Conn.LocalAddr().String()); err == nil && host != "" {
+					sni = host
+				} else {
+					sni = "127.0.0.1"
+				}
 			}
 			return caProv.MintLeaf(sni)
 		},
