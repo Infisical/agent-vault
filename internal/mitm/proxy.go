@@ -68,7 +68,11 @@ func New(addr string, caProv ca.Provider, sessions brokercore.SessionResolver, c
 	if listenHost == "" {
 		listenHost = "127.0.0.1"
 	} else if ip := net.ParseIP(listenHost); ip != nil && ip.IsUnspecified() {
-		listenHost = "127.0.0.1"
+		if ip.To4() == nil {
+			listenHost = "::1" // IPv6 unspecified (::) → IPv6 loopback
+		} else {
+			listenHost = "127.0.0.1" // IPv4 unspecified (0.0.0.0) → IPv4 loopback
+		}
 	}
 
 	p := &Proxy{
