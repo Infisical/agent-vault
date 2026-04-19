@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"bytes"
 	_ "embed"
 	"encoding/json"
@@ -167,29 +166,22 @@ func maybeInstallSkills(agentName, baseDir string) {
 		{filepath.Join(baseDir, "skills", "agent-vault-http", "SKILL.md"), skillHTTP},
 	}
 
-	// Check which skills need installing.
-	var missing []skillEntry
+	// Install or update skills whose on-disk content differs from the
+	// embedded version. This keeps skills current after agent-vault
+	// upgrades without requiring manual deletion.
+	var stale []skillEntry
 	for _, s := range skills {
-		if _, err := os.Stat(filepath.Join(home, s.relPath)); err != nil {
-			missing = append(missing, s)
+		fullPath := filepath.Join(home, s.relPath)
+		existing, err := os.ReadFile(fullPath)
+		if err != nil || !bytes.Equal(existing, []byte(s.content)) {
+			stale = append(stale, s)
 		}
 	}
-	if len(missing) == 0 {
+	if len(stale) == 0 {
 		return
 	}
 
-	fmt.Fprintf(os.Stderr, "Install Agent Vault skills for %s? [Y/n] ", agentName)
-	reader := bufio.NewReader(os.Stdin)
-	answer, err := reader.ReadString('\n')
-	if err != nil {
-		return
-	}
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "" && answer != "y" && answer != "yes" {
-		return
-	}
-
-	for _, s := range missing {
+	for _, s := range stale {
 		fullPath := filepath.Join(home, s.relPath)
 		dir := filepath.Dir(fullPath)
 		if err := os.MkdirAll(dir, 0o750); err != nil {
