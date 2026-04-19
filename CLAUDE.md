@@ -24,7 +24,7 @@ make docker       # Multi-stage Docker image; data persisted at /data/.agent-vau
 
 - **Two ingress paths into the broker**:
   - Explicit proxy: `GET/POST /proxy/{target_host}/{path}` with a vault-scoped session token. Agent Vault matches the host against broker services, strips client auth, and injects credentials from the vault.
-  - Transparent MITM (on by default, port 14322, disable with `--mitm-port 0`): HTTPS_PROXY-compatible ingress backed by [internal/mitm](internal/mitm/) + [internal/ca](internal/ca/) (software CA, root key encrypted with the master key). Same credential-injection code path as `/proxy` via `brokercore`. HTTP/1.1 only today. Bind failures are non-fatal — the core HTTP server keeps running.
+  - Transparent MITM (on by default, port 14322, disable with `--mitm-port 0`): TLS-encrypted HTTPS_PROXY-compatible ingress backed by [internal/mitm](internal/mitm/) + [internal/ca](internal/ca/) (software CA, root key encrypted with the master key). The listener itself is TLS-wrapped (cert signed by the MITM CA) so the CONNECT handshake carrying the session token is encrypted. Clients use `HTTPS_PROXY=https://...`. Same credential-injection code path as `/proxy` via `brokercore`. HTTP/1.1 only today. Bind failures are non-fatal — the core HTTP server keeps running.
 - **Proposals = GitHub-PR-style change requests.** Agents cannot edit services or credentials directly; they create proposals, a human approves in CLI or browser, and apply merges atomically. Per-vault sequential IDs. 7-day TTL.
 - **Two independent permission axes**:
   - Instance role: `owner` vs `member` (applies to both users and agents).

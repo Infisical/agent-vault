@@ -67,6 +67,10 @@ func TestHandleMITMCA(t *testing.T) {
 			t.Fatalf("Content-Disposition: got %q, want filename=agent-vault-ca.pem", cd)
 		}
 
+		if got := rec.Header().Get("X-MITM-TLS"); got != "1" {
+			t.Errorf("X-MITM-TLS = %q, want \"1\"", got)
+		}
+
 		block, _ := pem.Decode(rec.Body.Bytes())
 		if block == nil || block.Type != "CERTIFICATE" {
 			t.Fatal("response body did not decode as a CERTIFICATE PEM block")

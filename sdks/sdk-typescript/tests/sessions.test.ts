@@ -19,7 +19,7 @@ describe("SessionsResource", () => {
         },
         "/v1/mitm/ca.pem": {
           body: FAKE_PEM,
-          headers: { "X-MITM-Port": "14322" },
+          headers: { "X-MITM-Port": "14322", "X-MITM-TLS": "1" },
         },
       });
 
@@ -88,7 +88,7 @@ describe("SessionsResource", () => {
         },
         "/v1/mitm/ca.pem": {
           body: FAKE_PEM,
-          headers: { "X-MITM-Port": "14322" },
+          headers: { "X-MITM-Port": "14322", "X-MITM-TLS": "1" },
         },
       });
 
@@ -104,6 +104,7 @@ describe("SessionsResource", () => {
       expect(session.address).toBe("http://my-server:14321");
 
       expect(session.containerConfig).not.toBeNull();
+      expect(session.containerConfig!.env.HTTPS_PROXY).toMatch(/^https:\/\//);
       expect(session.containerConfig!.env.HTTPS_PROXY).toContain("scoped-token-123");
       expect(session.containerConfig!.env.HTTPS_PROXY).toContain("test");
       expect(session.containerConfig!.env.HTTPS_PROXY).toContain("14322");
@@ -148,7 +149,7 @@ describe("SessionsResource", () => {
         },
         "/v1/mitm/ca.pem": {
           body: FAKE_PEM,
-          headers: { "X-MITM-Port": "9999" },
+          headers: { "X-MITM-Port": "9999", "X-MITM-TLS": "1" },
         },
       });
 
@@ -160,6 +161,32 @@ describe("SessionsResource", () => {
       const session = await av.vault("default").sessions!.create();
 
       expect(session.containerConfig!.env.HTTPS_PROXY).toContain(":9999");
+    });
+
+    it("falls back to http:// scheme when server omits X-MITM-TLS", async () => {
+      const mockFetch = createRoutedMockFetch({
+        "/v1/sessions": {
+          body: {
+            token: "tok",
+            expires_at: "2026-04-16T00:00:00Z",
+            av_addr: "http://localhost:14321",
+          },
+        },
+        "/v1/mitm/ca.pem": {
+          body: FAKE_PEM,
+          headers: { "X-MITM-Port": "14322" },
+        },
+      });
+
+      const av = new AgentVault({
+        token: "agent-token",
+        address: "http://localhost:14321",
+        fetch: mockFetch,
+      });
+      const session = await av.vault("default").sessions!.create();
+
+      expect(session.containerConfig).not.toBeNull();
+      expect(session.containerConfig!.env.HTTPS_PROXY).toMatch(/^http:\/\//);
     });
 
     it("includes X-Vault header in the request", async () => {
@@ -198,7 +225,7 @@ describe("buildProxyEnv()", () => {
   it("builds complete env with cert path variables", () => {
     const config: ContainerConfig = {
       env: {
-        HTTPS_PROXY: "http://tok:vault@127.0.0.1:14322",
+        HTTPS_PROXY: "https://tok:vault@127.0.0.1:14322",
         NO_PROXY: "localhost,127.0.0.1",
       },
       caCertificate: FAKE_PEM,
@@ -206,7 +233,7 @@ describe("buildProxyEnv()", () => {
 
     const env = buildProxyEnv(config, "/etc/ssl/agent-vault-ca.pem");
 
-    expect(env.HTTPS_PROXY).toBe("http://tok:vault@127.0.0.1:14322");
+    expect(env.HTTPS_PROXY).toBe("https://tok:vault@127.0.0.1:14322");
     expect(env.NO_PROXY).toBe("localhost,127.0.0.1");
     expect(env.NODE_USE_ENV_PROXY).toBe("1");
     expect(env.SSL_CERT_FILE).toBe("/etc/ssl/agent-vault-ca.pem");

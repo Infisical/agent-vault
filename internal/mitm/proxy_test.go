@@ -111,7 +111,7 @@ func setupProxy(t *testing.T, sr brokercore.SessionResolver, cp brokercore.Crede
 		_ = p.Shutdown(ctx)
 	})
 
-	proxyURL = &url.URL{Scheme: "http", Host: l.Addr().String()}
+	proxyURL = &url.URL{Scheme: "https", Host: l.Addr().String()}
 	return proxyURL, clientRoots, p
 }
 
@@ -272,25 +272,32 @@ func TestMITMPassthroughForwardsClientAuthorization(t *testing.T) {
 	}
 }
 
-func TestMITMMissingProxyAuth(t *testing.T) {
-	sr := errResolver(brokercore.ErrInvalidSession)
-	cp := &fakeCredProvider{}
-	proxyURL, _, _ := setupProxy(t, sr, cp)
-
-	// Speak CONNECT manually so we can inspect the response without client
-	// retries masking it.
-	conn, err := net.Dial("tcp", proxyURL.Host)
+// rawConnect dials the proxy over TLS, sends a CONNECT request with the
+// given extra headers (e.g. Proxy-Authorization), and returns the response.
+// Callers assert on the returned status code and body.
+func rawConnect(t *testing.T, proxyURL *url.URL, roots *x509.CertPool, extraHeaders string) *http.Response {
+	t.Helper()
+	conn, err := tls.Dial("tcp", proxyURL.Host, &tls.Config{RootCAs: roots})
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+	t.Cleanup(func() { _ = conn.Close() })
 
-	_, _ = fmt.Fprintf(conn, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+	_, _ = fmt.Fprintf(conn, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n%s\r\n", extraHeaders)
 	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+func TestMITMMissingProxyAuth(t *testing.T) {
+	sr := errResolver(brokercore.ErrInvalidSession)
+	cp := &fakeCredProvider{}
+	proxyURL, clientRoots, _ := setupProxy(t, sr, cp)
+
+	resp := rawConnect(t, proxyURL, clientRoots, "")
 	if resp.StatusCode != http.StatusProxyAuthRequired {
 		t.Fatalf("status = %d, want 407", resp.StatusCode)
 	}
@@ -302,23 +309,10 @@ func TestMITMMissingProxyAuth(t *testing.T) {
 func TestMITMInvalidSession(t *testing.T) {
 	sr := validTokenResolver("not-this-one", nil)
 	cp := &fakeCredProvider{}
-	proxyURL, _, _ := setupProxy(t, sr, cp)
+	proxyURL, clientRoots, _ := setupProxy(t, sr, cp)
 
 	auth := base64.StdEncoding.EncodeToString([]byte("bad-token:"))
-	conn, err := net.Dial("tcp", proxyURL.Host)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer conn.Close()
-
-	_, _ = fmt.Fprintf(conn,
-		"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Authorization: Basic %s\r\n\r\n",
-		auth)
-	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		t.Fatalf("read response: %v", err)
-	}
-	defer resp.Body.Close()
+	resp := rawConnect(t, proxyURL, clientRoots, fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth))
 	if resp.StatusCode != http.StatusProxyAuthRequired {
 		t.Fatalf("status = %d, want 407", resp.StatusCode)
 	}
@@ -327,28 +321,15 @@ func TestMITMInvalidSession(t *testing.T) {
 func TestMITMAmbiguousAgentVault(t *testing.T) {
 	sr := errResolver(brokercore.ErrAgentVaultAmbiguous)
 	cp := &fakeCredProvider{}
-	proxyURL, _, _ := setupProxy(t, sr, cp)
+	proxyURL, clientRoots, _ := setupProxy(t, sr, cp)
 
 	auth := base64.StdEncoding.EncodeToString([]byte("av_agt_multi:"))
-	conn, err := net.Dial("tcp", proxyURL.Host)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer conn.Close()
-
-	_, _ = fmt.Fprintf(conn,
-		"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Authorization: Basic %s\r\n\r\n",
-		auth)
-	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		t.Fatalf("read response: %v", err)
-	}
-	defer resp.Body.Close()
+	resp := rawConnect(t, proxyURL, clientRoots, fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth))
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "HTTPS_PROXY=http://<token>:<vault>@") {
+	if !strings.Contains(string(body), "HTTPS_PROXY=https://<token>:<vault>@") {
 		t.Fatalf("body = %q, missing vault-hint message", body)
 	}
 }
@@ -356,23 +337,10 @@ func TestMITMAmbiguousAgentVault(t *testing.T) {
 func TestMITMVaultHintMismatch(t *testing.T) {
 	sr := errResolver(brokercore.ErrVaultHintMismatch)
 	cp := &fakeCredProvider{}
-	proxyURL, _, _ := setupProxy(t, sr, cp)
+	proxyURL, clientRoots, _ := setupProxy(t, sr, cp)
 
 	auth := base64.StdEncoding.EncodeToString([]byte("scoped-token:prod"))
-	conn, err := net.Dial("tcp", proxyURL.Host)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer conn.Close()
-
-	_, _ = fmt.Fprintf(conn,
-		"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Authorization: Basic %s\r\n\r\n",
-		auth)
-	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		t.Fatalf("read response: %v", err)
-	}
-	defer resp.Body.Close()
+	resp := rawConnect(t, proxyURL, clientRoots, fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth))
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", resp.StatusCode)
 	}
@@ -452,9 +420,12 @@ func TestMITMUpstreamCertUntrusted(t *testing.T) {
 }
 
 func TestMITMRejectsNonConnectRequests(t *testing.T) {
-	proxyURL, _, _ := setupProxy(t, errResolver(brokercore.ErrInvalidSession), &fakeCredProvider{})
+	proxyURL, clientRoots, _ := setupProxy(t, errResolver(brokercore.ErrInvalidSession), &fakeCredProvider{})
 
-	resp, err := http.Get(proxyURL.String() + "/anything")
+	client := &http.Client{
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: clientRoots}},
+	}
+	resp, err := client.Get(proxyURL.String() + "/anything")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}

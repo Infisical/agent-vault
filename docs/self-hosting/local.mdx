@@ -78,7 +78,7 @@ Subsequent users can self-register via `agent-vault auth register`, the web regi
   HTTP/1.1 only today. Clients that negotiate HTTP/2 end-to-end will not proxy through this path — use the explicit `/proxy` endpoint instead.
 </Warning>
 
-Agent Vault exposes a second ingress as a transparent `HTTPS_PROXY`. This lets clients that respect the proxy environment variable (but can't be pointed at a custom base URL) route through Agent Vault. It listens on port `14322` by default; pass `--mitm-port 0` to disable, or a different port to change it:
+Agent Vault exposes a second ingress as a transparent `HTTPS_PROXY`. This lets clients that respect the proxy environment variable (but can't be pointed at a custom base URL) route through Agent Vault. The listener is TLS-encrypted (cert signed by the MITM CA) so the CONNECT handshake carrying session tokens is protected. It listens on port `14322` by default; pass `--mitm-port 0` to disable, or a different port to change it:
 
 ```bash
 agent-vault server               # transparent proxy on 14322 (default)

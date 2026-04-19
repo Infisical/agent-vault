@@ -331,7 +331,7 @@ func stripEnvKeys(env []string, keys map[string]struct{}) []string {
 // HTTP CONNECT only and returns 405 for every other method, so setting
 // HTTP_PROXY would route plain http:// requests into a dead end.
 func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]string, int, bool, error) {
-	pem, port, enabled, err := fetchMITMCA(addr)
+	pem, port, enabled, mitmTLS, err := fetchMITMCA(addr)
 	if err != nil {
 		return env, 0, false, err
 	}
@@ -367,8 +367,12 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 			mitmHost = h
 		}
 	}
+	scheme := "http"
+	if mitmTLS {
+		scheme = "https"
+	}
 	proxyURL := (&url.URL{
-		Scheme: "http",
+		Scheme: scheme,
 		User:   url.UserPassword(token, vault),
 		Host:   fmt.Sprintf("%s:%d", mitmHost, port),
 	}).String()

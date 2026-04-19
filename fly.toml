@@ -14,6 +14,15 @@ primary_region = "sjc"
   auto_start_machines = true
   min_machines_running = 0  # Set to 1 to avoid cold-start latency
 
+# TCP passthrough for the TLS-wrapped MITM proxy. No Fly TLS termination —
+# the proxy handles its own TLS with certs signed by the MITM CA.
+[[services]]
+  internal_port = 14322
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 14322
+
 [[vm]]
   size = "shared-cpu-1x"
   memory = "256mb"

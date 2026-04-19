@@ -28,6 +28,7 @@ func (s *Server) handleMITMCA(w http.ResponseWriter, _ *http.Request) {
 	if _, port, err := net.SplitHostPort(s.mitm.Addr()); err == nil && port != "" && port != "0" {
 		w.Header().Set("X-MITM-Port", port)
 	}
+	w.Header().Set("X-MITM-TLS", "1")
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.Header().Set("Content-Disposition", `attachment; filename="agent-vault-ca.pem"`)
 	_, _ = w.Write(s.mitm.RootPEM())

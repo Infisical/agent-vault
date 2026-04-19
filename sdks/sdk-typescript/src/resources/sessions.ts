@@ -75,11 +75,12 @@ export function buildProxyEnv(
   };
 }
 
-/** Cached MITM metadata (CA cert, host, port) — static for the server's lifetime. */
+/** Cached MITM metadata (CA cert, host, port, TLS) — static for the server's lifetime. */
 interface MitmInfo {
   caCertificate: string;
   host: string;
   port: number;
+  tls: boolean;
 }
 
 /**
@@ -118,7 +119,8 @@ export class SessionsResource {
 
     let containerConfig: ContainerConfig | null = null;
     if (mitmInfo) {
-      const proxyUrl = `http://${encodeURIComponent(res.token)}:${encodeURIComponent(this.vaultName)}@${mitmInfo.host}:${mitmInfo.port}`;
+      const scheme = mitmInfo.tls ? "https" : "http";
+      const proxyUrl = `${scheme}://${encodeURIComponent(res.token)}:${encodeURIComponent(this.vaultName)}@${mitmInfo.host}:${mitmInfo.port}`;
       containerConfig = {
         env: {
           HTTPS_PROXY: proxyUrl,
@@ -176,6 +178,8 @@ export class SessionsResource {
       // fall back to 127.0.0.1
     }
 
-    return { caCertificate, host, port };
+    const tls = resp.headers.get("X-MITM-TLS") === "1";
+
+    return { caCertificate, host, port, tls };
   }
 }

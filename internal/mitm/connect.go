@@ -113,7 +113,7 @@ func writeAuthError(w http.ResponseWriter, err error) {
 		writeProxyAuthChallenge(w, "invalid or expired session")
 	case errors.Is(err, brokercore.ErrAgentVaultAmbiguous),
 		errors.Is(err, brokercore.ErrNoVaultContext):
-		http.Error(w, "set vault via HTTPS_PROXY=http://<token>:<vault>@host:port", http.StatusBadRequest)
+		http.Error(w, "set vault via HTTPS_PROXY=https://<token>:<vault>@host:port", http.StatusBadRequest)
 	case errors.Is(err, brokercore.ErrVaultHintMismatch),
 		errors.Is(err, brokercore.ErrVaultAccessDenied):
 		http.Error(w, "forbidden", http.StatusForbidden)

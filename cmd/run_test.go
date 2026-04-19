@@ -62,12 +62,16 @@ func TestAugmentEnvWithMITM_Disabled(t *testing.T) {
 
 // fakeMITMServer returns an httptest server that mimics the real
 // /v1/mitm/ca.pem endpoint. advertisedPort, when non-zero, is written
-// into the X-MITM-Port response header.
-func fakeMITMServer(t *testing.T, pem string, advertisedPort int) *httptest.Server {
+// into the X-MITM-Port response header. advertiseTLS controls whether
+// the X-MITM-TLS: 1 header is sent (matching new TLS-wrapped servers).
+func fakeMITMServer(t *testing.T, pem string, advertisedPort int, advertiseTLS bool) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if advertisedPort > 0 {
 			w.Header().Set("X-MITM-Port", fmt.Sprintf("%d", advertisedPort))
+		}
+		if advertiseTLS {
+			w.Header().Set("X-MITM-TLS", "1")
 		}
 		w.Header().Set("Content-Type", "application/x-pem-file")
 		_, _ = w.Write([]byte(pem))
@@ -76,7 +80,7 @@ func fakeMITMServer(t *testing.T, pem string, advertisedPort int) *httptest.Serv
 
 func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 	const fakePEM = "-----BEGIN CERTIFICATE-----\nMIIFAKE\n-----END CERTIFICATE-----\n"
-	srv := fakeMITMServer(t, fakePEM, 9001)
+	srv := fakeMITMServer(t, fakePEM, 9001, true)
 	defer srv.Close()
 
 	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
@@ -137,8 +141,8 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse HTTPS_PROXY: %v", err)
 	}
-	if u.Scheme != "http" {
-		t.Errorf("proxy scheme = %q, want http", u.Scheme)
+	if u.Scheme != "https" {
+		t.Errorf("proxy scheme = %q, want https", u.Scheme)
 	}
 	if u.User == nil {
 		t.Fatal("proxy URL missing userinfo")
@@ -164,7 +168,7 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 // port 0.
 func TestAugmentEnvWithMITM_PortFallback(t *testing.T) {
 	const fakePEM = "-----BEGIN CERTIFICATE-----\nMIIFAKE\n-----END CERTIFICATE-----\n"
-	srv := fakeMITMServer(t, fakePEM, 0) // no header
+	srv := fakeMITMServer(t, fakePEM, 0, true) // no port header
 	defer srv.Close()
 
 	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
@@ -185,7 +189,7 @@ func TestAugmentEnvWithMITM_PortFallback(t *testing.T) {
 // The fix strips the parent entries before appending the new ones.
 func TestAugmentEnvWithMITM_DedupesParentEnv(t *testing.T) {
 	const fakePEM = "-----BEGIN CERTIFICATE-----\nMIIFAKE\n-----END CERTIFICATE-----\n"
-	srv := fakeMITMServer(t, fakePEM, 14322)
+	srv := fakeMITMServer(t, fakePEM, 14322, true)
 	defer srv.Close()
 
 	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
@@ -235,6 +239,30 @@ func TestAugmentEnvWithMITM_DedupesParentEnv(t *testing.T) {
 	}
 	if vars["FOO"] != "bar" {
 		t.Error("unrelated parent env vars must be preserved")
+	}
+}
+
+// TestAugmentEnvWithMITM_OldServerNoTLS verifies backward compatibility:
+// when the server does not advertise X-MITM-TLS (pre-TLS build), the
+// HTTPS_PROXY scheme stays http:// so old plaintext listeners still work.
+func TestAugmentEnvWithMITM_OldServerNoTLS(t *testing.T) {
+	const fakePEM = "-----BEGIN CERTIFICATE-----\nMIIFAKE\n-----END CERTIFICATE-----\n"
+	srv := fakeMITMServer(t, fakePEM, 9001, false) // no X-MITM-TLS header
+	defer srv.Close()
+
+	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
+	env, _, ok, err := augmentEnvWithMITM(nil, srv.URL, "tok", "v", caPath)
+	if err != nil || !ok {
+		t.Fatalf("augmentEnvWithMITM: ok=%v err=%v", ok, err)
+	}
+
+	vars := envMap(env)
+	u, err := url.Parse(vars["HTTPS_PROXY"])
+	if err != nil {
+		t.Fatalf("parse HTTPS_PROXY: %v", err)
+	}
+	if u.Scheme != "http" {
+		t.Errorf("proxy scheme = %q, want http (old server without X-MITM-TLS)", u.Scheme)
 	}
 }
 
