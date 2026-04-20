@@ -224,6 +224,9 @@ func WriteInjectError(w http.ResponseWriter, err error, targetHost, vaultName, b
 	switch {
 	case errors.Is(err, ErrServiceNotFound):
 		WriteForbiddenHint(w, targetHost, vaultName, baseURL)
+	case errors.Is(err, ErrServiceDisabled):
+		writeProxyErrorWithHelp(w, http.StatusForbidden, "service_disabled",
+			fmt.Sprintf("Broker service matching host %q in vault %q is currently disabled", targetHost, vaultName), baseURL)
 	case errors.Is(err, ErrCredentialMissing):
 		writeProxyErrorWithHelp(w, http.StatusBadGateway, "credential_not_found",
 			"A required credential could not be resolved; check vault configuration", baseURL)

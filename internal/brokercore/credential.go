@@ -86,6 +86,9 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	if matched == nil {
 		return nil, ErrServiceNotFound
 	}
+	if !matched.IsEnabled() {
+		return nil, ErrServiceDisabled
+	}
 
 	// Passthrough services opt out of credential injection entirely. No
 	// vault read, no CredentialKeys (nothing to resolve). The ingress

@@ -35,14 +35,17 @@ func MergeServices(existing []broker.Service, proposed []Service) ([]broker.Serv
 			delete(hostIndex, p.Host)
 
 		default: // ActionSet: upsert
-			svc := toBrokerService(p)
-			if idx, exists := hostIndex[p.Host]; exists {
-				// Replace existing service in place.
-				merged[idx] = svc
-			} else {
-				// Append new service.
+			idx, exists := hostIndex[p.Host]
+			switch {
+			case exists && p.Auth == nil && p.Enabled != nil:
+				// Enable/disable-only change on an existing service:
+				// preserve Auth and Description, overlay just the flag.
+				merged[idx].Enabled = p.Enabled
+			case exists:
+				merged[idx] = toBrokerService(p)
+			default:
 				hostIndex[p.Host] = len(merged)
-				merged = append(merged, svc)
+				merged = append(merged, toBrokerService(p))
 			}
 		}
 	}
@@ -70,6 +73,7 @@ func toBrokerService(p Service) broker.Service {
 	svc := broker.Service{
 		Host:        p.Host,
 		Description: desc,
+		Enabled:     p.Enabled,
 	}
 	if p.Auth != nil {
 		svc.Auth = *p.Auth

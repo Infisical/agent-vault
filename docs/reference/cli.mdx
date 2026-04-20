@@ -422,8 +422,35 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--api-key-key` | | Credential key for api-key auth |
     | `--api-key-header` | `Authorization` | Header name for api-key |
     | `--api-key-prefix` | | Prefix for api-key value |
+    | `--disabled` | `false` | Create the service in a disabled state (proxy traffic returns 403 until enabled) |
 
     The `passthrough` auth type accepts no credential flags; Agent Vault allowlists the host and forwards the client's request headers unchanged, stripping only hop-by-hop and broker-scoped headers (`X-Vault`, `Proxy-Authorization`).
+
+    New services are **enabled by default**. Pass `--disabled` to create the service in a disabled state, or use `agent-vault vault service disable <host>` after creation.
+  </Accordion>
+
+  <Accordion title="agent-vault vault service enable">
+    ```bash
+    agent-vault vault service enable <host> [flags]
+    ```
+
+    Enable a service so proxy traffic to the host resumes. Idempotent — no error if the service is already enabled.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--vault` | `default` | Target vault |
+  </Accordion>
+
+  <Accordion title="agent-vault vault service disable">
+    ```bash
+    agent-vault vault service disable <host> [flags]
+    ```
+
+    Disable a service while preserving its configuration. Agents proxying to the host receive `403` with error code `service_disabled` until the service is re-enabled. Idempotent.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--vault` | `default` | Target vault |
   </Accordion>
 
   <Accordion title="agent-vault vault service remove">

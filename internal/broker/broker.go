@@ -15,10 +15,23 @@ type Config struct {
 }
 
 // Service defines a host-matching service with credential attachment.
+//
+// Enabled is a nullable toggle. nil means "not set" and is treated as
+// enabled so existing persisted services (which predate this field) stay
+// live after upgrade. Callers should use IsEnabled() rather than
+// dereferencing the pointer.
 type Service struct {
 	Host        string  `yaml:"host" json:"host"`
 	Description *string `yaml:"description,omitempty" json:"description"`
+	Enabled     *bool   `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Auth        Auth    `yaml:"auth" json:"auth"`
+}
+
+// IsEnabled reports whether the service should serve proxy traffic. A
+// nil Enabled field (missing from the stored JSON) is treated as enabled
+// so services persisted before this field existed stay live after upgrade.
+func (s *Service) IsEnabled() bool {
+	return s.Enabled == nil || *s.Enabled
 }
 
 // Auth describes how credentials are attached for a broker service.

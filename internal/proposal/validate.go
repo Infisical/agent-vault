@@ -133,11 +133,13 @@ func Validate(services []Service, credentials []CredentialSlot) error {
 			return fmt.Errorf("service %d: description too long (max %d characters)", i, MaxDescriptionLen)
 		}
 		if s.Action == ActionSet {
-			if s.Auth == nil {
-				return fmt.Errorf("service %d: auth is required for set action", i)
+			if s.Auth == nil && s.Enabled == nil {
+				return fmt.Errorf("service %d: set action requires auth or enabled change", i)
 			}
-			if err := s.Auth.Validate(); err != nil {
-				return fmt.Errorf("service %d: %w", i, err)
+			if s.Auth != nil {
+				if err := s.Auth.Validate(); err != nil {
+					return fmt.Errorf("service %d: %w", i, err)
+				}
 			}
 		}
 	}

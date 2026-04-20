@@ -238,6 +238,85 @@ func (s *Server) handleServiceRemove(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleServicePatch applies a partial update to a single service,
+// keyed by host. Today only the `enabled` field is patchable — other
+// fields change through the existing POST/PUT upsert/set flow so there
+// is a single code path for validation of auth configs. Admin-only.
+func (s *Server) handleServicePatch(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := r.PathValue("name")
+
+	ns, err := s.store.GetVault(ctx, name)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
+		return
+	}
+
+	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
+		return
+	}
+
+	host := r.PathValue("host")
+	if host == "" {
+		jsonError(w, http.StatusBadRequest, "Host is required")
+		return
+	}
+
+	var req struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if req.Enabled == nil {
+		jsonError(w, http.StatusBadRequest, "At least one patchable field is required (enabled)")
+		return
+	}
+
+	bc, err := s.store.GetBrokerConfig(ctx, ns.ID)
+	if err != nil || bc == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Service not found for host %q", host))
+		return
+	}
+
+	var services []broker.Service
+	if err := json.Unmarshal([]byte(bc.ServicesJSON), &services); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to parse services")
+		return
+	}
+
+	found := false
+	for i := range services {
+		if services[i].Host == host {
+			services[i].Enabled = req.Enabled
+			found = true
+			break
+		}
+	}
+	if !found {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Service not found for host %q", host))
+		return
+	}
+
+	servicesJSON, err := json.Marshal(services)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to marshal services")
+		return
+	}
+
+	if _, err := s.store.SetBrokerConfig(ctx, ns.ID, string(servicesJSON)); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to update services")
+		return
+	}
+
+	jsonOK(w, map[string]interface{}{
+		"vault":   name,
+		"host":    host,
+		"enabled": *req.Enabled,
+	})
+}
+
 func (s *Server) handleServicesSet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")

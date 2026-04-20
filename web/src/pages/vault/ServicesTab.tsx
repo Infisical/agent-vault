@@ -10,13 +10,19 @@ import Modal from "../../components/Modal";
 import Button from "../../components/Button";
 import Input from "../../components/Input";
 import FormField from "../../components/FormField";
+import Toggle from "../../components/Toggle";
 import { type Auth, AUTH_TYPE_LABELS } from "../../components/ProposalPreview";
 import { apiFetch } from "../../lib/api";
 
 interface Service {
   host: string;
   description?: string;
+  enabled?: boolean;
   auth: Auth;
+}
+
+function isEnabled(service: Service): boolean {
+  return service.enabled !== false;
 }
 
 const AUTH_TYPE_OPTIONS: { value: string; label: string }[] = [
@@ -79,6 +85,30 @@ export default function ServicesTab() {
     setServices(updatedServices);
   }
 
+  async function toggleEnabled(index: number, next: boolean) {
+    const service = services[index];
+    if (!service) return;
+    const applyEnabled = (want: boolean) => (list: Service[]) =>
+      list.map((s) => (s.host === service.host ? { ...s, enabled: want } : s));
+    setServices(applyEnabled(next));
+    try {
+      const resp = await apiFetch(
+        `/v1/vaults/${encodeURIComponent(vaultName)}/services/${encodeURIComponent(service.host)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ enabled: next }),
+        }
+      );
+      if (!resp.ok) {
+        const data = await resp.json();
+        throw new Error(data.error || "Failed to update service.");
+      }
+    } catch (err: unknown) {
+      setServices(applyEnabled(!next));
+      setError(err instanceof Error ? err.message : "Failed to update service.");
+    }
+  }
+
   async function handleDelete() {
     if (deleteIndex === null) return;
     setDeleting(true);
@@ -122,6 +152,18 @@ export default function ServicesTab() {
           </div>
         );
       },
+    },
+    {
+      key: "enabled",
+      header: "Enabled",
+      render: (service, index) => (
+        <Toggle
+          checked={isEnabled(service)}
+          disabled={!isAdmin}
+          onChange={(next) => toggleEnabled(index, next)}
+          ariaLabel={`Toggle ${service.host}`}
+        />
+      ),
     },
     ...(isAdmin
       ? [
@@ -253,6 +295,7 @@ function ServiceModal({
 }) {
   const [host, setHost] = useState(initial?.host ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
+  const [enabled, setEnabled] = useState(initial ? initial.enabled !== false : true);
   const [authType, setAuthType] = useState(initial?.auth?.type ?? "bearer");
 
   // Bearer fields
@@ -333,6 +376,7 @@ function ServiceModal({
       const service: Service = {
         host: host.trim(),
         ...(description.trim() && { description: description.trim() }),
+        ...(enabled ? {} : { enabled: false }),
         auth: buildAuth(),
       };
       await onSave(service);
@@ -379,6 +423,12 @@ function ServiceModal({
             value={description}
             onChange={(e) => setDescription(e.target.value)}
           />
+        </FormField>
+        <FormField
+          label="Enabled"
+          helperText="Disabled services remain configured but return 403 to agents until re-enabled."
+        >
+          <Toggle checked={enabled} onChange={setEnabled} ariaLabel="Enabled" />
         </FormField>
         <FormField label="Authentication Method">
           <select

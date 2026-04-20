@@ -23,10 +23,16 @@ const (
 )
 
 // Service is a proposed broker service change.
+//
+// For "set" actions, at least one of Auth or Enabled must be specified.
+// When Enabled is provided without Auth and the host already exists,
+// the merge preserves the existing service's Auth/Description and
+// overlays only the Enabled flag — this is the enable/disable flow.
 type Service struct {
 	Action      Action       `json:"action"`
 	Host        string       `json:"host"`
 	Description string       `json:"description,omitempty"`
+	Enabled     *bool        `json:"enabled,omitempty"`
 	Auth        *broker.Auth `json:"auth,omitempty"`
 }
 

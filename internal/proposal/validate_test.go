@@ -45,8 +45,16 @@ func TestValidateEmptyHost(t *testing.T) {
 func TestValidateMissingAuthForSet(t *testing.T) {
 	services := []Service{{Action: ActionSet, Host: "example.com"}}
 	err := Validate(services, nil)
-	if err == nil || !strings.Contains(err.Error(), "auth is required") {
-		t.Fatalf("expected auth required error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "auth or enabled") {
+		t.Fatalf("expected auth-or-enabled required error, got %v", err)
+	}
+}
+
+func TestValidateEnabledOnlySetValid(t *testing.T) {
+	disabled := false
+	services := []Service{{Action: ActionSet, Host: "example.com", Enabled: &disabled}}
+	if err := Validate(services, nil); err != nil {
+		t.Fatalf("expected enable-only set to validate, got %v", err)
 	}
 }
 

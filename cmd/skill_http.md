@@ -117,8 +117,9 @@ Content-Type: application/json
 ```
 
 Key fields:
-- `services[].action` -- `"set"` (upsert, needs `host` + `auth`) or `"delete"` (needs `host` only)
+- `services[].action` -- `"set"` (upsert, needs `host` + `auth` **or** an `enabled` change) or `"delete"` (needs `host` only)
 - `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates), `passthrough` (no credential fields)
+- `services[].enabled` -- optional boolean. Omitted means "enabled" for new services. A `"set"` proposal may supply `enabled` alone (no `auth`) to flip an existing service's state without replacing its auth config -- useful for staged rollouts where the operator wires credentials before flipping traffic on
 - `credentials[].action` -- `"set"` (omit `value` for human to supply; include `value` to store back) or `"delete"`
 - `credentials` -- only declare credentials not already in `available_credentials`. Every credential referenced in auth configs must resolve to a slot or existing credential (400 otherwise)
 - `message` -- developer-facing explanation; `user_message` -- shown on the browser approval page
@@ -178,7 +179,8 @@ Content-Type: application/json
 ## Error Handling
 
 - 401: Invalid or expired token -- check `AGENT_VAULT_SESSION_TOKEN`
-- 403: Host not allowed -- create a proposal
+- 403 `forbidden`: Host not allowed -- create a proposal
+- 403 `service_disabled`: Host is configured but currently disabled by an operator. Don't create a new proposal; surface the error to the user so they can re-enable it
 - 429: Too many pending proposals -- wait for review
 - 502: Missing credential or upstream unreachable, tell user a credential may need to be added
 

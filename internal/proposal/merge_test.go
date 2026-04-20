@@ -33,6 +33,30 @@ func TestMergeServicesSetAppend(t *testing.T) {
 	}
 }
 
+func TestMergeServicesSetEnabledOnlyPreservesAuth(t *testing.T) {
+	disabled := false
+	existing := []broker.Service{
+		{Host: "api.stripe.com", Auth: broker.Auth{Type: "bearer", Token: "OLD"}},
+	}
+	proposed := []Service{
+		{Action: ActionSet, Host: "api.stripe.com", Enabled: &disabled},
+	}
+
+	merged, warnings := MergeServices(existing, proposed)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+	if len(merged) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(merged))
+	}
+	if merged[0].Auth.Token != "OLD" {
+		t.Fatalf("expected Auth preserved (token OLD), got %q", merged[0].Auth.Token)
+	}
+	if merged[0].Enabled == nil || *merged[0].Enabled != false {
+		t.Fatalf("expected Enabled=false, got %v", merged[0].Enabled)
+	}
+}
+
 func TestMergeServicesSetReplacesExisting(t *testing.T) {
 	existing := []broker.Service{
 		{Host: "api.stripe.com", Auth: broker.Auth{Type: "bearer", Token: "OLD"}},

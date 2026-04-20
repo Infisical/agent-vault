@@ -286,6 +286,63 @@ func TestInject_Passthrough(t *testing.T) {
 	}
 }
 
+func TestInject_ServiceDisabled(t *testing.T) {
+	key32 := make32(0xEE)
+	disabled := false
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host:    "api.example.com",
+		Enabled: &disabled,
+		Auth:    broker.Auth{Type: "bearer", Token: "TOK"},
+	}})
+	f.setCred(t, key32, "v1", "TOK", "x")
+
+	p := NewStoreCredentialProvider(f, key32)
+	_, err := p.Inject(context.Background(), "v1", "api.example.com")
+	if !errors.Is(err, ErrServiceDisabled) {
+		t.Fatalf("expected ErrServiceDisabled, got %v", err)
+	}
+	if f.getCredentialCalls != 0 {
+		t.Fatalf("expected no credential lookup when disabled, got %d calls", f.getCredentialCalls)
+	}
+}
+
+func TestInject_ServiceDisabled_Passthrough(t *testing.T) {
+	disabled := false
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host:    "api.example.com",
+		Enabled: &disabled,
+		Auth:    broker.Auth{Type: "passthrough"},
+	}})
+	p := NewStoreCredentialProvider(f, make32(0xEF))
+	_, err := p.Inject(context.Background(), "v1", "api.example.com")
+	if !errors.Is(err, ErrServiceDisabled) {
+		t.Fatalf("expected ErrServiceDisabled for disabled passthrough, got %v", err)
+	}
+}
+
+func TestInject_EnabledExplicitTrue(t *testing.T) {
+	key32 := make32(0xF0)
+	enabled := true
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host:    "api.example.com",
+		Enabled: &enabled,
+		Auth:    broker.Auth{Type: "bearer", Token: "TOK"},
+	}})
+	f.setCred(t, key32, "v1", "TOK", "v")
+
+	p := NewStoreCredentialProvider(f, key32)
+	res, err := p.Inject(context.Background(), "v1", "api.example.com")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Headers["Authorization"] != "Bearer v" {
+		t.Fatalf("got %q", res.Headers["Authorization"])
+	}
+}
+
 func TestInject_PassthroughPortStripped(t *testing.T) {
 	f := newFakeCredStore()
 	f.setServices(t, "v1", []broker.Service{{

@@ -6,6 +6,8 @@ export function StatusBadge({ status }: { status: string }) {
     expired: "bg-bg text-text-dim border-border",
     active: "bg-success-bg text-success border-success/20",
     revoked: "bg-danger-bg text-danger border-danger/20",
+    enabled: "bg-success-bg text-success border-success/20",
+    disabled: "bg-danger-bg text-danger border-danger/20",
   };
 
   return (

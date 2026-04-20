@@ -1,3 +1,5 @@
+import { StatusBadge } from "./shared";
+
 export interface Auth {
   type: string;
   token?: string;
@@ -13,6 +15,7 @@ export interface Service {
   action: string;
   host: string;
   description?: string;
+  enabled?: boolean;
   auth?: Auth;
 }
 
@@ -178,6 +181,14 @@ export default function ProposalPreview({ data }: { data: ProposalData }) {
                     <p className="text-xs text-text-muted mt-1">{service.description}</p>
                   )}
                 </div>
+                {service.enabled !== undefined && (
+                  <div className="mt-2 pt-2 border-t border-border">
+                    <div className="text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-1.5">
+                      State
+                    </div>
+                    <StatusBadge status={service.enabled ? "enabled" : "disabled"} />
+                  </div>
+                )}
                 {service.auth && <AuthDisplay auth={service.auth} />}
               </div>
             ))}

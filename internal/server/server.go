@@ -617,6 +617,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(s.handleServicesGet)))
 	mux.HandleFunc("POST /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(limitBody(s.handleServicesUpsert))))
 	mux.HandleFunc("PUT /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(limitBody(s.handleServicesSet))))
+	mux.HandleFunc("PATCH /v1/vaults/{name}/services/{host}", s.requireInitialized(s.requireAuth(limitBody(s.handleServicePatch))))
 	mux.HandleFunc("DELETE /v1/vaults/{name}/services/{host}", s.requireInitialized(s.requireAuth(s.handleServiceRemove)))
 	mux.HandleFunc("DELETE /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(s.handleServicesClear)))
 	mux.HandleFunc("GET /v1/vaults/{name}/services/credential-usage", s.requireInitialized(s.requireAuth(s.handleServicesCredentialUsage)))

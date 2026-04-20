@@ -36,4 +36,10 @@ var (
 	// service's auth config is not set or could not be decrypted. Callers
 	// surface 502 so agents retry only after the credential is provisioned.
 	ErrCredentialMissing = errors.New("brokercore: referenced credential missing or undecryptable")
+
+	// ErrServiceDisabled means a configured broker service matched the
+	// target host but has been toggled off by an operator. Distinct from
+	// ErrServiceNotFound so agents can tell "configured but off" from "not
+	// configured". Callers surface 403 with error code "service_disabled".
+	ErrServiceDisabled = errors.New("brokercore: broker service is disabled")
 )

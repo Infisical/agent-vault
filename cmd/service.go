@@ -187,6 +187,10 @@ File mode (upsert, not replace-all):
 			if desc, _ := cmd.Flags().GetString("description"); desc != "" {
 				svc.Description = &desc
 			}
+			if disabled, _ := cmd.Flags().GetBool("disabled"); disabled {
+				f := false
+				svc.Enabled = &f
+			}
 			services = []broker.Service{svc}
 		}
 
@@ -273,6 +277,63 @@ var serviceRemoveCmd = &cobra.Command{
 	},
 }
 
+var serviceEnableCmd = &cobra.Command{
+	Use:   "enable <host>",
+	Short: "Enable a service so proxy traffic to the host resumes",
+	Long:  `Re-enable a previously disabled service. Idempotent — no error if already enabled.`,
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return patchServiceEnabled(cmd, args[0], true)
+	},
+}
+
+var serviceDisableCmd = &cobra.Command{
+	Use:   "disable <host>",
+	Short: "Disable a service so proxy requests to the host return 403",
+	Long: `Disable a service while preserving its configuration. Agents proxying
+to the host receive 403 with error code "service_disabled" until the
+service is re-enabled. Idempotent.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return patchServiceEnabled(cmd, args[0], false)
+	},
+}
+
+func patchServiceEnabled(cmd *cobra.Command, host string, enabled bool) error {
+	vault := resolveVault(cmd)
+
+	sess, err := ensureSession()
+	if err != nil {
+		return err
+	}
+
+	body, err := json.Marshal(map[string]bool{"enabled": enabled})
+	if err != nil {
+		return err
+	}
+
+	reqURL := fmt.Sprintf("%s/v1/vaults/%s/services/%s", sess.Address, vault, url.PathEscape(host))
+	respBody, err := doAdminRequestWithBody("PATCH", reqURL, sess.Token, body)
+	if err != nil {
+		return err
+	}
+
+	var resp struct {
+		Host    string `json:"host"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return fmt.Errorf("parsing response: %w", err)
+	}
+
+	verb := "disabled"
+	if resp.Enabled {
+		verb = "enabled"
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s Service %s: %s\n", successText("✓"), verb, resp.Host)
+	return nil
+}
+
 // loadServicesFromFile reads and validates a broker config from a YAML file path ("-" for stdin).
 func loadServicesFromFile(filePath, vault string) ([]broker.Service, error) {
 	var data []byte
@@ -324,6 +385,7 @@ func init() {
 	serviceAddCmd.Flags().String("api-key-key", "", "Credential key for api-key auth")
 	serviceAddCmd.Flags().String("api-key-header", "", "Header name for api-key (default Authorization)")
 	serviceAddCmd.Flags().String("api-key-prefix", "", "Prefix for api-key value")
+	serviceAddCmd.Flags().Bool("disabled", false, "Create the service in a disabled state (proxy traffic returns 403 until enabled)")
 
 	// service remove flags
 	serviceRemoveCmd.Flags().Bool("yes", false, "Skip confirmation prompt")
@@ -331,6 +393,8 @@ func init() {
 	serviceCmd.AddCommand(serviceListCmd)
 	serviceCmd.AddCommand(serviceSetCmd)
 	serviceCmd.AddCommand(serviceAddCmd)
+	serviceCmd.AddCommand(serviceEnableCmd)
+	serviceCmd.AddCommand(serviceDisableCmd)
 	serviceCmd.AddCommand(serviceRemoveCmd)
 	serviceCmd.AddCommand(serviceClearCmd)
 	vaultCmd.AddCommand(serviceCmd)
