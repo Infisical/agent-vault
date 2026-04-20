@@ -6,6 +6,11 @@
   "colors": {
     "primary": "#3B82F6"
   },
+  "integrations": {
+    "ga4": {
+      "measurementId": "G-MKYN2VSJTE"
+    }
+  },
   "navigation": {
     "groups": [
       {
