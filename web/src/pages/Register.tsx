@@ -63,7 +63,7 @@ function InviteOnlyNotice() {
   );
 }
 
-const INSTALL_COMMAND = "curl -fsSL https://raw.githubusercontent.com/Infisical/agent-vault/main/install.sh | sh";
+const INSTALL_COMMAND = "curl -fsSL https://get.agent-vault.dev | sh";
 
 function CommandBlock({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
