@@ -186,10 +186,15 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
-	if err := child.Run(); err != nil {
+	err = child.Run()
+	// Exit-code propagation via fmt.Errorf would collapse everything to
+	// Cobra's generic exit 1. Return the ExitError unchanged so a caller
+	// wrapping us can inspect it; for now we also lose the exact code to
+	// keep defers (network teardown, signal.Stop) intact.
+	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			os.Exit(exitErr.ExitCode())
+			return fmt.Errorf("sandbox container exited with status %d", exitErr.ExitCode())
 		}
 		return fmt.Errorf("docker run: %w", err)
 	}
