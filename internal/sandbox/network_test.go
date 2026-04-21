@@ -104,12 +104,14 @@ func TestParseNetworkInspect_EmptyContainers(t *testing.T) {
 }
 
 func TestHostBindIP(t *testing.T) {
-	// macOS/Windows path: loopback regardless of network gateway.
+	// macOS/Windows: 0.0.0.0 so Docker Desktop can deliver
+	// host.docker.internal traffic regardless of which host interface
+	// its VM backend routes through.
 	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
 		n := &Network{GatewayIP: net.ParseIP("172.20.0.1")}
 		got := HostBindIP(n)
-		if !got.Equal(net.IPv4(127, 0, 0, 1)) {
-			t.Errorf("HostBindIP on %s = %v, want 127.0.0.1", runtime.GOOS, got)
+		if !got.Equal(net.IPv4(0, 0, 0, 0)) {
+			t.Errorf("HostBindIP on %s = %v, want 0.0.0.0", runtime.GOOS, got)
 		}
 	}
 	// Linux path (or whatever host we're on): gateway IP passthrough.
