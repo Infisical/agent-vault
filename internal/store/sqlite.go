@@ -2846,7 +2846,7 @@ func (s *SQLiteStore) ListRequestLogs(ctx context.Context, opts ListRequestLogsO
 	                 matched_service, credential_keys, status, latency_ms, error_code, created_at
 	          FROM request_logs`
 	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
+		query += " WHERE " + strings.Join(where, " AND ") // #nosec G202 -- where entries are static predicate strings; all user input flows through args as ? placeholders
 	}
 	query += " ORDER BY id DESC LIMIT ?"
 	args = append(args, limit)
