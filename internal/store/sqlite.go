@@ -2848,7 +2848,15 @@ func (s *SQLiteStore) ListRequestLogs(ctx context.Context, opts ListRequestLogsO
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ") // #nosec G202 -- where entries are static predicate strings; all user input flows through args as ? placeholders
 	}
-	query += " ORDER BY id DESC LIMIT ?"
+	// Tailing (After > 0) scans ASC so bursts larger than the page are
+	// consumed oldest-first — a DESC LIMIT would skip the oldest new
+	// rows and silently lose them on the next poll. Historical paging
+	// (Before, or no cursor) stays DESC for newest-first display.
+	if opts.After > 0 {
+		query += " ORDER BY id ASC LIMIT ?"
+	} else {
+		query += " ORDER BY id DESC LIMIT ?"
+	}
 	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)

@@ -121,7 +121,10 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	)
 	emit := func(status int, errCode string) {
 		event.Emit(s.logger, start, status, errCode)
-		if s.logSink != nil {
+		// Skip persistence for early-exit paths before vault resolution:
+		// an empty vault_id violates the FK constraint and would roll
+		// back the entire 250ms batch, losing valid records alongside.
+		if s.logSink != nil && logVaultID != "" {
 			s.logSink.Record(r.Context(), requestlog.FromEvent(event, logVaultID, logActorType, logActorID))
 		}
 	}

@@ -86,6 +86,15 @@ func (s *Server) handleVaultLogsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Tail queries come back ASC (so bursts > page size don't lose the
+	// oldest rows); flip to DESC so the response contract stays
+	// newest-first regardless of cursor direction.
+	if opts.After > 0 {
+		for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+			rows[i], rows[j] = rows[j], rows[i]
+		}
+	}
+
 	items := make([]logItem, len(rows))
 	var latestID int64
 	for i, r := range rows {

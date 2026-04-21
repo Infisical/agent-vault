@@ -57,6 +57,7 @@ export default function LogsView({
   const [selected, setSelected] = useState<LogEntry | null>(null);
 
   const latestIdRef = useRef<number>(0);
+  const initializedRef = useRef<boolean>(false);
   const abortRef = useRef<AbortController | null>(null);
 
   const filterQS = useMemo(() => {
@@ -68,6 +69,7 @@ export default function LogsView({
   // Reset when filters change.
   useEffect(() => {
     latestIdRef.current = 0;
+    initializedRef.current = false;
     setRows([]);
     setNextCursor(null);
     setError("");
@@ -101,6 +103,7 @@ export default function LogsView({
       setRows(data.logs ?? []);
       setNextCursor(data.next_cursor);
       latestIdRef.current = data.latest_id || 0;
+      initializedRef.current = true;
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       setError("Network error.");
@@ -110,7 +113,10 @@ export default function LogsView({
   }
 
   async function pollNew() {
-    if (latestIdRef.current === 0) return;
+    // Gate on the initial load completing, not on cursor > 0 — an empty
+    // vault legitimately reports latest_id=0 and still needs polls so
+    // the first row shows up without a reload.
+    if (!initializedRef.current) return;
     try {
       const resp = await apiFetch(`${endpoint}?${filterQS}&after=${latestIdRef.current}`);
       if (!resp.ok) return;
