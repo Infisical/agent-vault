@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"net"
 	"net/http"
 )
 
@@ -18,6 +19,20 @@ type Keyer func(*http.Request) string
 func IPKey(clientIP func(*http.Request) string) Keyer {
 	return func(r *http.Request) string {
 		return "ip:" + clientIP(r)
+	}
+}
+
+// IPKeySkipLoopback is IPKey with a loopback exemption: peers on
+// 127.0.0.0/8 or ::1 return "" so the middleware fails open. Local
+// callers (CLI, same-host dashboard) legitimately fan out many
+// requests and aren't the DoS surface TierAuth is sized to protect.
+func IPKeySkipLoopback(clientIP func(*http.Request) string) Keyer {
+	return func(r *http.Request) string {
+		ip := clientIP(r)
+		if parsed := net.ParseIP(ip); parsed != nil && parsed.IsLoopback() {
+			return ""
+		}
+		return "ip:" + ip
 	}
 }
 

@@ -649,14 +649,16 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("DELETE /v1/vaults/{name}/services/{host}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServiceRemove))))
 	mux.HandleFunc("DELETE /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServicesClear))))
 	mux.HandleFunc("GET /v1/vaults/{name}/services/credential-usage", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServicesCredentialUsage))))
-	mux.HandleFunc("GET /v1/service-catalog", s.requireInitialized(ipAuth(s.handleServiceCatalog)))
-	mux.HandleFunc("GET /v1/skills/cli", s.requireInitialized(ipAuth(s.handleSkillCLI)))
-	mux.HandleFunc("GET /v1/skills/http", s.requireInitialized(ipAuth(s.handleSkillHTTP)))
-
-	// Public: transparent-proxy root CA. Safe to expose; clients need it to
-	// trust the minted leaves. Not wrapped in requireInitialized — the CA
-	// lifecycle is tied to --mitm-port, not owner registration.
-	mux.HandleFunc("GET /v1/mitm/ca.pem", ipAuth(s.handleMITMCA))
+	// Public static reads — immutable payloads with no credentials on
+	// the wire. TierGlobal is the only useful backstop; TierAuth would
+	// punish `vault run` (CA fetch per invocation) and the dashboard
+	// (re-mount poll) without defending any real surface.
+	mux.HandleFunc("GET /v1/service-catalog", s.requireInitialized(s.handleServiceCatalog))
+	mux.HandleFunc("GET /v1/skills/cli", s.requireInitialized(s.handleSkillCLI))
+	mux.HandleFunc("GET /v1/skills/http", s.requireInitialized(s.handleSkillHTTP))
+	// CA PEM is not wrapped in requireInitialized — the CA lifecycle is
+	// tied to --mitm-port, not owner registration.
+	mux.HandleFunc("GET /v1/mitm/ca.pem", s.handleMITMCA)
 
 	// Instance-level user invites
 	mux.HandleFunc("POST /v1/users/invites", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleUserInviteCreate)))))
@@ -838,10 +840,12 @@ func init() {
 	}
 }
 
-// ipKeyer returns a ratelimit.Keyer that keys on the request's client IP
-// (honoring AGENT_VAULT_TRUSTED_PROXIES via clientIP).
+// ipKeyer keys on the request's client IP (honoring
+// AGENT_VAULT_TRUSTED_PROXIES via clientIP), with loopback exempt.
+// Login/register still enforce their own in-handler buckets directly
+// on the raw IP, so credential-bearing endpoints keep defense-in-depth.
 func (s *Server) ipKeyer() ratelimit.Keyer {
-	return ratelimit.IPKey(clientIP)
+	return ratelimit.IPKeySkipLoopback(clientIP)
 }
 
 // actorKeyer returns a ratelimit.Keyer that keys on the authenticated
