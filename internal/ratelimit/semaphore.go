@@ -70,9 +70,6 @@ func (s *semaphore) releaseOnce() func() {
 // held returns the current number of in-flight holders (for gauges).
 func (s *semaphore) holders() int64 { return s.held.Load() }
 
-// capacity returns the configured capacity.
-func (s *semaphore) capacity() int { return cap(s.slots) }
-
 // keyedSemaphore is a map of per-key semaphores, each with the same
 // capacity. Used for TierProxy per-scope concurrency caps. maxKeys evicts
 // idle (fully-released) semaphores to bound memory.

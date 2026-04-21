@@ -136,10 +136,3 @@ func (m *tokenBucketMap) evictIfNeededLocked(_ time.Time) {
 		delete(m.buckets, oldestKey)
 	}
 }
-
-// size returns the number of tracked keys.
-func (m *tokenBucketMap) size() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.buckets)
-}
