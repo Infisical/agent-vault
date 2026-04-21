@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -2741,3 +2742,205 @@ func newUUID() string {
 
 func newSessionToken() string { return newPrefixedToken("av_sess_") }
 func newAgentToken() string   { return newPrefixedToken("av_agt_") }
+
+// --- Request Logs ---
+
+// InsertRequestLogs persists a batch of request logs inside a single
+// transaction. Credential key names are stored as a JSON array.
+// Callers are expected to pre-filter out anything secret; the store does
+// not validate fields beyond the column types.
+func (s *SQLiteStore) InsertRequestLogs(ctx context.Context, rows []RequestLog) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning request_logs tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO request_logs
+		  (vault_id, actor_type, actor_id, ingress, method, host, path,
+		   matched_service, credential_keys, status, latency_ms, error_code, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("preparing request_logs insert: %w", err)
+	}
+	defer func() { _ = stmt.Close() }()
+
+	for _, r := range rows {
+		keys := r.CredentialKeys
+		if keys == nil {
+			keys = []string{}
+		}
+		keysJSON, err := json.Marshal(keys)
+		if err != nil {
+			return fmt.Errorf("marshaling credential_keys: %w", err)
+		}
+		createdAt := r.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now()
+		}
+		if _, err := stmt.ExecContext(ctx,
+			r.VaultID, r.ActorType, r.ActorID, r.Ingress, r.Method, r.Host, r.Path,
+			r.MatchedService, string(keysJSON), r.Status, r.LatencyMs, r.ErrorCode,
+			createdAt.UTC().Format(time.DateTime),
+		); err != nil {
+			return fmt.Errorf("inserting request_log: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing request_logs: %w", err)
+	}
+	return nil
+}
+
+// ListRequestLogs returns logs matching opts, newest first. Pagination is
+// cursor-based via opts.Before (historical) or opts.After (tailing).
+// opts.Limit is used as-is; callers must cap it.
+func (s *SQLiteStore) ListRequestLogs(ctx context.Context, opts ListRequestLogsOpts) ([]RequestLog, error) {
+	var (
+		where []string
+		args  []any
+	)
+	if opts.VaultID != nil {
+		where = append(where, "vault_id = ?")
+		args = append(args, *opts.VaultID)
+	}
+	if opts.Ingress != "" {
+		where = append(where, "ingress = ?")
+		args = append(args, opts.Ingress)
+	}
+	if opts.MatchedService != "" {
+		where = append(where, "matched_service = ?")
+		args = append(args, opts.MatchedService)
+	}
+	switch opts.StatusBucket {
+	case "2xx":
+		where = append(where, "status >= 200 AND status < 300")
+	case "3xx":
+		where = append(where, "status >= 300 AND status < 400")
+	case "4xx":
+		where = append(where, "status >= 400 AND status < 500")
+	case "5xx":
+		where = append(where, "status >= 500 AND status < 600")
+	case "err":
+		where = append(where, "(error_code != '' OR status >= 400)")
+	}
+	if opts.Before > 0 {
+		where = append(where, "id < ?")
+		args = append(args, opts.Before)
+	}
+	if opts.After > 0 {
+		where = append(where, "id > ?")
+		args = append(args, opts.After)
+	}
+
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+
+	query := `SELECT id, vault_id, actor_type, actor_id, ingress, method, host, path,
+	                 matched_service, credential_keys, status, latency_ms, error_code, created_at
+	          FROM request_logs`
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += " ORDER BY id DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing request_logs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []RequestLog
+	for rows.Next() {
+		var rl RequestLog
+		var keysJSON, createdAt string
+		if err := rows.Scan(
+			&rl.ID, &rl.VaultID, &rl.ActorType, &rl.ActorID, &rl.Ingress,
+			&rl.Method, &rl.Host, &rl.Path, &rl.MatchedService, &keysJSON,
+			&rl.Status, &rl.LatencyMs, &rl.ErrorCode, &createdAt,
+		); err != nil {
+			return nil, fmt.Errorf("scanning request_log: %w", err)
+		}
+		if keysJSON != "" {
+			_ = json.Unmarshal([]byte(keysJSON), &rl.CredentialKeys)
+		}
+		rl.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
+		out = append(out, rl)
+	}
+	return out, rows.Err()
+}
+
+// DeleteOldRequestLogs deletes rows older than before across all vaults.
+// Returns the number of rows affected.
+func (s *SQLiteStore) DeleteOldRequestLogs(ctx context.Context, before time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM request_logs WHERE created_at < ?`,
+		before.UTC().Format(time.DateTime),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("deleting old request_logs: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// TrimRequestLogsToCap keeps at most cap rows for vaultID, deleting the
+// oldest beyond that ceiling. Returns rows deleted. Short-circuits when
+// the vault is under the cap so steady-state calls do no index-walk work.
+func (s *SQLiteStore) TrimRequestLogsToCap(ctx context.Context, vaultID string, cap int64) (int64, error) {
+	if cap <= 0 {
+		return 0, nil
+	}
+	var count int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM request_logs WHERE vault_id = ?`, vaultID,
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("counting request_logs: %w", err)
+	}
+	if count <= cap {
+		return 0, nil
+	}
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM request_logs
+		WHERE vault_id = ?
+		  AND id <= (
+		    SELECT id FROM request_logs
+		    WHERE vault_id = ?
+		    ORDER BY id DESC
+		    LIMIT 1 OFFSET ?
+		  )`,
+		vaultID, vaultID, cap,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("trimming request_logs: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// VaultIDsWithLogs returns the distinct vault IDs that have at least one
+// persisted request log. Used by the retention ticker to scope per-vault
+// trimming without iterating every vault.
+func (s *SQLiteStore) VaultIDsWithLogs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT vault_id FROM request_logs`)
+	if err != nil {
+		return nil, fmt.Errorf("listing log vault ids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}

@@ -9,7 +9,23 @@ import (
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/ratelimit"
+	"github.com/Infisical/agent-vault/internal/requestlog"
 )
+
+// actorFromScope returns the (type, id) pair used in request log rows.
+// Empty strings when neither principal is set on the scope.
+func actorFromScope(scope *brokercore.ProxyScope) (string, string) {
+	if scope == nil {
+		return "", ""
+	}
+	if scope.UserID != "" {
+		return brokercore.ActorTypeUser, scope.UserID
+	}
+	if scope.AgentID != "" {
+		return brokercore.ActorTypeAgent, scope.AgentID
+	}
+	return "", ""
+}
 
 // forwardHandler returns an http.Handler that forwards each request to
 // target (the host:port captured from the original CONNECT line). Using
@@ -20,13 +36,17 @@ func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		event := brokercore.ProxyEvent{
-			Ingress: "mitm",
+			Ingress: brokercore.IngressMITM,
 			Method:  r.Method,
 			Host:    target,
 			Path:    r.URL.Path,
 		}
+		actorType, actorID := actorFromScope(scope)
 		emit := func(status int, errCode string) {
 			event.Emit(p.logger, start, status, errCode)
+			if p.logSink != nil {
+				p.logSink.Record(r.Context(), requestlog.FromEvent(event, scope.VaultID, actorType, actorID))
+			}
 		}
 
 		// Shares one budget with /proxy so switching ingress can't bypass.

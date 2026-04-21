@@ -5,12 +5,27 @@ import (
 	"time"
 )
 
+// Ingress labels identify which entrypoint handled a proxied request.
+// Persisted into request logs and filterable by the Logs UI, so a typo
+// at any call site would silently desync filters from the real data.
+const (
+	IngressExplicit = "explicit"
+	IngressMITM     = "mitm"
+)
+
+// Actor types identify the principal behind a proxied request. Same
+// reason for constants as the ingress labels above.
+const (
+	ActorTypeUser  = "user"
+	ActorTypeAgent = "agent"
+)
+
 // ProxyEvent is the shape of a single structured per-request log line
 // emitted by both the explicit /proxy/ handler and the transparent MITM
 // forward handler. It is intentionally shallow and contains only
 // non-secret metadata — no header values, no bodies, no query strings.
 type ProxyEvent struct {
-	Ingress        string   // "explicit" | "mitm"
+	Ingress        string   // one of IngressExplicit, IngressMITM
 	Method         string   // HTTP method from the agent request
 	Host           string   // target host (with port if present)
 	Path           string   // r.URL.Path only — no query, no fragment

@@ -134,6 +134,17 @@ Key fields:
 
 **List proposals:** `GET {AGENT_VAULT_ADDR}/v1/proposals?status=pending`
 
+## Request Logs
+
+Agent Vault persists a per-request audit log for each vault (method, host, path, status, latency, matched service, credential key names -- **never** bodies or query strings). Useful for debugging "did the request go through?" and inspecting traffic patterns. Requires vault `member` or `admin` role.
+
+```
+GET {AGENT_VAULT_ADDR}/v1/vaults/{vault}/logs
+Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+```
+
+Query params: `ingress` (`explicit`|`mitm`), `status_bucket` (`2xx`|`3xx`|`4xx`|`5xx`|`err`), `service`, `limit` (default 50, max 200), `before=<id>` (page back), `after=<id>` (tail forward for new rows). Response: `{ "logs": [...], "next_cursor": <id|null>, "latest_id": <id> }`.
+
 ## Building Code That Needs Credentials
 
 When you are writing or modifying application code that requires secrets or API keys (e.g. `process.env.STRIPE_KEY`, `os.Getenv("DB_PASSWORD")`), use Agent Vault to ensure those credentials are tracked and available.

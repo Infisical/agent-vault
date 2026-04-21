@@ -28,6 +28,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/ca"
 	"github.com/Infisical/agent-vault/internal/netguard"
 	"github.com/Infisical/agent-vault/internal/ratelimit"
+	"github.com/Infisical/agent-vault/internal/requestlog"
 )
 
 // Proxy is a transparent MITM proxy. It is safe to start at most once;
@@ -43,6 +44,7 @@ type Proxy struct {
 	baseURL     string // externally-reachable control-plane URL for help links
 	logger      *slog.Logger
 	rateLimit   *ratelimit.Registry // shared with the HTTP server; nil = no-op
+	logSink     requestlog.Sink     // never nil (Nop default); shared with HTTP ingress
 }
 
 // Options carries the dependencies a Proxy needs. BaseURL is the
@@ -58,6 +60,7 @@ type Options struct {
 	BaseURL     string
 	Logger      *slog.Logger
 	RateLimit   *ratelimit.Registry
+	LogSink     requestlog.Sink // nil → Nop
 }
 
 // New builds a Proxy bound to addr. The returned Proxy does not begin
@@ -73,6 +76,10 @@ func New(addr string, opts Options) *Proxy {
 		ResponseHeaderTimeout: 30 * time.Second,
 	}
 
+	sink := opts.LogSink
+	if sink == nil {
+		sink = requestlog.Nop{}
+	}
 	p := &Proxy{
 		ca:        opts.CA,
 		sessions:  opts.Sessions,
@@ -81,6 +88,7 @@ func New(addr string, opts Options) *Proxy {
 		baseURL:   opts.BaseURL,
 		logger:    opts.Logger,
 		rateLimit: opts.RateLimit,
+		logSink:   sink,
 	}
 
 	p.tlsConfig = &tls.Config{
