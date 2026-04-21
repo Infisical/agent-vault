@@ -1,0 +1,108 @@
+---
+title: "Container sandbox"
+description: "Run `vault run` agents inside a Docker container with iptables-locked egress so the child cannot reach the network outside the Agent Vault proxy, no matter what it tries."
+---
+
+`agent-vault vault run` has two sandbox modes:
+
+- **`--sandbox=process`** (default) — forks the agent with `HTTPS_PROXY` and CA-trust env vars pointing at Agent Vault. Cooperative: a misbehaving or malicious agent can unset the env, spawn a subprocess that doesn't inherit them, use raw sockets, or exfiltrate over DNS.
+- **`--sandbox=container`** — launches the agent inside a Docker container whose egress is locked down with iptables. Non-cooperative: the only TCP destination the container can reach is the Agent Vault proxy. Everything else is dropped at the kernel.
+
+<Note>
+  Container mode is opt-in while it stabilizes. Process mode remains the default.
+</Note>
+
+## Quick start
+
+```bash
+agent-vault vault run --sandbox=container -- claude
+```
+
+First run takes ~60s while the sandbox image builds. Subsequent runs reuse the cached image.
+
+## What's inside the sandbox
+
+- **Image**: `agent-vault/sandbox:<hash>`, built on first use from an embedded Dockerfile. Debian-slim + Node 22 + `@anthropic-ai/claude-code` + `iptables` / `gosu` / `curl` / `git` / `python3`.
+- **Network**: a dedicated per-invocation Docker bridge network (`agent-vault-<session>`). Not the default bridge — other containers you're running cannot reach the forwarder.
+- **User**: `claude` (UID != 0), dropped via `gosu` after `init-firewall.sh` runs as root. `--security-opt=no-new-privileges` + `--cap-drop=ALL` with only `NET_ADMIN`/`NET_RAW` added.
+- **Egress policy**: `OUTPUT DROP` by default. `ACCEPT` only for loopback, ESTABLISHED/RELATED replies, and the two Agent Vault ports at `host.docker.internal`. **No DNS rule**: `host.docker.internal` is resolved via `/etc/hosts` (`docker run --add-host=host.docker.internal:host-gateway`), closing the DNS-exfiltration channel.
+- **Mounts**:
+  - `$PWD → /workspace` (read-write, your project)
+  - `~/.agent-vault/sandbox/ca-<session>.pem → /etc/agent-vault/ca.pem` (read-only, MITM CA)
+  - `agent-vault-claude-home-<session> → /home/claude/.claude` (per-invocation by default; see `--home-volume-shared` below)
+
+## Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--sandbox` | `process` | `process` (default) or `container`. Also read from `AGENT_VAULT_SANDBOX`. |
+| `--image` | | Override the bundled image. Use for your own base (different agent, pinned versions). |
+| `--mount` | | Extra bind mount `src:dst[:ro]`; repeatable. Host paths are symlink-resolved before validation; binds into `~/.agent-vault/` or `/var/run/docker.sock` are rejected. |
+| `--keep` | `false` | Omit `--rm` so the container is available for `docker inspect` / `docker logs` after exit. |
+| `--no-firewall` | `false` | **Debug only.** Skip `init-firewall.sh`; container has unrestricted egress. Prints a loud warning. |
+| `--home-volume-shared` | `false` | Share `/home/claude/.claude` across invocations. Default is per-invocation (auth doesn't persist, but concurrent runs can't corrupt each other). |
+
+## Bundled image vs `--image`
+
+The default image pins `@anthropic-ai/claude-code` at build time. If you want a specific version, or a different agent entirely, provide your own image:
+
+```bash
+# Build your own image (any Dockerfile that runs as root at entry,
+# supports `gosu`, has `iptables` in PATH, and ends with:
+#   ENTRYPOINT ["/usr/local/sbin/entrypoint.sh"]
+# where entrypoint.sh calls init-firewall.sh then execs gosu <user> "$@"
+# — the bundled assets in internal/sandbox/assets/ are the reference.)
+docker build -t my-org/my-agent-sandbox:v1 .
+
+agent-vault vault run --sandbox=container --image=my-org/my-agent-sandbox:v1 -- claude
+```
+
+## Concurrency
+
+The default per-invocation home volume means **your Claude login doesn't persist across runs** — you'll be prompted to log in again on each `vault run`. This is the conservative choice: shared state across concurrent containers corrupts `.claude/` (auth tokens, MCP configs, session history).
+
+When you want auth to persist across invocations in a single-project workflow:
+
+```bash
+agent-vault vault run --sandbox=container --home-volume-shared -- claude
+```
+
+Do not run two `--home-volume-shared` sessions concurrently — there's no locking, and `.claude/` will race.
+
+## Threat model
+
+**In scope.** The agent (and any subprocess it spawns) cannot:
+
+- Reach destinations outside `host.docker.internal:<agent-vault-port>` via any network method (HTTPS, raw sockets, ICMP, whatever) — iptables DROPs at the kernel before the packet leaves the container.
+- Exfiltrate over DNS — no DNS rule, no resolver, `host.docker.internal` is baked into `/etc/hosts`.
+- Inspect or mutate host state outside the workspace and its own ephemeral home volume.
+- Drop its own iptables rules — `gosu claude` runs UID != 0, Docker doesn't grant container capabilities as ambient caps to non-root processes.
+
+**Out of scope.**
+
+- Container escapes via kernel exploits. We rely on Docker's standard isolation.
+- Exfiltration through Agent Vault to whitelisted upstreams (e.g. Anthropic API). Agent Vault's service catalog and credential-injection policy govern that; the container just guarantees traffic can't bypass the broker.
+- Side channels (timing, resource usage).
+
+## Platform support
+
+- **Linux**: supported. Requires Docker 20.10+ for `--add-host=host.docker.internal:host-gateway`.
+- **macOS (Docker Desktop)**: supported.
+- **Windows**: not supported in v1. `vault run --sandbox=container` errors on Windows.
+
+## Troubleshooting
+
+**"docker not found in PATH"** — install Docker Desktop (macOS) or Docker Engine (Linux) and make sure `docker` is on `PATH`.
+
+**"host.docker.internal not resolvable"** inside the container — Docker version is too old. Upgrade to 20.10+ on Linux.
+
+**First run hangs** — the image build pulls `node:22-bookworm-slim` and runs `apt-get install` + `npm install -g @anthropic-ai/claude-code`. ~60 seconds on a fast connection; a slow network or corporate registry proxy can make it much longer. Watch `docker ps` in another terminal to confirm progress.
+
+**`iptables -S OUTPUT` in the container shows `DROP` but the agent still makes external calls** — that's impossible unless you passed `--no-firewall`. Check for the loud warning banner on startup.
+
+**Containers leak** after crashes — `agent-vault vault run --sandbox=container` runs `PruneStaleNetworks` at startup, removing any `agent-vault-*` networks older than 60 seconds with zero attached containers. The 60-second grace window prevents racing invocations from deleting each other's freshly-created networks.
+
+## Related
+
+- [Connect a coding agent](/guides/connect-coding-agent) — the standard `--sandbox=process` workflow.
+- [CLI reference](/reference/cli#agent-vault-vault-run) — full flag table.

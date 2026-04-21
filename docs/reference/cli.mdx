@@ -249,6 +249,12 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--role` | `proxy` | Vault role for the session: `proxy`, `member`, or `admin` |
     | `--ttl` | `0` | Session TTL in seconds (300–604800). Default: server default (24h). |
     | `--no-mitm` | `false` | Skip HTTPS_PROXY/CA env injection; rely solely on the explicit `/proxy/{host}/{path}` endpoint. |
+    | `--sandbox` | `process` | Sandbox mode for the child: `process` (default, cooperative) or `container` (non-cooperative Docker sandbox; see [Container sandbox](/guides/container-sandbox)). Also read from `AGENT_VAULT_SANDBOX`. |
+    | `--image` | | Override the bundled container image (`--sandbox=container` only). |
+    | `--mount` | | Extra bind mount `src:dst[:ro]`; repeatable (`--sandbox=container` only). Host paths are EvalSymlinks-resolved; reserved paths rejected. |
+    | `--keep` | `false` | Omit `--rm` from `docker run` (`--sandbox=container` only; useful for debugging). |
+    | `--no-firewall` | `false` | Skip the iptables egress lockdown (`--sandbox=container` only; debug, prints a warning). |
+    | `--home-volume-shared` | `false` | Share `/home/claude/.claude` across invocations (`--sandbox=container` only). Default is a per-invocation volume — auth doesn't persist but concurrent runs can't corrupt each other. |
   </Accordion>
 
   <Accordion title="agent-vault vault token">
