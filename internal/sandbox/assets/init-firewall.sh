@@ -29,7 +29,17 @@ iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A OUTPUT -d "$GW_IP" -p tcp --dport "$VAULT_HTTP_PORT" -j ACCEPT
 iptables -A OUTPUT -d "$GW_IP" -p tcp --dport "$VAULT_MITM_PORT" -j ACCEPT
 
+# IPv6 lockdown. We resolved host.docker.internal via ahostsv4, so the
+# forwarder path is IPv4 only — there's no destination we need to ACCEPT
+# over v6. If the Docker daemon has IPv6 enabled, this closes the
+# parallel egress channel that iptables rules alone would miss.
+ip6tables -F OUTPUT
+ip6tables -P OUTPUT DROP
+ip6tables -A OUTPUT -o lo -j ACCEPT
+ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
 {
-  echo "agent-vault: egress locked to $GW_IP:{$VAULT_HTTP_PORT,$VAULT_MITM_PORT}"
+  echo "agent-vault: egress locked to $GW_IP:{$VAULT_HTTP_PORT,$VAULT_MITM_PORT} (v4); all v6 dropped"
   iptables -S OUTPUT
+  ip6tables -S OUTPUT
 } >&2

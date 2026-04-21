@@ -63,6 +63,21 @@ func BuildRunArgs(cfg Config) ([]string, error) {
 	}
 
 	home, _ := os.UserHomeDir()
+
+	// The CWD is bind-mounted read-write at /workspace. Subject it to
+	// the same host-src validation as user --mount flags so running
+	// `vault run --sandbox=container` from inside ~/.agent-vault (which
+	// holds the encrypted CA key + vault database) does not expose
+	// that dir to the container.
+	resolvedWorkDir, err := filepath.EvalSymlinks(cfg.WorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolving workdir: %w", err)
+	}
+	if err := validateHostSrc(resolvedWorkDir, home); err != nil {
+		return nil, fmt.Errorf("workspace: %w", err)
+	}
+	cfg.WorkDir = resolvedWorkDir
+
 	parsed := make([]parsedMount, 0, len(cfg.Mounts))
 	for _, raw := range cfg.Mounts {
 		pm, err := parseAndValidateMount(raw, home)

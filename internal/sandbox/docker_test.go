@@ -200,6 +200,31 @@ func TestBuildRunArgs_UserMountAccepted(t *testing.T) {
 	}
 }
 
+// TestBuildRunArgs_RejectsCWDInsideAgentVaultDir pins the fix for the
+// case where `vault run --sandbox=container` is invoked with the CWD
+// inside ~/.agent-vault — the vault's encrypted CA key and database
+// must not be bind-mounted into the container.
+func TestBuildRunArgs_RejectsCWDInsideAgentVaultDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	vaultDir := filepath.Join(home, ".agent-vault")
+	inside := filepath.Join(vaultDir, "some-project")
+	if err := os.MkdirAll(inside, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	cfg := baseConfig(t)
+	cfg.WorkDir = inside
+
+	_, err := BuildRunArgs(cfg)
+	if err == nil {
+		t.Fatal("expected BuildRunArgs to reject a workdir inside ~/.agent-vault")
+	}
+	if !strings.Contains(err.Error(), ".agent-vault") {
+		t.Errorf("err = %q, want to mention .agent-vault", err.Error())
+	}
+}
+
 func TestParseAndValidateMount_RejectReservedContainerDst(t *testing.T) {
 	tmp := t.TempDir()
 	home := t.TempDir()

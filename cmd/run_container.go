@@ -19,22 +19,31 @@ import (
 	"github.com/Infisical/agent-vault/internal/sandbox"
 )
 
-// containerOnlyFlags are no-ops in process mode; we reject them explicitly
-// rather than silently ignoring them, which would be a foot-gun.
-var containerOnlyFlags = []string{"image", "mount", "keep", "no-firewall", "home-volume-shared"}
+// containerOnlyFlags are no-ops in process mode. processOnlyFlags are
+// no-ops in container mode (where MITM is always on, enforced by the
+// iptables lockdown). Either direction is a foot-gun if accepted
+// silently — reject in both.
+var (
+	containerOnlyFlags = []string{"image", "mount", "keep", "no-firewall", "home-volume-shared"}
+	processOnlyFlags   = []string{"no-mitm"}
+)
 
 func validateSandboxFlagConflicts(cmd *cobra.Command, mode SandboxMode) error {
+	var disallowed []string
+	var otherMode string
 	if mode == SandboxContainer {
-		return nil
+		disallowed = processOnlyFlags
+		otherMode = "process"
+	} else {
+		disallowed = containerOnlyFlags
+		otherMode = "container"
 	}
-	for _, name := range containerOnlyFlags {
+	for _, name := range disallowed {
 		f := cmd.Flags().Lookup(name)
-		if f == nil {
+		if f == nil || !f.Changed {
 			continue
 		}
-		if f.Changed {
-			return fmt.Errorf("--%s requires --sandbox=container", name)
-		}
+		return fmt.Errorf("--%s requires --sandbox=%s", name, otherMode)
 	}
 	return nil
 }
@@ -54,10 +63,11 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 		ctx = context.Background()
 	}
 
-	// Housekeeping: trim old CA tempfiles and networks from crashed runs
-	// before we create new ones. Both are best-effort.
+	// Housekeeping: trim resources leaked by crashed runs before we
+	// create new ones. All best-effort.
 	sandbox.PruneHostCAFiles()
 	_ = sandbox.PruneStaleNetworks(ctx, sandbox.DefaultPruneGrace)
+	_ = sandbox.PruneStaleVolumes(ctx)
 
 	// Pull the MITM CA from the server. Container mode always routes
 	// through MITM — --no-mitm is a process-mode-only escape hatch.
@@ -103,6 +113,19 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 		_ = sandbox.RemoveNetwork(cleanup, network.Name)
 	}()
 
+	homeShared, _ := cmd.Flags().GetBool("home-volume-shared")
+	if !homeShared {
+		defer func() {
+			// Per-invocation volume: remove after the container exits
+			// so .claude state (auth tokens, session history) doesn't
+			// accumulate one volume per invocation. Shared-mode volume
+			// is opt-in persistent; never auto-remove.
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = sandbox.RemoveVolume(cleanup, sandbox.ClaudeHomeVolumeName(sessionID))
+		}()
+	}
+
 	bindIP := sandbox.HostBindIP(network)
 	if bindIP == nil {
 		return errors.New("could not determine host bind IP for forwarder")
@@ -130,7 +153,6 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 	mounts, _ := cmd.Flags().GetStringArray("mount")
 	keep, _ := cmd.Flags().GetBool("keep")
 	noFirewall, _ := cmd.Flags().GetBool("no-firewall")
-	homeShared, _ := cmd.Flags().GetBool("home-volume-shared")
 
 	dockerArgs, err := sandbox.BuildRunArgs(sandbox.Config{
 		ImageRef:         imageRef,

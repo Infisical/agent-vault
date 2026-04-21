@@ -70,6 +70,7 @@ func TestValidateSandboxFlagConflicts(t *testing.T) {
 		{"process mode rejects --keep", SandboxProcess, []string{"--keep"}, "--keep requires --sandbox=container"},
 		{"process mode rejects --no-firewall", SandboxProcess, []string{"--no-firewall"}, "--no-firewall requires --sandbox=container"},
 		{"process mode rejects --home-volume-shared", SandboxProcess, []string{"--home-volume-shared"}, "--home-volume-shared requires --sandbox=container"},
+		{"container mode rejects --no-mitm", SandboxContainer, []string{"--no-mitm"}, "--no-mitm requires --sandbox=process"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -105,5 +106,6 @@ func newRunCommandForTest() *cobra.Command {
 	c.Flags().Bool("keep", false, "")
 	c.Flags().Bool("no-firewall", false, "")
 	c.Flags().Bool("home-volume-shared", false, "")
+	c.Flags().Bool("no-mitm", false, "")
 	return c
 }

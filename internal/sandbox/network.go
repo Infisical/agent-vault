@@ -14,11 +14,13 @@ import (
 
 // NetworkLabelKey / NetworkLabelValue are set on every docker network
 // agent-vault creates so PruneStaleNetworks can identify ones it owns
-// without touching networks from other tools.
+// without touching networks from other tools. The same label key is
+// applied to per-invocation claude-home volumes for symmetric pruning.
 const (
 	NetworkLabelKey    = "agent-vault-sandbox"
 	NetworkLabelValue  = "1"
 	NetworkNamePrefix  = "agent-vault-"
+	VolumeNamePrefix   = "agent-vault-claude-home-"
 	DefaultPruneGrace  = 60 * time.Second
 	sessionIDBytes     = 8 // 16 hex chars
 	sessionLabelPrefix = "agent-vault-session="
@@ -87,6 +89,50 @@ func inspectNetworkGateway(ctx context.Context, name string) (net.IP, error) {
 // RemoveNetwork is a best-effort teardown.
 func RemoveNetwork(ctx context.Context, name string) error {
 	return exec.CommandContext(ctx, "docker", "network", "rm", name).Run()
+}
+
+// ClaudeHomeVolumeName returns the per-invocation claude-home volume
+// name for a session. Keeping the mapping in one place prevents drift
+// with PruneStaleVolumes's name-prefix filter.
+func ClaudeHomeVolumeName(sessionID string) string {
+	return VolumeNamePrefix + sessionID
+}
+
+// RemoveVolume is a best-effort `docker volume rm`. Ignores "volume
+// still in use" errors (the defer path only runs after the container
+// is gone, but a racing run on the same name is theoretically possible
+// with the shared volume).
+func RemoveVolume(ctx context.Context, name string) error {
+	return exec.CommandContext(ctx, "docker", "volume", "rm", name).Run()
+}
+
+// PruneStaleVolumes removes agent-vault-claude-home-* named volumes
+// that no container is currently mounting. Analogous to
+// PruneStaleNetworks — reclaims volumes left behind by crashed runs.
+// No grace period is needed because, unlike networks, volumes are only
+// "in use" while a container has them attached; docker rejects rm on
+// attached volumes, so racing creators are self-protecting.
+func PruneStaleVolumes(ctx context.Context) error {
+	cmd := exec.CommandContext(ctx, "docker", "volume", "ls",
+		"--filter", "name="+VolumeNamePrefix,
+		"--format", "{{.Name}}",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("docker volume ls: %w", err)
+	}
+	for _, name := range strings.Fields(string(out)) {
+		// VolumeNamePrefix has a trailing dash, so it matches only the
+		// per-invocation volumes ("agent-vault-claude-home-<sid>"), never
+		// the shared volume ("agent-vault-claude-home") whose name lacks
+		// the dash. Docker rejects rm on in-use volumes, so racing
+		// runs are self-protecting.
+		if !strings.HasPrefix(name, VolumeNamePrefix) {
+			continue
+		}
+		_ = exec.CommandContext(ctx, "docker", "volume", "rm", name).Run()
+	}
+	return nil
 }
 
 // PruneStaleNetworks removes agent-vault-* networks with zero attached
