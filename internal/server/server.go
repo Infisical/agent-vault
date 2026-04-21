@@ -840,12 +840,10 @@ func init() {
 	}
 }
 
-// ipKeyer keys on the request's client IP (honoring
-// AGENT_VAULT_TRUSTED_PROXIES via clientIP), with loopback exempt.
-// Login/register still enforce their own in-handler buckets directly
-// on the raw IP, so credential-bearing endpoints keep defense-in-depth.
+// ipKeyer returns a ratelimit.Keyer that keys on the request's client IP
+// (honoring AGENT_VAULT_TRUSTED_PROXIES via clientIP).
 func (s *Server) ipKeyer() ratelimit.Keyer {
-	return ratelimit.IPKeySkipLoopback(clientIP)
+	return ratelimit.IPKey(clientIP)
 }
 
 // actorKeyer returns a ratelimit.Keyer that keys on the authenticated
