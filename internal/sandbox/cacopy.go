@@ -47,7 +47,7 @@ func WriteHostCAFile(pem []byte, sessionID string) (string, error) {
 	// WriteFile with 0o600 is default-safe; Chmod to 0o644 is the
 	// explicit step that lets the container read its own bind mount.
 	// Parent dir is 0o700 so the host attack surface is unchanged.
-	if err := os.Chmod(path, 0o644); err != nil {
+	if err := os.Chmod(path, 0o644); err != nil { // #nosec G302 -- container user (UID != host) must read bind-mounted CA; parent dir is 0o700
 		return "", fmt.Errorf("chmod CA file: %w", err)
 	}
 	return path, nil

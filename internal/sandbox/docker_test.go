@@ -58,11 +58,10 @@ func TestBuildRunArgs_Default(t *testing.T) {
 	if !hasFlagValue(args, "--cap-drop", "ALL") {
 		t.Error("expected --cap-drop ALL")
 	}
-	if !hasFlagValue(args, "--cap-add", "NET_ADMIN") {
-		t.Error("expected --cap-add NET_ADMIN")
-	}
-	if !hasFlagValue(args, "--cap-add", "NET_RAW") {
-		t.Error("expected --cap-add NET_RAW")
+	for _, cap := range []string{"NET_ADMIN", "NET_RAW", "SETUID", "SETGID"} {
+		if !hasFlagValue(args, "--cap-add", cap) {
+			t.Errorf("expected --cap-add %s", cap)
+		}
 	}
 	if !hasFlagValue(args, "--security-opt", "no-new-privileges") {
 		t.Error("expected --security-opt no-new-privileges")

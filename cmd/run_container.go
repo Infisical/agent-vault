@@ -112,7 +112,7 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 	if err != nil {
 		return fmt.Errorf("start forwarder: %w", err)
 	}
-	defer fwd.Close()
+	defer func() { _ = fwd.Close() }()
 
 	image, _ := cmd.Flags().GetString("image")
 	imageRef, err := sandbox.EnsureImage(ctx, image, os.Stderr)

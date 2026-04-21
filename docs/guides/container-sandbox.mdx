@@ -24,7 +24,7 @@ First run takes ~60s while the sandbox image builds. Subsequent runs reuse the c
 
 - **Image**: `agent-vault/sandbox:<hash>`, built on first use from an embedded Dockerfile. Debian-slim + Node 22 + `@anthropic-ai/claude-code` + `iptables` / `gosu` / `curl` / `git` / `python3`.
 - **Network**: a dedicated per-invocation Docker bridge network (`agent-vault-<session>`). Not the default bridge — other containers you're running cannot reach the forwarder.
-- **User**: `claude` (UID != 0), dropped via `gosu` after `init-firewall.sh` runs as root. `--security-opt=no-new-privileges` + `--cap-drop=ALL` with only `NET_ADMIN`/`NET_RAW` added.
+- **User**: `claude` (UID != 0), dropped via `gosu` after `init-firewall.sh` runs as root. `--security-opt=no-new-privileges` + `--cap-drop=ALL` with only `NET_ADMIN` / `NET_RAW` (for iptables) and `SETUID` / `SETGID` (so gosu can change UID) added. Docker doesn't grant container caps as *ambient* caps to non-root processes, so `claude` post-gosu has an empty effective cap set regardless.
 - **Egress policy**: `OUTPUT DROP` by default. `ACCEPT` only for loopback, ESTABLISHED/RELATED replies, and the two Agent Vault ports at `host.docker.internal`. **No DNS rule**: `host.docker.internal` is resolved via `/etc/hosts` (`docker run --add-host=host.docker.internal:host-gateway`), closing the DNS-exfiltration channel.
 - **Mounts**:
   - `$PWD → /workspace` (read-write, your project)

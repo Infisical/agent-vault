@@ -83,12 +83,16 @@ func BuildRunArgs(cfg Config) ([]string, error) {
 	args = append(args,
 		"--init",
 		"--network", cfg.NetworkName,
-		// NET_ADMIN/NET_RAW are needed by init-firewall.sh. Docker does
-		// not grant container caps as *ambient* caps to non-root procs,
-		// so claude post-gosu cannot exercise them.
+		// NET_ADMIN/NET_RAW: init-firewall.sh installs iptables rules.
+		// SETUID/SETGID: gosu(8) drops root to the claude user in entrypoint.sh.
+		// Docker does not grant these as *ambient* caps to non-root processes,
+		// so claude post-gosu has an empty effective cap set — it cannot
+		// exercise any of them.
 		"--cap-drop", "ALL",
 		"--cap-add", "NET_ADMIN",
 		"--cap-add", "NET_RAW",
+		"--cap-add", "SETUID",
+		"--cap-add", "SETGID",
 		"--security-opt", "no-new-privileges",
 		"--add-host", "host.docker.internal:host-gateway",
 	)

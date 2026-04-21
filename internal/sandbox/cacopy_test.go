@@ -86,7 +86,7 @@ func TestPruneHostCAFiles_RemovesStaleOnly(t *testing.T) {
 	fresh := filepath.Join(dir, caPrefix+"new-sid"+caSuffix)
 	unrelated := filepath.Join(dir, "claude-home.lock") // not a CA file
 	for _, p := range []string{stale, fresh, unrelated} {
-		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
 			t.Fatalf("prep %s: %v", p, err)
 		}
 	}
