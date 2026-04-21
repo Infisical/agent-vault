@@ -27,6 +27,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/ca"
 	"github.com/Infisical/agent-vault/internal/netguard"
+	"github.com/Infisical/agent-vault/internal/ratelimit"
 )
 
 // Proxy is a transparent MITM proxy. It is safe to start at most once;
@@ -41,15 +42,27 @@ type Proxy struct {
 	isListening atomic.Bool
 	baseURL     string // externally-reachable control-plane URL for help links
 	logger      *slog.Logger
+	rateLimit   *ratelimit.Registry // shared with the HTTP server; nil = no-op
 }
 
-// New builds a Proxy bound to addr using caProv for leaf certificates and
-// the brokercore sessions/creds for authentication and credential injection.
-// baseURL is the externally-reachable control-plane URL (e.g.
-// "http://127.0.0.1:14321") used to build help links in error responses.
-// The returned Proxy does not begin listening until ListenAndServe is
-// called. logger must be non-nil; tests can pass slog.New(slog.DiscardHandler).
-func New(addr string, caProv ca.Provider, sessions brokercore.SessionResolver, creds brokercore.CredentialProvider, baseURL string, logger *slog.Logger) *Proxy {
+// Options carries the dependencies a Proxy needs. BaseURL is the
+// externally-reachable control-plane URL used in help-link error
+// responses. Logger must be non-nil; tests can pass
+// slog.New(slog.DiscardHandler). RateLimit is shared with the HTTP
+// server so proxy limits apply uniformly across both ingresses; nil
+// disables rate limiting on the MITM path.
+type Options struct {
+	CA          ca.Provider
+	Sessions    brokercore.SessionResolver
+	Credentials brokercore.CredentialProvider
+	BaseURL     string
+	Logger      *slog.Logger
+	RateLimit   *ratelimit.Registry
+}
+
+// New builds a Proxy bound to addr. The returned Proxy does not begin
+// listening until ListenAndServe is called.
+func New(addr string, opts Options) *Proxy {
 	upstream := &http.Transport{
 		DialContext:           netguard.SafeDialContext(netguard.ModeFromEnv()),
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
@@ -61,12 +74,13 @@ func New(addr string, caProv ca.Provider, sessions brokercore.SessionResolver, c
 	}
 
 	p := &Proxy{
-		ca:       caProv,
-		sessions: sessions,
-		creds:    creds,
-		upstream: upstream,
-		baseURL:  baseURL,
-		logger:   logger,
+		ca:        opts.CA,
+		sessions:  opts.Sessions,
+		creds:     opts.Credentials,
+		upstream:  upstream,
+		baseURL:   opts.BaseURL,
+		logger:    opts.Logger,
+		rateLimit: opts.RateLimit,
 	}
 
 	p.tlsConfig = &tls.Config{
@@ -75,16 +89,15 @@ func New(addr string, caProv ca.Provider, sessions brokercore.SessionResolver, c
 			sni := hello.ServerName
 			if sni == "" {
 				// No SNI (IP-literal connection per RFC 6066). Use the
-				// actual local address the client connected to so the
-				// cert SAN matches regardless of IPv4/IPv6 or which
-				// interface was used on a wildcard bind.
+				// local address the client connected to so the cert
+				// SAN matches regardless of IPv4/IPv6 or wildcard bind.
 				if host, _, err := net.SplitHostPort(hello.Conn.LocalAddr().String()); err == nil && host != "" {
 					sni = host
 				} else {
 					sni = "127.0.0.1"
 				}
 			}
-			return caProv.MintLeaf(sni)
+			return opts.CA.MintLeaf(sni)
 		},
 	}
 

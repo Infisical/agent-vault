@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/Infisical/agent-vault/internal/ratelimit"
 )
 
 // handleEmailTest sends a test email to verify SMTP configuration.
@@ -88,6 +90,12 @@ func (s *Server) writeSettingsResponse(w http.ResponseWriter, ctx context.Contex
 		resp["invite_only"] = raw == "true"
 	}
 
+	// Rate-limit settings: include the effective config, its source per
+	// tier, and the operator-pin flag so the UI can disable fields.
+	if rl := s.buildRateLimitSettingResponse(ctx); rl != nil {
+		resp["rate_limit"] = rl
+	}
+
 	jsonOK(w, resp)
 }
 
@@ -97,8 +105,9 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		AllowedEmailDomains *[]string `json:"allowed_email_domains"`
-		InviteOnly          *bool     `json:"invite_only"`
+		AllowedEmailDomains *[]string                `json:"allowed_email_domains"`
+		InviteOnly          *bool                    `json:"invite_only"`
+		RateLimit           *rateLimitSettingPayload `json:"rate_limit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
@@ -150,6 +159,17 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 				jsonError(w, http.StatusInternalServerError, "Failed to save settings")
 				return
 			}
+		}
+	}
+
+	if req.RateLimit != nil {
+		if err := s.handleUpdateRateLimitSetting(ctx, req.RateLimit); err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, ratelimit.ErrLocked) {
+				status = http.StatusConflict
+			}
+			jsonError(w, status, err.Error())
+			return
 		}
 	}
 

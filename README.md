@@ -36,7 +36,7 @@ See the [installation guide](https://docs.agent-vault.dev/installation) for full
 ### Script (macOS / Linux)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Infisical/agent-vault/main/install.sh | sh
+curl -fsSL https://get.agent-vault.dev | sh
 agent-vault server -d
 ```
 
@@ -116,6 +116,12 @@ const caCert = session.containerConfig!.caCertificate;
 ```
 
 See the [TypeScript SDK README](sdks/sdk-typescript/README.md) for full documentation.
+
+## Rate limiting
+
+Agent Vault ships with a **tiered, in-memory rate limiter** keyed on the principal appropriate for each endpoint (client IP for anonymous auth, hashed token for invite/approval redemption, `(actor, vault)` scope for the proxy path, global in-flight ceiling for the server). Defaults are tuned for normal use — agents doing realistic bursts of proxy calls don't trip anything — and 429 responses carry a `Retry-After` header so clients can back off politely.
+
+Pick a preset via `AGENT_VAULT_RATELIMIT_PROFILE={default,strict,loose,off}`, or fine-tune per tier in **Manage Instance → Settings → Rate Limiting** (owner-only). Set `AGENT_VAULT_RATELIMIT_LOCK=true` on PaaS to pin limits to env vars and disable the UI. See [docs/self-hosting/environment-variables.mdx](docs/self-hosting/environment-variables.mdx) for the full knob list.
 
 ## Development
 

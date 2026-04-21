@@ -9,13 +9,34 @@ import (
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
+	"github.com/Infisical/agent-vault/internal/ratelimit"
 )
+
+// mitmConnectIPKey is the rate-limit key for the CONNECT-flood
+// limiter. X-Forwarded-For doesn't exist at this layer (the HTTP
+// request is tunnelled); only the direct peer IP is meaningful.
+func mitmConnectIPKey(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || host == "" {
+		host = r.RemoteAddr
+	}
+	return "mitm:" + host
+}
 
 // handleConnect terminates a CONNECT tunnel and serves HTTP/1.1 off the
 // resulting TLS connection. The upstream target is taken from the
 // CONNECT request line (r.Host) and captured in a closure so subsequent
 // Host-header rewrites by the client cannot redirect the tunnel.
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
+	// Gate before ParseProxyAuth + session lookup so a bad-auth flood
+	// can't burn CPU. Per-IP on the raw TCP peer.
+	if p.rateLimit != nil {
+		if d := p.rateLimit.Allow(ratelimit.TierAuth, mitmConnectIPKey(r)); !d.Allow {
+			ratelimit.WriteDenial(w, d, "Too many CONNECT attempts")
+			return
+		}
+	}
+
 	target := r.Host
 	host, _, err := net.SplitHostPort(target)
 	if err != nil {
@@ -87,8 +108,13 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// closes the listener so Serve returns.
 	listener := newOneShotListener(tlsConn)
 	srv := &http.Server{
-		Handler:           p.forwardHandler(target, host, scope),
+		Handler: p.forwardHandler(target, host, scope),
+		// Slow-loris defense: without these the tunnel can drip bytes
+		// forever and pin a proxy concurrency slot.
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      5 * time.Minute, // upstream streaming can be legit
+		IdleTimeout:       2 * time.Minute,
 		ConnState: func(c net.Conn, state http.ConnState) {
 			if state == http.StateClosed || state == http.StateHijacked {
 				_ = listener.Close()

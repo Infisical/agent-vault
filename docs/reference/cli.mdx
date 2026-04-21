@@ -43,6 +43,9 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `AGENT_VAULT_SMTP_FROM_NAME` | Sender display name (default `Agent Vault`) |
     | `AGENT_VAULT_SMTP_TLS_MODE` | TLS mode: `opportunistic` (default), `required`, or `none` |
     | `AGENT_VAULT_SMTP_TLS_SKIP_VERIFY` | Skip TLS certificate verification (default `false`) |
+    | `AGENT_VAULT_RATELIMIT_PROFILE` | Rate-limit profile: `default`, `strict`, `loose`, or `off`. Affects anonymous auth, token-redeem, proxy, authenticated CRUD, and the global in-flight / RPS ceilings. |
+    | `AGENT_VAULT_RATELIMIT_LOCK` | When `true`, the rate-limit section in the Manage Instance UI is read-only and UI overrides are ignored. Use when you want limits pinned to env vars on PaaS. |
+    | `AGENT_VAULT_RATELIMIT_<TIER>_<KNOB>` | Fine-grained per-tier overrides. `TIER` ∈ `AUTH`, `PROXY`, `AUTHED`, `GLOBAL`. `KNOB` ∈ `RATE`, `BURST`, `WINDOW`, `MAX`, `CONCURRENCY`. Env-set knobs always beat UI overrides. |
   </Accordion>
 
   <Accordion title="agent-vault server stop">

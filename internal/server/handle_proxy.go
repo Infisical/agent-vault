@@ -10,6 +10,7 @@ import (
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/netguard"
+	"github.com/Infisical/agent-vault/internal/ratelimit"
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
@@ -155,6 +156,18 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		emit(0, "vault_error")
 		return // error already written
 	}
+
+	// Enforced post-vault-resolution; scope isn't known until here.
+	scope := &brokercore.ProxyScope{UserID: sess.UserID, AgentID: sess.AgentID}
+	enf := s.rateLimit.EnforceProxy(ctx, scope.ActorID(), ns.ID)
+	if !enf.Allowed {
+		ratelimit.WriteDenial(w, enf.Decision, enf.Message)
+		emit(http.StatusTooManyRequests, enf.ErrCode)
+		return
+	}
+	defer enf.Release()
+
+	r.Body = http.MaxBytesReader(w, r.Body, brokercore.MaxProxyBodyBytes)
 
 	// Resolve broker service + inject credentials.
 	inject, err := s.CredentialProvider().Inject(ctx, ns.ID, targetHost)

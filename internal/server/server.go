@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"net"
-	"sync"
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/crypto"
@@ -23,6 +22,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/notify"
 	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/pidfile"
+	"github.com/Infisical/agent-vault/internal/ratelimit"
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
@@ -61,9 +61,14 @@ type Server struct {
 	oauthProviders map[string]oauth.Provider
 	skillCLI       []byte       // embedded CLI skill content (served at GET /v1/skills/cli)
 	skillHTTP      []byte       // embedded HTTP skill content (served at GET /v1/skills/http)
-	mitm           *mitm.Proxy  // transparent MITM proxy; nil only when --mitm-port 0
-	logger         *slog.Logger // structured logger for per-request observability
+	mitm           *mitm.Proxy          // transparent MITM proxy; nil only when --mitm-port 0
+	logger         *slog.Logger         // structured logger for per-request observability
+	rateLimit      *ratelimit.Registry  // tiered rate limiter; shared with the MITM ingress
 }
+
+// RateLimit returns the server's rate-limit registry. Exported so the
+// MITM ingress can share the same tier state (see cmd/server.go).
+func (s *Server) RateLimit() *ratelimit.Registry { return s.rateLimit }
 
 // AttachMITM registers an optional transparent MITM proxy whose lifecycle
 // is bound to this Server: Start launches it, and SIGINT/SIGTERM/Shutdown
@@ -524,10 +529,13 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 		proxyClient = newProxyClient()
 	}
 
+	rlCfg, _ := ratelimit.LoadFromEnv()
+	rl := ratelimit.New(rlCfg)
+
 	s := &Server{
 		httpServer: &http.Server{
 			Addr:              addr,
-			Handler:           securityHeaders(mux),
+			Handler:           securityHeaders(rl.GlobalMiddleware(logger)(mux)),
 			ReadHeaderTimeout: 10 * time.Second,
 			ReadTimeout:       30 * time.Second,
 			WriteTimeout:      60 * time.Second,
@@ -540,128 +548,148 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 		baseURL:        strings.TrimRight(baseURL, "/"),
 		oauthProviders: oauthProviders,
 		logger:         logger,
+		rateLimit:      rl,
 	}
 
-	// Always available (no initialization required)
+	ipAuth := s.tier(ratelimit.TierAuth, s.ipKeyer())
+	ipInviteToken := s.tier(ratelimit.TierAuth, s.tokenKeyer("token"))
+
+	// /health, /v1/status, and other public static routes rely on the
+	// server-wide TierGlobal backstop; no per-route limit is useful.
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
-	mux.HandleFunc("POST /v1/auth/register", limitBody(s.handleRegister))
-	mux.HandleFunc("POST /v1/auth/verify", limitBody(s.handleVerify))
-	mux.HandleFunc("POST /v1/auth/resend-verification", limitBody(s.handleResendVerification))
-	mux.HandleFunc("POST /v1/auth/forgot-password", limitBody(s.handleForgotPassword))
-	mux.HandleFunc("POST /v1/auth/reset-password", limitBody(s.handleResetPassword))
+	mux.HandleFunc("POST /v1/auth/register", ipAuth(limitBody(s.handleRegister)))
+	mux.HandleFunc("POST /v1/auth/verify", ipAuth(limitBody(s.handleVerify)))
+	mux.HandleFunc("POST /v1/auth/resend-verification", ipAuth(limitBody(s.handleResendVerification)))
+	mux.HandleFunc("POST /v1/auth/forgot-password", ipAuth(limitBody(s.handleForgotPassword)))
+	mux.HandleFunc("POST /v1/auth/reset-password", ipAuth(limitBody(s.handleResetPassword)))
+
+	actorAuthed := s.tier(ratelimit.TierAuthed, s.actorKeyer())
 
 	// Require initialization
-	mux.HandleFunc("GET /v1/auth/me", s.requireInitialized(s.requireAuth(s.handleAuthMe)))
-	mux.HandleFunc("POST /v1/auth/login", s.requireInitialized(limitBody(s.handleLogin)))
-	mux.HandleFunc("POST /v1/auth/change-password", s.requireInitialized(s.requireAuth(limitBody(s.handleChangePassword))))
-	mux.HandleFunc("DELETE /v1/auth/account", s.requireInitialized(s.requireAuth(s.handleDeleteAccount)))
-	mux.HandleFunc("POST /v1/sessions", s.requireInitialized(s.requireAuth(limitBody(s.handleScopedSession))))
-	mux.HandleFunc("GET /v1/credentials", s.requireInitialized(s.requireAuth(s.handleCredentialsList)))
-	mux.HandleFunc("POST /v1/credentials", s.requireInitialized(s.requireAuth(limitBody(s.handleCredentialsSet))))
-	mux.HandleFunc("DELETE /v1/credentials", s.requireInitialized(s.requireAuth(limitBody(s.handleCredentialsDelete))))
-	mux.HandleFunc("GET /discover", s.requireInitialized(s.requireAuth(s.handleDiscover)))
-	mux.HandleFunc("POST /v1/proposals", s.requireInitialized(s.requireAuth(limitBody(s.handleProposalCreate))))
-	mux.HandleFunc("GET /v1/proposals/{id}", s.requireInitialized(s.requireAuth(s.handleProposalGet)))
-	mux.HandleFunc("GET /v1/proposals", s.requireInitialized(s.requireAuth(s.handleProposalList)))
-	mux.HandleFunc("POST /v1/admin/proposals/{id}/approve", s.requireInitialized(s.requireAuth(limitBody(s.handleAdminProposalApprove))))
-	mux.HandleFunc("POST /v1/admin/proposals/{id}/reject", s.requireInitialized(s.requireAuth(limitBody(s.handleAdminProposalReject))))
+	mux.HandleFunc("GET /v1/auth/me", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAuthMe))))
+	mux.HandleFunc("POST /v1/auth/login", s.requireInitialized(ipAuth(limitBody(s.handleLogin))))
+	mux.HandleFunc("POST /v1/auth/change-password", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleChangePassword)))))
+	mux.HandleFunc("DELETE /v1/auth/account", s.requireInitialized(s.requireAuth(actorAuthed(s.handleDeleteAccount))))
+	mux.HandleFunc("POST /v1/sessions", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleScopedSession)))))
+	mux.HandleFunc("GET /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(s.handleCredentialsList))))
+	mux.HandleFunc("POST /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleCredentialsSet)))))
+	mux.HandleFunc("DELETE /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleCredentialsDelete)))))
+	mux.HandleFunc("GET /discover", s.requireInitialized(s.requireAuth(actorAuthed(s.handleDiscover))))
+	mux.HandleFunc("POST /v1/proposals", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleProposalCreate)))))
+	mux.HandleFunc("GET /v1/proposals/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleProposalGet))))
+	mux.HandleFunc("GET /v1/proposals", s.requireInitialized(s.requireAuth(actorAuthed(s.handleProposalList))))
+	mux.HandleFunc("POST /v1/admin/proposals/{id}/approve", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAdminProposalApprove)))))
+	mux.HandleFunc("POST /v1/admin/proposals/{id}/reject", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAdminProposalReject)))))
+	// /proxy/ enforces its rate limit inside the handler (needs the resolved vault).
 	mux.HandleFunc("/proxy/", s.requireInitialized(s.requireAuth(s.handleProxy)))
 
 	// Agent invite redemption (no auth — token is the credential)
-	mux.HandleFunc("GET /invite/{token}", s.requireInitialized(s.handleInviteRedeem))
-	mux.HandleFunc("POST /invite/{token}", s.requireInitialized(limitBody(s.handlePersistentInviteRedeem)))
+	mux.HandleFunc("GET /invite/{token}", s.requireInitialized(ipInviteToken(s.handleInviteRedeem)))
+	mux.HandleFunc("POST /invite/{token}", s.requireInitialized(ipInviteToken(limitBody(s.handlePersistentInviteRedeem))))
+
+	ipUserInviteToken := s.tier(ratelimit.TierAuth, ratelimit.IPTokenKey(clientIP, func(r *http.Request) string {
+		return r.PathValue("token")
+	}))
+	ipApprovalToken := s.tier(ratelimit.TierAuth, ratelimit.IPTokenKey(clientIP, func(r *http.Request) string {
+		return r.URL.Query().Get("token")
+	}))
+	// OAuth callback: keyed on the hashed state query param.
+	ipOAuthCallback := s.tier(ratelimit.TierAuth, ratelimit.IPTokenKey(clientIP, func(r *http.Request) string {
+		return r.URL.Query().Get("state")
+	}))
 
 	// Agent invites (instance-level, requires auth)
-	mux.HandleFunc("POST /v1/agents/invites", s.requireInitialized(s.requireAuth(limitBody(s.handleAgentInviteCreate))))
-	mux.HandleFunc("GET /v1/agents/invites", s.requireInitialized(s.requireAuth(s.handleAgentInviteList)))
-	mux.HandleFunc("DELETE /v1/agents/invites/{token}", s.requireInitialized(s.requireAuth(s.handleAgentInviteRevoke)))
-	mux.HandleFunc("DELETE /v1/agents/invites/by-id/{id}", s.requireInitialized(s.requireAuth(s.handleAgentInviteRevokeByID)))
+	mux.HandleFunc("POST /v1/agents/invites", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAgentInviteCreate)))))
+	mux.HandleFunc("GET /v1/agents/invites", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentInviteList))))
+	mux.HandleFunc("DELETE /v1/agents/invites/{token}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentInviteRevoke))))
+	mux.HandleFunc("DELETE /v1/agents/invites/by-id/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentInviteRevokeByID))))
 
 	// Agent management (instance-level)
-	mux.HandleFunc("GET /v1/agents", s.requireInitialized(s.requireAuth(s.handleAgentList)))
-	mux.HandleFunc("GET /v1/agents/{name}", s.requireInitialized(s.requireAuth(s.handleAgentGet)))
-	mux.HandleFunc("DELETE /v1/agents/{name}", s.requireInitialized(s.requireAuth(s.handleAgentRevoke)))
-	mux.HandleFunc("POST /v1/agents/{name}/rotate", s.requireInitialized(s.requireAuth(limitBody(s.handleAgentRotate))))
-	mux.HandleFunc("POST /v1/agents/{name}/rename", s.requireInitialized(s.requireAuth(limitBody(s.handleAgentRename))))
-	mux.HandleFunc("POST /v1/agents/{name}/role", s.requireInitialized(s.requireAuth(limitBody(s.handleAgentSetRole))))
+	mux.HandleFunc("GET /v1/agents", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentList))))
+	mux.HandleFunc("GET /v1/agents/{name}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentGet))))
+	mux.HandleFunc("DELETE /v1/agents/{name}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentRevoke))))
+	mux.HandleFunc("POST /v1/agents/{name}/rotate", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAgentRotate)))))
+	mux.HandleFunc("POST /v1/agents/{name}/rename", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAgentRename)))))
+	mux.HandleFunc("POST /v1/agents/{name}/role", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAgentSetRole)))))
 
 	// Vault-level agent management
-	mux.HandleFunc("GET /v1/vaults/{name}/agents", s.requireInitialized(s.requireAuth(s.handleVaultAgentList)))
-	mux.HandleFunc("POST /v1/vaults/{name}/agents", s.requireInitialized(s.requireAuth(limitBody(s.handleVaultAgentAdd))))
-	mux.HandleFunc("DELETE /v1/vaults/{name}/agents/{agentName}", s.requireInitialized(s.requireAuth(s.handleVaultAgentRemove)))
-	mux.HandleFunc("POST /v1/vaults/{name}/agents/{agentName}/role", s.requireInitialized(s.requireAuth(limitBody(s.handleVaultAgentSetRole))))
+	mux.HandleFunc("GET /v1/vaults/{name}/agents", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultAgentList))))
+	mux.HandleFunc("POST /v1/vaults/{name}/agents", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultAgentAdd)))))
+	mux.HandleFunc("DELETE /v1/vaults/{name}/agents/{agentName}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultAgentRemove))))
+	mux.HandleFunc("POST /v1/vaults/{name}/agents/{agentName}/role", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultAgentSetRole)))))
 
 	// Instance settings (owner-only)
-	mux.HandleFunc("GET /v1/admin/settings", s.requireInitialized(s.requireAuth(s.handleGetSettings)))
-	mux.HandleFunc("PUT /v1/admin/settings", s.requireInitialized(s.requireAuth(limitBody(s.handleUpdateSettings))))
+	mux.HandleFunc("GET /v1/admin/settings", s.requireInitialized(s.requireAuth(actorAuthed(s.handleGetSettings))))
+	mux.HandleFunc("PUT /v1/admin/settings", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleUpdateSettings)))))
+	mux.HandleFunc("POST /v1/admin/settings/rate-limit/preview", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleRateLimitPreview)))))
 
 	// Public user list (any authenticated user)
-	mux.HandleFunc("GET /v1/users", s.requireInitialized(s.requireAuth(s.handlePublicUserList)))
+	mux.HandleFunc("GET /v1/users", s.requireInitialized(s.requireAuth(actorAuthed(s.handlePublicUserList))))
 
 	// User management (owner-only, except GET self)
-	mux.HandleFunc("GET /v1/admin/users/{email}", s.requireInitialized(s.requireAuth(s.handleUserGet)))
-	mux.HandleFunc("DELETE /v1/admin/users/{email}", s.requireInitialized(s.requireAuth(s.handleUserDelete)))
-	mux.HandleFunc("POST /v1/admin/users/{email}/role", s.requireInitialized(s.requireAuth(limitBody(s.handleUserSetRole))))
+	mux.HandleFunc("GET /v1/admin/users/{email}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleUserGet))))
+	mux.HandleFunc("DELETE /v1/admin/users/{email}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleUserDelete))))
+	mux.HandleFunc("POST /v1/admin/users/{email}/role", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleUserSetRole)))))
 
 	// Vault management (any auth'd user)
-	mux.HandleFunc("GET /v1/vaults/{name}/context", s.requireInitialized(s.requireAuth(s.handleVaultContext)))
-	mux.HandleFunc("POST /v1/vaults", s.requireInitialized(s.requireAuth(limitBody(s.handleVaultCreate))))
-	mux.HandleFunc("GET /v1/vaults", s.requireInitialized(s.requireAuth(s.handleVaultList)))
-	mux.HandleFunc("DELETE /v1/vaults/{name}", s.requireInitialized(s.requireAuth(s.handleVaultDelete)))
-	mux.HandleFunc("POST /v1/vaults/{name}/rename", s.requireInitialized(s.requireAuth(limitBody(s.handleVaultRename))))
-	mux.HandleFunc("POST /v1/vaults/{name}/join", s.requireInitialized(s.requireAuth(limitBody(s.handleVaultJoin))))
+	mux.HandleFunc("GET /v1/vaults/{name}/context", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultContext))))
+	mux.HandleFunc("POST /v1/vaults", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultCreate)))))
+	mux.HandleFunc("GET /v1/vaults", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultList))))
+	mux.HandleFunc("DELETE /v1/vaults/{name}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultDelete))))
+	mux.HandleFunc("POST /v1/vaults/{name}/rename", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultRename)))))
+	mux.HandleFunc("POST /v1/vaults/{name}/join", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultJoin)))))
 
 	// Vault admin (owner-only)
-	mux.HandleFunc("GET /v1/admin/vaults", s.requireInitialized(s.requireAuth(s.handleAdminVaultList)))
-	mux.HandleFunc("GET /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(s.handleServicesGet)))
-	mux.HandleFunc("POST /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(limitBody(s.handleServicesUpsert))))
-	mux.HandleFunc("PUT /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(limitBody(s.handleServicesSet))))
-	mux.HandleFunc("PATCH /v1/vaults/{name}/services/{host}", s.requireInitialized(s.requireAuth(limitBody(s.handleServicePatch))))
-	mux.HandleFunc("DELETE /v1/vaults/{name}/services/{host}", s.requireInitialized(s.requireAuth(s.handleServiceRemove)))
-	mux.HandleFunc("DELETE /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(s.handleServicesClear)))
-	mux.HandleFunc("GET /v1/vaults/{name}/services/credential-usage", s.requireInitialized(s.requireAuth(s.handleServicesCredentialUsage)))
-	mux.HandleFunc("GET /v1/service-catalog", s.requireInitialized(s.handleServiceCatalog))
-	mux.HandleFunc("GET /v1/skills/cli", s.requireInitialized(s.handleSkillCLI))
-	mux.HandleFunc("GET /v1/skills/http", s.requireInitialized(s.handleSkillHTTP))
+	mux.HandleFunc("GET /v1/admin/vaults", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAdminVaultList))))
+	mux.HandleFunc("GET /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServicesGet))))
+	mux.HandleFunc("POST /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleServicesUpsert)))))
+	mux.HandleFunc("PUT /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleServicesSet)))))
+	mux.HandleFunc("PATCH /v1/vaults/{name}/services/{host}", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleServicePatch)))))
+	mux.HandleFunc("DELETE /v1/vaults/{name}/services/{host}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServiceRemove))))
+	mux.HandleFunc("DELETE /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServicesClear))))
+	mux.HandleFunc("GET /v1/vaults/{name}/services/credential-usage", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServicesCredentialUsage))))
+	mux.HandleFunc("GET /v1/service-catalog", s.requireInitialized(ipAuth(s.handleServiceCatalog)))
+	mux.HandleFunc("GET /v1/skills/cli", s.requireInitialized(ipAuth(s.handleSkillCLI)))
+	mux.HandleFunc("GET /v1/skills/http", s.requireInitialized(ipAuth(s.handleSkillHTTP)))
 
 	// Public: transparent-proxy root CA. Safe to expose; clients need it to
 	// trust the minted leaves. Not wrapped in requireInitialized — the CA
 	// lifecycle is tied to --mitm-port, not owner registration.
-	mux.HandleFunc("GET /v1/mitm/ca.pem", s.handleMITMCA)
+	mux.HandleFunc("GET /v1/mitm/ca.pem", ipAuth(s.handleMITMCA))
 
 	// Instance-level user invites
-	mux.HandleFunc("POST /v1/users/invites", s.requireInitialized(s.requireAuth(limitBody(s.handleUserInviteCreate))))
-	mux.HandleFunc("GET /v1/users/invites", s.requireInitialized(s.requireAuth(s.handleUserInviteList)))
-	mux.HandleFunc("DELETE /v1/users/invites/{token}", s.requireInitialized(s.requireAuth(s.handleUserInviteRevoke)))
-	mux.HandleFunc("POST /v1/users/invites/{token}/reinvite", s.requireInitialized(s.requireAuth(limitBody(s.handleUserInviteReinvite))))
-	mux.HandleFunc("GET /v1/users/invites/{token}/details", s.requireInitialized(s.handleUserInviteDetails))
-	mux.HandleFunc("POST /v1/users/invites/{token}/accept", s.requireInitialized(limitBody(s.handleUserInviteAccept)))
+	mux.HandleFunc("POST /v1/users/invites", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleUserInviteCreate)))))
+	mux.HandleFunc("GET /v1/users/invites", s.requireInitialized(s.requireAuth(actorAuthed(s.handleUserInviteList))))
+	mux.HandleFunc("DELETE /v1/users/invites/{token}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleUserInviteRevoke))))
+	mux.HandleFunc("POST /v1/users/invites/{token}/reinvite", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleUserInviteReinvite)))))
+	mux.HandleFunc("GET /v1/users/invites/{token}/details", s.requireInitialized(ipUserInviteToken(s.handleUserInviteDetails)))
+	mux.HandleFunc("POST /v1/users/invites/{token}/accept", s.requireInitialized(ipUserInviteToken(limitBody(s.handleUserInviteAccept))))
 
 	// Vault user management (vault admin)
-	mux.HandleFunc("GET /v1/vaults/{name}/users", s.requireInitialized(s.requireAuth(s.handleVaultUserList)))
-	mux.HandleFunc("POST /v1/vaults/{name}/users", s.requireInitialized(s.requireAuth(limitBody(s.handleVaultUserAdd))))
-	mux.HandleFunc("DELETE /v1/vaults/{name}/users/{email}", s.requireInitialized(s.requireAuth(s.handleVaultUserRemove)))
-	mux.HandleFunc("POST /v1/vaults/{name}/users/{email}/role", s.requireInitialized(s.requireAuth(limitBody(s.handleVaultUserSetRole))))
+	mux.HandleFunc("GET /v1/vaults/{name}/users", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultUserList))))
+	mux.HandleFunc("POST /v1/vaults/{name}/users", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultUserAdd)))))
+	mux.HandleFunc("DELETE /v1/vaults/{name}/users/{email}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultUserRemove))))
+	mux.HandleFunc("POST /v1/vaults/{name}/users/{email}/role", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultUserSetRole)))))
 
 	// Proposal approval details (token-based, no auth required)
-	mux.HandleFunc("GET /v1/proposals/approve-details", s.requireInitialized(s.handleProposalApproveDetails))
+	mux.HandleFunc("GET /v1/proposals/approve-details", s.requireInitialized(ipApprovalToken(s.handleProposalApproveDetails)))
 
 	// Admin proposal management
-	mux.HandleFunc("GET /v1/admin/proposals", s.requireInitialized(s.requireAuth(s.handleAdminProposalList)))
-	mux.HandleFunc("GET /v1/admin/proposals/{id}", s.requireInitialized(s.requireAuth(s.handleAdminProposalGet)))
+	mux.HandleFunc("GET /v1/admin/proposals", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAdminProposalList))))
+	mux.HandleFunc("GET /v1/admin/proposals/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAdminProposalGet))))
 
 	// Email
-	mux.HandleFunc("POST /v1/admin/email/test", s.requireInitialized(s.requireAuth(limitBody(s.handleEmailTest))))
+	mux.HandleFunc("POST /v1/admin/email/test", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleEmailTest)))))
 
-	mux.HandleFunc("POST /v1/auth/logout", s.requireInitialized(s.handleLogout))
+	mux.HandleFunc("POST /v1/auth/logout", s.requireInitialized(ipAuth(s.handleLogout)))
 
 	// OAuth
-	mux.HandleFunc("GET /v1/auth/oauth/providers", s.handleOAuthProviders)
-	mux.HandleFunc("GET /v1/auth/oauth/{provider}/login", s.requireInitialized(s.optionalAuth(s.handleOAuthLogin)))
-	mux.HandleFunc("GET /v1/auth/oauth/{provider}/callback", s.requireInitialized(s.handleOAuthCallback))
-	mux.HandleFunc("POST /v1/auth/oauth/{provider}/connect", s.requireInitialized(s.requireAuth(s.handleOAuthConnect)))
-	mux.HandleFunc("DELETE /v1/auth/oauth/{provider}", s.requireInitialized(s.requireAuth(s.handleOAuthDisconnect)))
+	mux.HandleFunc("GET /v1/auth/oauth/providers", ipAuth(s.handleOAuthProviders))
+	mux.HandleFunc("GET /v1/auth/oauth/{provider}/login", s.requireInitialized(ipAuth(s.optionalAuth(s.handleOAuthLogin))))
+	mux.HandleFunc("GET /v1/auth/oauth/{provider}/callback", s.requireInitialized(ipOAuthCallback(s.handleOAuthCallback)))
+	mux.HandleFunc("POST /v1/auth/oauth/{provider}/connect", s.requireInitialized(s.requireAuth(actorAuthed(s.handleOAuthConnect))))
+	mux.HandleFunc("DELETE /v1/auth/oauth/{provider}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleOAuthDisconnect))))
 
 	// React app static assets (Vite outputs to /assets/ with base "/")
 	webFS, _ := fs.Sub(webDistFS, "webdist")
@@ -701,6 +729,13 @@ func (s *Server) requireInitialized(next http.HandlerFunc) http.HandlerFunc {
 // Start starts the server and blocks until shutdown.
 // It listens for SIGINT/SIGTERM to shut down gracefully.
 func (s *Server) Start() error {
+	// Non-fatal: registry already holds env-based config from New().
+	if s.initialized {
+		if _, err := s.applyRateLimitSettingToRegistry(context.Background()); err != nil {
+			s.logger.Warn("ratelimit setting load failed", "err", err.Error())
+		}
+	}
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
@@ -803,64 +838,45 @@ func init() {
 	}
 }
 
-// slidingWindowLimiter is a generic sliding-window rate limiter keyed by string.
-type slidingWindowLimiter struct {
-	mu       sync.Mutex
-	attempts map[string][]time.Time
-	window   time.Duration
-	max      int
-	maxKeys  int // max map keys before eviction (0 = unlimited)
+// ipKeyer returns a ratelimit.Keyer that keys on the request's client IP
+// (honoring AGENT_VAULT_TRUSTED_PROXIES via clientIP).
+func (s *Server) ipKeyer() ratelimit.Keyer {
+	return ratelimit.IPKey(clientIP)
 }
 
-// allow checks whether an action for the given key should be allowed.
-func (l *slidingWindowLimiter) allow(key string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	now := time.Now()
-	cutoff := now.Add(-l.window)
-
-	// Filter to recent attempts only.
-	recent := l.attempts[key][:0]
-	for _, t := range l.attempts[key] {
-		if t.After(cutoff) {
-			recent = append(recent, t)
+// actorKeyer returns a ratelimit.Keyer that keys on the authenticated
+// actor (user or agent). Returns "" if no session is on the context;
+// the middleware then skips the check, which is safe because actor
+// tiers are wrapped *after* requireAuth.
+func (s *Server) actorKeyer() ratelimit.Keyer {
+	return ratelimit.ActorKey(func(r *http.Request) string {
+		sess := sessionFromContext(r.Context())
+		if sess == nil {
+			return ""
 		}
-	}
-	l.attempts[key] = recent
-
-	if len(recent) >= l.max {
-		return false
-	}
-
-	l.attempts[key] = append(l.attempts[key], now)
-
-	// Evict oldest keys if map grows too large (prevents unbounded growth).
-	if l.maxKeys > 0 && len(l.attempts) > l.maxKeys {
-		for k, v := range l.attempts {
-			if len(v) == 0 || v[len(v)-1].Before(cutoff) {
-				delete(l.attempts, k)
-			}
+		if sess.UserID != "" {
+			return "u:" + sess.UserID
 		}
-	}
-
-	return true
+		return "a:" + sess.AgentID
+	})
 }
 
-const (
-	loginRateWindow = 5 * time.Minute
-	loginRateMax    = 10 // max attempts per key per window
-)
+// tokenKeyer returns a ratelimit.Keyer that combines clientIP with a
+// hashed URL path value so token-enumeration attempts are bounded by
+// both the caller's IP and the token being probed.
+func (s *Server) tokenKeyer(pathValue string) ratelimit.Keyer {
+	return ratelimit.IPTokenKey(clientIP, func(r *http.Request) string {
+		return r.PathValue(pathValue)
+	})
+}
 
-var (
-	loginIPLimiter          = newSlidingWindowLimiter(loginRateWindow, loginRateMax, 10000)
-	loginEmailLimiter       = newSlidingWindowLimiter(loginRateWindow, loginRateMax, 10000)
-	registerLimiter         = newSlidingWindowLimiter(loginRateWindow, 5, 10000)  // 5 registrations per IP per 5 min
-	forgotPasswordLimiter   = newSlidingWindowLimiter(loginRateWindow, 5, 10000)  // 5 forgot-password requests per IP per 5 min
-	resendVerifyLimiter     = newSlidingWindowLimiter(loginRateWindow, 5, 10000)  // 5 resend-verification requests per IP per 5 min
-	userInviteAcceptLimiter = newSlidingWindowLimiter(loginRateWindow, 10, 10000) // 10 invite accepts per IP per 5 min
-	resetVerifyLimiter      = &verifyRateLimiter{attempts: make(map[string]int), maxKeys: maxVerifyKeys}
-)
+// tier wraps handler with a rate-limit check for tier keyed by keyer.
+// On denial the middleware writes a 429 with standard headers; on
+// allow, it calls handler. This is the canonical way new routes in
+// server.go register tier enforcement.
+func (s *Server) tier(t ratelimit.Tier, keyer ratelimit.Keyer) func(http.HandlerFunc) http.HandlerFunc {
+	return s.rateLimit.HandlerFunc(t, keyer, s.logger)
+}
 
 var (
 	dummyPasswordHash []byte
@@ -962,3 +978,5 @@ func sessionExpired(s *store.Session) bool {
 const settingAllowedDomains = "allowed_email_domains"
 
 const settingInviteOnly = "invite_only"
+
+const settingRateLimitConfig = "ratelimit_config"

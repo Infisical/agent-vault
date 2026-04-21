@@ -97,7 +97,13 @@ func setupProxy(t *testing.T, sr brokercore.SessionResolver, cp brokercore.Crede
 		t.Fatal("failed to load CA root PEM into pool")
 	}
 
-	p = New("127.0.0.1:0", caProv, sr, cp, "http://127.0.0.1:14321", slog.New(slog.DiscardHandler))
+	p = New("127.0.0.1:0", Options{
+		CA:          caProv,
+		Sessions:    sr,
+		Credentials: cp,
+		BaseURL:     "http://127.0.0.1:14321",
+		Logger:      slog.New(slog.DiscardHandler),
+	})
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

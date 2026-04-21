@@ -29,7 +29,7 @@ func TestHandleMITMCA(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ca.New: %v", err)
 		}
-		p := mitm.New("127.0.0.1:0", caProv, srv.SessionResolver(), srv.CredentialProvider(), srv.BaseURL(), srv.Logger())
+		p := mitm.New("127.0.0.1:0", mitm.Options{CA: caProv, Sessions: srv.SessionResolver(), Credentials: srv.CredentialProvider(), BaseURL: srv.BaseURL(), Logger: srv.Logger(), RateLimit: srv.RateLimit()})
 		srv.AttachMITM(p)
 
 		// Start the proxy so IsListening() reports true. The handler gates
@@ -100,7 +100,7 @@ func TestHandleMITMCA(t *testing.T) {
 		}
 		// Bind to an explicit non-default port so we can assert the
 		// header reflects the configured Addr rather than any constant.
-		p := mitm.New("127.0.0.1:19322", caProv, srv.SessionResolver(), srv.CredentialProvider(), srv.BaseURL(), srv.Logger())
+		p := mitm.New("127.0.0.1:19322", mitm.Options{CA: caProv, Sessions: srv.SessionResolver(), Credentials: srv.CredentialProvider(), BaseURL: srv.BaseURL(), Logger: srv.Logger(), RateLimit: srv.RateLimit()})
 		srv.AttachMITM(p)
 
 		l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -164,7 +164,7 @@ func TestHandleMITMCA(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ca.New: %v", err)
 		}
-		p := mitm.New("127.0.0.1:0", caProv, srv.SessionResolver(), srv.CredentialProvider(), srv.BaseURL(), srv.Logger())
+		p := mitm.New("127.0.0.1:0", mitm.Options{CA: caProv, Sessions: srv.SessionResolver(), Credentials: srv.CredentialProvider(), BaseURL: srv.BaseURL(), Logger: srv.Logger(), RateLimit: srv.RateLimit()})
 		srv.AttachMITM(p)
 		// Intentionally do not call Serve — simulates a bind failure.
 

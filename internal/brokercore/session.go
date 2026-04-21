@@ -7,6 +7,13 @@ import (
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
+// MaxProxyBodyBytes caps forwarded request bodies on both proxy
+// ingresses. Distinct from the generic 1 MB limitBody wrapper used
+// on control-plane endpoints: proxy bodies are legitimately larger
+// (file uploads, bulk API payloads) but must still be bounded to
+// protect RAM under the proxy concurrency semaphore.
+const MaxProxyBodyBytes = 64 << 20
+
 // ProxyScope is the resolved identity + vault context for a proxy request.
 // It is produced once per ingress (per request for /proxy, per CONNECT for
 // MITM) and carried through to credential injection.
@@ -16,6 +23,16 @@ type ProxyScope struct {
 	VaultID   string
 	VaultName string
 	VaultRole string
+}
+
+// ActorID returns the non-empty principal ID — UserID for user
+// sessions, AgentID for agent tokens. Used as the actor dimension in
+// per-scope rate-limit keys.
+func (s *ProxyScope) ActorID() string {
+	if s.UserID != "" {
+		return s.UserID
+	}
+	return s.AgentID
 }
 
 // SessionResolver collapses bearer-token validation and vault selection into

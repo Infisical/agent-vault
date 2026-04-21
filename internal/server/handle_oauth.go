@@ -17,8 +17,6 @@ import (
 
 const oauthStateTTL = 10 * time.Minute
 
-var oauthLoginLimiter = newSlidingWindowLimiter(5*time.Minute, 20, 10000) // 20 OAuth initiations per IP per 5 min
-
 // handleOAuthProviders returns the list of enabled OAuth providers.
 func (s *Server) handleOAuthProviders(w http.ResponseWriter, r *http.Request) {
 	type providerInfo struct {
@@ -48,11 +46,6 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ip := clientIP(r)
-	if !oauthLoginLimiter.allow(ip) {
-		jsonError(w, http.StatusTooManyRequests, "Too many login attempts, try again later")
-		return
-	}
 
 	// Generate CSRF state, PKCE code verifier, and OIDC nonce.
 	state, err := generateRandomHex(32)

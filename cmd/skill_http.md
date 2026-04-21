@@ -181,7 +181,7 @@ Content-Type: application/json
 - 401: Invalid or expired token -- check `AGENT_VAULT_SESSION_TOKEN`
 - 403 `forbidden`: Host not allowed -- create a proposal
 - 403 `service_disabled`: Host is configured but currently disabled by an operator. Don't create a new proposal; surface the error to the user so they can re-enable it
-- 429: Too many pending proposals -- wait for review
+- 429: Rate limited. The response carries a `Retry-After` header (seconds) and a JSON body `{"error":"too_many_requests", ...}`. Respect `Retry-After` — wait that many seconds before retrying. Do **not** tight-loop or switch to a different Agent Vault ingress to bypass the limit; the MITM and explicit `/proxy/` paths share one budget. If the limit trips repeatedly on normal work, ask the instance owner to raise the limit in **Manage Instance → Settings → Rate Limiting**.
 - 502: Missing credential or upstream unreachable, tell user a credential may need to be added
 
 ## Rules

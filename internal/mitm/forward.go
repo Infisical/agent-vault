@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
+	"github.com/Infisical/agent-vault/internal/ratelimit"
 )
 
 // forwardHandler returns an http.Handler that forwards each request to
@@ -27,6 +28,17 @@ func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope
 		emit := func(status int, errCode string) {
 			event.Emit(p.logger, start, status, errCode)
 		}
+
+		// Shares one budget with /proxy so switching ingress can't bypass.
+		enf := p.rateLimit.EnforceProxy(r.Context(), scope.ActorID(), scope.VaultID)
+		if !enf.Allowed {
+			ratelimit.WriteDenial(w, enf.Decision, enf.Message)
+			emit(http.StatusTooManyRequests, enf.ErrCode)
+			return
+		}
+		defer enf.Release()
+
+		r.Body = http.MaxBytesReader(w, r.Body, brokercore.MaxProxyBodyBytes)
 
 		outURL := &url.URL{
 			Scheme:   "https",

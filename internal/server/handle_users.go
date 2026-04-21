@@ -420,12 +420,6 @@ func (s *Server) handleUserInviteCreate(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleUserInviteAccept(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
-	if !userInviteAcceptLimiter.allow(ip) {
-		jsonError(w, http.StatusTooManyRequests, "Too many requests. Please try again later.")
-		return
-	}
-
 	ctx := r.Context()
 	token := r.PathValue("token")
 

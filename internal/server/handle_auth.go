@@ -12,57 +12,17 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/auth"
 	"github.com/Infisical/agent-vault/internal/crypto"
+	"github.com/Infisical/agent-vault/internal/ratelimit"
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
 const emailVerificationTTL = 15 * time.Minute
 
 const maxPendingVerifications = 3
-
-// verifyRateLimiter tracks failed verification attempts per email.
-type verifyRateLimiter struct {
-	mu       sync.Mutex
-	attempts map[string]int
-	maxKeys  int
-}
-
-const maxVerifyAttempts = 10 // max failed attempts per email before code is invalidated
-
-const maxVerifyKeys = 10000 // max tracked emails to prevent unbounded map growth
-
-var verifyLimiter = &verifyRateLimiter{attempts: make(map[string]int), maxKeys: maxVerifyKeys}
-
-func (l *verifyRateLimiter) check(email string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.attempts[email] < maxVerifyAttempts
-}
-
-func (l *verifyRateLimiter) recordFailure(email string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.attempts[email]++
-	// Evict entries if map grows too large (DoS protection).
-	if len(l.attempts) > l.maxKeys {
-		for k := range l.attempts {
-			if k != email {
-				delete(l.attempts, k)
-				break
-			}
-		}
-	}
-}
-
-func (l *verifyRateLimiter) reset(email string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	delete(l.attempts, email)
-}
 
 // generateAndSendVerificationCode creates a new 6-digit verification code for
 // the given email and sends it via email (or logs to stderr if SMTP is not configured).
@@ -117,13 +77,6 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Password) < 8 {
 		jsonError(w, http.StatusBadRequest, "Password must be at least 8 characters")
-		return
-	}
-
-	// Rate limit registrations by IP to prevent account creation floods.
-	ip := clientIP(r)
-	if !registerLimiter.allow(ip) {
-		jsonError(w, http.StatusTooManyRequests, "Too many registration attempts, try again later")
 		return
 	}
 
@@ -280,14 +233,15 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Rate limit verification attempts per email.
-	if !verifyLimiter.check(req.Email) {
+	verifyKey := "v:" + req.Email
+	if !s.rateLimit.FailureCheck(ratelimit.TierVerifyFailure, verifyKey) {
 		jsonError(w, http.StatusTooManyRequests, "Too many failed verification attempts; request a new code")
 		return
 	}
 
 	ev, err := s.store.GetPendingEmailVerification(ctx, req.Email, req.Code)
 	if err != nil || ev == nil {
-		verifyLimiter.recordFailure(req.Email)
+		s.rateLimit.FailureRecord(ratelimit.TierVerifyFailure, verifyKey)
 		jsonError(w, http.StatusBadRequest, "Invalid or expired verification code")
 		return
 	}
@@ -314,7 +268,7 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reset rate limit on successful verification.
-	verifyLimiter.reset(req.Email)
+	s.rateLimit.FailureReset(ratelimit.TierVerifyFailure, verifyKey)
 
 	// Auto-login: create session and set cookie.
 	session, err := s.store.CreateSession(ctx, user.ID, time.Now().Add(sessionTTL))
@@ -337,13 +291,6 @@ func (s *Server) handleResendVerification(w http.ResponseWriter, r *http.Request
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" {
 		jsonError(w, http.StatusBadRequest, "Email is required")
-		return
-	}
-
-	// Rate limit by IP.
-	ip := clientIP(r)
-	if !resendVerifyLimiter.allow(ip) {
-		jsonError(w, http.StatusTooManyRequests, "Too many requests, try again later")
 		return
 	}
 
@@ -379,13 +326,6 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" {
 		jsonError(w, http.StatusBadRequest, "Email is required")
-		return
-	}
-
-	// Rate limit by IP.
-	ip := clientIP(r)
-	if !forgotPasswordLimiter.allow(ip) {
-		jsonError(w, http.StatusTooManyRequests, "Too many requests, try again later")
 		return
 	}
 
@@ -475,14 +415,15 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Rate limit verification attempts per email.
-	if !resetVerifyLimiter.check(req.Email) {
+	resetKey := "rp:" + req.Email
+	if !s.rateLimit.FailureCheck(ratelimit.TierVerifyFailure, resetKey) {
 		jsonError(w, http.StatusTooManyRequests, "Too many failed reset attempts; request a new code")
 		return
 	}
 
 	pr, err := s.store.GetPendingPasswordReset(ctx, req.Email, req.Code)
 	if err != nil || pr == nil {
-		resetVerifyLimiter.recordFailure(req.Email)
+		s.rateLimit.FailureRecord(ratelimit.TierVerifyFailure, resetKey)
 		jsonError(w, http.StatusBadRequest, "Invalid or expired reset code")
 		return
 	}
@@ -520,7 +461,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	_ = s.store.DeleteUserSessions(ctx, user.ID)
 
 	// Reset rate limit on successful reset.
-	resetVerifyLimiter.reset(req.Email)
+	s.rateLimit.FailureReset(ratelimit.TierVerifyFailure, resetKey)
 
 	// Create new session and auto-login.
 	session, err := s.store.CreateSession(ctx, user.ID, time.Now().Add(sessionTTL))
@@ -636,15 +577,6 @@ func clientIP(r *http.Request) string {
 	return remoteIP
 }
 
-func newSlidingWindowLimiter(window time.Duration, max, maxKeys int) *slidingWindowLimiter {
-	return &slidingWindowLimiter{
-		attempts: make(map[string][]time.Time),
-		window:   window,
-		max:      max,
-		maxKeys:  maxKeys,
-	}
-}
-
 func init() {
 	dummyPasswordHash, dummyPasswordSalt, dummyKDFParams, _ = auth.HashUserPassword([]byte("sb-dummy-timing-equalization"))
 }
@@ -656,10 +588,18 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rate limit by IP and by email.
+	// Rate limit by IP and by email (reject if either bucket is full).
+	// Normalize the email key so case/whitespace variations don't
+	// let an attacker bypass the email bucket for a legitimate user.
 	ip := clientIP(r)
-	if !loginIPLimiter.allow(ip) || !loginEmailLimiter.allow(req.Email) {
-		jsonError(w, http.StatusTooManyRequests, "Too many login attempts, try again later")
+	ipDecision := s.rateLimit.Allow(ratelimit.TierAuth, "ip:"+ip)
+	emailDecision := s.rateLimit.Allow(ratelimit.TierAuth, "email:"+strings.ToLower(strings.TrimSpace(req.Email)))
+	if !ipDecision.Allow || !emailDecision.Allow {
+		d := ipDecision
+		if !emailDecision.Allow {
+			d = emailDecision
+		}
+		ratelimit.WriteDenial(w, d, "Too many login attempts, try again later")
 		return
 	}
 
