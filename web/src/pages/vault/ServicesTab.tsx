@@ -346,24 +346,43 @@ function ServiceModal({
     return [{ name: "", value: "" }];
   });
 
+  // Snapshot the catalog at open time so a fetch resolving mid-form doesn't
+  // shift the preset picker into view above fields the user is already editing.
+  const [catalogSnapshot] = useState<CatalogTemplate[]>(() => catalog);
   const [selectedPreset, setSelectedPreset] = useState("");
-  const showPresets = !initial && catalog.length > 0;
+  const showPresets = !initial && catalogSnapshot.length > 0;
+
+  function resetFields() {
+    setHost("");
+    setDescription("");
+    setAuthType("bearer");
+    setToken("");
+    setUsername("");
+    setPassword("");
+    setApiKey("");
+    setApiKeyHeader("");
+    setApiKeyPrefix("");
+    setCustomHeaders([{ name: "", value: "" }]);
+  }
 
   function applyPreset(id: string) {
     setSelectedPreset(id);
+    resetFields();
     if (!id) return;
-    const tpl = catalog.find((t) => t.id === id);
+    const tpl = catalogSnapshot.find((t) => t.id === id);
     if (!tpl) return;
     setHost(tpl.host);
     setDescription(tpl.description);
     setAuthType(tpl.auth_type);
-    setToken(tpl.auth_type === "bearer" ? tpl.suggested_credential_key : "");
-    setUsername(tpl.auth_type === "basic" ? tpl.suggested_credential_key : "");
-    setPassword("");
-    setApiKey(tpl.auth_type === "api-key" ? tpl.suggested_credential_key : "");
-    setApiKeyHeader(tpl.auth_type === "api-key" ? tpl.header ?? "" : "");
-    setApiKeyPrefix(tpl.auth_type === "api-key" ? tpl.prefix ?? "" : "");
-    setCustomHeaders([{ name: "", value: "" }]);
+    if (tpl.auth_type === "bearer") setToken(tpl.suggested_credential_key);
+    // Catalogued basic-auth services (Twilio, Jira) carry a token that belongs
+    // in the password slot — the username (AccountSID, email) is user-specific.
+    if (tpl.auth_type === "basic") setPassword(tpl.suggested_credential_key);
+    if (tpl.auth_type === "api-key") {
+      setApiKey(tpl.suggested_credential_key);
+      setApiKeyHeader(tpl.header ?? "");
+      setApiKeyPrefix(tpl.prefix ?? "");
+    }
   }
 
   const [saving, setSaving] = useState(false);
@@ -467,7 +486,7 @@ function ServiceModal({
               onChange={(e) => applyPreset(e.target.value)}
             >
               <option value="">Custom (blank)</option>
-              {catalog.map((tpl) => (
+              {catalogSnapshot.map((tpl) => (
                 <option key={tpl.id} value={tpl.id}>
                   {tpl.name} — {tpl.host}
                 </option>
