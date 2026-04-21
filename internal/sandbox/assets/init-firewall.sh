@@ -7,9 +7,11 @@ set -euo pipefail
 [ -n "${VAULT_HTTP_PORT:-}" ] || { echo "init-firewall: VAULT_HTTP_PORT unset" >&2; exit 1; }
 [ -n "${VAULT_MITM_PORT:-}" ] || { echo "init-firewall: VAULT_MITM_PORT unset" >&2; exit 1; }
 
-GW_IP=$(getent hosts host.docker.internal | awk '{print $1}' | head -1)
+# getent ahostsv4 returns only A records — using plain `hosts` picks up
+# the AAAA first on Docker Desktop, but our iptables rules are IPv4.
+GW_IP=$(getent ahostsv4 host.docker.internal | awk 'NR==1 {print $1}')
 if [ -z "$GW_IP" ]; then
-  echo "init-firewall: host.docker.internal not resolvable (missing --add-host?)" >&2
+  echo "init-firewall: host.docker.internal has no IPv4 entry (missing --add-host?)" >&2
   exit 1
 fi
 if ! echo "$GW_IP" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
