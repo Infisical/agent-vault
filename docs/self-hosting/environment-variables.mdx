@@ -28,6 +28,14 @@ Master password resolution order:
   Never put `AGENT_VAULT_MASTER_PASSWORD` in Dockerfiles, committed `.env` files, or shell history. Use secret management features of your deployment platform (e.g., `fly secrets set`, Docker secrets, or your CI/CD provider's secret store).
 </Warning>
 
+## Installer
+
+Read by [`install.sh`](https://github.com/Infisical/agent-vault/blob/main/install.sh) only — not by the server or the CLI binary.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AGENT_VAULT_NO_TELEMETRY` | (unset) | When set to any non-empty value, skips the anonymous install/upgrade beacon that reports OS, architecture, and version. Must be placed in front of `sh`, not `curl`: `curl -fsSL https://get.agent-vault.dev \| AGENT_VAULT_NO_TELEMETRY=1 sh`. |
+
 ## Email SMTP configuration
 
 Configure SMTP to enable Agent Vault to send emails for verification codes, vault invites, and notifications.

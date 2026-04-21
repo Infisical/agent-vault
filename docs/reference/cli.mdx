@@ -968,3 +968,11 @@ Manage the master password that wraps the data encryption key (DEK). All command
     Print the version and build information.
   </Accordion>
 </AccordionGroup>
+
+## Installer
+
+The [`install.sh`](https://github.com/Infisical/agent-vault/blob/main/install.sh) script (`curl -fsSL https://get.agent-vault.dev | sh`) is not part of the `agent-vault` binary but reads one environment variable:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AGENT_VAULT_NO_TELEMETRY` | (unset) | When set to any non-empty value, skips the anonymous install/upgrade beacon (OS, architecture, version — nothing else). Must be placed in front of `sh`, not `curl`: `curl -fsSL https://get.agent-vault.dev \| AGENT_VAULT_NO_TELEMETRY=1 sh`. |

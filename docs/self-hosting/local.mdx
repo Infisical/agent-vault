@@ -13,6 +13,14 @@ curl -fsSL https://get.agent-vault.dev | sh
 
 Supports macOS (Intel + Apple Silicon) and Linux (x86\_64 + ARM64).
 
+<Note>
+  On a successful install the script sends an anonymous ping (OS, architecture, version — nothing else) so we can count installs for the launch. Opt out by placing `AGENT_VAULT_NO_TELEMETRY=1` in front of `sh`, not `curl`:
+
+  ```bash
+  curl -fsSL https://get.agent-vault.dev | AGENT_VAULT_NO_TELEMETRY=1 sh
+  ```
+</Note>
+
 Verify the installation:
 
 ```bash
@@ -116,6 +124,14 @@ Re-run the same install command — the script detects your existing installatio
 ```bash
 curl -fsSL https://get.agent-vault.dev | sh
 ```
+
+<Note>
+  On a successful upgrade the script sends the same anonymous ping (OS, architecture, version). Opt out by placing `AGENT_VAULT_NO_TELEMETRY=1` in front of `sh`, not `curl`:
+
+  ```bash
+  curl -fsSL https://get.agent-vault.dev | AGENT_VAULT_NO_TELEMETRY=1 sh
+  ```
+</Note>
 
 Restart the server afterward:
 

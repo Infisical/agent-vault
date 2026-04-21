@@ -9,7 +9,7 @@ set -e
 #
 # Privacy: on successful install, sends an anonymous ping with OS, arch,
 # and version only — no identifiers, no IP retention. Opt out with:
-#   AGENT_VAULT_NO_TELEMETRY=1 curl -fsSL https://get.agent-vault.dev | sh
+#   curl -fsSL https://get.agent-vault.dev | AGENT_VAULT_NO_TELEMETRY=1 sh
 
 REPO="Infisical/agent-vault"
 INSTALL_DIR="/usr/local/bin"
@@ -160,7 +160,7 @@ main() {
     INSTALLED_VERSION="$(agent-vault version 2>/dev/null || echo "")"
     if [ -z "$INSTALLED_VERSION" ]; then
         warn "Could not verify installed binary."
-        if [ -n "$EXISTING_VERSION" ]; then
+        if [ -n "$BACKUP_FILE" ]; then
             warn "A database backup was saved at: ${BACKUP_FILE}"
         fi
         error "Installation may have failed. Check that ${INSTALL_DIR} is in your PATH."
@@ -171,7 +171,9 @@ main() {
 
     if [ -n "$EXISTING_VERSION" ] && [ "$EXISTING_VERSION" != "unknown" ]; then
         info "Upgraded from ${EXISTING_VERSION}"
-        info "Database backup: ${BACKUP_FILE}"
+        if [ -n "$BACKUP_FILE" ]; then
+            info "Database backup: ${BACKUP_FILE}"
+        fi
     fi
 
     if [ "$SERVER_WAS_RUNNING" = true ]; then

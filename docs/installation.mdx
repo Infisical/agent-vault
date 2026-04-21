@@ -19,7 +19,11 @@ Agent Vault ships as a single binary that acts as both a server and CLI client. 
     Supports macOS (Intel + Apple Silicon) and Linux (x86\_64 + ARM64).
 
     <Note>
-      On a successful install the script sends an anonymous ping (OS, architecture, version — nothing else) so we can count installs for the launch. Opt out with `AGENT_VAULT_NO_TELEMETRY=1`.
+      On a successful install the script sends an anonymous ping (OS, architecture, version — nothing else) so we can count installs for the launch. Opt out by placing `AGENT_VAULT_NO_TELEMETRY=1` in front of `sh`, not `curl`:
+
+      ```bash
+      curl -fsSL https://get.agent-vault.dev | AGENT_VAULT_NO_TELEMETRY=1 sh
+      ```
     </Note>
 
   </Tab>
