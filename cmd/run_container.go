@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
 	"strconv"
 	"syscall"
@@ -95,9 +96,8 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 		return fmt.Errorf("create docker network: %w", err)
 	}
 	defer func() {
-		// Only runs on error arms — syscall.Exec below replaces the
-		// process, bypassing defers. Use a detached context so a
-		// parent ctx cancel doesn't skip the cleanup exec itself.
+		// Detached context so a parent ctx cancel doesn't skip the
+		// cleanup exec itself.
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = sandbox.RemoveNetwork(cleanup, network.Name)
@@ -163,9 +163,35 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 	fmt.Fprintf(os.Stderr, "%s starting %s in sandbox (%s)...\n\n",
 		successText("agent-vault:"), boldText(args[0]), network.Name)
 
-	// Exec docker directly so the controlling TTY, SIGINT, SIGWINCH
-	// propagate naturally. Listeners are FD_CLOEXEC so they close at
-	// exec; per-conn forwarder goroutines die with the replaced process
-	// image. On success this never returns.
-	return syscall.Exec(dockerBin, append([]string{"docker"}, dockerArgs...), os.Environ())
+	// Fork docker (instead of syscall.Exec) so the forwarder stays
+	// alive for the container's lifetime. Go listeners are FD_CLOEXEC,
+	// so exec'ing would close them before the container could dial
+	// host.docker.internal:<fwd-port>, producing ECONNREFUSED on every
+	// HTTPS call through the MITM path.
+	//
+	// Docker is in our process group (default), so the kernel delivers
+	// TTY signals (SIGINT, SIGWINCH) to both docker and us. Docker's
+	// --init/tini handles them for the container; we ignore them in
+	// the parent so we don't exit before the child and leak the
+	// forwarder mid-call.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigs)
+	go func() {
+		for range sigs {
+		}
+	}()
+
+	child := exec.Command(dockerBin, dockerArgs...)
+	child.Stdin = os.Stdin
+	child.Stdout = os.Stdout
+	child.Stderr = os.Stderr
+	if err := child.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.ExitCode())
+		}
+		return fmt.Errorf("docker run: %w", err)
+	}
+	return nil
 }
