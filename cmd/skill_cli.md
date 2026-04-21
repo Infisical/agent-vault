@@ -142,6 +142,10 @@ Key fields (JSON mode):
 
 **Check status:** `GET {AGENT_VAULT_ADDR}/v1/proposals/{id}` with `Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}` -- returns `pending`, `applied`, `rejected`, or `expired`
 
+## Request Logs
+
+Agent Vault keeps a per-vault audit log of proxied requests (method, host, path, status, latency -- never bodies or query strings). The CLI does not wrap this yet; fetch via the HTTP API: `GET {AGENT_VAULT_ADDR}/v1/vaults/{vault}/logs` with `Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}`. Requires vault `member` or `admin` role. See `skill_http.md` for query params.
+
 ## Building Code That Needs Credentials
 
 When you are writing or modifying application code that requires secrets or API keys (e.g. `process.env.STRIPE_KEY`, `os.Getenv("DB_PASSWORD")`), use Agent Vault to ensure those credentials are tracked and available.

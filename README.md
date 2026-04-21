@@ -24,6 +24,7 @@ Agent Vault takes a different approach: **Agent Vault never reveals vault-stored
 - **Self-service access** - Agents discover available services at runtime and [propose access](https://docs.agent-vault.dev/learn/proposals) for anything missing. You review and approve in your browser with one click. Any service can be toggled on/off without losing its configuration — disabled services return `403 service_disabled` until re-enabled.
 - **Encrypted at rest** - Credentials are encrypted with AES-256-GCM using a random data encryption key (DEK). An optional master password wraps the DEK via Argon2id — change the password without re-encrypting credentials. Passwordless mode available for PaaS deploys. [Learn more](https://docs.agent-vault.dev/learn/credentials)
 - **Multi-user, multi-vault** - Role-based access control with instance and vault-level [permissions](https://docs.agent-vault.dev/learn/permissions). Invite teammates, scope agents to specific [vaults](https://docs.agent-vault.dev/learn/vaults), and audit everything.
+- **Request logs** - Every proxied request is persisted per vault with method, host, path, status, latency, and the credential key names involved — never bodies, headers, or query strings. View them in the **Logs** tab. Retention defaults to 7 days / 10k rows per vault and is owner-tunable.
 
 <p align="center">
   <img src="docs/images/architecture.png" alt="Agent Vault architecture diagram" />

@@ -28,8 +28,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 38 {
-		t.Fatalf("expected migration version 38, got %d", version)
+	if version != 39 {
+		t.Fatalf("expected migration version 39, got %d", version)
 	}
 }
 
@@ -1783,5 +1783,69 @@ func TestExpirePendingPasswordResets(t *testing.T) {
 	count, _ := s.CountPendingPasswordResets(ctx, "user@test.com")
 	if count != 1 {
 		t.Fatalf("expected 1 pending after expiry, got %d", count)
+	}
+}
+
+// TestListRequestLogsTailOrdering is a regression test: when a burst
+// larger than the page size lands between polls, the tail query must
+// consume the oldest rows first so subsequent polls can advance the
+// cursor through the whole burst without gaps. Before the ASC fix,
+// `ORDER BY id DESC LIMIT N` returned the *newest* N rows and silently
+// lost the older ones on the next poll.
+func TestListRequestLogsTailOrdering(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	ns, err := s.CreateVault(ctx, "logs")
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+
+	// Insert 10 rows so we can page through with Limit=3.
+	rows := make([]RequestLog, 10)
+	for i := range rows {
+		rows[i] = RequestLog{
+			VaultID: ns.ID,
+			Ingress: "explicit",
+			Method:  "GET",
+			Host:    "api.example.com",
+			Path:    "/",
+			Status:  200,
+		}
+	}
+	if err := s.InsertRequestLogs(ctx, rows); err != nil {
+		t.Fatalf("InsertRequestLogs: %v", err)
+	}
+
+	// Historical page (no cursor) returns newest-first.
+	page, err := s.ListRequestLogs(ctx, ListRequestLogsOpts{VaultID: &ns.ID, Limit: 3})
+	if err != nil {
+		t.Fatalf("initial list: %v", err)
+	}
+	if len(page) != 3 {
+		t.Fatalf("initial page size = %d, want 3", len(page))
+	}
+	if page[0].ID <= page[1].ID || page[1].ID <= page[2].ID {
+		t.Fatalf("historical page not DESC: %v", []int64{page[0].ID, page[1].ID, page[2].ID})
+	}
+
+	// Tail from an id boundary: returns rows (boundary, boundary+Limit]
+	// in ASC order so a subsequent poll with after=boundary+Limit picks
+	// up from there with no gap. Before the fix, the query was
+	// `ORDER BY id DESC LIMIT N`, which returned the newest N rows above
+	// the boundary and silently dropped the older ones.
+	boundary := page[2].ID - 1
+	tail, err := s.ListRequestLogs(ctx, ListRequestLogsOpts{VaultID: &ns.ID, After: boundary, Limit: 3})
+	if err != nil {
+		t.Fatalf("tail: %v", err)
+	}
+	if len(tail) != 3 {
+		t.Fatalf("tail size = %d, want 3", len(tail))
+	}
+	if tail[0].ID >= tail[1].ID || tail[1].ID >= tail[2].ID {
+		t.Fatalf("tail not ASC: %v", []int64{tail[0].ID, tail[1].ID, tail[2].ID})
+	}
+	if tail[0].ID != boundary+1 {
+		t.Fatalf("tail should start at id %d, got %d", boundary+1, tail[0].ID)
 	}
 }

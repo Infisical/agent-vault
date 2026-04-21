@@ -11,6 +11,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/netguard"
 	"github.com/Infisical/agent-vault/internal/ratelimit"
+	"github.com/Infisical/agent-vault/internal/requestlog"
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
@@ -107,12 +108,25 @@ func (s *Server) resolveVaultForSession(w http.ResponseWriter, r *http.Request, 
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	event := brokercore.ProxyEvent{
-		Ingress: "explicit",
+		Ingress: brokercore.IngressExplicit,
 		Method:  r.Method,
 		Path:    r.URL.Path,
 	}
+	// Captured as the handler resolves the request; Emit hands off the
+	// terminal snapshot to both the slog line and the log sink.
+	var (
+		logVaultID   string
+		logActorType string
+		logActorID   string
+	)
 	emit := func(status int, errCode string) {
 		event.Emit(s.logger, start, status, errCode)
+		// Skip persistence for early-exit paths before vault resolution:
+		// an empty vault_id violates the FK constraint and would roll
+		// back the entire 250ms batch, losing valid records alongside.
+		if s.logSink != nil && logVaultID != "" {
+			s.logSink.Record(r.Context(), requestlog.FromEvent(event, logVaultID, logActorType, logActorID))
+		}
 	}
 
 	// 1. Parse target host and path from /proxy/{target_host}/{path...}
@@ -155,6 +169,12 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		emit(0, "vault_error")
 		return // error already written
+	}
+	logVaultID = ns.ID
+	if sess.UserID != "" {
+		logActorType, logActorID = brokercore.ActorTypeUser, sess.UserID
+	} else if sess.AgentID != "" {
+		logActorType, logActorID = brokercore.ActorTypeAgent, sess.AgentID
 	}
 
 	// Enforced post-vault-resolution; scope isn't known until here.

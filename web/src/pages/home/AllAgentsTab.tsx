@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, type ReactNode } from "react";
 import { useRouteContext } from "@tanstack/react-router";
 import { LoadingSpinner, ErrorBanner, StatusBadge, timeAgo } from "../../components/shared";
 import DataTable, { type Column } from "../../components/DataTable";
@@ -529,7 +529,7 @@ function InviteAgentButton({
   );
 }
 
-type InviteTab = "prompt" | "token";
+type InviteTab = "prompt" | "manual";
 
 function InviteResultView({
   token,
@@ -540,12 +540,11 @@ function InviteResultView({
   buildPrompt: () => string;
   onRedeemed: () => void;
 }) {
-  const [tab, setTab] = useState<InviteTab>("token");
+  const [tab, setTab] = useState<InviteTab>("prompt");
   const [redeeming, setRedeeming] = useState(false);
   const [redeemError, setRedeemError] = useState("");
   const [sessionToken, setSessionToken] = useState<string | null>(null);
   const prompt = buildPrompt();
-  const vaultAddr = window.location.origin;
 
   async function handleRedeem() {
     setRedeeming(true);
@@ -574,8 +573,8 @@ function InviteResultView({
     <div className="space-y-4">
       <div className="inline-flex rounded-lg bg-bg p-0.5 border border-border">
         {([
-          { key: "token" as const, label: "Raw token" },
-          { key: "prompt" as const, label: "Invite prompt" },
+          { key: "prompt" as const, label: "Chat prompt" },
+          { key: "manual" as const, label: "Manual setup" },
         ]).map(({ key, label }) => (
           <button
             key={key}
@@ -610,97 +609,174 @@ function InviteResultView({
             />
           </div>
           <p className="text-xs text-text-dim">
-            Works with Claude Code, Cursor, ChatGPT, and other chat-based agents.
+            Works with Claude Code, Cursor, ChatGPT, and other chat-based agents. For agents you can't paste into, see <strong>Manual setup</strong>.
           </p>
         </>
       ) : (
-        <>
-          <p className="text-sm text-text-muted">
-            Copy the token to configure the agent directly via environment variables.
-          </p>
-          <div className="space-y-3">
-            <div>
-              <label className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-1 block">
-                Vault address
-              </label>
-              <div className="flex items-center gap-2">
-                <code className="flex-1 px-3 py-2 bg-bg border border-border rounded-lg text-text text-sm font-mono truncate">
-                  {vaultAddr}
-                </code>
-                <CopyButton
-                  value={vaultAddr}
-                  className="shrink-0 px-3 py-2 bg-primary text-primary-text rounded-lg text-sm font-semibold hover:bg-primary-hover transition-colors"
-                />
-              </div>
-            </div>
-            <div>
-              <label className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-1 block">
-                Token
-              </label>
-              <div className="flex items-center gap-2">
-                <code className="flex-1 px-3 py-2 bg-bg border border-border rounded-lg text-text text-sm font-mono truncate">
-                  {sessionToken ?? "••••••••••••••••••••••••••••••••"}
-                </code>
-                <RedeemCopyButton
-                  sessionToken={sessionToken}
-                  redeeming={redeeming}
-                  onRedeem={handleRedeem}
-                />
-              </div>
-              {redeemError && (
-                <p className="text-sm text-danger mt-1">{redeemError}</p>
-              )}
-            </div>
-          </div>
-          <p className="text-xs text-text-dim">
-            Set as <code className="text-text-muted">AGENT_VAULT_ADDR</code> and <code className="text-text-muted">AGENT_VAULT_SESSION_TOKEN</code> in the agent's environment.
-          </p>
-        </>
+        <ManualSetupView
+          sessionToken={sessionToken}
+          redeeming={redeeming}
+          redeemError={redeemError}
+          onRedeem={handleRedeem}
+        />
       )}
     </div>
   );
 }
 
-function RedeemCopyButton({
+type TrustTab = "macos" | "linux" | "node" | "python";
+
+function ManualSetupView({
   sessionToken,
   redeeming,
+  redeemError,
   onRedeem,
 }: {
   sessionToken: string | null;
   redeeming: boolean;
+  redeemError: string;
   onRedeem: () => Promise<void>;
 }) {
-  const [copied, setCopied] = useState(false);
+  const [mitm, setMitm] = useState<{ available: boolean; port: string } | null>(null);
+  const [trustTab, setTrustTab] = useState<TrustTab>("macos");
 
-  async function handleClick() {
-    if (sessionToken) {
-      try {
-        await navigator.clipboard.writeText(sessionToken);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-      } catch {}
-      return;
-    }
-    await onRedeem();
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/v1/mitm/ca.pem")
+      .then((r) => {
+        if (cancelled) return;
+        if (r.ok) {
+          setMitm({ available: true, port: r.headers.get("X-MITM-Port") ?? "14322" });
+        } else {
+          setMitm({ available: false, port: "" });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setMitm({ available: false, port: "" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (mitm === null) {
+    return <LoadingSpinner />;
   }
 
-  // After redeem completes and sessionToken is set, auto-copy once.
-  useEffect(() => {
-    if (sessionToken && !copied) {
-      navigator.clipboard.writeText(sessionToken).then(() => {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-      }).catch(() => {});
-    }
-  }, [sessionToken]);
+  if (!mitm.available) {
+    return (
+      <div className="px-4 py-3 bg-bg border border-border rounded-lg">
+        <p className="text-sm text-text">Transparent proxy is disabled on this server.</p>
+        <p className="text-xs text-text-muted mt-1">
+          Restart Agent Vault with <code className="text-text-muted">--mitm-port</code> greater than 0 to enable it, or use the <strong>Chat prompt</strong> flow.
+        </p>
+      </div>
+    );
+  }
+
+  const host = window.location.hostname;
+  const tokenDisplay = sessionToken ?? "<TOKEN>";
+  const httpsProxy = `https://${tokenDisplay}@${host}:${mitm.port}`;
+  const trustSnippets: Record<TrustTab, string> = {
+    macos: `sudo security add-trusted-cert -d -r trustRoot \\\n  -k /Library/Keychains/System.keychain agent-vault-ca.pem`,
+    linux: `sudo cp agent-vault-ca.pem /usr/local/share/ca-certificates/agent-vault-ca.crt\nsudo update-ca-certificates`,
+    node: `export NODE_EXTRA_CA_CERTS="$(pwd)/agent-vault-ca.pem"`,
+    python: `export REQUESTS_CA_BUNDLE="$(pwd)/agent-vault-ca.pem"`,
+  };
+  const trustTabs: { key: TrustTab; label: string }[] = [
+    { key: "macos", label: "macOS" },
+    { key: "linux", label: "Linux" },
+    { key: "node", label: "Node" },
+    { key: "python", label: "Python" },
+  ];
 
   return (
-    <button
-      onClick={handleClick}
-      disabled={redeeming}
-      className="shrink-0 px-3 py-2 bg-primary text-primary-text rounded-lg text-sm font-semibold hover:bg-primary-hover transition-colors disabled:opacity-50"
-    >
-      {redeeming ? "Copying..." : copied ? "Copied!" : "Copy"}
-    </button>
+    <div className="space-y-5">
+      <ManualStep n={1} title="Download the root CA">
+        <p className="text-sm text-text-muted">
+          Agent Vault's transparent proxy presents TLS leaves signed by its own CA. Save the certificate and trust it so your agent's HTTPS client can verify those leaves.
+        </p>
+        <a
+          href="/v1/mitm/ca.pem"
+          download="agent-vault-ca.pem"
+          className="inline-flex items-center gap-2 px-3 py-2 bg-primary text-primary-text rounded-lg text-sm font-semibold hover:bg-primary-hover transition-colors"
+        >
+          Download CA
+        </a>
+      </ManualStep>
+
+      <ManualStep n={2} title="Trust the CA">
+        <div className="inline-flex rounded-lg bg-bg p-0.5 border border-border">
+          {trustTabs.map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setTrustTab(key)}
+              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                trustTab === key
+                  ? "bg-surface text-text shadow-sm"
+                  : "text-text-muted hover:text-text"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <Snippet value={trustSnippets[trustTab]} />
+      </ManualStep>
+
+      <ManualStep n={3} title="Point the agent at the proxy">
+        <p className="text-sm text-text-muted">
+          The session token is embedded in the proxy URL — HTTP clients send it as <code className="text-text-muted">Proxy-Authorization</code> on every CONNECT handshake.
+        </p>
+        <Snippet value={`export HTTPS_PROXY="${httpsProxy}"`} />
+        {!sessionToken && (
+          <div className="flex items-center gap-2">
+            <Button onClick={onRedeem} loading={redeeming}>
+              Reveal token
+            </Button>
+            {redeemError && <span className="text-sm text-danger">{redeemError}</span>}
+          </div>
+        )}
+        <p className="text-xs text-text-dim">
+          If Agent Vault is behind a reverse proxy, replace <code className="text-text-muted">{host}</code> with the externally reachable hostname.
+        </p>
+      </ManualStep>
+
+      <p className="text-xs text-text-dim pt-3 border-t border-border">
+        <code className="text-text-muted">agent-vault run --vault &lt;name&gt; -- &lt;command&gt;</code> does all of this automatically.
+      </p>
+    </div>
+  );
+}
+
+function ManualStep({
+  n,
+  title,
+  children,
+}: {
+  n: number;
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="space-y-2">
+      <h4 className="text-sm font-semibold text-text">
+        <span className="text-text-dim mr-2">{n}.</span>
+        {title}
+      </h4>
+      {children}
+    </div>
+  );
+}
+
+function Snippet({ value }: { value: string }) {
+  return (
+    <div className="relative">
+      <pre className="px-4 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono overflow-x-auto whitespace-pre">{value}</pre>
+      <CopyButton
+        value={value}
+        className="absolute top-2 right-2 px-3 py-1.5 bg-primary text-primary-text rounded-md text-xs font-semibold hover:bg-primary-hover transition-colors"
+      />
+    </div>
   );
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/notify"
 	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/pidfile"
+	"github.com/Infisical/agent-vault/internal/requestlog"
 	"github.com/Infisical/agent-vault/internal/server"
 	"github.com/Infisical/agent-vault/internal/store"
 	"github.com/spf13/cobra"
@@ -145,6 +146,8 @@ var serverCmd = &cobra.Command{
 		oauthProviders := loadOAuthProviders(baseURL)
 		srv := server.New(addr, db, masterKey.Key(), notifier, initialized, baseURL, oauthProviders, logger)
 		srv.SetSkills(skillCLI, skillHTTP)
+		shutdownLogs := attachLogSink(srv, db, logger)
+		defer shutdownLogs()
 		if err := attachMITMIfEnabled(srv, host, mitmPort, masterKey.Key()); err != nil {
 			return err
 		}
@@ -178,9 +181,31 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 			BaseURL:     srv.BaseURL(),
 			Logger:      srv.Logger(),
 			RateLimit:   srv.RateLimit(),
+			LogSink:     srv.LogSink(),
 		},
 	))
 	return nil
+}
+
+// attachLogSink wires the request-log pipeline: a SQLiteSink with async
+// batching feeds persistent storage, and a retention goroutine trims old
+// rows. Returns a shutdown function the caller runs after Start()
+// returns to flush pending records and stop retention.
+func attachLogSink(srv *server.Server, db *store.SQLiteStore, logger *slog.Logger) func() {
+	sink := requestlog.NewSQLiteSink(db, logger, requestlog.SQLiteSinkConfig{})
+	srv.AttachLogSink(sink)
+
+	retentionCtx, cancelRetention := context.WithCancel(context.Background())
+	go requestlog.RunRetention(retentionCtx, db, logger)
+
+	return func() {
+		cancelRetention()
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := sink.Close(flushCtx); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: request_log sink flush: %v\n", err)
+		}
+	}
 }
 
 // promptOwnerSetup interactively creates the owner account.
@@ -438,6 +463,8 @@ func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger) erro
 	oauthProviders := loadOAuthProviders(baseURL)
 	srv := server.New(addr, db, key, notifier, initialized, baseURL, oauthProviders, logger)
 	srv.SetSkills(skillCLI, skillHTTP)
+	shutdownLogs := attachLogSink(srv, db, logger)
+	defer shutdownLogs()
 	if err := attachMITMIfEnabled(srv, host, mitmPort, key); err != nil {
 		return err
 	}

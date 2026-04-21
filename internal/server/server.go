@@ -23,6 +23,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/pidfile"
 	"github.com/Infisical/agent-vault/internal/ratelimit"
+	"github.com/Infisical/agent-vault/internal/requestlog"
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
@@ -64,6 +65,7 @@ type Server struct {
 	mitm           *mitm.Proxy          // transparent MITM proxy; nil only when --mitm-port 0
 	logger         *slog.Logger         // structured logger for per-request observability
 	rateLimit      *ratelimit.Registry  // tiered rate limiter; shared with the MITM ingress
+	logSink        requestlog.Sink      // per-request persistence sink; never nil (Nop default)
 }
 
 // RateLimit returns the server's rate-limit registry. Exported so the
@@ -74,6 +76,20 @@ func (s *Server) RateLimit() *ratelimit.Registry { return s.rateLimit }
 // is bound to this Server: Start launches it, and SIGINT/SIGTERM/Shutdown
 // stops it alongside the HTTP server.
 func (s *Server) AttachMITM(p *mitm.Proxy) { s.mitm = p }
+
+// AttachLogSink swaps the per-request log sink. Safe to call once at
+// startup, before the HTTP server begins accepting connections. nil
+// resets to a Nop sink.
+func (s *Server) AttachLogSink(sink requestlog.Sink) {
+	if sink == nil {
+		sink = requestlog.Nop{}
+	}
+	s.logSink = sink
+}
+
+// LogSink returns the server's log sink. Shared with the MITM ingress so
+// both paths feed the same pipeline.
+func (s *Server) LogSink() requestlog.Sink { return s.logSink }
 
 // SessionResolver returns a brokercore.SessionResolver backed by this
 // server's store.
@@ -235,6 +251,13 @@ type Store interface {
 	DeleteAgentTokens(ctx context.Context, agentID string) error
 	CreateAgentToken(ctx context.Context, agentID string, expiresAt *time.Time) (*store.Session, error)
 	CountAllOwners(ctx context.Context) (int, error)
+
+	// Request logs
+	InsertRequestLogs(ctx context.Context, rows []store.RequestLog) error
+	ListRequestLogs(ctx context.Context, opts store.ListRequestLogsOpts) ([]store.RequestLog, error)
+	DeleteOldRequestLogs(ctx context.Context, before time.Time) (int64, error)
+	TrimRequestLogsToCap(ctx context.Context, vaultID string, cap int64) (int64, error)
+	VaultIDsWithLogs(ctx context.Context) ([]string, error)
 
 	Close() error
 }
@@ -549,6 +572,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 		oauthProviders: oauthProviders,
 		logger:         logger,
 		rateLimit:      rl,
+		logSink:        requestlog.Nop{},
 	}
 
 	ipAuth := s.tier(ratelimit.TierAuth, s.ipKeyer())
@@ -649,6 +673,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("DELETE /v1/vaults/{name}/services/{host}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServiceRemove))))
 	mux.HandleFunc("DELETE /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServicesClear))))
 	mux.HandleFunc("GET /v1/vaults/{name}/services/credential-usage", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServicesCredentialUsage))))
+	mux.HandleFunc("GET /v1/vaults/{name}/logs", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultLogsList))))
 	// Public static reads — immutable payloads with no credentials on
 	// the wire. TierGlobal is the only useful backstop; TierAuth would
 	// punish `vault run` (CA fetch per invocation) and the dashboard

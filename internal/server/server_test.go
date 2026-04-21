@@ -460,6 +460,27 @@ func (m *mockStore) UpdateAgentInviteVaultRole(_ context.Context, inviteID int, 
 
 func (m *mockStore) Close() error { return nil }
 
+// --- Request log stubs (unused in server tests; storage-level tests
+// live in the store package). ---
+
+func (m *mockStore) InsertRequestLogs(_ context.Context, _ []store.RequestLog) error {
+	return nil
+}
+
+func (m *mockStore) ListRequestLogs(_ context.Context, _ store.ListRequestLogsOpts) ([]store.RequestLog, error) {
+	return nil, nil
+}
+
+func (m *mockStore) DeleteOldRequestLogs(_ context.Context, _ time.Time) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockStore) TrimRequestLogsToCap(_ context.Context, _ string, _ int64) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockStore) VaultIDsWithLogs(_ context.Context) ([]string, error) { return nil, nil }
+
 // --- Multi-user permission model mocks ---
 
 func (m *mockStore) GetUserByID(_ context.Context, id string) (*store.User, error) {

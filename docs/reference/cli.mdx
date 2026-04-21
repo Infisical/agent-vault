@@ -46,6 +46,9 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `AGENT_VAULT_RATELIMIT_PROFILE` | Rate-limit profile: `default`, `strict`, `loose`, or `off`. Affects anonymous auth, token-redeem, proxy, authenticated CRUD, and the global in-flight / RPS ceilings. |
     | `AGENT_VAULT_RATELIMIT_LOCK` | When `true`, the rate-limit section in the Manage Instance UI is read-only and UI overrides are ignored. Use when you want limits pinned to env vars on PaaS. |
     | `AGENT_VAULT_RATELIMIT_<TIER>_<KNOB>` | Fine-grained per-tier overrides. `TIER` ∈ `AUTH`, `PROXY`, `AUTHED`, `GLOBAL`. `KNOB` ∈ `RATE`, `BURST`, `WINDOW`, `MAX`, `CONCURRENCY`. Env-set knobs always beat UI overrides. |
+    | `AGENT_VAULT_LOGS_MAX_AGE_HOURS` | Retention ceiling for the per-vault request log. Default `168` (7 days). Rows older than this are trimmed by a background job every 15 minutes. Only non-secret metadata is stored. |
+    | `AGENT_VAULT_LOGS_MAX_ROWS_PER_VAULT` | Per-vault row cap for the request log. Default `10000`. Whichever limit (age or rows) fills first wins. Set `0` to disable the cap. |
+    | `AGENT_VAULT_LOGS_RETENTION_LOCK` | When `true`, owner-UI overrides for log retention are ignored and env values (or defaults) are pinned. |
   </Accordion>
 
   <Accordion title="agent-vault server stop">

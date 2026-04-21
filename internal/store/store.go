@@ -124,6 +124,39 @@ type EncryptedCredential struct {
 	Nonce      []byte
 }
 
+// RequestLog is a persisted record of a single proxied request. Secret-free
+// by construction: no header values, no bodies, no query strings — only
+// metadata already safe to log (see internal/brokercore/logging.go).
+type RequestLog struct {
+	ID             int64
+	VaultID        string
+	ActorType      string // brokercore.ActorType{User,Agent} or ""
+	ActorID        string
+	Ingress        string // brokercore.Ingress{Explicit,MITM}
+	Method         string
+	Host           string
+	Path           string
+	MatchedService string
+	CredentialKeys []string
+	Status         int
+	LatencyMs      int64
+	ErrorCode      string
+	CreatedAt      time.Time
+}
+
+// ListRequestLogsOpts controls the ListRequestLogs query.
+// Exactly one of Before or After may be set (both zero returns the newest page).
+// VaultID == nil means "all vaults" — reserved for a future owner-only endpoint.
+type ListRequestLogsOpts struct {
+	VaultID        *string
+	Ingress        string // "", "explicit", "mitm"
+	StatusBucket   string // "", "2xx", "3xx", "4xx", "5xx", "err"
+	MatchedService string
+	Before         int64 // rows with id < Before (pagination going back)
+	After          int64 // rows with id > After (polling for new rows)
+	Limit          int   // capped at 200 by handler; store trusts caller
+}
+
 // Invite represents a named agent invite with optional vault pre-assignments.
 // All invites create named, instance-level agents on redemption.
 type Invite struct {
@@ -383,6 +416,13 @@ type Store interface {
 	GetSetting(ctx context.Context, key string) (string, error)
 	SetSetting(ctx context.Context, key, value string) error
 	GetAllSettings(ctx context.Context) (map[string]string, error)
+
+	// Request logs
+	InsertRequestLogs(ctx context.Context, rows []RequestLog) error
+	ListRequestLogs(ctx context.Context, opts ListRequestLogsOpts) ([]RequestLog, error)
+	DeleteOldRequestLogs(ctx context.Context, before time.Time) (int64, error)
+	TrimRequestLogsToCap(ctx context.Context, vaultID string, cap int64) (int64, error)
+	VaultIDsWithLogs(ctx context.Context) ([]string, error)
 
 	// Lifecycle
 	Close() error

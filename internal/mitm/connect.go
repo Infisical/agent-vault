@@ -23,14 +23,31 @@ func mitmConnectIPKey(r *http.Request) string {
 	return "mitm:" + host
 }
 
+// isLoopbackPeer reports whether the HTTP request came from a loopback
+// peer (127.0.0.0/8 or ::1). Used to skip the CONNECT flood gate for
+// local `vault run` clients — a single agent legitimately opens dozens
+// of CONNECTs (one per distinct upstream host) on startup, and a
+// cooperating or higher-privilege local process can trivially DoS the
+// proxy by other means regardless, so rate-limiting loopback only
+// breaks legitimate agents without adding defense.
+func isLoopbackPeer(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || host == "" {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // handleConnect terminates a CONNECT tunnel and serves HTTP/1.1 off the
 // resulting TLS connection. The upstream target is taken from the
 // CONNECT request line (r.Host) and captured in a closure so subsequent
 // Host-header rewrites by the client cannot redirect the tunnel.
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Gate before ParseProxyAuth + session lookup so a bad-auth flood
-	// can't burn CPU. Per-IP on the raw TCP peer.
-	if p.rateLimit != nil {
+	// can't burn CPU. Per-IP on the raw TCP peer, shared with the
+	// TierAuth budget. Loopback is exempt — see isLoopbackPeer.
+	if p.rateLimit != nil && !isLoopbackPeer(r) {
 		if d := p.rateLimit.Allow(ratelimit.TierAuth, mitmConnectIPKey(r)); !d.Allow {
 			ratelimit.WriteDenial(w, d, "Too many CONNECT attempts")
 			return
