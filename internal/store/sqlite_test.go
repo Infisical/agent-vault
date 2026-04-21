@@ -1825,7 +1825,7 @@ func TestListRequestLogsTailOrdering(t *testing.T) {
 	if len(page) != 3 {
 		t.Fatalf("initial page size = %d, want 3", len(page))
 	}
-	if !(page[0].ID > page[1].ID && page[1].ID > page[2].ID) {
+	if page[0].ID <= page[1].ID || page[1].ID <= page[2].ID {
 		t.Fatalf("historical page not DESC: %v", []int64{page[0].ID, page[1].ID, page[2].ID})
 	}
 
@@ -1842,7 +1842,7 @@ func TestListRequestLogsTailOrdering(t *testing.T) {
 	if len(tail) != 3 {
 		t.Fatalf("tail size = %d, want 3", len(tail))
 	}
-	if !(tail[0].ID < tail[1].ID && tail[1].ID < tail[2].ID) {
+	if tail[0].ID >= tail[1].ID || tail[1].ID >= tail[2].ID {
 		t.Fatalf("tail not ASC: %v", []int64{tail[0].ID, tail[1].ID, tail[2].ID})
 	}
 	if tail[0].ID != boundary+1 {
