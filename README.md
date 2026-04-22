@@ -10,7 +10,11 @@ Agents should not possess credentials. Agent Vault eliminates credential exfiltr
 </p>
 
 <p align="center">
-<a href="https://docs.agent-vault.dev">Documentation</a> | <a href="https://docs.agent-vault.dev/installation">Installation</a> | <a href="https://docs.agent-vault.dev/reference/cli">CLI Reference</a> | <a href="https://infisical.com/blog/agent-vault-the-open-source-credential-proxy-and-vault-for-agents">Blog</a> | <a href="https://infisical.com/slack">Slack</a>
+<strong>New here? Read the <a href="https://infisical.com/blog/agent-vault-the-open-source-credential-proxy-and-vault-for-agents">launch blog post</a> for the full story — why agents shouldn't hold credentials, and how Agent Vault brokers access instead.</strong>
+</p>
+
+<p align="center">
+<a href="https://docs.agent-vault.dev">Documentation</a> | <a href="https://docs.agent-vault.dev/installation">Installation</a> | <a href="https://docs.agent-vault.dev/reference/cli">CLI Reference</a> | <a href="https://infisical.com/slack">Slack</a>
 </p>
 
 <p align="center">
