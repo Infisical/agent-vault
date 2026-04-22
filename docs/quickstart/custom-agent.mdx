@@ -1,6 +1,6 @@
 ---
 title: "Custom Agent"
-description: "Connect any HTTP-capable agent or script to Agent Vault using environment variables and the proxy API."
+description: "Connect any HTTP-capable agent or script to Agent Vault through HTTPS_PROXY."
 ---
 
 ## Prerequisites
@@ -10,13 +10,11 @@ description: "Connect any HTTP-capable agent or script to Agent Vault using envi
 
 ## Quick start
 
-The simplest way to connect a custom agent is with `vault run`, which sets up the environment variables automatically:
+Wrap your agent process with `vault run`. It sets `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT`, then pre-configures `HTTPS_PROXY` and the CA trust chain so standard HTTP clients transparently route through the broker:
 
 ```bash
 agent-vault vault run -- my-agent
 ```
-
-This sets `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT` in your agent's environment.
 
 ### Target a specific vault
 
@@ -24,49 +22,29 @@ This sets `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAUL
 agent-vault vault run --vault myproject -- my-agent
 ```
 
-### Alternative: agent invite
-
-For agents that can't be wrapped with `vault run` (e.g. cloud-hosted or CI pipelines), create an invite:
-
-```bash
-agent-vault agent invite my-agent --vault default:proxy
-```
-
-The agent redeems the invite via HTTP and receives an agent token. See [Connect a custom agent](/guides/connect-custom-agent) for the full walkthrough.
-
 ## Try it out
 
-Have your agent make a request through the proxy. The proxy URL format is:
-
-```
-{AGENT_VAULT_ADDR}/proxy/{target_host}/{path}
-```
-
-For example, to call Stripe:
+Your agent calls real API URLs directly. `HTTPS_PROXY` routes the request through Agent Vault, which matches the host against the vault's [services](/learn/services), strips client auth, and injects the stored credential.
 
 <CodeGroup>
 
 ```bash curl
-curl "${AGENT_VAULT_ADDR}/proxy/api.stripe.com/v1/charges?limit=10" \
-  -H "Authorization: Bearer ${AGENT_VAULT_SESSION_TOKEN}"
+curl "https://api.stripe.com/v1/charges?limit=10"
 ```
 
 ```python Python
-import os, requests
+import requests
 
+# Authorization intentionally omitted — Agent Vault injects the real credential.
 resp = requests.get(
-    f"{os.environ['AGENT_VAULT_ADDR']}/proxy/api.stripe.com/v1/charges",
+    "https://api.stripe.com/v1/charges",
     params={"limit": 10},
-    headers={"Authorization": f"Bearer {os.environ['AGENT_VAULT_SESSION_TOKEN']}"},
 )
 print(resp.json())
 ```
 
 ```typescript TypeScript
-const resp = await fetch(
-  `${process.env.AGENT_VAULT_ADDR}/proxy/api.stripe.com/v1/charges?limit=10`,
-  { headers: { Authorization: `Bearer ${process.env.AGENT_VAULT_SESSION_TOKEN}` } },
-);
+const resp = await fetch("https://api.stripe.com/v1/charges?limit=10");
 console.log(await resp.json());
 ```
 
@@ -75,8 +53,14 @@ console.log(await resp.json());
 If the service isn't configured yet, Agent Vault returns a **403** with a `proposal_hint`. Your agent can use this to create a [proposal](/learn/proposals) requesting access.
 
 <Note>
-Your agent never sees or handles credentials. Agent Vault strips the agent's token and injects the real API key before forwarding to the target service.
+Your agent never sees or handles credentials. Agent Vault strips whatever the client sends and injects the real API key at the proxy boundary.
 </Note>
+
+## Other connection flows
+
+- **Agent invites** — for cloud-hosted agents or CI pipelines that can't be wrapped with `vault run`. See [Connect a custom agent](/guides/connect-custom-agent#get-connection-credentials).
+- **Manual HTTPS_PROXY setup** — for containerized agents and sandboxes that need to configure the proxy themselves. See [Set HTTPS_PROXY manually](/guides/connect-custom-agent#set-https-proxy-manually).
+- **Explicit `/proxy` endpoint** — for clients that can't honor `HTTPS_PROXY` (HTTP/2-only runtimes, no CA-mounting). See [Explicit proxy endpoint](/guides/connect-custom-agent#explicit-proxy-endpoint-fallback).
 
 ## Discover available services
 
@@ -98,15 +82,15 @@ curl ${AGENT_VAULT_ADDR}/discover \
 }
 ```
 
-Requests to hosts not in this list should go direct, not through the proxy.
+Requests to hosts not in `services` go direct, not through the proxy.
 
 ## Next steps
 
 <CardGroup cols={2}>
   <Card title="Connect a custom agent" icon="plug" href="/guides/connect-custom-agent">
-    Full guide with error handling and proposals.
+    Full guide with manual HTTPS_PROXY setup, error handling, and proposals.
   </Card>
   <Card title="Agent protocol" icon="code" href="/agents/protocol">
-    HTTP reference for sessions, discovery, proxy, and proposals.
+    HTTP reference for sessions, discovery, and proposals.
   </Card>
 </CardGroup>

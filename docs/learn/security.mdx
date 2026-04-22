@@ -116,6 +116,14 @@ This means:
 - The agent's token never reaches the target service.
 - Credential values only exist in the outbound request headers, never in the agent's address space.
 
+### Transparent proxy (HTTPS_PROXY) transport
+
+The MITM listener that backs `HTTPS_PROXY` is itself TLS-wrapped with a cert signed by the software-backed root CA. This means the CONNECT handshake carrying the agent's session token is encrypted end-to-end between the client and the broker — session tokens are never exposed in plaintext on the wire, even on an untrusted local network.
+
+- **Root CA private key** is encrypted at rest with the DEK (same key that wraps credentials). See [Encryption at rest](#encryption-at-rest).
+- **DNS rebinding protection** and **[netguard](#network-security)** apply to both the transparent proxy and the explicit `/proxy` endpoint — every outbound connection is resolved and validated against the IP blocklist before Agent Vault dials the upstream.
+- **Rate limiting** shares one `(actor, vault)` budget across both ingress paths; switching from one to the other does not bypass the limit.
+
 ## Access control
 
 Agent Vault enforces access at two independent layers. For full details, see [Permissions](/learn/permissions).

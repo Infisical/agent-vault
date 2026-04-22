@@ -21,10 +21,10 @@ Enter Agent Vault - a new credential management solution built for agents that p
 
 ## How it works
 
-1. Your agent calls `/discover` to see which services are available in the [vault](/learn/vaults).
-2. If a service isn't listed, the agent raises a [**proposal**](/learn/proposals) requesting access.
-3. You review and approve in the browser, pasting in the API key.
-4. The agent retries through the proxy — Agent Vault attaches the real credentials and forwards to the target API.
+1. You point the agent at Agent Vault by setting `HTTPS_PROXY` and trusting the Agent Vault CA certificate.
+2. The agent makes API calls the way it normally would — direct `fetch`, a vendor SDK, a CLI like `gh` or `stripe`, or an MCP server. All outbound HTTPS transparently routes through the Agent Vault proxy.
+3. Agent Vault matches the target host against the services in the [vault](/learn/vaults), strips any client-supplied auth, injects the stored credential, and forwards the request upstream.
+4. If no service matches the host, the agent can raise a [**proposal**](/learn/proposals) requesting access. You review and approve in the browser, pasting in the API key, and the next request succeeds.
 
 The agent never sees or handles your secrets. Learn more about [vaults](/learn/vaults), [services](/learn/services), [proposals](/learn/proposals), and [agents](/agents/overview).
 

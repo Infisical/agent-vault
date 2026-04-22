@@ -1,9 +1,9 @@
 ---
 title: "Agent protocol"
-description: "How agents authenticate, discover services, proxy requests, and propose changes through Agent Vault."
+description: "How agents authenticate, discover services, route requests through HTTPS_PROXY, and propose changes through Agent Vault."
 ---
 
-Agent Vault agents follow a standard HTTP protocol to interact with the server. Agents handle this automatically (the instructions are embedded in every invite response). This page is a reference for understanding what happens under the hood.
+Agent Vault agents follow a standard HTTP protocol to interact with the server. Agents handle this automatically — the instructions are embedded in every invite response and in the [agent skill files](https://github.com/Infisical/agent-vault/blob/main/cmd/skill_http.md). This page is a reference for understanding what happens under the hood.
 
 <Warning>
 Agents must never extract, log, or display credential values. They reference credentials by key name only.
@@ -34,7 +34,7 @@ There are two session types:
 
 ### The X-Vault header
 
-Instance-level agent tokens must include `X-Vault: {vault_name}` on all vault-scoped requests (discover, proxy, proposals, credentials):
+Instance-level agent tokens must include `X-Vault: {vault_name}` on all vault-scoped requests (discover, proposals, credentials):
 
 ```
 GET {AGENT_VAULT_ADDR}/discover
@@ -44,15 +44,9 @@ X-Vault: my-vault
 
 Agents created via `agent-vault vault run` do not need this header — the vault is embedded in the session token.
 
-### Instance-level agent tokens
-
-Agents invited via `agent-vault agent invite` receive instance-level agent tokens that can access multiple vaults. The agent token can be configured with no expiry (works indefinitely) or a specific TTL. If the token expires, the operator can issue a new one via [rotation](/agents/overview#rotating-an-agent-token).
-
-See [Agents overview](/agents/overview) for the full lifecycle.
-
 ## Discover services
 
-Before proxying anything, the agent calls `/discover` to learn which hosts have [credentials](/learn/credentials) configured in the vault.
+Before making any proxied request, the agent calls `/discover` to learn which hosts have [credentials](/learn/credentials) configured in the vault.
 
 ```
 GET {AGENT_VAULT_ADDR}/discover
@@ -76,19 +70,43 @@ The `X-Vault` header is required for instance-level agent tokens. Vault-scoped s
 }
 ```
 
-- **`services`** lists the hosts the agent can proxy through Agent Vault (defined by the vault's [services](/learn/services)). Requests to any other host go direct.
+- **`services`** lists the hosts the agent can reach through Agent Vault (defined by the vault's [services](/learn/services)). Requests to any other host go direct.
 - **`available_credentials`** lists [credential](/learn/credentials) key names in the vault (values are never exposed). Agents use these to avoid creating duplicate slots in [proposals](/learn/proposals).
+- **`proxy_url`** is the fallback endpoint for clients that can't honor `HTTPS_PROXY`. See [Explicit proxy endpoint](#explicit-proxy-endpoint-fallback).
 
-## Proxy requests
+## Route requests through HTTPS_PROXY
 
-For hosts returned by `/discover`, the agent routes requests through the Agent Vault proxy:
+The canonical way for an agent to reach an upstream host is to call the real URL directly. `agent-vault vault run` pre-configures `HTTPS_PROXY` and the CA trust chain on the child process, so every standard HTTP client — `curl`, `fetch`, `requests`, `axios`, the Go stdlib, SDKs like `stripe-node`, CLIs like `gh` and `stripe` — transparently routes through the broker. Agent Vault intercepts the CONNECT, matches the target host against the vault's [services](/learn/services), strips any client-supplied auth, and injects the stored credential.
+
+```
+GET https://api.stripe.com/v1/charges?limit=10
+```
+
+The agent writes this line unchanged. No URL rewriting. No `Authorization` header. No credential in the code.
+
+### Environment set by `vault run`
+
+| Variable | Purpose |
+|---|---|
+| `HTTPS_PROXY` | Points at the MITM listener (`http://{token}:{vault}@host:14322`) |
+| `NO_PROXY` | `localhost,127.0.0.1` — so agent-to-vault traffic skips the proxy |
+| `NODE_USE_ENV_PROXY` | `1` — enables Node.js v22.21+ built-in `HTTPS_PROXY` support for `fetch()` and `https.get()` |
+| `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT` | Point standard HTTP libraries at the Agent Vault root CA so the proxied TLS handshake validates |
+
+<Tip>
+HTTP_PROXY is intentionally not set. The MITM listener only handles HTTPS (CONNECT) and would 405 on plain `http://` requests.
+</Tip>
+
+### Explicit proxy endpoint (fallback)
+
+For clients that can't honor `HTTPS_PROXY` — HTTP/2-terminating edges, constrained runtimes, sandboxes without CA-mounting — Agent Vault exposes an explicit endpoint:
 
 ```
 {AGENT_VAULT_ADDR}/proxy/{target_host}/{path}[?query]
 Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
 ```
 
-Agent Vault strips the agent's auth header, attaches the real credentials from the vault's services, and forwards the request over HTTPS.
+Rewrite the upstream URL to this shape and Agent Vault applies the same credential-injection logic — strips the agent's `Authorization` header, attaches credentials from the vault's [services](/learn/services), forwards over HTTPS.
 
 <CodeGroup>
 
@@ -164,13 +182,14 @@ See [Proposals](/learn/proposals) for the full proposal lifecycle, including sto
 | Status | Meaning | What the agent does |
 |---|---|---|
 | 401 | Invalid or expired token | Re-check `AGENT_VAULT_SESSION_TOKEN`. Contact operator for a new token or [rotation](/agents/overview#rotating-an-agent-token). |
-| 403 | Host not allowed | Create a proposal to request access. The response includes a `proposal_hint`. |
-| 429 | Too many pending proposals | Wait for existing proposals to be reviewed. |
-| 502 | Missing credential or upstream error | Tell the user a credential may need to be added. |
+| 403 `forbidden` | Host not allowed | Create a proposal to request access. The response includes a `proposal_hint`. |
+| 403 `service_disabled` | Host is configured but disabled | Surface to the user — don't create a duplicate proposal. |
+| 429 | Rate limited | Respect the `Retry-After` header. The MITM and `/proxy` paths share one budget. |
+| 502 | Missing credential or upstream unreachable | Tell the user a credential may need to be added. |
 
 ## Security constraints
 
 - Never extract, log, or display credential values
 - Never hardcode tokens. Always read from `AGENT_VAULT_SESSION_TOKEN`.
-- Only proxy hosts returned by `/discover`. For unlisted hosts, create a proposal.
+- Only reach hosts returned by `/discover`. For unlisted hosts, create a proposal.
 - If a `credential_not_found` error occurs, inform the user which key is missing.

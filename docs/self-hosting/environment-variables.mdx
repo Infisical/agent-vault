@@ -77,10 +77,28 @@ The callback URL configured in Google Cloud Console must be `{AGENT_VAULT_ADDR}/
 
 These variables are set automatically by `agent-vault vault run` on the agent's environment. You do not need to set them manually.
 
+### Control-plane
+
 | Variable | Description |
 |----------|-------------|
 | `AGENT_VAULT_ADDR` | Server base URL (e.g., `http://127.0.0.1:14321`) |
-| `AGENT_VAULT_SESSION_TOKEN` | Bearer token for authenticating with the proxy, scoped to the vault |
+| `AGENT_VAULT_SESSION_TOKEN` | Bearer token for authenticating with Agent Vault (control-plane: `/discover`, proposals, credentials). Scoped to the vault. |
 | `AGENT_VAULT_VAULT` | Name of the vault the session is scoped to |
 
-Agents use these to discover available services (`GET {AGENT_VAULT_ADDR}/discover`) and route authenticated requests through the proxy (`{AGENT_VAULT_ADDR}/proxy/{host}/{path}`).
+### Transparent proxy
+
+`vault run` also wires up `HTTPS_PROXY` and the CA trust chain so standard HTTP clients transparently route through Agent Vault. Disable with `--no-mitm`.
+
+| Variable | Description |
+|----------|-------------|
+| `HTTPS_PROXY` | Points at the MITM listener (`https://{token}:{vault}@host:14322`). HTTP_PROXY is intentionally not set — the MITM only handles HTTPS CONNECT. |
+| `NO_PROXY` | `localhost,127.0.0.1` — so agent-to-vault control-plane traffic skips the proxy |
+| `NODE_USE_ENV_PROXY` | `1` — enables Node.js v22.21+ built-in proxy support for `fetch()` and `https.get()` |
+| `SSL_CERT_FILE` | Points OpenSSL-linked clients (Python, Ruby, PHP) at the Agent Vault root CA |
+| `NODE_EXTRA_CA_CERTS` | Trusts the root CA in Node.js |
+| `REQUESTS_CA_BUNDLE` | Trusts the root CA in Python `requests` |
+| `CURL_CA_BUNDLE` | Trusts the root CA in `curl` |
+| `GIT_SSL_CAINFO` | Trusts the root CA in `git` |
+| `DENO_CERT` | Trusts the root CA in Deno |
+
+The CA PEM is written to `~/.agent-vault/mitm-ca.pem` by `vault run` on first launch. Agents use `HTTPS_PROXY` to make authenticated requests to upstream APIs transparently and call `GET {AGENT_VAULT_ADDR}/discover` over the control-plane to learn which services are available.

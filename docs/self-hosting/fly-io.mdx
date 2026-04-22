@@ -72,7 +72,8 @@ description: "Deploy Agent Vault to Fly.io with persistent storage"
 
 ## Key details
 
-- **Config**: `fly.toml` sets port 14321, forces HTTPS, and enables auto-stop/auto-start machines
+- **Config**: `fly.toml` exposes port 14321 via Fly's HTTP service (force HTTPS, auto-stop/auto-start) and port 14322 via TCP passthrough for the transparent MITM proxy — the MITM listener's own TLS cert handles the handshake, so Fly doesn't terminate TLS on that port
+- **Agent `HTTPS_PROXY`**: `https://<token>:<vault>@your-app.fly.dev:14322` — the root CA must be trusted by the agent's HTTP client (fetch with [`agent-vault ca fetch --address https://your-app.fly.dev`](docs/reference/cli.mdx))
 - **Entrypoint**: `scripts/docker-entrypoint.sh` forwards arguments to the `agent-vault` binary, which natively reads `AGENT_VAULT_MASTER_PASSWORD` from the environment
 - **Storage**: Persistent volume `agent_vault_data` mounted at `/data` -- all state is in a single SQLite file
 - **Cold starts**: `min_machines_running` defaults to `0`, so the app scales to zero when idle. The first request after sleep incurs a few seconds of cold-start latency. Set it to `1` in `fly.toml` if you need always-on availability.

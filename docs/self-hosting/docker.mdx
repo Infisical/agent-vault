@@ -21,10 +21,10 @@ The final image runs as non-root user `agentvault` (UID 65532) and includes a bu
 
 ## Configuration
 
-Pass the master password via environment variable to wrap the data encryption key (DEK):
+Expose both the HTTP API (`14321`) and the transparent HTTPS proxy (`14322`) so agents' `HTTPS_PROXY` can reach the broker. Pass the master password via environment variable to wrap the data encryption key (DEK):
 
 ```bash
-docker run -it -p 14321:14321 \
+docker run -it -p 14321:14321 -p 14322:14322 \
   -v agent-vault-data:/data \
   -e AGENT_VAULT_MASTER_PASSWORD=your-password \
   -e AGENT_VAULT_ADDR=https://agent-vault.example.com \
@@ -32,6 +32,15 @@ docker run -it -p 14321:14321 \
 ```
 
 Omit `AGENT_VAULT_MASTER_PASSWORD` for **passwordless mode** — the DEK is stored unwrapped, relying on volume access controls for security.
+
+Fetch the root CA from the running container so agents outside Docker trust the proxied TLS handshake:
+
+```bash
+# The /v1/mitm/ca.pem endpoint is public — no auth required
+curl -O http://localhost:14321/v1/mitm/ca.pem
+```
+
+See [transparent proxy setup](/self-hosting/local#transparent-proxy) for installing the CA into client trust stores.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -54,6 +63,7 @@ services:
     image: infisical/agent-vault
     ports:
       - "14321:14321"
+      - "14322:14322"
     volumes:
       - agent-vault-data:/data
     environment:

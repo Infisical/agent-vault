@@ -10,7 +10,7 @@ Agents should not possess credentials. Agent Vault eliminates credential exfiltr
 </p>
 
 <p align="center">
-<a href="https://docs.agent-vault.dev">Documentation</a> | <a href="https://docs.agent-vault.dev/installation">Installation</a> | <a href="https://docs.agent-vault.dev/reference/cli">CLI Reference</a> | <a href="https://infisical.com/slack">Slack</a>
+<a href="https://docs.agent-vault.dev">Documentation</a> | <a href="https://docs.agent-vault.dev/installation">Installation</a> | <a href="https://docs.agent-vault.dev/reference/cli">CLI Reference</a> | <a href="https://infisical.com/blog/agent-vault-the-open-source-credential-proxy-and-vault-for-agents">Blog</a> | <a href="https://infisical.com/slack">Slack</a>
 </p>
 
 <p align="center">
@@ -19,13 +19,13 @@ Agents should not possess credentials. Agent Vault eliminates credential exfiltr
 
 ## Why Agent Vault
 
-Secret managers return credentials directly to the caller. This breaks down with AI agents, which are non-deterministic systems vulnerable to prompt injection that can be tricked into exfiltrating secrets.
+Traditional secrets management relies on returning credentials directly to the caller. This breaks down with AI agents, which are non-deterministic systems vulnerable to prompt injection that can be fooled into leaking its secrets.
 
 Agent Vault takes a different approach: **Agent Vault never reveals vault-stored credentials to agents**. Instead, agents route HTTP requests through a local proxy that injects the right credentials at the network layer.
 
-- **Brokered access, not retrieval** - Your agent gets a scoped session and a local `HTTPS_PROXY`. It calls target APIs normally, and Agent Vault injects the right credential at the network layer. Credentials are never returned to the agent. [Learn more](https://docs.agent-vault.dev/learn/security)
-- **Works with any agent** - Custom Python/TypeScript agents, sandboxed processes, and coding agents like Claude Code, Cursor, and Codex. Anything that speaks HTTP. [Learn more](https://docs.agent-vault.dev/quickstart)
-- **Encrypted at rest** - Credentials are encrypted with AES-256-GCM using a random data encryption key (DEK). An optional master password wraps the DEK via Argon2id, so rotating the password does not re-encrypt credentials. A passwordless mode is available for PaaS deploys. [Learn more](https://docs.agent-vault.dev/learn/credentials)
+- **Brokered access, not retrieval** - Your agent gets a scoped session and a local `HTTPS_PROXY`. It calls target APIs normally, and Agent Vault injects the right credential at the network layer. Credentials are never returned to the agent.
+- **Works with any agent** - Custom Python/TypeScript agents, sandboxed processes, and coding agents like Claude Code, Cursor, and Codex. Anything that speaks HTTP.
+- **Encrypted at rest** - Credentials are encrypted with AES-256-GCM using a random data encryption key (DEK). An optional master password wraps the DEK via Argon2id, so rotating the password does not re-encrypt credentials. A passwordless mode is available for PaaS deploys.
 - **Request logs** - Every proxied request is persisted per vault with method, host, path, status, latency, and the credential key names involved. Bodies, headers, and query strings are not recorded. Retention is configurable per vault.
 
 ## Installation
@@ -92,8 +92,13 @@ npm install @infisical/agent-vault-sdk
 ```typescript
 import { AgentVault, buildProxyEnv } from "@infisical/agent-vault-sdk";
 
-const av = new AgentVault({ token: "YOUR_TOKEN", address: "http://localhost:14321" });
-const session = await av.vault("default").sessions.create({ vaultRole: "proxy" });
+const av = new AgentVault({
+  token: "YOUR_TOKEN",
+  address: "http://localhost:14321",
+});
+const session = await av
+  .vault("default")
+  .sessions.create({ vaultRole: "proxy" });
 
 // certPath is where you'll mount the CA certificate inside the sandbox.
 const certPath = "/etc/ssl/agent-vault-ca.pem";
