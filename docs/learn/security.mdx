@@ -142,7 +142,24 @@ When [Google OAuth](/guides/oauth) is enabled, Agent Vault applies several secur
 
 ## Rate limits
 
-Built-in limits prevent abuse and resource exhaustion:
+### Request rate limiting
+
+Agent Vault enforces a tiered, in-memory rate limiter on every HTTP ingress. Each tier is keyed on the principal appropriate for that endpoint, so one noisy client cannot drown out another:
+
+| Tier | Keyed on | Covers |
+| ---- | -------- | ------ |
+| `AUTH` | Client IP | Anonymous endpoints (login, registration, OAuth callback) |
+| `AUTHED` | Session token hash | Invite redemption, proposal approval, authenticated CRUD |
+| `PROXY` | `(actor, vault)` scope | Proxy path and MITM ingress |
+| `GLOBAL` | Server-wide | In-flight request ceiling and RPS backstop |
+
+Requests that exceed a tier return `429 Too Many Requests` with a `Retry-After` header so clients can back off.
+
+Operators pick a profile via `AGENT_VAULT_RATELIMIT_PROFILE` (`default`, `strict`, `loose`, `off`) or tune individual tiers in **Manage Instance → Settings → Rate Limiting**. Setting `AGENT_VAULT_RATELIMIT_LOCK=true` pins limits to env vars and makes the UI read-only, which is recommended on PaaS deployments. See [environment variables](/self-hosting/environment-variables) for the full knob list.
+
+### Resource caps
+
+Hard caps prevent unbounded growth in vault state:
 
 | Resource | Limit |
 | -------- | ----- |
