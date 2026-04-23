@@ -6,7 +6,7 @@ FROM node:22-bookworm-slim
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      iptables iproute2 ca-certificates curl git python3 gosu \
+      iptables iproute2 ca-certificates curl git python3 gosu iputils-ping \
  && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @anthropic-ai/claude-code

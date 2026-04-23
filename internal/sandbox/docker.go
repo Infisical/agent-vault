@@ -36,11 +36,18 @@ type parsedMount struct {
 
 // reservedContainerDsts are bind-mount destinations agent-vault owns.
 // A user --mount landing on one of these would silently replace our
-// own mount and undo the sandbox guarantees.
+// own mount and undo the sandbox guarantees. The entrypoint + firewall
+// scripts are the image's trust path — overwriting either pre-entrypoint
+// would be a direct break-out.
 var reservedContainerDsts = []string{
+	"/",
+	"/etc",
 	"/workspace",
+	"/usr/local/sbin/init-firewall.sh",
+	"/usr/local/sbin/entrypoint.sh",
 	ContainerCAPath,
 	ContainerClaudeHome,
+	ContainerClaudeConfig,
 }
 
 // BuildRunArgs produces the argv for `docker run …`. Pure apart from
@@ -268,7 +275,16 @@ func isDockerSocket(resolved string) bool {
 
 func validateContainerDst(dst string) error {
 	for _, reserved := range reservedContainerDsts {
-		if dst == reserved || strings.HasPrefix(dst, reserved+"/") {
+		// dst == reserved: direct overlay.
+		// dst inside reserved: e.g. dst=/etc/passwd vs reserved=/etc.
+		// reserved inside dst: e.g. dst=/usr/local/sbin vs
+		//   reserved=/usr/local/sbin/entrypoint.sh — mounting the parent
+		//   shadows every baked-in file underneath, so the entrypoint
+		//   script resolves to attacker content and runs as PID 1 before
+		//   init-firewall.sh ever gets a chance to lock egress down.
+		if dst == reserved ||
+			strings.HasPrefix(dst, reserved+"/") ||
+			strings.HasPrefix(reserved, dst+"/") {
 			return fmt.Errorf("--mount: refusing to override reserved container path %s", reserved)
 		}
 	}
