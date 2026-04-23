@@ -13,9 +13,10 @@ import (
 
 // expectedRunFlags is the single source of truth for flags both `vault run`
 // and the top-level `run` shorthand must expose. Adding a flag to one without
-// the other is a bug.
+// the other is a bug. `vault` is inherited from vaultCmd's persistent flags
+// on `vault run` and registered locally on the top-level `run`.
 var expectedRunFlags = []string{
-	"address", "role", "ttl", "no-mitm",
+	"address", "role", "ttl", "no-mitm", "vault",
 	"sandbox", "image", "mount", "keep", "no-firewall",
 	"home-volume-shared", "share-agent-dir",
 }
@@ -30,8 +31,9 @@ func TestRunFlagsRegistered(t *testing.T) {
 		t.Fatal("vault run subcommand not found")
 	}
 
+	// Flag walks local + inherited persistent flags, matching what users see.
 	for _, name := range expectedRunFlags {
-		if rCmd.Flags().Lookup(name) == nil {
+		if rCmd.Flag(name) == nil {
 			t.Errorf("expected vault run flag --%s to be registered", name)
 		}
 	}
@@ -49,7 +51,7 @@ func TestTopLevelRunRegistered(t *testing.T) {
 	}
 
 	for _, name := range expectedRunFlags {
-		if tCmd.Flags().Lookup(name) == nil {
+		if tCmd.Flag(name) == nil {
 			t.Errorf("expected top-level run flag --%s to be registered", name)
 		}
 	}

@@ -468,6 +468,12 @@ func requestScopedSession(addr, adminToken, vault, role string, ttlSeconds int) 
 }
 
 func init() {
+	// `vault run` inherits --vault from vaultCmd's persistent flag set; the
+	// top-level shorthand is parented to rootCmd, which has no such flag, so
+	// we register it locally here. Registering it inside newRunCmd would
+	// collide with the inherited one on runCmd at flag-merge time.
+	topRunCmd.Flags().String("vault", "", "target vault (overrides active context)")
+
 	vaultCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(topRunCmd)
 }
