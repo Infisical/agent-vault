@@ -278,10 +278,13 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 			// Return an ExitCodeError so defers (network teardown,
 			// signal.Stop, forwarder close) run before Execute() exits
 			// with the container's actual status. Silence cobra's own
-			// printing for this path — the container already wrote
-			// whatever it had to say to stderr, and our sentinel's
-			// empty Msg keeps Execute() quiet too.
+			// error + usage printing on this path — the container
+			// already wrote whatever it had to say to stderr, and a
+			// usage block after `pytest` exits 1 is pure noise.
+			// SilenceErrors and SilenceUsage are independent gates in
+			// cobra, so both must be set.
 			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
 			return &ExitCodeError{Code: exitErr.ExitCode()}
 		}
 		return fmt.Errorf("docker run: %w", err)

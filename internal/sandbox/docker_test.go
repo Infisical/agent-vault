@@ -330,6 +330,14 @@ func TestParseAndValidateMount_RejectReservedContainerDst(t *testing.T) {
 		// replaces the trusted setup with attacker code run as root.
 		"/usr/local/sbin/init-firewall.sh",
 		"/usr/local/sbin/entrypoint.sh",
+		// Ancestor bypass: mounting the parent dir silently shadows the
+		// baked-in script underneath. These must reject even though the
+		// reserved list only names the leaves.
+		"/usr/local/sbin",
+		"/usr/local",
+		"/usr",
+		"/home/claude",
+		"/home",
 		// /etc subtree is reserved wholesale; ContainerCAPath sits under it
 		// and we also don't want a user overwriting /etc/passwd, /etc/shadow,
 		// etc. pre-privilege-drop.
