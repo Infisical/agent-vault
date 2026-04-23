@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -81,8 +82,24 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 	shareAgentDir, _ := cmd.Flags().GetBool("share-agent-dir")
 
 	var hostAgentDir string
+	var hostAgentConfig string
+	var hostAgentSkillsDir string
 	var hostUID, hostGID int
+	var containerAgentDir string
+	var containerConfig string
+	var containerAgentSkillsDir string
 	if shareAgentDir {
+		if len(args) == 0 {
+			return errors.New("--share-agent-dir: no agent command specified")
+		}
+		agentInfo, ok := agentContainerInfo(args[0])
+		if !ok {
+			return fmt.Errorf("--share-agent-dir: %q is not a known agent (supported: %s)", args[0], strings.Join(knownAgentBases(), ", "))
+		}
+		image, _ := cmd.Flags().GetString("image")
+		if err := requireCustomImageForNonClaudeShare(agentInfo, image, args[0]); err != nil {
+			return err
+		}
 		// Running as root on Linux would remap the in-container claude
 		// user to uid 0, combining with --cap-add NET_ADMIN/NET_RAW/
 		// SETUID/SETGID/KILL to give the agent a much larger blast
@@ -95,22 +112,40 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 		if herr != nil {
 			return fmt.Errorf("--share-agent-dir: resolve home dir: %w", herr)
 		}
-		hostAgentDir = filepath.Join(userHome, ".claude")
+		effectiveStateDir := agentInfo.effectiveStateDir()
+		hostAgentDir = filepath.Join(userHome, effectiveStateDir)
 		if err := os.MkdirAll(hostAgentDir, 0o700); err != nil {
 			return fmt.Errorf("--share-agent-dir: create %s: %w", hostAgentDir, err)
 		}
-		// Touch ~/.claude.json so docker doesn't auto-create a dir
-		// where Claude expects a file (O_CREATE without O_TRUNC is a
-		// no-op when the file already exists).
-		configPath := filepath.Join(userHome, ".claude.json")
-		f, err := os.OpenFile(configPath, os.O_CREATE|os.O_WRONLY, 0o600)
-		if err != nil {
-			return fmt.Errorf("--share-agent-dir: ensure %s: %w", configPath, err)
+		if agentInfo.siblingConfig != "" {
+			// Touch the sibling config file so docker doesn't
+			// auto-create a dir where the agent expects a file.
+			configPath := filepath.Join(userHome, agentInfo.siblingConfig)
+			f, err := os.OpenFile(configPath, os.O_CREATE|os.O_WRONLY, 0o600)
+			if err != nil {
+				return fmt.Errorf("--share-agent-dir: ensure %s: %w", configPath, err)
+			}
+			_ = f.Close()
+			hostAgentConfig = configPath
 		}
-		_ = f.Close()
-		// macOS stores auth in Keychain, not on disk — bridge it into
-		// the file Linux Claude reads inside the sandbox.
-		populateClaudeCredentialsFromKeychain(hostAgentDir)
+		// Agents whose skills dir (baseDir) differs from the state dir
+		// need a second bind mount so the agent-vault skill installed by
+		// maybeInstallSkills at ~/<baseDir>/skills/ is visible inside
+		// the sandbox. Codex is the only such agent today (skills at
+		// ~/.agents/, state at ~/.codex/).
+		if agentInfo.baseDir != effectiveStateDir {
+			skillsDir := filepath.Join(userHome, agentInfo.baseDir)
+			if err := os.MkdirAll(skillsDir, 0o700); err != nil {
+				return fmt.Errorf("--share-agent-dir: create %s: %w", skillsDir, err)
+			}
+			hostAgentSkillsDir = skillsDir
+			containerAgentSkillsDir = sandbox.ContainerAgentHome(agentInfo.baseDir)
+		}
+		if agentInfo.hostSetup != nil {
+			agentInfo.hostSetup(hostAgentDir)
+		}
+		containerAgentDir = sandbox.ContainerAgentHome(effectiveStateDir)
+		containerConfig = sandbox.ContainerAgentConfig(agentInfo.siblingConfig)
 		// Docker Desktop on macOS translates UIDs through its hypervisor,
 		// so HOST_UID remapping is Linux-only.
 		if runtime.GOOS == "linux" {
@@ -215,21 +250,26 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 	noFirewall, _ := cmd.Flags().GetBool("no-firewall")
 
 	dockerArgs, err := sandbox.BuildRunArgs(sandbox.Config{
-		ImageRef:         imageRef,
-		SessionID:        sessionID,
-		WorkDir:          workDir,
-		HostCAPath:       hostCAPath,
-		NetworkName:      network.Name,
-		AttachTTY:        term.IsTerminal(int(os.Stdin.Fd())),
-		Keep:             keep,
-		NoFirewall:       noFirewall,
-		HomeVolumeShared: homeShared,
-		HostAgentDir:     hostAgentDir,
-		HostUID:          hostUID,
-		HostGID:          hostGID,
-		Mounts:           mounts,
-		Env:              env,
-		CommandArgs:      args,
+		ImageRef:                imageRef,
+		SessionID:               sessionID,
+		WorkDir:                 workDir,
+		HostCAPath:              hostCAPath,
+		NetworkName:             network.Name,
+		AttachTTY:               term.IsTerminal(int(os.Stdin.Fd())),
+		Keep:                    keep,
+		NoFirewall:              noFirewall,
+		HomeVolumeShared:        homeShared,
+		HostAgentDir:            hostAgentDir,
+		HostAgentConfig:         hostAgentConfig,
+		HostAgentSkillsDir:      hostAgentSkillsDir,
+		ContainerAgentDir:       containerAgentDir,
+		ContainerConfig:         containerConfig,
+		ContainerAgentSkillsDir: containerAgentSkillsDir,
+		HostUID:                 hostUID,
+		HostGID:                 hostGID,
+		Mounts:                  mounts,
+		Env:                     env,
+		CommandArgs:             args,
 	})
 	if err != nil {
 		return err
@@ -290,4 +330,17 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 		return fmt.Errorf("docker run: %w", err)
 	}
 	return nil
+}
+
+// requireCustomImageForNonClaudeShare enforces that --share-agent-dir with
+// a non-Claude agent is paired with a user-supplied --image. The bundled
+// sandbox image only preinstalls @anthropic-ai/claude-code, so running
+// cursor/codex/hermes/opencode on the bundled image would fail after
+// docker run with "executable file not found". We surface a clearer error
+// before launching the container.
+func requireCustomImageForNonClaudeShare(agent knownAgent, image, cmdName string) error {
+	if agent.baseDir == ".claude" || image != "" {
+		return nil
+	}
+	return fmt.Errorf("--share-agent-dir with %q requires --image: the bundled sandbox image only preinstalls claude-code; provide your own image with %s preinstalled", cmdName, cmdName)
 }

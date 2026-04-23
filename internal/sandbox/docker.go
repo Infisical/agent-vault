@@ -12,21 +12,26 @@ import (
 // resolved `docker run` argv. All values are already decided (mode,
 // session ID, network, TTY) — this type does no I/O.
 type Config struct {
-	ImageRef         string // "agent-vault/sandbox:<hash>" or user --image
-	SessionID        string // 16 hex chars; names the network and per-invocation volume
-	WorkDir          string // host path bound at /workspace
-	HostCAPath       string // host path bound read-only at ContainerCAPath
-	NetworkName      string // "agent-vault-<SessionID>" — must not be empty
-	AttachTTY        bool   // true if stdin is a TTY; adds -t
-	Keep             bool   // true → omit --rm
-	NoFirewall       bool   // true → container skips init-firewall.sh (debug only)
-	HomeVolumeShared bool   // true → shared volume, false → per-invocation
-	HostAgentDir     string // non-empty → bind-mount this host path at ContainerClaudeHome instead of a docker volume; a sibling .claude.json (if present) is bind-mounted too
-	HostUID          int    // >0 → pass HOST_UID/HOST_GID env so entrypoint.sh can remap the claude user (linux only)
-	HostGID          int
-	Mounts           []string // raw --mount "src:dst[:ro]" strings
-	Env              []string // from BuildContainerEnv
-	CommandArgs      []string // claude + any agent args
+	ImageRef                string // "agent-vault/sandbox:<hash>" or user --image
+	SessionID               string // 16 hex chars; names the network and per-invocation volume
+	WorkDir                 string // host path bound at /workspace
+	HostCAPath              string // host path bound read-only at ContainerCAPath
+	NetworkName             string // "agent-vault-<SessionID>" — must not be empty
+	AttachTTY               bool   // true if stdin is a TTY; adds -t
+	Keep                    bool   // true → omit --rm
+	NoFirewall              bool   // true → container skips init-firewall.sh (debug only)
+	HomeVolumeShared        bool   // true → shared volume, false → per-invocation
+	HostAgentDir            string // non-empty → bind-mount this host path at ContainerAgentDir instead of a docker volume
+	HostAgentConfig         string // optional sibling config file path on host; empty means no sibling bind
+	HostAgentSkillsDir      string // optional secondary bind for agents whose skills dir (~/.agents for Codex) differs from the state dir; empty means no extra bind
+	ContainerAgentDir       string // container mount target for HostAgentDir; empty falls back to ContainerClaudeHome
+	ContainerConfig         string // optional container mount target for HostAgentConfig; empty means no sibling bind
+	ContainerAgentSkillsDir string // container mount target for HostAgentSkillsDir; must be set iff HostAgentSkillsDir is set
+	HostUID                 int    // >0 → pass HOST_UID/HOST_GID env so entrypoint.sh can remap the claude user (linux only)
+	HostGID                 int
+	Mounts                  []string // raw --mount "src:dst[:ro]" strings
+	Env                     []string // from BuildContainerEnv
+	CommandArgs             []string // claude + any agent args
 }
 
 type parsedMount struct {
@@ -94,6 +99,20 @@ func BuildRunArgs(cfg Config) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
+		if cfg.ContainerAgentDir != "" && cfg.ContainerAgentDir != ContainerClaudeHome {
+			if pm.Dst == cfg.ContainerAgentDir ||
+				strings.HasPrefix(pm.Dst, cfg.ContainerAgentDir+"/") ||
+				strings.HasPrefix(cfg.ContainerAgentDir, pm.Dst+"/") {
+				return nil, fmt.Errorf("--mount: refusing to override reserved container path %s", cfg.ContainerAgentDir)
+			}
+		}
+		if cfg.ContainerAgentSkillsDir != "" {
+			if pm.Dst == cfg.ContainerAgentSkillsDir ||
+				strings.HasPrefix(pm.Dst, cfg.ContainerAgentSkillsDir+"/") ||
+				strings.HasPrefix(cfg.ContainerAgentSkillsDir, pm.Dst+"/") {
+				return nil, fmt.Errorf("--mount: refusing to override reserved container path %s", cfg.ContainerAgentSkillsDir)
+			}
+		}
 		parsed = append(parsed, pm)
 	}
 
@@ -145,6 +164,11 @@ func BuildRunArgs(cfg Config) ([]string, error) {
 	args = append(args, "-v", cfg.WorkDir+":/workspace")
 	args = append(args, "-v", cfg.HostCAPath+":"+ContainerCAPath+":ro")
 
+	containerAgentDir := cfg.ContainerAgentDir
+	if containerAgentDir == "" {
+		containerAgentDir = ContainerClaudeHome
+	}
+
 	if cfg.HostAgentDir != "" {
 		resolvedAgentDir, err := filepath.EvalSymlinks(cfg.HostAgentDir)
 		if err != nil {
@@ -156,24 +180,40 @@ func BuildRunArgs(cfg Config) ([]string, error) {
 		if err := validateHostSrc(resolvedAgentDir, home); err != nil {
 			return nil, fmt.Errorf("HostAgentDir: %w", err)
 		}
-		args = append(args, "-v", resolvedAgentDir+":"+ContainerClaudeHome)
+		args = append(args, "-v", resolvedAgentDir+":"+containerAgentDir)
 
-		// Claude reads ~/.claude.json as a sibling file to the dir.
-		// Bind it if present; bail-if-absent keeps docker from
-		// auto-creating a directory where Claude expects a file.
-		configPath := filepath.Join(filepath.Dir(resolvedAgentDir), ".claude.json")
-		if resolvedConfig, err := filepath.EvalSymlinks(configPath); err == nil {
+		if cfg.HostAgentConfig != "" && cfg.ContainerConfig != "" {
+			resolvedConfig, err := filepath.EvalSymlinks(cfg.HostAgentConfig)
+			if err != nil {
+				return nil, fmt.Errorf("resolving HostAgentConfig: %w", err)
+			}
 			if err := validateHostSrc(resolvedConfig, home); err != nil {
 				return nil, fmt.Errorf("HostAgentConfig: %w", err)
 			}
-			args = append(args, "-v", resolvedConfig+":"+ContainerClaudeConfig)
+			args = append(args, "-v", resolvedConfig+":"+cfg.ContainerConfig)
+		}
+
+		if cfg.HostAgentSkillsDir != "" && cfg.ContainerAgentSkillsDir != "" {
+			// Second bind for agents whose skills dir (baseDir) differs
+			// from the state dir — Codex stores auth under ~/.codex but
+			// agent-vault installs its skill at ~/.agents/skills/. Both
+			// paths need to be available inside the container so the
+			// agent finds its login AND the agent-vault skill.
+			resolvedSkills, err := filepath.EvalSymlinks(cfg.HostAgentSkillsDir)
+			if err != nil {
+				return nil, fmt.Errorf("resolving HostAgentSkillsDir: %w", err)
+			}
+			if err := validateHostSrc(resolvedSkills, home); err != nil {
+				return nil, fmt.Errorf("HostAgentSkillsDir: %w", err)
+			}
+			args = append(args, "-v", resolvedSkills+":"+cfg.ContainerAgentSkillsDir)
 		}
 	} else {
 		homeVolume := "agent-vault-claude-home-" + cfg.SessionID
 		if cfg.HomeVolumeShared {
 			homeVolume = "agent-vault-claude-home"
 		}
-		args = append(args, "-v", homeVolume+":"+ContainerClaudeHome)
+		args = append(args, "-v", homeVolume+":"+containerAgentDir)
 	}
 
 	for _, m := range parsed {

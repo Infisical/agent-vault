@@ -94,7 +94,7 @@ For **non-cooperative** sandboxing — where the child physically cannot reach a
 agent-vault run --sandbox=container --share-agent-dir -- claude
 ```
 
-`--share-agent-dir` bind-mounts your host's `~/.claude` into the container so the sandboxed agent reuses your existing login. Currently Claude-only; support for other agents is coming soon.
+`--share-agent-dir` bind-mounts the selected agent's host state dir into the container (`~/.claude`, `~/.cursor`, `~/.codex`, `~/.hermes`, or `~/.opencode`) so the sandboxed agent reuses your existing login.
 
 See [Container sandbox](https://docs.agent-vault.dev/guides/container-sandbox) for the threat model and flags.
 

@@ -73,7 +73,7 @@ Example:
 	c.Flags().Bool("keep", false, "Don't pass --rm to docker (requires --sandbox=container)")
 	c.Flags().Bool("no-firewall", false, "Skip iptables egress rules inside the container (requires --sandbox=container; debug only)")
 	c.Flags().Bool("home-volume-shared", false, "Share /home/claude/.claude across invocations (requires --sandbox=container); default is a per-invocation volume, losing auth state but avoiding concurrency corruption")
-	c.Flags().Bool("share-agent-dir", false, "Bind-mount the host's agent state dir (~/.claude) into the container so the sandbox reuses your host login (requires --sandbox=container; mutually exclusive with --home-volume-shared)")
+	c.Flags().Bool("share-agent-dir", false, "Bind-mount the host's state dir for the selected agent command (for example ~/.claude, ~/.cursor, ~/.codex) into the container so the sandbox reuses your host login (requires --sandbox=container; mutually exclusive with --home-volume-shared)")
 
 	return c
 }
@@ -173,16 +173,28 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 // knownAgents maps CLI binary base-names to the (agentName, skillsDir)
 // pair used by maybeInstallSkills. Multiple base-names can map to the
 // same entry (e.g. "cursor" and "agent" both target ".cursor").
-var knownAgents = []struct {
-	bases     []string
-	agentName string
-	baseDir   string
-}{
-	{[]string{"claude"}, "Claude Code", ".claude"},
-	{[]string{"cursor", "agent"}, "Cursor", ".cursor"},
-	{[]string{"codex"}, "Codex", ".agents"},
-	{[]string{"hermes"}, "Hermes", ".hermes"},
-	{[]string{"opencode"}, "OpenCode", ".opencode"},
+type knownAgent struct {
+	bases         []string
+	agentName     string
+	baseDir       string
+	stateDir      string
+	siblingConfig string
+	hostSetup     func(hostAgentDir string)
+}
+
+func (a knownAgent) effectiveStateDir() string {
+	if a.stateDir != "" {
+		return a.stateDir
+	}
+	return a.baseDir
+}
+
+var knownAgents = []knownAgent{
+	{[]string{"claude"}, "Claude Code", ".claude", "", ".claude.json", populateClaudeCredentialsFromKeychain},
+	{[]string{"cursor", "agent"}, "Cursor", ".cursor", "", "", nil},
+	{[]string{"codex"}, "Codex", ".agents", ".codex", "", nil},
+	{[]string{"hermes"}, "Hermes", ".hermes", "", "", nil},
+	{[]string{"opencode"}, "OpenCode", ".opencode", "", "", nil},
 }
 
 // agentSkillDir returns the display name and skills base directory for a
@@ -197,6 +209,26 @@ func agentSkillDir(cmd string) (agentName, baseDir string, ok bool) {
 		}
 	}
 	return "", "", false
+}
+
+func agentContainerInfo(cmd string) (info knownAgent, ok bool) {
+	base := filepath.Base(cmd)
+	for _, a := range knownAgents {
+		for _, b := range a.bases {
+			if base == b {
+				return a, true
+			}
+		}
+	}
+	return info, false
+}
+
+func knownAgentBases() []string {
+	var out []string
+	for _, a := range knownAgents {
+		out = append(out, a.bases...)
+	}
+	return out
 }
 
 // maybeInstallSkills installs both Agent Vault skills (CLI and HTTP) under

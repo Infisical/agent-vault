@@ -14,6 +14,22 @@ const (
 	ContainerClaudeConfig = "/home/claude/.claude.json"
 )
 
+// ContainerAgentHome returns the container path where --share-agent-dir
+// bind-mounts the host agent directory. The "claude" segment is the Unix
+// user baked into the sandbox image.
+func ContainerAgentHome(baseDir string) string {
+	return "/home/claude/" + baseDir
+}
+
+// ContainerAgentConfig returns the sibling config file path for agents
+// that use one. Empty siblingConfig means no sibling config bind.
+func ContainerAgentConfig(siblingConfig string) string {
+	if siblingConfig == "" {
+		return ""
+	}
+	return "/home/claude/" + siblingConfig
+}
+
 // ProxyEnvParams feeds BuildProxyEnv. Process mode and container mode
 // differ only in Host (loopback vs host.docker.internal) and CAPath
 // (host-local vs container-local bind mount).

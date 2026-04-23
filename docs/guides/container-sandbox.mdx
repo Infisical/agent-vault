@@ -29,7 +29,7 @@ First run takes ~60s while the sandbox image builds. Subsequent runs reuse the c
 - **Mounts**:
   - `$PWD → /workspace` (read-write, your project)
   - `~/.agent-vault/sandbox/ca-<session>.pem → /etc/agent-vault/ca.pem` (read-only, MITM CA)
-  - `agent-vault-claude-home-<session> → /home/claude/.claude` (per-invocation by default; removed after the container exits. See `--home-volume-shared` for a persistent docker volume, or `--share-agent-dir` to bind-mount your host `~/.claude` instead.)
+  - `agent-vault-claude-home-<session> → /home/claude/.claude` (per-invocation by default; removed after the container exits. See `--home-volume-shared` for a persistent docker volume, or `--share-agent-dir` to bind-mount your host agent dir instead.)
 
 ## Flags
 
@@ -41,7 +41,7 @@ First run takes ~60s while the sandbox image builds. Subsequent runs reuse the c
 | `--keep` | `false` | Omit `--rm` so the container is available for `docker inspect` / `docker logs` after exit. |
 | `--no-firewall` | `false` | **Debug only.** Skip `init-firewall.sh`; container has unrestricted egress. Prints a loud warning. |
 | `--home-volume-shared` | `false` | Share `/home/claude/.claude` across invocations via a persistent docker volume. Default is per-invocation (auth doesn't persist, but concurrent runs can't corrupt each other). |
-| `--share-agent-dir` | `false` | Bind-mount the host's agent state dir (`~/.claude`) into the container so the sandbox reuses your host login (auth, project history, MCP config). Mutually exclusive with `--home-volume-shared`. |
+| `--share-agent-dir` | `false` | Bind-mount the host state dir for the selected command (`~/.claude`, `~/.cursor`, `~/.codex`, `~/.hermes`, `~/.opencode`) into the container so the sandbox reuses your host login (auth, project history, MCP config). Mutually exclusive with `--home-volume-shared`. |
 
 ## Bundled image vs `--image`
 
@@ -70,13 +70,26 @@ agent-vault vault run --sandbox=container --image=my-org/my-agent-sandbox:v1 -- 
    ```
    Don't run two `--home-volume-shared` sessions concurrently — there's no locking, and the volume's contents will race.
 
-3. **Bind-mount the host's `~/.claude` (`--share-agent-dir`).** Reuses your existing host login — starting the sandbox feels identical to running `claude` on the host (no onboarding, your project history is there). Mutually exclusive with `--home-volume-shared`.
+3. **Bind-mount the host agent dir (`--share-agent-dir`).** Reuses your existing host login for the selected command. Mutually exclusive with `--home-volume-shared`.
    ```bash
    agent-vault vault run --sandbox=container --share-agent-dir -- claude
    ```
+   The bind source and destination depend on the command after `--`:
+
+   | Command | Host dir | Container path | Extra setup |
+   |---------|----------|----------------|-------------|
+   | `claude` | `~/.claude` | `/home/claude/.claude` | Also bind `~/.claude.json` to `/home/claude/.claude.json`; macOS Keychain bridge writes `~/.claude/.credentials.json` when needed |
+   | `cursor` / `agent` | `~/.cursor` | `/home/claude/.cursor` | None |
+   | `codex` | `~/.codex` | `/home/claude/.codex` | Also bind `~/.agents` to `/home/claude/.agents` so the Agent Vault skill installed at `~/.agents/skills/agent-vault/SKILL.md` is visible inside the sandbox |
+   | `hermes` | `~/.hermes` | `/home/claude/.hermes` | None |
+   | `opencode` | `~/.opencode` | `/home/claude/.opencode` | None |
+
+   Unknown commands are rejected with a list of supported agent commands. Running a non-Claude agent with `--share-agent-dir` also requires `--image` with that agent preinstalled — the bundled sandbox image only has `@anthropic-ai/claude-code` on it, so agent-vault rejects `--share-agent-dir -- cursor` (etc.) on the bundled image before launching the container.
    Concurrency matches the status quo of running `claude` directly on the host — session files are UUID-keyed, so two concurrent sandboxes behave the same as two host-level Claude sessions. On Linux, agent-vault passes `HOST_UID`/`HOST_GID` so the container's `claude` user matches your host uid — writes to the bind mount land owned by you, not the baked-in container uid.
 
    **macOS auth bridge.** Claude stores its OAuth credential in the macOS Keychain, not on disk, so the bind mount alone doesn't carry the login across. When `--share-agent-dir` is set on a Mac host, agent-vault calls `security find-generic-password -s "Claude Code-credentials" -w` once to extract the credential and writes it to `~/.claude/.credentials.json` (mode 0600) — the path Linux Claude reads. Only runs if the file is absent; the container (or you) can refresh it thereafter. First use may trigger a Keychain confirmation prompt. Trade-off: the credential now exists as a filesystem-readable file on your Mac, slightly weaker than Keychain-only storage. If you'd rather avoid that, skip `--share-agent-dir` (or `rm ~/.claude/.credentials.json` and `/login` inside the sandbox — Claude will write a fresh file itself).
+
+   The bundled image still preinstalls only `@anthropic-ai/claude-code`. For `cursor`, `codex`, `hermes`, or `opencode`, provide `--image` with that agent preinstalled.
 
 Security note: the sandbox protects *vault-brokered* credentials (Stripe, GitHub, etc.) by forcing egress through Agent Vault. Your Claude login in `~/.claude` is the agent's own identity — sharing it with the sandboxed agent is strictly a UX choice, not a credential exposure, since the agent already needs that identity to function. The genuinely sensitive `~/.agent-vault/` directory stays off-limits in all three modes.
 
