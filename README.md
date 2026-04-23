@@ -75,7 +75,7 @@ The server starts the HTTP API on port `14321` and a TLS-encrypted transparent H
 
 ## Quickstart
 
-### CLI — local agents (Claude Code, Cursor, Codex, OpenClaw, Hermes)
+### CLI — local agents (Claude Code, Cursor, Codex, OpenClaw, Hermes, OpenCode)
 
 Wrap any local agent process with `vault run`. Agent Vault creates a scoped session, sets `HTTPS_PROXY` and CA-trust env vars, and launches the agent — all HTTPS traffic is transparently proxied and authenticated:
 

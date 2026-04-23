@@ -33,7 +33,7 @@ var sandboxMode SandboxMode
 var runCmd = &cobra.Command{
 	Use:   "run [flags] -- <command> [args...]",
 	Short: "Wrap an agent process with Agent Vault access",
-	Long: `Start an agent process (e.g. claude, agent, codex, hermes) with an Agent Vault session.
+	Long: `Start an agent process (e.g. claude, agent, codex, hermes, opencode) with an Agent Vault session.
 Everything after -- is treated as the command to execute.
 
 Environment variables always set on the child:
