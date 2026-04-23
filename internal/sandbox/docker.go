@@ -36,11 +36,18 @@ type parsedMount struct {
 
 // reservedContainerDsts are bind-mount destinations agent-vault owns.
 // A user --mount landing on one of these would silently replace our
-// own mount and undo the sandbox guarantees.
+// own mount and undo the sandbox guarantees. The entrypoint + firewall
+// scripts are the image's trust path — overwriting either pre-entrypoint
+// would be a direct break-out.
 var reservedContainerDsts = []string{
+	"/",
+	"/etc",
 	"/workspace",
+	"/usr/local/sbin/init-firewall.sh",
+	"/usr/local/sbin/entrypoint.sh",
 	ContainerCAPath,
 	ContainerClaudeHome,
+	ContainerClaudeConfig,
 }
 
 // BuildRunArgs produces the argv for `docker run …`. Pure apart from

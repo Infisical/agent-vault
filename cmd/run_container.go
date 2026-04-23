@@ -83,6 +83,14 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 	var hostAgentDir string
 	var hostUID, hostGID int
 	if shareAgentDir {
+		// Running as root on Linux would remap the in-container claude
+		// user to uid 0, combining with --cap-add NET_ADMIN/NET_RAW/
+		// SETUID/SETGID/KILL to give the agent a much larger blast
+		// radius than a normal user. --security-opt=no-new-privileges
+		// doesn't undo ambient caps on uid 0. Reject.
+		if runtime.GOOS == "linux" && os.Getuid() == 0 {
+			return errors.New("--share-agent-dir: refusing to map the in-container user to root; re-run agent-vault as a non-root user")
+		}
 		userHome, herr := os.UserHomeDir()
 		if herr != nil {
 			return fmt.Errorf("--share-agent-dir: resolve home dir: %w", herr)
@@ -264,14 +272,17 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
 	err = child.Run()
-	// Exit-code propagation via fmt.Errorf would collapse everything to
-	// Cobra's generic exit 1. Return the ExitError unchanged so a caller
-	// wrapping us can inspect it; for now we also lose the exact code to
-	// keep defers (network teardown, signal.Stop) intact.
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return fmt.Errorf("sandbox container exited with status %d", exitErr.ExitCode())
+			// Return an ExitCodeError so defers (network teardown,
+			// signal.Stop, forwarder close) run before Execute() exits
+			// with the container's actual status. Silence cobra's own
+			// printing for this path — the container already wrote
+			// whatever it had to say to stderr, and our sentinel's
+			// empty Msg keeps Execute() quiet too.
+			cmd.SilenceErrors = true
+			return &ExitCodeError{Code: exitErr.ExitCode()}
 		}
 		return fmt.Errorf("docker run: %w", err)
 	}

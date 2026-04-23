@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -28,8 +29,17 @@ func init() {
 }
 
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, errorText(err.Error()))
-		os.Exit(1)
+	err := rootCmd.Execute()
+	if err == nil {
+		return
 	}
+	// An ExitCodeError carries the wrapped subprocess's exit status —
+	// propagate it verbatim. The subprocess already wrote to stderr;
+	// we stay quiet and exit with its code.
+	var ece *ExitCodeError
+	if errors.As(err, &ece) {
+		os.Exit(ece.Code)
+	}
+	fmt.Fprintln(os.Stderr, errorText(err.Error()))
+	os.Exit(1)
 }

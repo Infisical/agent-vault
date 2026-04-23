@@ -315,7 +315,27 @@ func TestBuildRunArgs_RejectsCWDInsideAgentVaultDir(t *testing.T) {
 func TestParseAndValidateMount_RejectReservedContainerDst(t *testing.T) {
 	tmp := t.TempDir()
 	home := t.TempDir()
-	for _, dst := range []string{"/workspace", "/workspace/sub", ContainerCAPath, "/home/claude/.claude", "/home/claude/.claude/x"} {
+	for _, dst := range []string{
+		"/",
+		"/workspace",
+		"/workspace/sub",
+		ContainerCAPath,
+		"/home/claude/.claude",
+		"/home/claude/.claude/x",
+		// ContainerClaudeConfig: --share-agent-dir bind-mounts ~/.claude.json
+		// here; a user --mount overriding it would replace real config
+		// with attacker-controlled content.
+		ContainerClaudeConfig,
+		// Entrypoint + firewall scripts: overwriting either pre-entrypoint
+		// replaces the trusted setup with attacker code run as root.
+		"/usr/local/sbin/init-firewall.sh",
+		"/usr/local/sbin/entrypoint.sh",
+		// /etc subtree is reserved wholesale; ContainerCAPath sits under it
+		// and we also don't want a user overwriting /etc/passwd, /etc/shadow,
+		// etc. pre-privilege-drop.
+		"/etc",
+		"/etc/passwd",
+	} {
 		t.Run(dst, func(t *testing.T) {
 			_, err := parseAndValidateMount(tmp+":"+dst, home)
 			if err == nil || !strings.Contains(err.Error(), "reserved") {
