@@ -26,14 +26,14 @@ var skillCLI string
 //go:embed skill_http.md
 var skillHTTP string
 
-// sandboxMode is enum-typed so `--sandbox=foo` fails at flag-parse time
-// with the allowed set, rather than deep inside RunE.
-var sandboxMode SandboxMode
-
-var runCmd = &cobra.Command{
-	Use:   "run [flags] -- <command> [args...]",
-	Short: "Wrap an agent process with Agent Vault access",
-	Long: `Start an agent process (e.g. claude, agent, codex, hermes, opencode) with an Agent Vault session.
+// newRunCmd is called twice — for `vault run` and top-level `run` — so each
+// command gets its own pflag state. examplePrefix parameterizes the Example
+// section of Long.
+func newRunCmd(examplePrefix string) *cobra.Command {
+	c := &cobra.Command{
+		Use:   "run [flags] -- <command> [args...]",
+		Short: "Wrap an agent process with Agent Vault access",
+		Long: `Start an agent process (e.g. claude, agent, codex, hermes, opencode) with an Agent Vault session.
 Everything after -- is treated as the command to execute.
 
 Environment variables always set on the child:
@@ -52,99 +52,122 @@ is written to ~/.agent-vault/mitm-ca.pem. Pass --no-mitm to disable
 injection and rely solely on the explicit /proxy/{host}/{path} endpoint.
 
 Example:
-  agent-vault vault run -- claude
-  agent-vault vault run --vault myproject -- claude
-  agent-vault vault run --no-mitm -- claude`,
-	Args:                  cobra.MinimumNArgs(1),
-	DisableFlagsInUseLine: true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		// 0. Resolve sandbox mode and validate flag compatibility before any
-		//    network I/O — the user sees conflicts immediately, not after
-		//    a slow session-mint round-trip.
-		mode := sandboxMode
-		if mode == "" {
-			if v := os.Getenv("AGENT_VAULT_SANDBOX"); v != "" {
-				if err := mode.Set(v); err != nil {
-					return fmt.Errorf("AGENT_VAULT_SANDBOX: %w", err)
-				}
+  ` + examplePrefix + ` -- claude
+  ` + examplePrefix + ` --vault myproject -- claude
+  ` + examplePrefix + ` --no-mitm -- claude`,
+		Args:                  cobra.MinimumNArgs(1),
+		DisableFlagsInUseLine: true,
+		RunE:                  runCmdRunE,
+	}
+
+	var sbx SandboxMode
+	c.Flags().Var(&sbx, "sandbox", "Sandbox mode: process (default) or container")
+
+	c.Flags().String("address", "", "Agent Vault server address (defaults to session address)")
+	c.Flags().String("role", "", "Vault role for the agent session (proxy, member, admin; default: proxy)")
+	c.Flags().Int("ttl", 0, "Session TTL in seconds (300–604800; default: server default 24h)")
+	c.Flags().Bool("no-mitm", false, "Skip HTTPS_PROXY/CA env injection for the child (explicit /proxy only)")
+
+	c.Flags().String("image", "", "Container image override (requires --sandbox=container)")
+	c.Flags().StringArray("mount", nil, "Extra bind mount src:dst[:ro] (repeatable; requires --sandbox=container)")
+	c.Flags().Bool("keep", false, "Don't pass --rm to docker (requires --sandbox=container)")
+	c.Flags().Bool("no-firewall", false, "Skip iptables egress rules inside the container (requires --sandbox=container; debug only)")
+	c.Flags().Bool("home-volume-shared", false, "Share /home/claude/.claude across invocations (requires --sandbox=container); default is a per-invocation volume, losing auth state but avoiding concurrency corruption")
+	c.Flags().Bool("share-agent-dir", false, "Bind-mount the host's agent state dir (~/.claude) into the container so the sandbox reuses your host login (requires --sandbox=container; mutually exclusive with --home-volume-shared)")
+
+	return c
+}
+
+var runCmd = newRunCmd("agent-vault vault run")
+var topRunCmd = newRunCmd("agent-vault run")
+
+func runCmdRunE(cmd *cobra.Command, args []string) error {
+	// 0. Resolve sandbox mode and validate flag compatibility before any
+	//    network I/O — the user sees conflicts immediately, not after
+	//    a slow session-mint round-trip.
+	mode := *cmd.Flags().Lookup("sandbox").Value.(*SandboxMode)
+	if mode == "" {
+		if v := os.Getenv("AGENT_VAULT_SANDBOX"); v != "" {
+			if err := mode.Set(v); err != nil {
+				return fmt.Errorf("AGENT_VAULT_SANDBOX: %w", err)
 			}
 		}
-		if mode == "" {
-			mode = SandboxProcess
-		}
-		if err := validateSandboxFlagConflicts(cmd, mode); err != nil {
-			return err
-		}
+	}
+	if mode == "" {
+		mode = SandboxProcess
+	}
+	if err := validateSandboxFlagConflicts(cmd, mode); err != nil {
+		return err
+	}
 
-		// 1. Load the admin session from agent-vault auth login.
-		sess, err := ensureSession()
-		if err != nil {
-			return err
+	// 1. Load the admin session from agent-vault auth login.
+	sess, err := ensureSession()
+	if err != nil {
+		return err
+	}
+
+	addr, _ := cmd.Flags().GetString("address")
+	if addr == "" {
+		addr = sess.Address
+	}
+
+	// 2. Resolve the target vault: --vault flag > context > interactive select > "default".
+	vault, err := resolveVaultForRun(cmd, addr, sess.Token)
+	if err != nil {
+		return err
+	}
+
+	// 3. Request a vault-scoped session token from the server.
+	role, _ := cmd.Flags().GetString("role")
+	ttl, _ := cmd.Flags().GetInt("ttl")
+	scopedToken, err := requestScopedSession(addr, sess.Token, vault, role, ttl)
+	if err != nil {
+		return err
+	}
+
+	if mode == SandboxContainer {
+		return runContainer(cmd, args, scopedToken, addr, vault)
+	}
+
+	// 4. Resolve the target binary.
+	binary, err := exec.LookPath(args[0])
+	if err != nil {
+		return fmt.Errorf("command not found: %s", args[0])
+	}
+
+	// 5. Build env: inherit current env + inject Agent Vault vars.
+	env := os.Environ()
+	env = append(env,
+		"AGENT_VAULT_SESSION_TOKEN="+scopedToken,
+		"AGENT_VAULT_ADDR="+addr,
+		"AGENT_VAULT_VAULT="+vault,
+	)
+
+	// 6. Route the child's HTTPS traffic through the transparent MITM
+	//    proxy. Explicit /proxy stays available as a fallback.
+	if noMITM, _ := cmd.Flags().GetBool("no-mitm"); !noMITM {
+		newEnv, mitmPort, ok, err := augmentEnvWithMITM(env, addr, scopedToken, vault, "")
+		switch {
+		case err != nil:
+			fmt.Fprintf(os.Stderr, "agent-vault: MITM setup failed (%v); continuing with explicit proxy only\n", err)
+		case !ok:
+			fmt.Fprintln(os.Stderr, "agent-vault: MITM proxy disabled on server; using explicit proxy only")
+		default:
+			env = newEnv
+			fmt.Fprintf(os.Stderr, "%s routing HTTPS through MITM proxy (127.0.0.1:%d)\n", successText("agent-vault:"), mitmPort)
 		}
+	}
 
-		addr, _ := cmd.Flags().GetString("address")
-		if addr == "" {
-			addr = sess.Address
-		}
+	// 7. If the target command is a supported agent, offer to install the
+	//    Agent Vault skill (only when not already present).
+	if name, dir, ok := agentSkillDir(args[0]); ok {
+		maybeInstallSkills(name, dir)
+	}
 
-		// 2. Resolve the target vault: --vault flag > context > interactive select > "default".
-		vault, err := resolveVaultForRun(cmd, addr, sess.Token)
-		if err != nil {
-			return err
-		}
-
-		// 3. Request a vault-scoped session token from the server.
-		role, _ := cmd.Flags().GetString("role")
-		ttl, _ := cmd.Flags().GetInt("ttl")
-		scopedToken, err := requestScopedSession(addr, sess.Token, vault, role, ttl)
-		if err != nil {
-			return err
-		}
-
-		if mode == SandboxContainer {
-			return runContainer(cmd, args, scopedToken, addr, vault)
-		}
-
-		// 4. Resolve the target binary.
-		binary, err := exec.LookPath(args[0])
-		if err != nil {
-			return fmt.Errorf("command not found: %s", args[0])
-		}
-
-		// 5. Build env: inherit current env + inject Agent Vault vars.
-		env := os.Environ()
-		env = append(env,
-			"AGENT_VAULT_SESSION_TOKEN="+scopedToken,
-			"AGENT_VAULT_ADDR="+addr,
-			"AGENT_VAULT_VAULT="+vault,
-		)
-
-		// 6. Route the child's HTTPS traffic through the transparent MITM
-		//    proxy. Explicit /proxy stays available as a fallback.
-		if noMITM, _ := cmd.Flags().GetBool("no-mitm"); !noMITM {
-			newEnv, mitmPort, ok, err := augmentEnvWithMITM(env, addr, scopedToken, vault, "")
-			switch {
-			case err != nil:
-				fmt.Fprintf(os.Stderr, "agent-vault: MITM setup failed (%v); continuing with explicit proxy only\n", err)
-			case !ok:
-				fmt.Fprintln(os.Stderr, "agent-vault: MITM proxy disabled on server; using explicit proxy only")
-			default:
-				env = newEnv
-				fmt.Fprintf(os.Stderr, "%s routing HTTPS through MITM proxy (127.0.0.1:%d)\n", successText("agent-vault:"), mitmPort)
-			}
-		}
-
-		// 7. If the target command is a supported agent, offer to install the
-		//    Agent Vault skill (only when not already present).
-		if name, dir, ok := agentSkillDir(args[0]); ok {
-			maybeInstallSkills(name, dir)
-		}
-
-		// 8. Confirm, then exec — replaces this process entirely so the child
-		//    (e.g. Claude Code) gets direct terminal control.
-		fmt.Fprintf(os.Stderr, "%s agent-vault connected. Starting %s...\n\n", successText("agent-vault:"), boldText(args[0]))
-		return syscall.Exec(binary, args, env)
-	},
+	// 8. Confirm, then exec — replaces this process entirely so the child
+	//    (e.g. Claude Code) gets direct terminal control.
+	fmt.Fprintf(os.Stderr, "%s agent-vault connected. Starting %s...\n\n", successText("agent-vault:"), boldText(args[0]))
+	return syscall.Exec(binary, args, env)
 }
 
 // knownAgents maps CLI binary base-names to the (agentName, skillsDir)
@@ -445,18 +468,6 @@ func requestScopedSession(addr, adminToken, vault, role string, ttlSeconds int) 
 }
 
 func init() {
-	runCmd.Flags().String("address", "", "Agent Vault server address (defaults to session address)")
-	runCmd.Flags().String("role", "", "Vault role for the agent session (proxy, member, admin; default: proxy)")
-	runCmd.Flags().Int("ttl", 0, "Session TTL in seconds (300–604800; default: server default 24h)")
-	runCmd.Flags().Bool("no-mitm", false, "Skip HTTPS_PROXY/CA env injection for the child (explicit /proxy only)")
-
-	runCmd.Flags().Var(&sandboxMode, "sandbox", "Sandbox mode: process (default) or container")
-	runCmd.Flags().String("image", "", "Container image override (requires --sandbox=container)")
-	runCmd.Flags().StringArray("mount", nil, "Extra bind mount src:dst[:ro] (repeatable; requires --sandbox=container)")
-	runCmd.Flags().Bool("keep", false, "Don't pass --rm to docker (requires --sandbox=container)")
-	runCmd.Flags().Bool("no-firewall", false, "Skip iptables egress rules inside the container (requires --sandbox=container; debug only)")
-	runCmd.Flags().Bool("home-volume-shared", false, "Share /home/claude/.claude across invocations (requires --sandbox=container); default is a per-invocation volume, losing auth state but avoiding concurrency corruption")
-	runCmd.Flags().Bool("share-agent-dir", false, "Bind-mount the host's agent state dir (~/.claude) into the container so the sandbox reuses your host login (requires --sandbox=container; mutually exclusive with --home-volume-shared)")
-
 	vaultCmd.AddCommand(runCmd)
+	rootCmd.AddCommand(topRunCmd)
 }

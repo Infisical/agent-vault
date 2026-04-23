@@ -11,6 +11,15 @@ import (
 	"testing"
 )
 
+// expectedRunFlags is the single source of truth for flags both `vault run`
+// and the top-level `run` shorthand must expose. Adding a flag to one without
+// the other is a bug.
+var expectedRunFlags = []string{
+	"address", "role", "ttl", "no-mitm",
+	"sandbox", "image", "mount", "keep", "no-firewall",
+	"home-volume-shared", "share-agent-dir",
+}
+
 func TestRunFlagsRegistered(t *testing.T) {
 	vCmd := findSubcommand(rootCmd, "vault")
 	if vCmd == nil {
@@ -21,9 +30,27 @@ func TestRunFlagsRegistered(t *testing.T) {
 		t.Fatal("vault run subcommand not found")
 	}
 
-	for _, name := range []string{"address", "role", "ttl", "no-mitm"} {
+	for _, name := range expectedRunFlags {
 		if rCmd.Flags().Lookup(name) == nil {
 			t.Errorf("expected vault run flag --%s to be registered", name)
+		}
+	}
+}
+
+// TestTopLevelRunRegistered guards the `agent-vault run` shorthand — it must
+// be a direct child of rootCmd and expose the same flag surface as `vault run`.
+func TestTopLevelRunRegistered(t *testing.T) {
+	tCmd := findSubcommand(rootCmd, "run")
+	if tCmd == nil {
+		t.Fatal("top-level run command not found")
+	}
+	if tCmd.Parent() != rootCmd {
+		t.Errorf("top-level run must be parented to rootCmd, got %v", tCmd.Parent())
+	}
+
+	for _, name := range expectedRunFlags {
+		if tCmd.Flags().Lookup(name) == nil {
+			t.Errorf("expected top-level run flag --%s to be registered", name)
 		}
 	}
 }

@@ -77,10 +77,10 @@ The server starts the HTTP API on port `14321` and a TLS-encrypted transparent H
 
 ### CLI — local agents (Claude Code, Cursor, Codex, OpenClaw, Hermes, OpenCode)
 
-Wrap any local agent process with `vault run`. Agent Vault creates a scoped session, sets `HTTPS_PROXY` and CA-trust env vars, and launches the agent — all HTTPS traffic is transparently proxied and authenticated:
+Wrap any local agent process with `agent-vault run` (long form: `agent-vault vault run`). Agent Vault creates a scoped session, sets `HTTPS_PROXY` and CA-trust env vars, and launches the agent — all HTTPS traffic is transparently proxied and authenticated:
 
 ```bash
-agent-vault vault run -- claude
+agent-vault run -- claude
 ```
 
 The agent calls APIs normally (e.g. `fetch("https://api.github.com/...")`). Agent Vault intercepts the request, injects the credential, and forwards it upstream. The agent never sees secrets.
@@ -88,7 +88,7 @@ The agent calls APIs normally (e.g. `fetch("https://api.github.com/...")`). Agen
 For **non-cooperative** sandboxing — where the child physically cannot reach anything except the Agent Vault proxy, regardless of what it tries — launch it in a Docker container with egress locked down by iptables:
 
 ```bash
-agent-vault vault run --sandbox=container -- claude
+agent-vault run --sandbox=container -- claude
 ```
 
 See [Container sandbox](https://docs.agent-vault.dev/guides/container-sandbox) for the threat model and flags.

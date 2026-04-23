@@ -21,7 +21,7 @@ You have access to Agent Vault, a transparent HTTPS proxy that injects credentia
 **Before telling the user you cannot access an external service, you MUST check Agent Vault.** This applies whenever a task involves any third-party service or API -- project management (Linear, Jira, Asana), source control (GitHub, GitLab), communication (Slack, Discord), payments (Stripe), databases, or any other authenticated service.
 
 **Your workflow for ANY external service interaction:**
-1. Check that `AGENT_VAULT_SESSION_TOKEN` is set (it should be if you were launched via `agent-vault vault run`)
+1. Check that `AGENT_VAULT_SESSION_TOKEN` is set (it should be if you were launched via `agent-vault run` — `agent-vault vault run` is the long form)
 2. Run `agent-vault vault discover --json` to see which hosts have credentials configured
 3. If the host is listed, **just make the request to the real API URL** -- Agent Vault transparently injects the credential
 4. If the host is NOT listed, create a proposal via CLI (the user approves and provides credentials)
@@ -37,9 +37,9 @@ You have access to Agent Vault, a transparent HTTPS proxy that injects credentia
 |----------|-------------|
 | `AGENT_VAULT_ADDR` | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
 | `AGENT_VAULT_SESSION_TOKEN` | Bearer token for authenticating with Agent Vault's control-plane endpoints (`discover`, proposals, etc.) |
-| `AGENT_VAULT_VAULT` | Vault name (set for user-scoped sessions via `vault run`) |
+| `AGENT_VAULT_VAULT` | Vault name (set for user-scoped sessions via `agent-vault run`) |
 
-`vault run` also pre-configures `HTTPS_PROXY`, `NO_PROXY`, `NODE_USE_ENV_PROXY`, and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) so HTTPS calls from your process route through the broker transparently. You don't manage these yourself.
+`agent-vault run` also pre-configures `HTTPS_PROXY`, `NO_PROXY`, `NODE_USE_ENV_PROXY`, and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) so HTTPS calls from your process route through the broker transparently. You don't manage these yourself.
 
 Under `--sandbox=container`, the same env shape is injected inside a Docker container, but the proxy URL host is `host.docker.internal` instead of `127.0.0.1` and egress to any other destination is blocked by iptables. From your perspective nothing changes — standard HTTP clients pick up the envvars as normal.
 
@@ -57,7 +57,7 @@ Response includes `vault`, `services` (host + description), and `available_crede
 
 ## Making Requests
 
-**Just call the real API URL.** When you were launched via `agent-vault vault run`, your HTTPS traffic already routes through Agent Vault transparently — `HTTPS_PROXY` and the broker's CA cert are pre-configured in your environment. Agent Vault intercepts the call, looks up the host in the vault's services, injects the credential, and forwards over HTTPS.
+**Just call the real API URL.** When you were launched via `agent-vault run` (or the long form `agent-vault vault run`), your HTTPS traffic already routes through Agent Vault transparently — `HTTPS_PROXY` and the broker's CA cert are pre-configured in your environment. Agent Vault intercepts the call, looks up the host in the vault's services, injects the credential, and forwards over HTTPS.
 
 ```bash
 curl https://api.stripe.com/v1/charges

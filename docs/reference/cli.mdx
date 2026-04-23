@@ -229,19 +229,23 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault discover [flags]
     ```
 
-    Show available services and credentials for the current vault. Requires a vault-scoped session (via `agent-vault vault run` or `AGENT_VAULT_SESSION_TOKEN` + `AGENT_VAULT_ADDR` env vars).
+    Show available services and credentials for the current vault. Requires a vault-scoped session (via `agent-vault run` or `AGENT_VAULT_SESSION_TOKEN` + `AGENT_VAULT_ADDR` env vars).
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--json` | `false` | Output response as JSON |
   </Accordion>
 
-  <Accordion title="agent-vault vault run">
+  <Accordion title="agent-vault run (alias: agent-vault vault run)">
     ```bash
+    agent-vault run [flags] -- <command>
+    # Long form — identical behavior:
     agent-vault vault run [flags] -- <command>
     ```
 
-    Wrap a process with Agent Vault environment variables. The child process always receives `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT`. When the server's transparent MITM proxy is reachable (default), it also receives `HTTPS_PROXY` / `NO_PROXY` / `NODE_USE_ENV_PROXY` plus CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) pointing at `~/.agent-vault/mitm-ca.pem`, so standard HTTPS clients transparently route through the broker.
+    Wrap a process with Agent Vault environment variables. `agent-vault run` is the shorthand; `agent-vault vault run` is the long form. Both are identical in behavior and flags.
+
+    The child process always receives `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT`. When the server's transparent MITM proxy is reachable (default), it also receives `HTTPS_PROXY` / `NO_PROXY` / `NODE_USE_ENV_PROXY` plus CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) pointing at `~/.agent-vault/mitm-ca.pem`, so standard HTTPS clients transparently route through the broker.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -263,7 +267,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault token [flags]
     ```
 
-    Mint a vault-scoped session token and print it to stdout. Useful when you need a scoped token without wrapping a child process via `vault run`.
+    Mint a vault-scoped session token and print it to stdout. Useful when you need a scoped token without wrapping a child process via `agent-vault run`.
 
     | Flag | Default | Description |
     |------|---------|-------------|
