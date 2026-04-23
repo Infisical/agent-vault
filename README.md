@@ -85,6 +85,14 @@ agent-vault vault run -- claude
 
 The agent calls APIs normally (e.g. `fetch("https://api.github.com/...")`). Agent Vault intercepts the request, injects the credential, and forwards it upstream. The agent never sees secrets.
 
+For **non-cooperative** sandboxing — where the child physically cannot reach anything except the Agent Vault proxy, regardless of what it tries — launch it in a Docker container with egress locked down by iptables:
+
+```bash
+agent-vault vault run --sandbox=container -- claude
+```
+
+See [Container sandbox](https://docs.agent-vault.dev/guides/container-sandbox) for the threat model and flags.
+
 ### SDK — sandboxed agents (Docker, Daytona, E2B)
 
 For agents running inside containers, use the SDK from your orchestrator to mint a session and pass proxy config into the sandbox:

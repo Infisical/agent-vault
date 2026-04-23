@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/Infisical/agent-vault/internal/sandbox"
 	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/Infisical/agent-vault/internal/store"
 	"github.com/charmbracelet/huh"
@@ -24,6 +25,10 @@ var skillCLI string
 
 //go:embed skill_http.md
 var skillHTTP string
+
+// sandboxMode is enum-typed so `--sandbox=foo` fails at flag-parse time
+// with the allowed set, rather than deep inside RunE.
+var sandboxMode SandboxMode
 
 var runCmd = &cobra.Command{
 	Use:   "run [flags] -- <command> [args...]",
@@ -53,6 +58,24 @@ Example:
 	Args:                  cobra.MinimumNArgs(1),
 	DisableFlagsInUseLine: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// 0. Resolve sandbox mode and validate flag compatibility before any
+		//    network I/O — the user sees conflicts immediately, not after
+		//    a slow session-mint round-trip.
+		mode := sandboxMode
+		if mode == "" {
+			if v := os.Getenv("AGENT_VAULT_SANDBOX"); v != "" {
+				if err := mode.Set(v); err != nil {
+					return fmt.Errorf("AGENT_VAULT_SANDBOX: %w", err)
+				}
+			}
+		}
+		if mode == "" {
+			mode = SandboxProcess
+		}
+		if err := validateSandboxFlagConflicts(cmd, mode); err != nil {
+			return err
+		}
+
 		// 1. Load the admin session from agent-vault auth login.
 		sess, err := ensureSession()
 		if err != nil {
@@ -76,6 +99,10 @@ Example:
 		scopedToken, err := requestScopedSession(addr, sess.Token, vault, role, ttl)
 		if err != nil {
 			return err
+		}
+
+		if mode == SandboxContainer {
+			return runContainer(cmd, args, scopedToken, addr, vault)
 		}
 
 		// 4. Resolve the target binary.
@@ -276,23 +303,19 @@ func fetchUserVaults(addr, token string) ([]string, error) {
 	return names, nil
 }
 
-// mitmInjectedKeys is the set of env keys augmentEnvWithMITM manages on
-// the child. Any pre-existing occurrence inherited from os.Environ() must
-// be stripped before the new values are appended — POSIX getenv returns
-// the *first* match in C code paths (glibc, curl, libcurl-backed Python),
-// so a stale corporate HTTPS_PROXY from the parent shell would otherwise
-// silently win and the MITM route would be bypassed entirely.
-var mitmInjectedKeys = map[string]struct{}{
-	"HTTPS_PROXY":         {},
-	"NO_PROXY":            {},
-	"NODE_USE_ENV_PROXY":  {},
-	"SSL_CERT_FILE":       {},
-	"NODE_EXTRA_CA_CERTS": {},
-	"REQUESTS_CA_BUNDLE":  {},
-	"CURL_CA_BUNDLE":      {},
-	"GIT_SSL_CAINFO":      {},
-	"DENO_CERT":           {},
-}
+// mitmInjectedKeys is the keyset that BuildProxyEnv emits. Any
+// pre-existing occurrence inherited from os.Environ() must be stripped
+// before the new values are appended — POSIX getenv returns the *first*
+// match in C code paths (glibc, curl, libcurl-backed Python), so a stale
+// corporate HTTPS_PROXY from the parent shell would otherwise silently
+// win and the MITM route would be bypassed entirely.
+var mitmInjectedKeys = func() map[string]struct{} {
+	m := make(map[string]struct{}, len(sandbox.ProxyEnvKeys))
+	for _, k := range sandbox.ProxyEnvKeys {
+		m[k] = struct{}{}
+	}
+	return m
+}()
 
 // stripEnvKeys returns env with every entry whose key (the part before
 // '=') appears in keys removed. Case-sensitive, matching how the kernel
@@ -359,30 +382,16 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 			mitmHost = h
 		}
 	}
-	scheme := "http"
-	if mitmTLS {
-		scheme = "https"
-	}
-	proxyURL := (&url.URL{
-		Scheme: scheme,
-		User:   url.UserPassword(token, vault),
-		Host:   fmt.Sprintf("%s:%d", mitmHost, port),
-	}).String()
 
 	env = stripEnvKeys(env, mitmInjectedKeys)
-	// CA trust variables must stay in sync with buildProxyEnv() in
-	// sdks/sdk-typescript/src/resources/sessions.ts.
-	env = append(env,
-		"HTTPS_PROXY="+proxyURL,
-		"NO_PROXY=localhost,127.0.0.1",
-		"NODE_USE_ENV_PROXY=1",
-		"SSL_CERT_FILE="+caPath,
-		"NODE_EXTRA_CA_CERTS="+caPath,
-		"REQUESTS_CA_BUNDLE="+caPath,
-		"CURL_CA_BUNDLE="+caPath,
-		"GIT_SSL_CAINFO="+caPath,
-		"DENO_CERT="+caPath,
-	)
+	env = append(env, sandbox.BuildProxyEnv(sandbox.ProxyEnvParams{
+		Host:    mitmHost,
+		Port:    port,
+		Token:   token,
+		Vault:   vault,
+		CAPath:  caPath,
+		MITMTLS: mitmTLS,
+	})...)
 	return env, port, true, nil
 }
 
@@ -439,6 +448,14 @@ func init() {
 	runCmd.Flags().String("role", "", "Vault role for the agent session (proxy, member, admin; default: proxy)")
 	runCmd.Flags().Int("ttl", 0, "Session TTL in seconds (300–604800; default: server default 24h)")
 	runCmd.Flags().Bool("no-mitm", false, "Skip HTTPS_PROXY/CA env injection for the child (explicit /proxy only)")
+
+	runCmd.Flags().Var(&sandboxMode, "sandbox", "Sandbox mode: process (default) or container")
+	runCmd.Flags().String("image", "", "Container image override (requires --sandbox=container)")
+	runCmd.Flags().StringArray("mount", nil, "Extra bind mount src:dst[:ro] (repeatable; requires --sandbox=container)")
+	runCmd.Flags().Bool("keep", false, "Don't pass --rm to docker (requires --sandbox=container)")
+	runCmd.Flags().Bool("no-firewall", false, "Skip iptables egress rules inside the container (requires --sandbox=container; debug only)")
+	runCmd.Flags().Bool("home-volume-shared", false, "Share /home/claude/.claude across invocations (requires --sandbox=container); default is a per-invocation volume, losing auth state but avoiding concurrency corruption")
+	runCmd.Flags().Bool("share-agent-dir", false, "Bind-mount the host's agent state dir (~/.claude) into the container so the sandbox reuses your host login (requires --sandbox=container; mutually exclusive with --home-volume-shared)")
 
 	vaultCmd.AddCommand(runCmd)
 }
