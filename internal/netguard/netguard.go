@@ -3,6 +3,7 @@ package netguard
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -30,6 +31,55 @@ func ModeFromEnv() Mode {
 	default:
 		return ModePublic
 	}
+}
+
+// AllowedRangesFromEnv reads AGENT_VAULT_NETWORK_ALLOW_RANGES and returns a list
+// of allowed IP networks. Empty string returns nil (no whitelist).
+// Invalid entries are logged as warnings and skipped.
+// Bare IPs are automatically converted to /32 CIDR notation.
+func AllowedRangesFromEnv() []net.IPNet {
+	env := os.Getenv("AGENT_VAULT_NETWORK_ALLOW_RANGES")
+	if env == "" {
+		return nil
+	}
+
+	var allowed []net.IPNet
+	parts := strings.Split(env, ",")
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+
+		// If it doesn't contain a slash, assume it's a bare IP and add /32
+		cidr := p
+		if !strings.Contains(p, "/") {
+			// Check if it's a valid IP first
+			if ip := net.ParseIP(p); ip == nil {
+				slog.Warn("netguard: invalid IP in AGENT_VAULT_NETWORK_ALLOW_RANGES, skipping",
+					slog.String("value", p))
+				continue
+			}
+			cidr = p + "/32"
+		}
+
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			slog.Warn("netguard: invalid CIDR in AGENT_VAULT_NETWORK_ALLOW_RANGES, skipping",
+				slog.String("value", p),
+				slog.String("error", err.Error()))
+			continue
+		}
+
+		allowed = append(allowed, *ipNet)
+	}
+
+	if len(allowed) > 0 {
+		slog.Debug("netguard: loaded network whitelist",
+			slog.Int("count", len(allowed)))
+	}
+
+	return allowed
 }
 
 // alwaysBlocked contains IP ranges that are blocked regardless of mode.
@@ -73,7 +123,8 @@ func parseCIDR(s string) net.IPNet {
 }
 
 // isBlockedIP checks if an IP is blocked for the given mode.
-func isBlockedIP(ip net.IP, mode Mode) bool {
+// In public mode, private/reserved ranges are blocked unless explicitly allowed.
+func isBlockedIP(ip net.IP, mode Mode, allowed []net.IPNet) bool {
 	// Always block metadata endpoints.
 	for _, n := range alwaysBlocked {
 		if n.Contains(ip) {
@@ -81,11 +132,19 @@ func isBlockedIP(ip net.IP, mode Mode) bool {
 		}
 	}
 
-	// In public mode, also block private/reserved ranges.
+	// In public mode, also block private/reserved ranges unless whitelisted.
 	if mode == ModePublic {
+		// First check if IP is in whitelist
+		for _, n := range allowed {
+			if n.Contains(ip) {
+				return false // Whitelisted - allow
+			}
+		}
+
+		// Check private ranges
 		for _, n := range privateRanges {
 			if n.Contains(ip) {
-				return true
+				return true // Blocked private range
 			}
 		}
 	}
@@ -101,6 +160,9 @@ func SafeDialContext(mode Mode) func(ctx context.Context, network, addr string) 
 		KeepAlive: 30 * time.Second,
 	}
 
+	// Parse allowed ranges once at initialization
+	allowed := AllowedRangesFromEnv()
+
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -115,7 +177,7 @@ func SafeDialContext(mode Mode) func(ctx context.Context, network, addr string) 
 
 		// Check all resolved IPs before connecting.
 		for _, ipAddr := range ips {
-			if isBlockedIP(ipAddr.IP, mode) {
+			if isBlockedIP(ipAddr.IP, mode, allowed) {
 				return nil, fmt.Errorf("netguard: connection to %s (%s) blocked by network policy (mode=%s)",
 					host, ipAddr.IP.String(), mode)
 			}
