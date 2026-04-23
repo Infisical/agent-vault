@@ -10,13 +10,13 @@ description: "Learn how to connect Codex to Agent Vault so it can make authentic
 
 ## Quick start
 
-Launch Codex with `vault run`. It wraps Codex with a vault-scoped session and installs the Agent Vault skill so Codex knows how to proxy requests and raise proposals automatically. If you haven't logged in yet, you'll be guided through setup automatically.
+Launch Codex with `vault run`. It wraps Codex with a vault-scoped session, pre-configures `HTTPS_PROXY` and CA trust so outbound HTTPS routes through Agent Vault transparently, and installs the Agent Vault skill so Codex knows how to discover services and raise proposals. If you haven't logged in yet, you'll be guided through setup automatically.
 
 ```bash
 agent-vault vault run -- codex
 ```
 
-That's it. Codex launches with Agent Vault access — no invite, no token pasting.
+That's it. Codex launches with Agent Vault access — no invite, no token pasting, no URL rewriting.
 
 <Tip>
 `vault run` also installs an Agent Vault skill at `~/.agents/skills/agent-vault/SKILL.md`. This teaches Codex how to discover services, proxy requests, and raise proposals through Agent Vault. The skill persists across sessions.
@@ -36,12 +36,12 @@ Ask Codex to do something that requires an external API:
 
 Here's what happens — with zero pre-configuration:
 
-1. Codex routes a request to `api.stripe.com` through Agent Vault
+1. Codex calls `https://api.stripe.com/...` directly. `HTTPS_PROXY` routes the call through Agent Vault
 2. Agent Vault returns a **403** — Stripe isn't configured yet
 3. Codex reads the `proposal_hint` and creates a proposal requesting Stripe access
 4. Codex presents you with an approval link
 5. You click the link, paste your Stripe key, and click **Allow**
-6. Codex retries — Agent Vault injects your Stripe credentials and the request succeeds
+6. Codex retries — Agent Vault injects your Stripe credentials at the proxy boundary and the request succeeds
 
 <Note>
 You didn't pre-configure anything. The agent discovered what it needed, asked for approval, and handled the rest.
@@ -60,7 +60,7 @@ This generates a one-time onboarding prompt and copies it to your clipboard. Pas
 ## Next steps
 
 <CardGroup cols={2}>
-  <Card title="How it works" icon="lightbulb" href="/how-it-works">
+  <Card title="Agent protocol" icon="code" href="/agents/protocol">
     Full request lifecycle end-to-end.
   </Card>
   <Card title="Services" icon="shield" href="/learn/services">

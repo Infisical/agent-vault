@@ -32,12 +32,16 @@ Ask NanoClaw to do something that requires an external API:
 
 Here's what happens — with zero pre-configuration:
 
-1. NanoClaw routes a request to `api.stripe.com` through Agent Vault
+1. NanoClaw routes a request through Agent Vault's explicit `/proxy/api.stripe.com/...` endpoint
 2. Agent Vault returns a **403** — Stripe isn't configured yet
-3. NanoClaw reads the `proposal_hint` and creates a proposal proposing Stripe access
+3. NanoClaw reads the `proposal_hint` and creates a proposal requesting Stripe access
 4. NanoClaw presents you with an approval link
 5. You click the link, paste your Stripe key, and click **Allow**
-6. NanoClaw retries — Agent Vault reconstructs the request with your Stripe credentials and the request succeeds
+6. NanoClaw retries — Agent Vault injects your Stripe credentials at the proxy boundary and the request succeeds
+
+<Note>
+Invited agents like NanoClaw use the explicit `/proxy/{host}/{path}` endpoint rather than `HTTPS_PROXY`. For local agents you wrap with `agent-vault vault run` (Claude Code, Cursor, Codex, Hermes), the `HTTPS_PROXY` flow is transparent and no URL rewriting is needed.
+</Note>
 
 <Note>
 You didn't pre-configure anything. The agent discovered what it needed, asked for approval, and handled the rest.
@@ -46,7 +50,7 @@ You didn't pre-configure anything. The agent discovered what it needed, asked fo
 ## Next steps
 
 <CardGroup cols={2}>
-  <Card title="How it works" icon="lightbulb" href="/how-it-works">
+  <Card title="Agent protocol" icon="code" href="/agents/protocol">
     Full request lifecycle end-to-end.
   </Card>
   <Card title="Services" icon="shield" href="/learn/services">

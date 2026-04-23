@@ -16,7 +16,7 @@ For agents that don't have a chat interface or need raw environment variables, s
 
 ## Option 1: Wrap with `agent-vault vault run`
 
-The simplest approach for local development. Wraps your agent process with the environment variables it needs — no invite, no token management.
+The simplest approach for local development. Wraps your agent process with the environment variables it needs — no invite, no token management. `vault run` also pre-configures `HTTPS_PROXY` and the CA trust chain on the child, so the agent calls upstream URLs directly and Agent Vault transparently injects credentials.
 
 ```bash
 agent-vault vault run -- claude    # Claude Code
@@ -25,13 +25,17 @@ agent-vault vault run -- codex     # Codex
 agent-vault vault run -- hermes    # Hermes Agent
 ```
 
-The agent can immediately make proxied requests and raise [proposals](/learn/proposals).
+The agent can immediately make authenticated requests and raise [proposals](/learn/proposals).
 
 Use `--vault` to target a specific vault:
 
 ```bash
 agent-vault vault run --vault my-vault -- claude
 ```
+
+<Note>
+`vault run` is a convenience wrapper, not a sandbox. A child process can unset `HTTPS_PROXY` or bypass the injected CA and reach the network directly — local credentials and network access are still fully available to the agent. Stronger isolation for local development is on the roadmap.
+</Note>
 
 ## Option 2: Paste an invite prompt
 
@@ -73,7 +77,7 @@ For agents you can't wrap with `vault run` (e.g. cloud-hosted agents, or when yo
 
 Once connected, the agent follows the Agent Vault protocol automatically:
 
-1. Routes API requests through the Agent Vault proxy
+1. Calls upstream APIs normally — `HTTPS_PROXY` and CA trust are pre-wired so Agent Vault transparently intercepts the call
 2. If a service isn't configured yet, the agent creates a [proposal](/learn/proposals) and shares an approval link
 3. You click the link, provide any required credentials, and approve
 4. The agent retries and the request succeeds

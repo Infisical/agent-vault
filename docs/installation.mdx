@@ -124,6 +124,8 @@ agent-vault server
 
 On first run, Agent Vault generates a random **data encryption key (DEK)** that encrypts all [credentials](/learn/credentials) at rest with AES-256-GCM. You can optionally set a **master password** to wrap the DEK (leave it empty for passwordless mode). The master password is never stored on disk. For non-interactive or automated environments, set the `AGENT_VAULT_MASTER_PASSWORD` environment variable or pass `--password-stdin`. Omit it entirely for passwordless mode. See [environment variables](/self-hosting/environment-variables) for all options.
 
+The server listens on port `14321` for the HTTP API and web UI, and on port `14322` for the transparent HTTPS proxy that agents' `HTTPS_PROXY` points at. Disable the transparent proxy with `--mitm-port 0`. See [transparent proxy setup](/self-hosting/local#transparent-proxy) for the CA-trust flow.
+
 To run in the background:
 
 ```bash

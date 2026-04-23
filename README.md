@@ -2,7 +2,7 @@
   <img src="assets/banner.png" alt="Agent Vault" />
 </p>
 
-<p align="center"><strong>Authenticated HTTP Proxy and Vault for AI Agents</strong></p>
+<p align="center"><strong>HTTP credential proxy and vault</strong></p>
 
 <p align="center">
 An open-source credential broker by <a href="https://infisical.com">Infisical</a> that sits between your agents and the APIs they call.<br>
@@ -10,25 +10,27 @@ Agents should not possess credentials. Agent Vault eliminates credential exfiltr
 </p>
 
 <p align="center">
+<strong>New here? The <a href="https://infisical.com/blog/agent-vault-the-open-source-credential-proxy-and-vault-for-agents">launch blog post</a> has the full story behind Agent Vault.</strong>
+</p>
+
+<p align="center">
 <a href="https://docs.agent-vault.dev">Documentation</a> | <a href="https://docs.agent-vault.dev/installation">Installation</a> | <a href="https://docs.agent-vault.dev/reference/cli">CLI Reference</a> | <a href="https://infisical.com/slack">Slack</a>
+</p>
+
+<p align="center">
+  <img src="assets/agent-vault.gif" alt="Agent Vault demo" />
 </p>
 
 ## Why Agent Vault
 
-Secret managers return credentials directly to the caller. This breaks down with AI agents, which are non-deterministic systems vulnerable to prompt injection that can be tricked into exfiltrating secrets.
+Traditional secrets management relies on returning credentials directly to the caller. This breaks down with AI agents, which are non-deterministic systems vulnerable to prompt injection that can be fooled into leaking its secrets.
 
 Agent Vault takes a different approach: **Agent Vault never reveals vault-stored credentials to agents**. Instead, agents route HTTP requests through a local proxy that injects the right credentials at the network layer.
 
-- **Brokered access, not retrieval** - Your agent gets a token and a proxy URL. It sends requests to `proxy/{host}/{path}` and Agent Vault authenticates them. Credentials stored in the vault are never returned to the agent. [Learn more](https://docs.agent-vault.dev/learn/security)
-- **Works with any agent** - Custom Python/TypeScript agents, sandboxed processes, coding agents (Claude Code, Cursor, Codex), anything that can make HTTP requests. [Learn more](https://docs.agent-vault.dev/quickstart)
-- **Self-service access** - Agents discover available services at runtime and [propose access](https://docs.agent-vault.dev/learn/proposals) for anything missing. You review and approve in your browser with one click. Any service can be toggled on/off without losing its configuration — disabled services return `403 service_disabled` until re-enabled.
-- **Encrypted at rest** - Credentials are encrypted with AES-256-GCM using a random data encryption key (DEK). An optional master password wraps the DEK via Argon2id — change the password without re-encrypting credentials. Passwordless mode available for PaaS deploys. [Learn more](https://docs.agent-vault.dev/learn/credentials)
-- **Multi-user, multi-vault** - Role-based access control with instance and vault-level [permissions](https://docs.agent-vault.dev/learn/permissions). Invite teammates, scope agents to specific [vaults](https://docs.agent-vault.dev/learn/vaults), and audit everything.
-- **Request logs** - Every proxied request is persisted per vault with method, host, path, status, latency, and the credential key names involved — never bodies, headers, or query strings. View them in the **Logs** tab. Retention defaults to 7 days / 10k rows per vault and is owner-tunable.
-
-<p align="center">
-  <img src="docs/images/architecture.png" alt="Agent Vault architecture diagram" />
-</p>
+- **Brokered access, not retrieval** - Your agent gets a scoped session and a local `HTTPS_PROXY`. It calls target APIs normally, and Agent Vault injects the right credential at the network layer. Credentials are never returned to the agent.
+- **Works with any agent** - Custom Python/TypeScript agents, sandboxed processes, and coding agents like Claude Code, Cursor, and Codex. Anything that speaks HTTP.
+- **Encrypted at rest** - Credentials are encrypted with AES-256-GCM using a random data encryption key (DEK). An optional master password wraps the DEK via Argon2id, so rotating the password does not re-encrypt credentials. A passwordless mode is available for PaaS deploys.
+- **Request logs** - Every proxied request is persisted per vault with method, host, path, status, latency, and the credential key names involved. Bodies, headers, and query strings are not recorded. Retention is configurable per vault.
 
 ## Installation
 
@@ -56,10 +58,6 @@ docker run -d -p 14321:14321 -p 14322:14322 \
   -e AGENT_VAULT_MASTER_PASSWORD=your-password \
   -v agent-vault-data:/data infisical/agent-vault
 ```
-
-### PaaS (Fly.io, Cloud Run, Heroku)
-
-Agent Vault respects the standard `PORT` env var injected by most PaaS platforms — no `--port` flag needed. On Fly.io, the externally-reachable base URL is automatically derived from `FLY_APP_NAME`, so `AGENT_VAULT_ADDR` is optional. Set `AGENT_VAULT_ADDR` explicitly if you use a custom domain.
 
 ### From source
 
@@ -106,8 +104,13 @@ npm install @infisical/agent-vault-sdk
 ```typescript
 import { AgentVault, buildProxyEnv } from "@infisical/agent-vault-sdk";
 
-const av = new AgentVault({ token: "YOUR_TOKEN", address: "http://localhost:14321" });
-const session = await av.vault("default").sessions.create({ vaultRole: "proxy" });
+const av = new AgentVault({
+  token: "YOUR_TOKEN",
+  address: "http://localhost:14321",
+});
+const session = await av
+  .vault("default")
+  .sessions.create({ vaultRole: "proxy" });
 
 // certPath is where you'll mount the CA certificate inside the sandbox.
 const certPath = "/etc/ssl/agent-vault-ca.pem";
@@ -126,12 +129,6 @@ const caCert = session.containerConfig!.caCertificate;
 
 See the [TypeScript SDK README](sdks/sdk-typescript/README.md) for full documentation.
 
-## Rate limiting
-
-Agent Vault ships with a **tiered, in-memory rate limiter** keyed on the principal appropriate for each endpoint (client IP for anonymous auth, hashed token for invite/approval redemption, `(actor, vault)` scope for the proxy path, global in-flight ceiling for the server). Defaults are tuned for normal use — agents doing realistic bursts of proxy calls don't trip anything — and 429 responses carry a `Retry-After` header so clients can back off politely.
-
-Pick a preset via `AGENT_VAULT_RATELIMIT_PROFILE={default,strict,loose,off}`, or fine-tune per tier in **Manage Instance → Settings → Rate Limiting** (owner-only). Set `AGENT_VAULT_RATELIMIT_LOCK=true` on PaaS to pin limits to env vars and disable the UI. See [docs/self-hosting/environment-variables.mdx](docs/self-hosting/environment-variables.mdx) for the full knob list.
-
 ## Development
 
 ```bash
@@ -141,6 +138,28 @@ make web-dev    # Vite dev server with hot reload (port 5173)
 make dev        # Go + Vite dev servers with hot reload
 make docker     # Build Docker image
 ```
+
+## Open-source vs. paid
+
+This repo available under the [MIT expat license](https://github.com/Infisical/infisical/blob/main/LICENSE), with the exception of the `ee` directory which will contain premium enterprise features requiring a Infisical license.
+
+If you are interested in Infisical or exploring a more commercial path for Agent Vault, take a look at [our website](https://infisical.com/) or [book a meeting with us](https://infisical.cal.com/vlad/infisical-demo).
+
+## Contributing
+
+Whether it's big or small, we love contributions. Agent Vault follows the same contribution guidelines as Infisical.
+
+Check out our guide to see how to [get started](https://infisical.com/docs/contributing/getting-started).
+
+Not sure where to get started? You can:
+
+- Join our <a href="https://infisical.com/slack">Slack</a>, and ask us any questions there.
+
+## We are hiring!
+
+If you're reading this, there is a strong chance you like the products we created.
+
+You might also make a great addition to our team. We're growing fast and would love for you to [join us](https://infisical.com/careers).
 
 ---
 

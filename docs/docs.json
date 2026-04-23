@@ -17,8 +17,7 @@
         "group": "Getting Started",
         "pages": [
           "index",
-          "installation",
-          "first-proposal"
+          "installation"
         ]
       },
       {

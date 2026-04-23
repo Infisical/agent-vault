@@ -1,6 +1,6 @@
 ---
 title: "Connect a custom agent"
-description: "Wire up a custom agent or script to Agent Vault using environment variables and the HTTP protocol."
+description: "Wire up a custom agent or script to Agent Vault through HTTPS_PROXY and the transparent CA."
 ---
 
 This guide walks through connecting a custom agent to Agent Vault. Use this when you're building your own sandboxed agent, a CI pipeline, or any process that needs to make authenticated API calls through Agent Vault.
@@ -11,7 +11,7 @@ If you're using Claude Code, Cursor, or another supported agent, see the [Quicks
 
 ## Prerequisites
 
-- A running Agent Vault server
+- A running Agent Vault server with the transparent proxy enabled (default)
 - A user account with vault access ([member or admin](/learn/permissions#vault-roles))
 
 ## Get connection credentials
@@ -24,7 +24,7 @@ If you're using Claude Code, Cursor, or another supported agent, see the [Quicks
     agent-vault vault run -- my-agent
     ```
 
-    This sets `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT` in the child process automatically. No invite needed.
+    `vault run` sets `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT` on the child, then pre-configures `HTTPS_PROXY` and the CA trust chain so standard HTTP clients transparently route through the broker. No invite needed.
   </Tab>
   <Tab title="Agent invite">
     For CI pipelines, cloud-hosted agents, or when you need the agent to redeem an invite via HTTP:
@@ -37,6 +37,9 @@ If you're using Claude Code, Cursor, or another supported agent, see the [Quicks
     - `av_addr` — the Agent Vault server URL
     - `av_agent_token` — bearer token for all requests
     - `vaults` — list of accessible vaults
+    - `proxy_url` — the [explicit proxy endpoint](#explicit-proxy-endpoint-fallback) fallback
+
+    Invited agents don't get `HTTPS_PROXY` auto-configured. You can either set it yourself (see [Set HTTPS_PROXY manually](#set-https-proxy-manually)) or use the explicit endpoint.
 
     Instance-level agent tokens require the `X-Vault` header on every vault-scoped request.
   </Tab>
@@ -49,92 +52,135 @@ Your agent needs these values to operate:
 | Variable | Required | Description |
 |---|---|---|
 | `AGENT_VAULT_ADDR` | Yes | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
-| `AGENT_VAULT_SESSION_TOKEN` | Yes | Bearer token for authenticating all requests to Agent Vault |
+| `AGENT_VAULT_SESSION_TOKEN` | Yes | Bearer token for authenticating control-plane requests (`/discover`, proposals) |
 
 For instance-level agent tokens (from agent invites), the agent must also send the `X-Vault` header on every vault-scoped request. For vault-scoped sessions (from `vault run`), the vault is embedded in the session.
 
-## Make proxied requests
+When the agent is launched via `vault run`, these additional variables are also set automatically on the child:
 
-The core of Agent Vault is the proxy. Your agent makes HTTP requests to Agent Vault, which injects the real credentials and forwards to the target service over HTTPS. Your agent never sees or handles the actual API keys.
+| Variable | Purpose |
+|---|---|
+| `HTTPS_PROXY` | Routes HTTPS traffic through the transparent proxy |
+| `NO_PROXY` | `localhost,127.0.0.1` — so agent-to-vault traffic skips the proxy |
+| `NODE_USE_ENV_PROXY` | Enables Node.js 22.21+ built-in proxy support |
+| `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT` | Trust the Agent Vault root CA from standard HTTP libraries |
 
-The proxy URL format is:
+## Make requests
 
-```
-{AGENT_VAULT_ADDR}/proxy/{target_host}/{path}[?query]
-```
-
-Every request to the proxy must include your agent token in the `Authorization` header. Agent Vault strips it before forwarding and replaces it with the real credentials from the vault's services.
+When your agent is launched via `vault run`, HTTPS traffic already routes through Agent Vault transparently. Call the real API URL — standard HTTP clients honor `HTTPS_PROXY` automatically. Agent Vault intercepts the CONNECT, matches the host against the vault's [services](/learn/services), strips client auth, and injects the stored credential over HTTPS.
 
 <CodeGroup>
 
 ```python Python
 import os, requests
 
-ADDR = os.environ["AGENT_VAULT_ADDR"]
-TOKEN = os.environ["AGENT_VAULT_SESSION_TOKEN"]
-
-headers = {"Authorization": f"Bearer {TOKEN}"}
-
-# GET request through the proxy
+# Authorization intentionally omitted — Agent Vault injects the real credential.
 charges = requests.get(
-    f"{ADDR}/proxy/api.stripe.com/v1/charges",
+    "https://api.stripe.com/v1/charges",
     params={"limit": 10},
-    headers=headers,
 )
 print(charges.json())
 
-# POST request through the proxy
 new_charge = requests.post(
-    f"{ADDR}/proxy/api.stripe.com/v1/charges",
-    headers={**headers, "Content-Type": "application/x-www-form-urlencoded"},
-    data="amount=2000&currency=usd",
+    "https://api.stripe.com/v1/charges",
+    data={"amount": 2000, "currency": "usd"},
 )
 print(new_charge.json())
 ```
 
 ```typescript TypeScript
-const ADDR = process.env.AGENT_VAULT_ADDR;
-const TOKEN = process.env.AGENT_VAULT_SESSION_TOKEN;
-
-const headers = { Authorization: `Bearer ${TOKEN}` };
-
-// GET request through the proxy
-const charges = await fetch(
-  `${ADDR}/proxy/api.stripe.com/v1/charges?limit=10`,
-  { headers },
-);
+// fetch() in Node.js v22.21+ honors HTTPS_PROXY when NODE_USE_ENV_PROXY=1.
+const charges = await fetch("https://api.stripe.com/v1/charges?limit=10");
 console.log(await charges.json());
 
-// POST request through the proxy
-const newCharge = await fetch(
-  `${ADDR}/proxy/api.stripe.com/v1/charges`,
-  {
-    method: "POST",
-    headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded" },
-    body: "amount=2000&currency=usd",
-  },
-);
+const newCharge = await fetch("https://api.stripe.com/v1/charges", {
+  method: "POST",
+  headers: { "Content-Type": "application/x-www-form-urlencoded" },
+  body: "amount=2000&currency=usd",
+});
 console.log(await newCharge.json());
 ```
 
 ```bash curl
-# GET
-curl "${AGENT_VAULT_ADDR}/proxy/api.stripe.com/v1/charges?limit=10" \
-  -H "Authorization: Bearer ${AGENT_VAULT_SESSION_TOKEN}"
+curl "https://api.stripe.com/v1/charges?limit=10"
 
-# POST
-curl -X POST "${AGENT_VAULT_ADDR}/proxy/api.stripe.com/v1/charges" \
-  -H "Authorization: Bearer ${AGENT_VAULT_SESSION_TOKEN}" \
+curl -X POST "https://api.stripe.com/v1/charges" \
   -d "amount=2000&currency=usd"
 ```
 
 </CodeGroup>
 
-Any HTTP method works (GET, POST, PUT, DELETE, PATCH). Query parameters, request bodies, and headers (other than `Authorization`) are forwarded as-is.
+Any HTTP method works (GET, POST, PUT, DELETE, PATCH). Query parameters, request bodies, and headers flow through unchanged.
+
+<Tip>
+Leave the upstream `Authorization` header blank or set it to a placeholder — Agent Vault strips whatever the client sends and attaches the real credential at the proxy boundary.
+</Tip>
+
+### Set HTTPS_PROXY manually
+
+If your agent wasn't launched via `vault run` (e.g. an invited agent, a Docker container, a sandboxed runtime), configure the proxy yourself. The MITM listener is TLS-encrypted, so the proxy URL uses the `https://` scheme and needs the root CA trusted.
+
+```bash
+# 1. Fetch the CA certificate
+agent-vault ca fetch -o /etc/ssl/certs/agent-vault-ca.pem
+
+# 2. Build the proxy URL (basic auth: token:vault)
+export HTTPS_PROXY="https://${AGENT_VAULT_SESSION_TOKEN}:my-vault@127.0.0.1:14322"
+export NO_PROXY="localhost,127.0.0.1"
+export NODE_USE_ENV_PROXY=1
+
+# 3. Point standard HTTP libraries at the CA
+export SSL_CERT_FILE=/etc/ssl/certs/agent-vault-ca.pem
+export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/agent-vault-ca.pem
+export REQUESTS_CA_BUNDLE=/etc/ssl/certs/agent-vault-ca.pem
+export CURL_CA_BUNDLE=/etc/ssl/certs/agent-vault-ca.pem
+export GIT_SSL_CAINFO=/etc/ssl/certs/agent-vault-ca.pem
+export DENO_CERT=/etc/ssl/certs/agent-vault-ca.pem
+```
+
+For containerized agents, the [TypeScript SDK](https://github.com/Infisical/agent-vault/tree/main/sdks/sdk-typescript) provides `buildProxyEnv()`, which returns the complete environment block from a session's `containerConfig`.
+
+### Explicit proxy endpoint (fallback)
+
+For clients that can't honor `HTTPS_PROXY` — HTTP/2-only runtimes, sandboxes without CA-mounting, or minimal environments — Agent Vault exposes an explicit endpoint. Rewrite the upstream URL to:
+
+```
+{AGENT_VAULT_ADDR}/proxy/{target_host}/{path}[?query]
+```
+
+<CodeGroup>
+
+```bash curl
+curl "${AGENT_VAULT_ADDR}/proxy/api.stripe.com/v1/charges?limit=10" \
+  -H "Authorization: Bearer ${AGENT_VAULT_SESSION_TOKEN}"
+```
+
+```python Python
+import os, requests
+
+resp = requests.get(
+    f"{os.environ['AGENT_VAULT_ADDR']}/proxy/api.stripe.com/v1/charges",
+    params={"limit": 10},
+    headers={"Authorization": f"Bearer {os.environ['AGENT_VAULT_SESSION_TOKEN']}"},
+)
+print(resp.json())
+```
+
+```typescript TypeScript
+const resp = await fetch(
+  `${process.env.AGENT_VAULT_ADDR}/proxy/api.stripe.com/v1/charges?limit=10`,
+  { headers: { Authorization: `Bearer ${process.env.AGENT_VAULT_SESSION_TOKEN}` } },
+);
+console.log(await resp.json());
+```
+
+</CodeGroup>
+
+Instance-level agent tokens must also include `X-Vault: {vault_name}`.
 
 ## Discover available services
 
-Your agent can call `/discover` to check which hosts have credentials configured before making proxy requests.
+Your agent can call `/discover` to check which hosts have credentials configured before making requests.
 
 ```bash
 curl ${AGENT_VAULT_ADDR}/discover \
@@ -153,12 +199,12 @@ curl ${AGENT_VAULT_ADDR}/discover \
 }
 ```
 
-- **`services`** lists the hosts your agent can route through the proxy.
+- **`services`** lists the hosts configured in the vault. Requests to unlisted hosts go direct.
 - **`available_credentials`** lists credential key names in the vault (values are never exposed).
-- Requests to hosts **not** in this list should go direct, not through the proxy.
+- **`proxy_url`** is the explicit endpoint fallback.
 
 <Tip>
-Discovery is optional. If your agent already knows which hosts are configured, it can skip straight to proxying. If it hits a host that isn't configured, Agent Vault returns a 403 with a `proposal_hint`.
+Discovery is optional. If your agent already knows which hosts are configured, it can skip straight to making requests. If it hits a host that isn't configured, Agent Vault returns a 403 with a `proposal_hint`.
 </Tip>
 
 ## Handle errors
@@ -166,15 +212,15 @@ Discovery is optional. If your agent already knows which hosts are configured, i
 | Status | Meaning | What to do |
 |---|---|---|
 | 401 | Invalid or expired token | Re-authenticate. Contact the operator for a [token rotation](/agents/overview#rotating-an-agent-token). |
-| 403 | Host not allowed | The service isn't configured in the vault. Create a [proposal](/learn/proposals) to request access, or ask the vault admin to add it. The response body includes a `proposal_hint`. |
-| 429 | Too many pending proposals | Wait for existing proposals to be reviewed before creating new ones. |
-| 502 | Missing credential or upstream error | A credential may need to be added to the vault. Inform the user. |
+| 403 | Host not allowed | Create a [proposal](/learn/proposals) to request access, or ask the vault admin to add it. |
+| 429 | Too many requests | Respect the `Retry-After` header. |
+| 502 | Missing credential or upstream error | A credential may need to be added to the vault. |
 
 ## Next steps
 
 <CardGroup cols={2}>
   <Card title="Agent protocol" icon="code" href="/agents/protocol">
-    Full HTTP reference for sessions, discovery, proxy, and proposals.
+    Full HTTP reference for sessions, discovery, and proposals.
   </Card>
   <Card title="Proposals" icon="file-circle-check" href="/learn/proposals">
     Request access to new services via the proposal API.
