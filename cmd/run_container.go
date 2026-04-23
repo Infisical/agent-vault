@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"syscall"
@@ -24,9 +25,22 @@ import (
 // iptables lockdown). Either direction is a foot-gun if accepted
 // silently — reject in both.
 var (
-	containerOnlyFlags = []string{"image", "mount", "keep", "no-firewall", "home-volume-shared"}
+	containerOnlyFlags = []string{"image", "mount", "keep", "no-firewall", "home-volume-shared", "share-agent-dir"}
 	processOnlyFlags   = []string{"no-mitm"}
 )
+
+// validateContainerFlagCombos enforces mutual-exclusion between container-mode
+// flags that would otherwise both try to own /home/claude/.claude. Split from
+// validateSandboxFlagConflicts because the "which mode wants which flag"
+// axis and the "these two flags can't coexist" axis are independent.
+func validateContainerFlagCombos(cmd *cobra.Command) error {
+	homeShared, _ := cmd.Flags().GetBool("home-volume-shared")
+	shareAgentDir, _ := cmd.Flags().GetBool("share-agent-dir")
+	if homeShared && shareAgentDir {
+		return errors.New("--home-volume-shared and --share-agent-dir are mutually exclusive")
+	}
+	return nil
+}
 
 func validateSandboxFlagConflicts(cmd *cobra.Command, mode SandboxMode) error {
 	var disallowed []string
@@ -56,6 +70,45 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		return errors.New("--sandbox=container: `docker` not found in PATH")
+	}
+
+	// Validate flag combos + set up host-side state for --share-agent-dir
+	// before any expensive ops (MITM fetch, network create, image build).
+	if err := validateContainerFlagCombos(cmd); err != nil {
+		return err
+	}
+	homeShared, _ := cmd.Flags().GetBool("home-volume-shared")
+	shareAgentDir, _ := cmd.Flags().GetBool("share-agent-dir")
+
+	var hostAgentDir string
+	var hostUID, hostGID int
+	if shareAgentDir {
+		userHome, herr := os.UserHomeDir()
+		if herr != nil {
+			return fmt.Errorf("--share-agent-dir: resolve home dir: %w", herr)
+		}
+		hostAgentDir = filepath.Join(userHome, ".claude")
+		if err := os.MkdirAll(hostAgentDir, 0o700); err != nil {
+			return fmt.Errorf("--share-agent-dir: create %s: %w", hostAgentDir, err)
+		}
+		// Touch ~/.claude.json so docker doesn't auto-create a dir
+		// where Claude expects a file (O_CREATE without O_TRUNC is a
+		// no-op when the file already exists).
+		configPath := filepath.Join(userHome, ".claude.json")
+		f, err := os.OpenFile(configPath, os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return fmt.Errorf("--share-agent-dir: ensure %s: %w", configPath, err)
+		}
+		_ = f.Close()
+		// macOS stores auth in Keychain, not on disk — bridge it into
+		// the file Linux Claude reads inside the sandbox.
+		populateClaudeCredentialsFromKeychain(hostAgentDir)
+		// Docker Desktop on macOS translates UIDs through its hypervisor,
+		// so HOST_UID remapping is Linux-only.
+		if runtime.GOOS == "linux" {
+			hostUID = os.Getuid()
+			hostGID = os.Getgid()
+		}
 	}
 
 	ctx := cmd.Context()
@@ -113,13 +166,12 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 		_ = sandbox.RemoveNetwork(cleanup, network.Name)
 	}()
 
-	homeShared, _ := cmd.Flags().GetBool("home-volume-shared")
-	if !homeShared {
+	if !homeShared && !shareAgentDir {
 		defer func() {
 			// Per-invocation volume: remove after the container exits
 			// so .claude state (auth tokens, session history) doesn't
 			// accumulate one volume per invocation. Shared-mode volume
-			// is opt-in persistent; never auto-remove.
+			// is opt-in persistent; host-bind mode never creates one.
 			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = sandbox.RemoveVolume(cleanup, sandbox.ClaudeHomeVolumeName(sessionID))
@@ -164,6 +216,9 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 		Keep:             keep,
 		NoFirewall:       noFirewall,
 		HomeVolumeShared: homeShared,
+		HostAgentDir:     hostAgentDir,
+		HostUID:          hostUID,
+		HostGID:          hostGID,
 		Mounts:           mounts,
 		Env:              env,
 		CommandArgs:      args,

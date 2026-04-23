@@ -12,15 +12,18 @@ import (
 // resolved `docker run` argv. All values are already decided (mode,
 // session ID, network, TTY) — this type does no I/O.
 type Config struct {
-	ImageRef         string   // "agent-vault/sandbox:<hash>" or user --image
-	SessionID        string   // 16 hex chars; names the network and per-invocation volume
-	WorkDir          string   // host path bound at /workspace
-	HostCAPath       string   // host path bound read-only at ContainerCAPath
-	NetworkName      string   // "agent-vault-<SessionID>" — must not be empty
-	AttachTTY        bool     // true if stdin is a TTY; adds -t
-	Keep             bool     // true → omit --rm
-	NoFirewall       bool     // true → container skips init-firewall.sh (debug only)
-	HomeVolumeShared bool     // true → shared volume, false → per-invocation
+	ImageRef         string // "agent-vault/sandbox:<hash>" or user --image
+	SessionID        string // 16 hex chars; names the network and per-invocation volume
+	WorkDir          string // host path bound at /workspace
+	HostCAPath       string // host path bound read-only at ContainerCAPath
+	NetworkName      string // "agent-vault-<SessionID>" — must not be empty
+	AttachTTY        bool   // true if stdin is a TTY; adds -t
+	Keep             bool   // true → omit --rm
+	NoFirewall       bool   // true → container skips init-firewall.sh (debug only)
+	HomeVolumeShared bool   // true → shared volume, false → per-invocation
+	HostAgentDir     string // non-empty → bind-mount this host path at ContainerClaudeHome instead of a docker volume; a sibling .claude.json (if present) is bind-mounted too
+	HostUID          int    // >0 → pass HOST_UID/HOST_GID env so entrypoint.sh can remap the claude user (linux only)
+	HostGID          int
 	Mounts           []string // raw --mount "src:dst[:ro]" strings
 	Env              []string // from BuildContainerEnv
 	CommandArgs      []string // claude + any agent args
@@ -100,6 +103,11 @@ func BuildRunArgs(cfg Config) ([]string, error) {
 		"--network", cfg.NetworkName,
 		// NET_ADMIN/NET_RAW: init-firewall.sh installs iptables rules.
 		// SETUID/SETGID: gosu(8) drops root to the claude user in entrypoint.sh.
+		// KILL: tini (PID 1, UID 0) forwards TTY signals (SIGWINCH on
+		// resize, SIGINT on ^C) to the child running as a different UID.
+		// With --cap-drop ALL root loses the "bypass capability checks"
+		// shortcut, so kill() across UIDs returns EPERM without CAP_KILL
+		// and tini fatals on the first terminal resize.
 		// Docker does not grant these as *ambient* caps to non-root processes,
 		// so claude post-gosu has an empty effective cap set — it cannot
 		// exercise any of them.
@@ -108,6 +116,7 @@ func BuildRunArgs(cfg Config) ([]string, error) {
 		"--cap-add", "NET_RAW",
 		"--cap-add", "SETUID",
 		"--cap-add", "SETGID",
+		"--cap-add", "KILL",
 		"--security-opt", "no-new-privileges",
 		"--add-host", "host.docker.internal:host-gateway",
 	)
@@ -118,15 +127,47 @@ func BuildRunArgs(cfg Config) ([]string, error) {
 	if cfg.NoFirewall {
 		args = append(args, "-e", "AGENT_VAULT_NO_FIREWALL=1")
 	}
+	// HOST_UID/HOST_GID let entrypoint.sh remap the baked-in claude user
+	// to the invoking user so bind-mounted state (see HostAgentDir) is
+	// readable/writable on the host without a chown dance.
+	if cfg.HostUID > 0 {
+		args = append(args, "-e", fmt.Sprintf("HOST_UID=%d", cfg.HostUID))
+		args = append(args, "-e", fmt.Sprintf("HOST_GID=%d", cfg.HostGID))
+	}
 
 	args = append(args, "-v", cfg.WorkDir+":/workspace")
 	args = append(args, "-v", cfg.HostCAPath+":"+ContainerCAPath+":ro")
 
-	homeVolume := "agent-vault-claude-home-" + cfg.SessionID
-	if cfg.HomeVolumeShared {
-		homeVolume = "agent-vault-claude-home"
+	if cfg.HostAgentDir != "" {
+		resolvedAgentDir, err := filepath.EvalSymlinks(cfg.HostAgentDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolving HostAgentDir: %w", err)
+		}
+		// Same host-src validation as user --mount (reject ~/.agent-vault
+		// and the docker socket), so a symlinked agent dir can't launder
+		// access to encrypted vault data.
+		if err := validateHostSrc(resolvedAgentDir, home); err != nil {
+			return nil, fmt.Errorf("HostAgentDir: %w", err)
+		}
+		args = append(args, "-v", resolvedAgentDir+":"+ContainerClaudeHome)
+
+		// Claude reads ~/.claude.json as a sibling file to the dir.
+		// Bind it if present; bail-if-absent keeps docker from
+		// auto-creating a directory where Claude expects a file.
+		configPath := filepath.Join(filepath.Dir(resolvedAgentDir), ".claude.json")
+		if resolvedConfig, err := filepath.EvalSymlinks(configPath); err == nil {
+			if err := validateHostSrc(resolvedConfig, home); err != nil {
+				return nil, fmt.Errorf("HostAgentConfig: %w", err)
+			}
+			args = append(args, "-v", resolvedConfig+":"+ContainerClaudeConfig)
+		}
+	} else {
+		homeVolume := "agent-vault-claude-home-" + cfg.SessionID
+		if cfg.HomeVolumeShared {
+			homeVolume = "agent-vault-claude-home"
+		}
+		args = append(args, "-v", homeVolume+":"+ContainerClaudeHome)
 	}
-	args = append(args, "-v", homeVolume+":"+ContainerClaudeHome)
 
 	for _, m := range parsed {
 		spec := m.Src + ":" + m.Dst

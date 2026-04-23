@@ -24,12 +24,12 @@ First run takes ~60s while the sandbox image builds. Subsequent runs reuse the c
 
 - **Image**: `agent-vault/sandbox:<hash>`, built on first use from an embedded Dockerfile. Debian-slim + Node 22 + `@anthropic-ai/claude-code` + `iptables` / `gosu` / `curl` / `git` / `python3`.
 - **Network**: a dedicated per-invocation Docker bridge network (`agent-vault-<session>`). Not the default bridge — other containers you're running cannot reach the forwarder.
-- **User**: `claude` (UID != 0), dropped via `gosu` after `init-firewall.sh` runs as root. `--security-opt=no-new-privileges` + `--cap-drop=ALL` with only `NET_ADMIN` / `NET_RAW` (for iptables) and `SETUID` / `SETGID` (so gosu can change UID) added. Docker doesn't grant container caps as *ambient* caps to non-root processes, so `claude` post-gosu has an empty effective cap set regardless.
+- **User**: `claude` (UID != 0), dropped via `gosu` after `init-firewall.sh` runs as root. `--security-opt=no-new-privileges` + `--cap-drop=ALL` with only `NET_ADMIN` / `NET_RAW` (for iptables), `SETUID` / `SETGID` (so gosu can change UID), and `KILL` (so tini at PID 1 can forward TTY signals across the UID boundary) added. Docker doesn't grant container caps as *ambient* caps to non-root processes, so `claude` post-gosu has an empty effective cap set regardless.
 - **Egress policy**: `OUTPUT DROP` by default on both IPv4 (`iptables`) and IPv6 (`ip6tables`). `ACCEPT` only for loopback, ESTABLISHED/RELATED replies, and the two Agent Vault ports at `host.docker.internal` over IPv4 (the MITM path is v4-only by construction — we resolve via `getent ahostsv4`). **No DNS rule**: `host.docker.internal` is resolved via `/etc/hosts` (`docker run --add-host=host.docker.internal:host-gateway`), closing the DNS-exfiltration channel.
 - **Mounts**:
   - `$PWD → /workspace` (read-write, your project)
   - `~/.agent-vault/sandbox/ca-<session>.pem → /etc/agent-vault/ca.pem` (read-only, MITM CA)
-  - `agent-vault-claude-home-<session> → /home/claude/.claude` (per-invocation by default; removed after the container exits. See `--home-volume-shared` below for persistence.)
+  - `agent-vault-claude-home-<session> → /home/claude/.claude` (per-invocation by default; removed after the container exits. See `--home-volume-shared` for a persistent docker volume, or `--share-agent-dir` to bind-mount your host `~/.claude` instead.)
 
 ## Flags
 
@@ -40,7 +40,8 @@ First run takes ~60s while the sandbox image builds. Subsequent runs reuse the c
 | `--mount` | | Extra bind mount `src:dst[:ro]`; repeatable. Host paths are symlink-resolved before validation; binds into `~/.agent-vault/` or `/var/run/docker.sock` are rejected. |
 | `--keep` | `false` | Omit `--rm` so the container is available for `docker inspect` / `docker logs` after exit. |
 | `--no-firewall` | `false` | **Debug only.** Skip `init-firewall.sh`; container has unrestricted egress. Prints a loud warning. |
-| `--home-volume-shared` | `false` | Share `/home/claude/.claude` across invocations. Default is per-invocation (auth doesn't persist, but concurrent runs can't corrupt each other). |
+| `--home-volume-shared` | `false` | Share `/home/claude/.claude` across invocations via a persistent docker volume. Default is per-invocation (auth doesn't persist, but concurrent runs can't corrupt each other). |
+| `--share-agent-dir` | `false` | Bind-mount the host's agent state dir (`~/.claude`) into the container so the sandbox reuses your host login (auth, project history, MCP config). Mutually exclusive with `--home-volume-shared`. |
 
 ## Bundled image vs `--image`
 
@@ -57,17 +58,27 @@ docker build -t my-org/my-agent-sandbox:v1 .
 agent-vault vault run --sandbox=container --image=my-org/my-agent-sandbox:v1 -- claude
 ```
 
-## Concurrency
+## Agent state directory: three modes
 
-The default per-invocation home volume means **your Claude login doesn't persist across runs** — you'll be prompted to log in again on each `vault run`. This is the conservative choice: shared state across concurrent containers corrupts `.claude/` (auth tokens, MCP configs, session history).
+`/home/claude/.claude` inside the container holds auth tokens, MCP config, and session history. There are three ways to back it:
 
-When you want auth to persist across invocations in a single-project workflow:
+1. **Per-invocation docker volume (default).** Fresh each run → you'll be prompted to log in again on every `vault run`. Safe to run concurrent sessions because every container has its own volume.
 
-```bash
-agent-vault vault run --sandbox=container --home-volume-shared -- claude
-```
+2. **Shared docker volume (`--home-volume-shared`).** Persistent named docker volume across invocations. Auth persists.
+   ```bash
+   agent-vault vault run --sandbox=container --home-volume-shared -- claude
+   ```
+   Don't run two `--home-volume-shared` sessions concurrently — there's no locking, and the volume's contents will race.
 
-Do not run two `--home-volume-shared` sessions concurrently — there's no locking, and `.claude/` will race.
+3. **Bind-mount the host's `~/.claude` (`--share-agent-dir`).** Reuses your existing host login — starting the sandbox feels identical to running `claude` on the host (no onboarding, your project history is there). Mutually exclusive with `--home-volume-shared`.
+   ```bash
+   agent-vault vault run --sandbox=container --share-agent-dir -- claude
+   ```
+   Concurrency matches the status quo of running `claude` directly on the host — session files are UUID-keyed, so two concurrent sandboxes behave the same as two host-level Claude sessions. On Linux, agent-vault passes `HOST_UID`/`HOST_GID` so the container's `claude` user matches your host uid — writes to the bind mount land owned by you, not the baked-in container uid.
+
+   **macOS auth bridge.** Claude stores its OAuth credential in the macOS Keychain, not on disk, so the bind mount alone doesn't carry the login across. When `--share-agent-dir` is set on a Mac host, agent-vault calls `security find-generic-password -s "Claude Code-credentials" -w` once to extract the credential and writes it to `~/.claude/.credentials.json` (mode 0600) — the path Linux Claude reads. Only runs if the file is absent; the container (or you) can refresh it thereafter. First use may trigger a Keychain confirmation prompt. Trade-off: the credential now exists as a filesystem-readable file on your Mac, slightly weaker than Keychain-only storage. If you'd rather avoid that, skip `--share-agent-dir` (or `rm ~/.claude/.credentials.json` and `/login` inside the sandbox — Claude will write a fresh file itself).
+
+Security note: the sandbox protects *vault-brokered* credentials (Stripe, GitHub, etc.) by forcing egress through Agent Vault. Your Claude login in `~/.claude` is the agent's own identity — sharing it with the sandboxed agent is strictly a UX choice, not a credential exposure, since the agent already needs that identity to function. The genuinely sensitive `~/.agent-vault/` directory stays off-limits in all three modes.
 
 ## Threat model
 

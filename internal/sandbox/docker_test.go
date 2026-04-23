@@ -58,7 +58,7 @@ func TestBuildRunArgs_Default(t *testing.T) {
 	if !hasFlagValue(args, "--cap-drop", "ALL") {
 		t.Error("expected --cap-drop ALL")
 	}
-	for _, cap := range []string{"NET_ADMIN", "NET_RAW", "SETUID", "SETGID"} {
+	for _, cap := range []string{"NET_ADMIN", "NET_RAW", "SETUID", "SETGID", "KILL"} {
 		if !hasFlagValue(args, "--cap-add", cap) {
 			t.Errorf("expected --cap-add %s", cap)
 		}
@@ -134,6 +134,93 @@ func TestBuildRunArgs_HomeVolumeShared(t *testing.T) {
 	bad := "agent-vault-claude-home-" + cfg.SessionID + ":/home/claude/.claude"
 	if hasFlagValue(args, "-v", bad) {
 		t.Errorf("shared mode should not produce per-invocation volume %q", bad)
+	}
+}
+
+func TestBuildRunArgs_HostAgentDirBindMount(t *testing.T) {
+	cfg := baseConfig(t)
+	agentDir := t.TempDir()
+	cfg.HostAgentDir = agentDir
+	// BuildRunArgs derives the sibling config path from HostAgentDir's
+	// parent and binds it only if present — create it so we exercise
+	// the happy path.
+	agentConfig := filepath.Join(filepath.Dir(agentDir), ".claude.json")
+	f, err := os.Create(agentConfig)
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+	_ = f.Close()
+	cfg.HostUID = 501
+	cfg.HostGID = 20
+
+	args, err := BuildRunArgs(cfg)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	resolvedDir, _ := filepath.EvalSymlinks(agentDir)
+	if !hasFlagValue(args, "-v", resolvedDir+":"+ContainerClaudeHome) {
+		t.Errorf("expected host-agent-dir bind in args, got %v", args)
+	}
+	resolvedCfg, _ := filepath.EvalSymlinks(agentConfig)
+	if !hasFlagValue(args, "-v", resolvedCfg+":"+ContainerClaudeConfig) {
+		t.Errorf("expected host-agent-config bind in args, got %v", args)
+	}
+	for _, a := range args {
+		if strings.Contains(a, "agent-vault-claude-home") {
+			t.Errorf("host-bind mode must not emit a docker volume mount; found %q", a)
+		}
+	}
+	if !hasFlagValue(args, "-e", "HOST_UID=501") {
+		t.Error("expected -e HOST_UID=501 when HostUID set")
+	}
+	if !hasFlagValue(args, "-e", "HOST_GID=20") {
+		t.Error("expected -e HOST_GID=20 when HostGID set")
+	}
+}
+
+func TestBuildRunArgs_HostAgentDirSkipsAbsentConfig(t *testing.T) {
+	// If the sibling .claude.json doesn't exist, BuildRunArgs must
+	// omit the config bind entirely — otherwise docker would
+	// auto-create a directory where Claude expects a file.
+	cfg := baseConfig(t)
+	cfg.HostAgentDir = t.TempDir()
+
+	args, err := BuildRunArgs(cfg)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	for _, a := range args {
+		if strings.HasSuffix(a, ":"+ContainerClaudeConfig) {
+			t.Errorf("expected no config bind when sibling .claude.json absent; got %q", a)
+		}
+	}
+}
+
+func TestBuildRunArgs_HostAgentDirRejectsVaultDir(t *testing.T) {
+	// A HostAgentDir that resolves into $HOME/.agent-vault must be
+	// rejected the same way a user --mount source would be. Pins the
+	// guarantee that the new bind mount can't be used to smuggle in
+	// the encrypted vault data dir via a symlink.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	vaultDir := filepath.Join(home, ".agent-vault")
+	if err := os.MkdirAll(vaultDir, 0o700); err != nil {
+		t.Fatalf("mkdir vault: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "innocent-claude")
+	if err := os.Symlink(vaultDir, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	cfg := baseConfig(t)
+	cfg.HostAgentDir = link
+	_, err := BuildRunArgs(cfg)
+	if err == nil {
+		t.Fatal("expected rejection for HostAgentDir resolving into ~/.agent-vault")
+	}
+	if !strings.Contains(err.Error(), ".agent-vault") {
+		t.Errorf("err = %q, want mention of .agent-vault", err.Error())
 	}
 }
 

@@ -8,9 +8,10 @@ import (
 )
 
 const (
-	ContainerCAPath     = "/etc/agent-vault/ca.pem"
-	ContainerProxyHost  = "host.docker.internal"
-	ContainerClaudeHome = "/home/claude/.claude"
+	ContainerCAPath       = "/etc/agent-vault/ca.pem"
+	ContainerProxyHost    = "host.docker.internal"
+	ContainerClaudeHome   = "/home/claude/.claude"
+	ContainerClaudeConfig = "/home/claude/.claude.json"
 )
 
 // ProxyEnvParams feeds BuildProxyEnv. Process mode and container mode

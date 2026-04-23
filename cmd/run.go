@@ -455,6 +455,7 @@ func init() {
 	runCmd.Flags().Bool("keep", false, "Don't pass --rm to docker (requires --sandbox=container)")
 	runCmd.Flags().Bool("no-firewall", false, "Skip iptables egress rules inside the container (requires --sandbox=container; debug only)")
 	runCmd.Flags().Bool("home-volume-shared", false, "Share /home/claude/.claude across invocations (requires --sandbox=container); default is a per-invocation volume, losing auth state but avoiding concurrency corruption")
+	runCmd.Flags().Bool("share-agent-dir", false, "Bind-mount the host's agent state dir (~/.claude) into the container so the sandbox reuses your host login (requires --sandbox=container; mutually exclusive with --home-volume-shared)")
 
 	vaultCmd.AddCommand(runCmd)
 }

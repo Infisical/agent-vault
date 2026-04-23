@@ -18,7 +18,7 @@ func TestSandboxFlagsRegistered(t *testing.T) {
 		t.Fatal("vault run subcommand not found")
 	}
 
-	for _, name := range []string{"sandbox", "image", "mount", "keep", "no-firewall", "home-volume-shared"} {
+	for _, name := range []string{"sandbox", "image", "mount", "keep", "no-firewall", "home-volume-shared", "share-agent-dir"} {
 		if rCmd.Flags().Lookup(name) == nil {
 			t.Errorf("expected vault run flag --%s to be registered", name)
 		}
@@ -70,6 +70,8 @@ func TestValidateSandboxFlagConflicts(t *testing.T) {
 		{"process mode rejects --keep", SandboxProcess, []string{"--keep"}, "--keep requires --sandbox=container"},
 		{"process mode rejects --no-firewall", SandboxProcess, []string{"--no-firewall"}, "--no-firewall requires --sandbox=container"},
 		{"process mode rejects --home-volume-shared", SandboxProcess, []string{"--home-volume-shared"}, "--home-volume-shared requires --sandbox=container"},
+		{"process mode rejects --share-agent-dir", SandboxProcess, []string{"--share-agent-dir"}, "--share-agent-dir requires --sandbox=container"},
+		{"container mode accepts --share-agent-dir alone", SandboxContainer, []string{"--share-agent-dir"}, ""},
 		{"container mode rejects --no-mitm", SandboxContainer, []string{"--no-mitm"}, "--no-mitm requires --sandbox=process"},
 	}
 	for _, tc := range tests {
@@ -95,6 +97,37 @@ func TestValidateSandboxFlagConflicts(t *testing.T) {
 	}
 }
 
+func TestValidateContainerFlagCombos(t *testing.T) {
+	tests := []struct {
+		name    string
+		setArgs []string
+		wantErr string
+	}{
+		{"neither set", nil, ""},
+		{"only home-volume-shared", []string{"--home-volume-shared"}, ""},
+		{"only share-agent-dir", []string{"--share-agent-dir"}, ""},
+		{"both set — mutually exclusive", []string{"--home-volume-shared", "--share-agent-dir"}, "mutually exclusive"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newRunCommandForTest()
+			if err := cmd.ParseFlags(tc.setArgs); err != nil {
+				t.Fatalf("ParseFlags: %v", err)
+			}
+			err := validateContainerFlagCombos(cmd)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Errorf("expected nil, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("err = %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // newRunCommandForTest isolates flag `Changed` state per subtest; runCmd
 // itself would leak pflag state across ParseFlags calls.
 func newRunCommandForTest() *cobra.Command {
@@ -106,6 +139,7 @@ func newRunCommandForTest() *cobra.Command {
 	c.Flags().Bool("keep", false, "")
 	c.Flags().Bool("no-firewall", false, "")
 	c.Flags().Bool("home-volume-shared", false, "")
+	c.Flags().Bool("share-agent-dir", false, "")
 	c.Flags().Bool("no-mitm", false, "")
 	return c
 }

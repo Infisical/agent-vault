@@ -254,7 +254,8 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--mount` | | Extra bind mount `src:dst[:ro]`; repeatable (`--sandbox=container` only). Host paths are EvalSymlinks-resolved; reserved paths rejected. |
     | `--keep` | `false` | Omit `--rm` from `docker run` (`--sandbox=container` only; useful for debugging). |
     | `--no-firewall` | `false` | Skip the iptables egress lockdown (`--sandbox=container` only; debug, prints a warning). |
-    | `--home-volume-shared` | `false` | Share `/home/claude/.claude` across invocations (`--sandbox=container` only). Default is a per-invocation volume — auth doesn't persist but concurrent runs can't corrupt each other. |
+    | `--home-volume-shared` | `false` | Share `/home/claude/.claude` across invocations via a persistent docker volume (`--sandbox=container` only). Default is a per-invocation volume — auth doesn't persist but concurrent runs can't corrupt each other. |
+    | `--share-agent-dir` | `false` | Bind-mount the host's agent state dir (`~/.claude`) at `/home/claude/.claude` so the sandbox reuses your host login (`--sandbox=container` only). On Linux the container's `claude` user is remapped to your host uid/gid so writes land owned by you. Mutually exclusive with `--home-volume-shared`. |
   </Accordion>
 
   <Accordion title="agent-vault vault token">

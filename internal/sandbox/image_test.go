@@ -28,7 +28,7 @@ func TestAssetsHash_Format(t *testing.T) {
 // Treat a diff on this constant as intentional. Update when changing
 // Dockerfile / init-firewall.sh / entrypoint.sh.
 func TestAssetsHash_Stable(t *testing.T) {
-	const want = "bf9e2b33cc42"
+	const want = "38b7b314cdf5"
 	got, err := assetsHash()
 	if err != nil {
 		t.Fatalf("assetsHash: %v", err)
