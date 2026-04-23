@@ -1,0 +1,69 @@
+---
+title: "OpenCode"
+description: "Learn how to connect OpenCode to Agent Vault so it can make authenticated API requests without ever seeing your credentials."
+---
+
+## Prerequisites
+
+- A running Agent Vault instance ([see installation guide](/installation))
+- [OpenCode](https://opencode.ai) installed
+
+## Quick start
+
+Launch OpenCode with `vault run`. It wraps OpenCode with a vault-scoped session, pre-configures `HTTPS_PROXY` and CA trust so outbound HTTPS routes through Agent Vault transparently, and installs the Agent Vault skill so OpenCode knows how to discover services and raise proposals. If you haven't logged in yet, you'll be guided through setup automatically.
+
+```bash
+agent-vault vault run -- opencode
+```
+
+That's it. OpenCode launches with Agent Vault access — no invite, no token pasting, no URL rewriting.
+
+<Tip>
+`vault run` also installs Agent Vault skill files at `~/.opencode/skills/`. These teach OpenCode how to discover services, proxy requests, and raise proposals through Agent Vault. The skills persist across sessions.
+</Tip>
+
+### Target a specific vault
+
+```bash
+agent-vault vault run --vault myproject -- opencode
+```
+
+## Try it out
+
+Ask OpenCode to do something that requires an external API:
+
+> "Fetch my recent Stripe charges"
+
+Here's what happens — with zero pre-configuration:
+
+1. OpenCode calls `https://api.stripe.com/...` directly. `HTTPS_PROXY` routes the call through Agent Vault
+2. Agent Vault returns a **403** — Stripe isn't configured yet
+3. OpenCode reads the `proposal_hint` and creates a proposal requesting Stripe access
+4. OpenCode presents you with an approval link
+5. You click the link, paste your Stripe key, and click **Allow**
+6. OpenCode retries — Agent Vault injects your Stripe credentials at the proxy boundary and the request succeeds
+
+<Note>
+You didn't pre-configure anything. The agent discovered what it needed, asked for approval, and handled the rest.
+</Note>
+
+## Alternative: invite-based setup
+
+If you can't use `vault run` (e.g. you're connecting a remote or cloud-hosted OpenCode instance), use the invite flow instead:
+
+```bash
+agent-vault agent invite my-agent
+```
+
+This generates a one-time onboarding prompt and copies it to your clipboard. Paste it into OpenCode — it redeems the invite automatically and receives an agent token plus usage instructions inline.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Agent protocol" icon="code" href="/agents/protocol">
+    Full request lifecycle end-to-end.
+  </Card>
+  <Card title="Services" icon="shield" href="/learn/services">
+    Pre-configure services you know the agent will need.
+  </Card>
+</CardGroup>

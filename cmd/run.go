@@ -132,6 +132,7 @@ var knownAgents = []struct {
 	{[]string{"cursor", "agent"}, "Cursor", ".cursor"},
 	{[]string{"codex"}, "Codex", ".agents"},
 	{[]string{"hermes"}, "Hermes", ".hermes"},
+	{[]string{"opencode"}, "OpenCode", ".opencode"},
 }
 
 // agentSkillDir returns the display name and skills base directory for a

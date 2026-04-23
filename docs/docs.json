@@ -29,6 +29,7 @@
           "quickstart/openclaw",
           "quickstart/nanoclaw",
           "quickstart/hermes-agent",
+          "quickstart/opencode",
           "quickstart/custom-agent"
         ]
       },
