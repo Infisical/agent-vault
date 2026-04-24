@@ -414,3 +414,114 @@ func TestValidateConfigPassthrough(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// ExtraPassthroughHeaders: per-service allowlist extension
+// ─────────────────────────────────────────────────────────────────────────
+
+func TestValidateExtraPassthroughHeadersAccepted(t *testing.T) {
+	cfg := &Config{
+		Vault: "default",
+		Services: []Service{
+			{
+				Host:                    "api.anthropic.com",
+				Auth:                    Auth{Type: "api-key", Key: "ANTHROPIC_API_KEY", Header: "x-api-key"},
+				ExtraPassthroughHeaders: []string{"anthropic-version", "anthropic-beta"},
+			},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateExtraPassthroughHeadersRejectsDenylist(t *testing.T) {
+	for _, name := range []string{
+		"Authorization",
+		"authorization", // case-insensitive check
+		"Proxy-Authorization",
+		"X-Vault",
+		"Connection",
+		"Keep-Alive",
+		"Transfer-Encoding",
+		"Upgrade",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := &Config{
+				Vault: "default",
+				Services: []Service{
+					{
+						Host:                    "api.example.com",
+						Auth:                    Auth{Type: "bearer", Token: "EXAMPLE_TOKEN"},
+						ExtraPassthroughHeaders: []string{name},
+					},
+				},
+			}
+			err := Validate(cfg)
+			if err == nil {
+				t.Fatalf("expected validation to reject %q", name)
+			}
+		})
+	}
+}
+
+func TestValidateExtraPassthroughHeadersRejectsInvalidName(t *testing.T) {
+	for _, name := range []string{
+		"",
+		"has space",
+		"has:colon",
+		"control\x01char",
+		"中文",
+	} {
+		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
+			cfg := &Config{
+				Vault: "default",
+				Services: []Service{
+					{
+						Host:                    "api.example.com",
+						Auth:                    Auth{Type: "bearer", Token: "EXAMPLE_TOKEN"},
+						ExtraPassthroughHeaders: []string{name},
+					},
+				},
+			}
+			if err := Validate(cfg); err == nil {
+				t.Fatalf("expected validation to reject invalid name %q", name)
+			}
+		})
+	}
+}
+
+func TestValidateExtraPassthroughHeadersRejectsDuplicate(t *testing.T) {
+	cfg := &Config{
+		Vault: "default",
+		Services: []Service{
+			{
+				Host:                    "api.anthropic.com",
+				Auth:                    Auth{Type: "api-key", Key: "ANTHROPIC_API_KEY", Header: "x-api-key"},
+				ExtraPassthroughHeaders: []string{"anthropic-version", "Anthropic-Version"},
+			},
+		},
+	}
+	if err := Validate(cfg); err == nil {
+		t.Fatalf("expected duplicate (case-insensitive) to be rejected")
+	}
+}
+
+func TestValidateExtraPassthroughHeadersRejectedOnPassthroughAuth(t *testing.T) {
+	// Passthrough services already forward everything via the denylist, so
+	// extending the allowlist makes no sense and must be a hard error to
+	// prevent confusing misconfigurations.
+	cfg := &Config{
+		Vault: "default",
+		Services: []Service{
+			{
+				Host:                    "api.example.com",
+				Auth:                    Auth{Type: "passthrough"},
+				ExtraPassthroughHeaders: []string{"anthropic-version"},
+			},
+		},
+	}
+	if err := Validate(cfg); err == nil {
+		t.Fatalf("expected extra_passthrough_headers on passthrough auth to be rejected")
+	}
+}

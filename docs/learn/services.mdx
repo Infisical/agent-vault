@@ -156,6 +156,45 @@ Use passthrough when the operator has decided their client already holds the cre
   credentials.
 </Warning>
 
+## Extra passthrough headers
+
+By default, credentialed services forward a minimal allowlist of client request headers to the upstream: `Content-Type`, `Content-Encoding`, `Accept`, `Accept-Encoding`, `Accept-Language`, `User-Agent`, `Idempotency-Key`, `X-Request-Id`. Everything else (including `Authorization`) is dropped so injected credentials always win.
+
+Some provider APIs require non-standard request headers that aren't on this list. Anthropic's `anthropic-version` header is the canonical example — it's mandatory on every `/v1/messages` request. Without it the provider returns `400 anthropic-version: header is required` and the request fails even though credential injection worked.
+
+Use `extra_passthrough_headers` to extend the allowlist for a single service:
+
+```yaml
+services:
+  - host: api.anthropic.com
+    auth:
+      type: api-key
+      key: ANTHROPIC_API_KEY
+      header: x-api-key
+    extra_passthrough_headers:
+      - anthropic-version
+      - anthropic-beta
+```
+
+Agent Vault's built-in [service catalog](/agents/overview) pre-fills the headers each listed provider needs (Anthropic, OpenAI, Stripe, GitHub, Notion, Datadog, Supabase), so templated services come pre-configured. Custom services must opt in explicitly.
+
+### Safety
+
+The field is validated at config time. Agent Vault rejects any header that:
+
+- Is `Authorization` or `Proxy-Authorization` (injected credentials must always win).
+- Is `X-Vault` or another broker-scoped header (those authenticate the client to Agent Vault itself and must not cross the broker → upstream hop).
+- Is a hop-by-hop header per RFC 7230 (`Connection`, `Keep-Alive`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`, `Proxy-Authenticate`).
+- Contains characters outside the RFC 7230 header-name token set.
+- Is a duplicate of another entry (case-insensitive).
+
+Injection still wins: if a service both adds a header to `extra_passthrough_headers` and injects the same header via its auth config, the injected value overrides the client-supplied one. This preserves the same guarantee the core `PassthroughHeaders` allowlist provides.
+
+### When not to use it
+
+- **Passthrough auth**: `extra_passthrough_headers` is rejected on `passthrough` services — they already forward every non-denylisted header, so the allowlist extension has no meaning.
+- **Sending secrets through the hop**: if the header itself carries credentials (for example a provider-specific API key that isn't modeled in your auth config), store it as a credential and inject it via `custom` auth instead of passing it through.
+
 ## Host matching
 
 Agent Vault supports two host matching modes:

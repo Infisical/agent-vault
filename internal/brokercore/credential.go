@@ -36,6 +36,17 @@ type InjectResult struct {
 	// PassthroughHeaders allowlist, and must not perform the injection
 	// merge step.
 	Passthrough bool
+
+	// ExtraPassthroughHeaders is the per-service extension of the core
+	// PassthroughHeaders allowlist. Applied only for credentialed
+	// (non-passthrough) services — passthrough services already forward
+	// all headers via the denylist, so the allowlist concept doesn't apply.
+	//
+	// Header names are canonicalized and denylist-checked at config time
+	// (see broker.validateExtraPassthroughHeaders), so consumers can trust
+	// the contents: Authorization, Proxy-Authorization, X-Vault, and hop-
+	// by-hop headers are already filtered out. Safe to log.
+	ExtraPassthroughHeaders []string
 }
 
 // CredentialProvider resolves a broker service for targetHost inside vaultID
@@ -103,8 +114,9 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	// Capture non-secret metadata up front so a downstream credential-missing
 	// error still carries it for the caller (e.g. for debug logging).
 	result := &InjectResult{
-		MatchedHost:    matched.Host,
-		CredentialKeys: matched.Auth.CredentialKeys(),
+		MatchedHost:             matched.Host,
+		CredentialKeys:          matched.Auth.CredentialKeys(),
+		ExtraPassthroughHeaders: matched.ExtraPassthroughHeaders,
 	}
 
 	headers, err := matched.Auth.Resolve(func(key string) (string, error) {

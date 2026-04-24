@@ -124,9 +124,17 @@ func CopyPassthroughRequestHeaders(src, dst http.Header, extraStrip ...string) {
 // ApplyInjection writes the outbound request headers for a resolved
 // InjectResult. Passthrough services forward client headers via the
 // denylist (hop-by-hop + broker-scoped + extraStrip); credentialed
-// services copy the PassthroughHeaders allowlist and then overlay
-// injected credentials. Used by both ingress paths so header handling
-// for the two branches stays in lockstep.
+// services copy the PassthroughHeaders allowlist, extend it with any
+// per-service ExtraPassthroughHeaders, and then overlay injected
+// credentials. Used by both ingress paths so header handling for the
+// two branches stays in lockstep.
+//
+// ExtraPassthroughHeaders are copied before injection, so a service's
+// injected headers always win over any client-supplied duplicate — the
+// same invariant PassthroughHeaders provides for Authorization. The
+// names are validated at config time (see broker.Validate) and cannot
+// include Authorization, Proxy-Authorization, X-Vault, or hop-by-hop
+// headers, so no runtime re-check is required.
 func ApplyInjection(src, dst http.Header, inject *InjectResult, extraStrip ...string) {
 	if inject.Passthrough {
 		CopyPassthroughRequestHeaders(src, dst, extraStrip...)
@@ -135,6 +143,12 @@ func ApplyInjection(src, dst http.Header, inject *InjectResult, extraStrip ...st
 	for _, k := range PassthroughHeaders {
 		for _, v := range src.Values(k) {
 			dst.Add(k, v)
+		}
+	}
+	for _, k := range inject.ExtraPassthroughHeaders {
+		ck := http.CanonicalHeaderKey(k)
+		for _, v := range src.Values(ck) {
+			dst.Add(ck, v)
 		}
 	}
 	for k, v := range inject.Headers {

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net"
+	"net/http"
 	"regexp"
 	"strings"
 )
@@ -20,11 +21,21 @@ type Config struct {
 // enabled so existing persisted services (which predate this field) stay
 // live after upgrade. Callers should use IsEnabled() rather than
 // dereferencing the pointer.
+//
+// ExtraPassthroughHeaders extends the broker's default request-header
+// allowlist for credentialed (non-passthrough) services. Needed for
+// provider APIs that require non-standard request headers the core
+// allowlist doesn't cover, e.g. Anthropic's mandatory `anthropic-version`.
+// Ignored for passthrough services (which already forward all headers
+// via the denylist). Header names are matched case-insensitively and must
+// not include Authorization, Proxy-Authorization, or hop-by-hop headers
+// — see Auth.validateExtraPassthroughHeaders for the full denylist.
 type Service struct {
-	Host        string  `yaml:"host" json:"host"`
-	Description *string `yaml:"description,omitempty" json:"description"`
-	Enabled     *bool   `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	Auth        Auth    `yaml:"auth" json:"auth"`
+	Host                    string   `yaml:"host" json:"host"`
+	Description             *string  `yaml:"description,omitempty" json:"description"`
+	Enabled                 *bool    `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Auth                    Auth     `yaml:"auth" json:"auth"`
+	ExtraPassthroughHeaders []string `yaml:"extra_passthrough_headers,omitempty" json:"extra_passthrough_headers,omitempty"`
 }
 
 // IsEnabled reports whether the service should serve proxy traffic. A
@@ -287,6 +298,74 @@ func Validate(cfg *Config) error {
 		if err := s.Auth.Validate(); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
+		if err := validateExtraPassthroughHeaders(s.ExtraPassthroughHeaders, s.Auth.Type); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// extraPassthroughDenylist is the set of request headers that must never
+// appear in a service's ExtraPassthroughHeaders allowlist extension.
+// These headers either carry credentials that injection would overwrite
+// (Authorization, Proxy-Authorization) or are hop-by-hop headers a proxy
+// must handle itself (Connection, Keep-Alive, TE, etc.). Additionally
+// the broker-scoped headers authenticate the client to Agent Vault and
+// must not traverse the broker → target hop.
+var extraPassthroughDenylist = map[string]bool{
+	"Authorization":       true,
+	"Proxy-Authorization": true,
+	"X-Vault":             true,
+	// Hop-by-hop per RFC 7230 §6.1.
+	"Connection":         true,
+	"Keep-Alive":         true,
+	"Proxy-Authenticate": true,
+	"Te":                 true,
+	"Trailer":            true,
+	"Transfer-Encoding":  true,
+	"Upgrade":            true,
+}
+
+// extraPassthroughHeaderNamePattern matches RFC 7230 token characters
+// for HTTP header names (the practical subset used by every well-known
+// provider). Deliberately stricter than the full RFC token set to keep
+// the surface area conservative.
+var extraPassthroughHeaderNamePattern = regexp.MustCompile(`^[A-Za-z0-9!#$%&'*+\-.^_` + "`" + `|~]+$`)
+
+// validateExtraPassthroughHeaders enforces three invariants for the
+// per-service allowlist extension:
+//
+//   - No Authorization/Proxy-Authorization/X-Vault or hop-by-hop names,
+//     to prevent reopening the exact paths PassthroughHeaders was
+//     designed to close.
+//   - Valid RFC 7230 token characters, so misconfiguration fails loudly
+//     rather than causing downstream header parser surprises.
+//   - Not permitted on passthrough services, where the denylist model
+//     already forwards every header — an allowlist extension is a
+//     configuration smell and we reject it with a clear error.
+func validateExtraPassthroughHeaders(headers []string, authType string) error {
+	if len(headers) == 0 {
+		return nil
+	}
+	if authType == "passthrough" {
+		return fmt.Errorf("extra_passthrough_headers: not permitted on passthrough auth (passthrough already forwards all client headers via the denylist)")
+	}
+	seen := make(map[string]bool, len(headers))
+	for _, h := range headers {
+		if h == "" {
+			return fmt.Errorf("extra_passthrough_headers: empty header name")
+		}
+		if !extraPassthroughHeaderNamePattern.MatchString(h) {
+			return fmt.Errorf("extra_passthrough_headers: invalid header name %q \u2014 only RFC 7230 token characters allowed", h)
+		}
+		ck := http.CanonicalHeaderKey(h)
+		if extraPassthroughDenylist[ck] {
+			return fmt.Errorf("extra_passthrough_headers: header %q is not allowed (it is a credential-carrying, broker-scoped, or hop-by-hop header)", h)
+		}
+		if seen[ck] {
+			return fmt.Errorf("extra_passthrough_headers: duplicate header %q", h)
+		}
+		seen[ck] = true
 	}
 	return nil
 }

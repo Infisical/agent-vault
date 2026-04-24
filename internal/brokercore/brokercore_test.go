@@ -172,3 +172,109 @@ func TestForbiddenHintBody_EmptyBaseURL(t *testing.T) {
 		t.Fatal("help field should be absent when baseURL is empty")
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// ApplyInjection: ExtraPassthroughHeaders for credentialed services
+// ─────────────────────────────────────────────────────────────────────────
+
+func TestApplyInjection_ForwardsExtraPassthroughHeaders(t *testing.T) {
+	// A credentialed service that opts a non-standard request header into
+	// the allowlist (Anthropic's mandatory anthropic-version) must see it
+	// forwarded to the upstream, while injected Authorization still wins.
+	src := http.Header{}
+	src.Set("anthropic-version", "2023-06-01")
+	src.Set("anthropic-beta", "tools-2024-04-04")
+	src.Set("Content-Type", "application/json")
+	src.Set("Authorization", "Bearer CLIENT_SHOULD_BE_IGNORED")
+
+	dst := http.Header{}
+	inject := &InjectResult{
+		Headers:                 map[string]string{"x-api-key": "sk-injected"},
+		ExtraPassthroughHeaders: []string{"anthropic-version", "anthropic-beta"},
+	}
+	ApplyInjection(src, dst, inject)
+
+	if got := dst.Get("Anthropic-Version"); got != "2023-06-01" {
+		t.Fatalf("anthropic-version not forwarded: got %q", got)
+	}
+	if got := dst.Get("Anthropic-Beta"); got != "tools-2024-04-04" {
+		t.Fatalf("anthropic-beta not forwarded: got %q", got)
+	}
+	if got := dst.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type lost: got %q", got)
+	}
+	if got := dst.Get("x-api-key"); got != "sk-injected" {
+		t.Fatalf("injected header missing: got %q", got)
+	}
+	// Client-supplied Authorization must not leak through \u2014 it wasn't on
+	// the allowlist and the ExtraPassthroughHeaders denylist check at
+	// config time ensures it could never be added.
+	if got := dst.Get("Authorization"); got != "" {
+		t.Fatalf("client Authorization leaked: got %q", got)
+	}
+}
+
+func TestApplyInjection_ExtraPassthroughHeaders_AreCaseInsensitive(t *testing.T) {
+	// Clients may send headers with any casing; net/http canonicalizes keys.
+	// The allowlist extension must match regardless of how the client spelled it.
+	src := http.Header{}
+	src.Set("Anthropic-Version", "2023-06-01") // canonical
+	dst := http.Header{}
+
+	ApplyInjection(src, dst, &InjectResult{
+		Headers:                 map[string]string{"x-api-key": "k"},
+		ExtraPassthroughHeaders: []string{"anthropic-version"}, // lowercase
+	})
+
+	if got := dst.Get("anthropic-version"); got != "2023-06-01" {
+		t.Fatalf("extra passthrough should be case-insensitive; got %q", got)
+	}
+}
+
+func TestApplyInjection_ExtraPassthrough_IgnoredForPassthroughService(t *testing.T) {
+	// Passthrough services forward everything via the denylist, so
+	// ExtraPassthroughHeaders has no effect \u2014 but must not crash either.
+	// (Validation also rejects this config upstream; this is runtime
+	// defense-in-depth.)
+	src := http.Header{}
+	src.Set("anthropic-version", "2023-06-01")
+	src.Set("X-Vault", "session-token")
+	dst := http.Header{}
+
+	ApplyInjection(src, dst, &InjectResult{
+		Passthrough:             true,
+		ExtraPassthroughHeaders: []string{"anthropic-version"},
+	})
+
+	// Passthrough forwards the header via the denylist path regardless.
+	if got := dst.Get("anthropic-version"); got != "2023-06-01" {
+		t.Fatalf("passthrough should forward header; got %q", got)
+	}
+	// Broker-scoped header must still be stripped even on passthrough.
+	if got := dst.Get("X-Vault"); got != "" {
+		t.Fatalf("X-Vault leaked through passthrough: got %q", got)
+	}
+}
+
+func TestApplyInjection_ExtraPassthrough_InjectionStillWins(t *testing.T) {
+	// If a client sends a header that both the service adds to the
+	// allowlist AND the auth config injects, the injected value must win.
+	// This is the same guarantee PassthroughHeaders provides for
+	// Authorization, extended to the custom-header case.
+	src := http.Header{}
+	src.Set("anthropic-version", "CLIENT_VALUE")
+	dst := http.Header{}
+
+	ApplyInjection(src, dst, &InjectResult{
+		Headers:                 map[string]string{"anthropic-version": "SERVICE_VALUE"},
+		ExtraPassthroughHeaders: []string{"anthropic-version"},
+	})
+
+	if got := dst.Get("anthropic-version"); got != "SERVICE_VALUE" {
+		t.Fatalf("injection must win; got %q", got)
+	}
+	vals := dst.Values("anthropic-version")
+	if len(vals) != 1 {
+		t.Fatalf("expected exactly one value after injection overwrite, got %v", vals)
+	}
+}
