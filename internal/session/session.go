@@ -11,6 +11,10 @@ import (
 type ClientSession struct {
 	Token   string `json:"token"`
 	Address string `json:"address"`
+	// Email of the account that minted Token. Cached so re-auth on
+	// expiry can skip the email prompt; empty for sessions saved by
+	// older clients.
+	Email string `json:"email,omitempty"`
 }
 
 func sessionPath() (string, error) {

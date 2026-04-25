@@ -31,14 +31,9 @@ Example:
 			addr = sess.Address
 		}
 
-		vault, err := resolveVaultForRun(cmd, addr, sess.Token)
-		if err != nil {
-			return err
-		}
-
 		role, _ := cmd.Flags().GetString("role")
 		ttl, _ := cmd.Flags().GetInt("ttl")
-		token, err := requestScopedSession(addr, sess.Token, vault, role, ttl)
+		_, token, err := mintScopedSession(cmd, sess, addr, role, ttl)
 		if err != nil {
 			return err
 		}

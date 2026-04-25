@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,33 @@ import (
 	"github.com/Infisical/agent-vault/internal/store"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
+)
+
+// errSessionExpired marks an error as recoverable by re-authenticating.
+// It is returned by HTTP helpers whenever the server replies with 401 to
+// an admin-token-bearing request; withReauthRetry uses errors.Is to detect
+// it. Match on status (not the error string) so all three 401 messages
+// the server emits — "Session expired", "Invalid or expired session",
+// "Authorization required" — are handled the same way.
+var errSessionExpired = &sessionExpiredError{msg: "session expired"}
+
+// sessionExpiredError carries a server- or caller-supplied message while
+// still matching errSessionExpired via errors.Is. Wrapping the sentinel
+// through fmt.Errorf("%s: %w", body, errSessionExpired) would stutter
+// ("Session expired: session expired"); this type renders only `msg`.
+type sessionExpiredError struct{ msg string }
+
+func (e *sessionExpiredError) Error() string { return e.msg }
+func (e *sessionExpiredError) Is(target error) bool {
+	_, ok := target.(*sessionExpiredError)
+	return ok
+}
+
+// isInteractiveFn and reauthFn are indirections so tests can stub the TTY
+// check and the interactive re-auth without wiring a real terminal.
+var (
+	isInteractiveFn = isInteractive
+	reauthFn        = reauthInteractive
 )
 
 const (
@@ -181,11 +209,69 @@ func doLogin(address, email, password string) (*session.ClientSession, error) {
 	sess := &session.ClientSession{
 		Token:   result.Token,
 		Address: address,
+		Email:   email,
 	}
 	if err := session.Save(sess); err != nil {
 		return nil, fmt.Errorf("saving session: %w", err)
 	}
 	return sess, nil
+}
+
+// reauthInteractive prompts the user to log in again on the same address as
+// sess and returns the freshly-saved session. Skips the email prompt when
+// sess.Email is already known (i.e. session was minted by a doLogin call
+// after the Email field was added).
+func reauthInteractive(sess *session.ClientSession) (*session.ClientSession, error) {
+	fmt.Fprintln(os.Stderr, "\nYour session has expired. Please log in again.")
+
+	email := sess.Email
+	if email == "" {
+		got, err := interactiveReadEmail()
+		if err != nil {
+			return nil, err
+		}
+		email = got
+	} else {
+		fmt.Fprintf(os.Stderr, "Re-authenticating as %s\n", email)
+	}
+
+	password, err := interactiveReadPassword()
+	if err != nil {
+		return nil, err
+	}
+
+	newSess, err := doLogin(sess.Address, email, password)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintln(os.Stderr, successText("✓")+" Login successful.")
+	return newSess, nil
+}
+
+// withReauthRetry runs op once. If op fails with errSessionExpired and
+// stdin is a TTY, prompts the user to re-authenticate, updates *sess in
+// place so callers holding the pointer pick up the new token, and runs op
+// exactly once more. Non-interactive callers see the original error
+// untouched so CI/scripts can detect and handle it themselves.
+//
+// addr is the server the failing request was sent to; reauth is skipped
+// when it differs from sess.Address, because the saved login is tied to
+// sess.Address and a fresh token for that server would still be useless
+// against a different one (e.g. `--address=B` with a session for A).
+func withReauthRetry(sess *session.ClientSession, addr string, op func(*session.ClientSession) error) error {
+	err := op(sess)
+	if err == nil || !errors.Is(err, errSessionExpired) {
+		return err
+	}
+	if !isInteractiveFn() || addr != sess.Address {
+		return err
+	}
+	newSess, rerr := reauthFn(sess)
+	if rerr != nil {
+		return fmt.Errorf("re-authentication failed: %w", rerr)
+	}
+	*sess = *newSess
+	return op(sess)
 }
 
 // interactiveReadEmail prompts for an email address on stderr and reads from stdin.
@@ -398,7 +484,12 @@ func fetchAndDecode[T any](method, path string) (*T, error) {
 	if err != nil {
 		return nil, err
 	}
-	respBody, err := doAdminRequestWithBody(method, sess.Address+path, sess.Token, nil)
+	var respBody []byte
+	err = withReauthRetry(sess, sess.Address, func(s *session.ClientSession) error {
+		var ierr error
+		respBody, ierr = doAdminRequestWithBody(method, s.Address+path, s.Token, nil)
+		return ierr
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -438,10 +529,14 @@ func doAdminRequestWithBody(method, url, token string, body []byte) ([]byte, err
 			Error string `json:"error"`
 		}
 		_ = json.Unmarshal(respBody, &errResp)
-		if errResp.Error != "" {
-			return nil, fmt.Errorf("%s", errResp.Error)
+		msg := errResp.Error
+		if msg == "" {
+			msg = fmt.Sprintf("server returned status %d", resp.StatusCode)
 		}
-		return nil, fmt.Errorf("server returned status %d", resp.StatusCode)
+		if resp.StatusCode == http.StatusUnauthorized {
+			return nil, &sessionExpiredError{msg: msg}
+		}
+		return nil, fmt.Errorf("%s", msg)
 	}
 
 	return respBody, nil
