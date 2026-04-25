@@ -112,27 +112,11 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		addr = sess.Address
 	}
 
-	// 2-3. Resolve the vault and request a vault-scoped session token.
-	//      Wrapped together so an interactive user whose admin session
-	//      has expired sees one re-auth prompt and the whole sequence
-	//      retries cleanly with the new token (otherwise the silent
-	//      DefaultVault fallback in resolveVaultForRun would mask the
-	//      expiry and demote a multi-vault user to "default").
+	// 2-3. Resolve the vault and mint a vault-scoped session token,
+	//      retrying on session expiry. Shared with `vault token`.
 	role, _ := cmd.Flags().GetString("role")
 	ttl, _ := cmd.Flags().GetInt("ttl")
-	var vault, scopedToken string
-	err = withReauthRetry(sess, func(s *session.ClientSession) error {
-		v, err := resolveVaultForRun(cmd, addr, s.Token)
-		if err != nil {
-			return err
-		}
-		token, err := requestScopedSession(addr, s.Token, v, role, ttl)
-		if err != nil {
-			return err
-		}
-		vault, scopedToken = v, token
-		return nil
-	})
+	vault, scopedToken, err := mintScopedSession(cmd, sess, addr, role, ttl)
 	if err != nil {
 		return err
 	}
@@ -328,10 +312,18 @@ func fetchUserVaults(addr, token string) ([]string, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode == http.StatusUnauthorized {
-			return nil, &sessionExpiredError{msg: "listing vaults: session expired"}
+		var errResp struct {
+			Error string `json:"error"`
 		}
-		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
+		_ = json.NewDecoder(resp.Body).Decode(&errResp)
+		msg := errResp.Error
+		if msg == "" {
+			msg = fmt.Sprintf("status %d", resp.StatusCode)
+		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			return nil, &sessionExpiredError{msg: "listing vaults: " + msg}
+		}
+		return nil, fmt.Errorf("listing vaults: %s", msg)
 	}
 
 	var result struct {
@@ -440,6 +432,32 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 		MITMTLS: mitmTLS,
 	})...)
 	return env, port, true, nil
+}
+
+// mintScopedSession resolves the target vault and mints a vault-scoped
+// session token, with inline re-auth on a 401 from the admin session.
+// The interactive vault picker (huh.NewSelect for multi-vault users with
+// no override) runs at most once across retries — re-prompting after
+// re-auth would be a UX regression, and the user's earlier choice is
+// still valid because vault membership is rechecked server-side when
+// requestScopedSession fires.
+func mintScopedSession(cmd *cobra.Command, sess *session.ClientSession, addr, role string, ttl int) (vault, scopedToken string, err error) {
+	err = withReauthRetry(sess, func(s *session.ClientSession) error {
+		if vault == "" {
+			v, verr := resolveVaultForRun(cmd, addr, s.Token)
+			if verr != nil {
+				return verr
+			}
+			vault = v
+		}
+		token, terr := requestScopedSession(addr, s.Token, vault, role, ttl)
+		if terr != nil {
+			return terr
+		}
+		scopedToken = token
+		return nil
+	})
+	return
 }
 
 // requestScopedSession calls the server to create a vault-scoped session

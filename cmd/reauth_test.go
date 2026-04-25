@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Infisical/agent-vault/internal/session"
+	"github.com/spf13/cobra"
 )
 
 func TestDoAdminRequestWithBody_401WrapsErrSessionExpired(t *testing.T) {
@@ -117,6 +118,88 @@ func TestFetchUserVaults_401WrapsErrSessionExpired(t *testing.T) {
 	}
 	if !errors.Is(err, errSessionExpired) {
 		t.Fatalf("err %q does not wrap errSessionExpired", err)
+	}
+}
+
+func TestFetchUserVaults_401PreservesServerMessage(t *testing.T) {
+	cases := []struct {
+		body string
+		want string
+	}{
+		{`{"error":"Authorization required"}`, "listing vaults: Authorization required"},
+		{`{"error":"Invalid or expired session"}`, "listing vaults: Invalid or expired session"},
+		{``, "listing vaults: status 401"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.want, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			_, err := fetchUserVaults(srv.URL, "tok")
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if got := err.Error(); got != tc.want {
+				t.Fatalf("expected %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
+// TestMintScopedSession_VaultResolutionMemoized asserts that when the admin
+// session expires between the vault lookup and the scoped-session mint, the
+// retry does not re-run vault resolution — otherwise a multi-vault user
+// would be re-prompted by the picker, and a single-vault user would pay an
+// extra `/v1/vaults` round-trip.
+func TestMintScopedSession_VaultResolutionMemoized(t *testing.T) {
+	var vaultsHits, sessionsHits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/vaults":
+			vaultsHits++
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"vaults":[{"name":"myvault"}]}`))
+		case "/v1/sessions":
+			sessionsHits++
+			if sessionsHits == 1 {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":"Session expired"}`))
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"token":"scoped-token"}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	withTestStubs(t, true, func(s *session.ClientSession) (*session.ClientSession, error) {
+		return &session.ClientSession{Token: "fresh", Address: s.Address}, nil
+	})
+
+	cmd := &cobra.Command{}
+	cmd.Flags().String("vault", "", "")
+
+	sess := &session.ClientSession{Token: "stale", Address: srv.URL}
+	vault, token, err := mintScopedSession(cmd, sess, srv.URL, "", 0)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if vault != "myvault" {
+		t.Fatalf("expected vault=myvault, got %q", vault)
+	}
+	if token != "scoped-token" {
+		t.Fatalf("expected token=scoped-token, got %q", token)
+	}
+	if vaultsHits != 1 {
+		t.Fatalf("expected /v1/vaults hit exactly once across retry, got %d", vaultsHits)
+	}
+	if sessionsHits != 2 {
+		t.Fatalf("expected /v1/sessions hit twice (initial + retry), got %d", sessionsHits)
 	}
 }
 
