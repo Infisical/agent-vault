@@ -155,6 +155,10 @@ func TestFetchUserVaults_401PreservesServerMessage(t *testing.T) {
 // would be re-prompted by the picker, and a single-vault user would pay an
 // extra `/v1/vaults` round-trip.
 func TestMintScopedSession_VaultResolutionMemoized(t *testing.T) {
+	// Isolate $HOME so a developer-set ~/.agent-vault/context doesn't
+	// short-circuit resolveVaultForRun before fetchUserVaults runs.
+	t.Setenv("HOME", t.TempDir())
+
 	var vaultsHits, sessionsHits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -226,7 +230,7 @@ func TestWithReauthRetry_NonInteractiveReturnsOriginalError(t *testing.T) {
 	calls := 0
 	original := errSessionExpired
 	sess := &session.ClientSession{Token: "stale", Address: "http://x"}
-	err := withReauthRetry(sess, func(s *session.ClientSession) error {
+	err := withReauthRetry(sess, sess.Address, func(s *session.ClientSession) error {
 		calls++
 		return original
 	})
@@ -249,7 +253,7 @@ func TestWithReauthRetry_NoErrorRunsOpOnce(t *testing.T) {
 
 	calls := 0
 	sess := &session.ClientSession{Token: "good", Address: "http://x"}
-	err := withReauthRetry(sess, func(s *session.ClientSession) error {
+	err := withReauthRetry(sess, sess.Address, func(s *session.ClientSession) error {
 		calls++
 		return nil
 	})
@@ -271,7 +275,7 @@ func TestWithReauthRetry_RetriesAfterReauth(t *testing.T) {
 	sess := &session.ClientSession{Token: "stale", Address: "http://x"}
 	calls := 0
 	var seenTokens []string
-	err := withReauthRetry(sess, func(s *session.ClientSession) error {
+	err := withReauthRetry(sess, sess.Address, func(s *session.ClientSession) error {
 		calls++
 		seenTokens = append(seenTokens, s.Token)
 		if calls == 1 {
@@ -305,7 +309,7 @@ func TestWithReauthRetry_DoesNotLoop(t *testing.T) {
 
 	sess := &session.ClientSession{Token: "stale", Address: "http://x"}
 	calls := 0
-	err := withReauthRetry(sess, func(s *session.ClientSession) error {
+	err := withReauthRetry(sess, sess.Address, func(s *session.ClientSession) error {
 		calls++
 		return errSessionExpired
 	})
@@ -320,6 +324,29 @@ func TestWithReauthRetry_DoesNotLoop(t *testing.T) {
 	}
 }
 
+func TestWithReauthRetry_CrossServerSkipsReauth(t *testing.T) {
+	withTestStubs(t, true, func(s *session.ClientSession) (*session.ClientSession, error) {
+		t.Fatal("reauth should not run when addr differs from sess.Address")
+		return nil, nil
+	})
+
+	calls := 0
+	sess := &session.ClientSession{Token: "tokA", Address: "http://server-a"}
+	err := withReauthRetry(sess, "http://server-b", func(s *session.ClientSession) error {
+		calls++
+		return errSessionExpired
+	})
+	if calls != 1 {
+		t.Fatalf("op should not retry on cross-server 401, ran %d times", calls)
+	}
+	if !errors.Is(err, errSessionExpired) {
+		t.Fatalf("expected errSessionExpired bubbled, got %v", err)
+	}
+	if sess.Token != "tokA" {
+		t.Fatalf("session token should be untouched, got %q", sess.Token)
+	}
+}
+
 func TestWithReauthRetry_ReauthFailureWraps(t *testing.T) {
 	stubErr := errors.New("invalid email or password")
 	withTestStubs(t, true, func(s *session.ClientSession) (*session.ClientSession, error) {
@@ -328,7 +355,7 @@ func TestWithReauthRetry_ReauthFailureWraps(t *testing.T) {
 
 	sess := &session.ClientSession{Token: "stale", Address: "http://x"}
 	calls := 0
-	err := withReauthRetry(sess, func(s *session.ClientSession) error {
+	err := withReauthRetry(sess, sess.Address, func(s *session.ClientSession) error {
 		calls++
 		return errSessionExpired
 	})

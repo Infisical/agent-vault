@@ -442,7 +442,7 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 // still valid because vault membership is rechecked server-side when
 // requestScopedSession fires.
 func mintScopedSession(cmd *cobra.Command, sess *session.ClientSession, addr, role string, ttl int) (vault, scopedToken string, err error) {
-	err = withReauthRetry(sess, func(s *session.ClientSession) error {
+	err = withReauthRetry(sess, addr, func(s *session.ClientSession) error {
 		if vault == "" {
 			v, verr := resolveVaultForRun(cmd, addr, s.Token)
 			if verr != nil {

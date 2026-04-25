@@ -253,12 +253,17 @@ func reauthInteractive(sess *session.ClientSession) (*session.ClientSession, err
 // place so callers holding the pointer pick up the new token, and runs op
 // exactly once more. Non-interactive callers see the original error
 // untouched so CI/scripts can detect and handle it themselves.
-func withReauthRetry(sess *session.ClientSession, op func(*session.ClientSession) error) error {
+//
+// addr is the server the failing request was sent to; reauth is skipped
+// when it differs from sess.Address, because the saved login is tied to
+// sess.Address and a fresh token for that server would still be useless
+// against a different one (e.g. `--address=B` with a session for A).
+func withReauthRetry(sess *session.ClientSession, addr string, op func(*session.ClientSession) error) error {
 	err := op(sess)
 	if err == nil || !errors.Is(err, errSessionExpired) {
 		return err
 	}
-	if !isInteractiveFn() {
+	if !isInteractiveFn() || addr != sess.Address {
 		return err
 	}
 	newSess, rerr := reauthFn(sess)
@@ -480,7 +485,7 @@ func fetchAndDecode[T any](method, path string) (*T, error) {
 		return nil, err
 	}
 	var respBody []byte
-	err = withReauthRetry(sess, func(s *session.ClientSession) error {
+	err = withReauthRetry(sess, sess.Address, func(s *session.ClientSession) error {
 		var ierr error
 		respBody, ierr = doAdminRequestWithBody(method, s.Address+path, s.Token, nil)
 		return ierr
