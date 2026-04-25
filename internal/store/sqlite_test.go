@@ -544,6 +544,76 @@ func TestListAndRevokeUserSessions(t *testing.T) {
 	}
 }
 
+// TestPreMigrationSessionStillUsable simulates a session row created before
+// migration 040 — populated id/user_id/expires_at, NULL on the columns
+// added by 040 except for public_id (backfilled by the migration's UPDATE).
+// It must continue to authenticate, enumerate, and revoke without
+// requiring the user to re-login.
+func TestPreMigrationSessionStillUsable(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "legacy@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+
+	// Forge a row that looks like one minted by the pre-040 server: just
+	// id/user_id/expires_at/created_at, no idle_ttl, no last_used_at, but
+	// with the backfilled public_id the migration would have written.
+	rawToken := "av_sess_legacy_test_token_value_with_padding_to_64_chars_xxxxxxx"
+	tokenHash := hashSessionToken(rawToken)
+	expiresAt := time.Now().Add(time.Hour).UTC().Format(time.DateTime)
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO sessions (id, user_id, expires_at, created_at, public_id)
+		 VALUES (?, ?, ?, datetime('now'), ?)`,
+		tokenHash, u.ID, expiresAt, "legacypub01",
+	)
+	if err != nil {
+		t.Fatalf("forging legacy session row: %v", err)
+	}
+
+	got, err := s.GetSession(ctx, rawToken)
+	if err != nil {
+		t.Fatalf("GetSession on legacy row: %v", err)
+	}
+	if got.IdleTTL != 0 {
+		t.Fatalf("legacy row IdleTTL should be 0 (idle disabled), got %v", got.IdleTTL)
+	}
+	if got.LastUsedAt != nil {
+		t.Fatalf("legacy row LastUsedAt should be nil, got %v", got.LastUsedAt)
+	}
+	if got.IsExpired(time.Now()) {
+		t.Fatal("legacy row inside its absolute TTL must not be expired")
+	}
+
+	rows, err := s.ListUserSessions(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("ListUserSessions: %v", err)
+	}
+	if len(rows) != 1 || rows[0].PublicID != "legacypub01" {
+		t.Fatalf("expected legacy row in list with public_id 'legacypub01', got %+v", rows)
+	}
+
+	// Touch a legacy session: should populate last_used_at without
+	// retroactively enabling the idle check.
+	if err := s.TouchSession(ctx, rawToken); err != nil {
+		t.Fatalf("TouchSession: %v", err)
+	}
+	got, _ = s.GetSession(ctx, rawToken)
+	if got.LastUsedAt == nil {
+		t.Fatal("touch should populate last_used_at on legacy row")
+	}
+	if got.IdleTTL != 0 {
+		t.Fatal("touch must not retroactively enable idle expiry on legacy row")
+	}
+
+	// Revoke by the backfilled public_id works.
+	if err := s.RevokeUserSession(ctx, u.ID, "legacypub01"); err != nil {
+		t.Fatalf("RevokeUserSession on legacy row: %v", err)
+	}
+	if _, err := s.GetSession(ctx, rawToken); err != sql.ErrNoRows {
+		t.Fatalf("revoked legacy session should be gone, got %v", err)
+	}
+}
+
 // --- Master Key ---
 
 func TestGetMasterKeyRecordEmpty(t *testing.T) {
