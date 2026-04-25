@@ -158,10 +158,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// First user: owner created successfully.
 		s.initialized = true
 
-		// Auto-login: create session and set cookie. Token + expires_at
-		// are also returned in the JSON body so non-cookie clients (the
-		// CLI) can persist the session without a follow-up /v1/auth/login
-		// — mirroring the browser's cookie-based auto-login.
+		// Auto-login: token + expires_at are returned alongside the
+		// cookie so non-cookie clients (the CLI) can persist the
+		// session without a follow-up /v1/auth/login.
 		params := newUserSessionParams(r, user.ID)
 		params.DeviceLabel = truncateDeviceLabel(req.DeviceLabel)
 		session, err := s.store.CreateUserSession(ctx, params)
@@ -171,14 +170,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(userSessionAbsoluteTTL.Seconds())))
 
-		jsonCreated(w, map[string]interface{}{
-			"email":                 user.Email,
-			"role":                  "owner",
-			"requires_verification": false,
-			"authenticated":         true,
-			"message":               "Owner account created.",
-			"token":                 session.ID,
-			"expires_at":            formatExpiresAt(session.ExpiresAt),
+		jsonCreated(w, registerResponse{
+			Email:                user.Email,
+			Role:                 "owner",
+			RequiresVerification: false,
+			Authenticated:        true,
+			Message:              "Owner account created.",
+			Token:                session.ID,
+			ExpiresAt:            formatExpiresAt(session.ExpiresAt),
 		})
 		return
 	}

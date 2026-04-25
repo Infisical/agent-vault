@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -10,6 +9,11 @@ import (
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/spf13/cobra"
 )
+
+type revokeSessionResponse struct {
+	Status  string `json:"status"`
+	Current bool   `json:"current"`
+}
 
 var authSessionsCmd = &cobra.Command{
 	Use:   "sessions",
@@ -60,22 +64,7 @@ var authSessionsRevokeCmd = &cobra.Command{
 	Short: "Revoke a session by id (from `auth sessions list`)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		id := args[0]
-		sess, err := ensureSession()
-		if err != nil {
-			return err
-		}
-		var resp struct {
-			Status  string `json:"status"`
-			Current bool   `json:"current"`
-		}
-		err = withReauthRetry(sess, sess.Address, func(s *session.ClientSession) error {
-			body, ierr := doAdminRequestWithBody("DELETE", s.Address+"/v1/auth/sessions/"+id, s.Token, nil)
-			if ierr != nil {
-				return ierr
-			}
-			return json.Unmarshal(body, &resp)
-		})
+		resp, err := fetchAndDecode[revokeSessionResponse]("DELETE", "/v1/auth/sessions/"+args[0])
 		if err != nil {
 			return err
 		}

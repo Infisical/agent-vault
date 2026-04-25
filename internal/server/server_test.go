@@ -1656,14 +1656,16 @@ func TestTruncateDeviceLabelKeepsValidUTF8(t *testing.T) {
 
 func TestPruneTouchCacheDropsStaleEntries(t *testing.T) {
 	srv := newTestServer()
-	srv.touchCache.Store("fresh-token", time.Now())
-	srv.touchCache.Store("stale-token", time.Now().Add(-2*store.TouchInterval))
+	// Cutoff is 2*TouchInterval; pick a within-window and an outside-window
+	// timestamp so the bound is exercised without coupling to wall clock.
+	srv.touchCache.Store("within-window", time.Now().Add(-store.TouchInterval))
+	srv.touchCache.Store("past-cutoff", time.Now().Add(-3*store.TouchInterval))
 	srv.pruneTouchCache()
-	if _, ok := srv.touchCache.Load("fresh-token"); !ok {
-		t.Fatal("fresh entry should be retained")
+	if _, ok := srv.touchCache.Load("within-window"); !ok {
+		t.Fatal("entry inside the throttle grace window should be retained")
 	}
-	if _, ok := srv.touchCache.Load("stale-token"); ok {
-		t.Fatal("stale entry should be evicted")
+	if _, ok := srv.touchCache.Load("past-cutoff"); ok {
+		t.Fatal("entry past the cutoff should be evicted")
 	}
 }
 

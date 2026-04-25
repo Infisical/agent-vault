@@ -84,6 +84,15 @@ func (s *Server) handleRevokeUserSession(w http.ResponseWriter, r *http.Request)
 	if selfRevoke {
 		http.SetCookie(w, sessionCookie(r, s.baseURL, "", -1))
 	}
-	jsonOK(w, map[string]interface{}{"status": "revoked", "current": selfRevoke})
+	jsonOK(w, revokeSessionResponse{Status: "revoked", Current: selfRevoke})
+}
+
+// revokeSessionResponse is the JSON shape returned by
+// DELETE /v1/auth/sessions/{id}. Current indicates whether the caller
+// just revoked their own session; CLI clients use it to decide whether
+// to drop their on-disk session.json.
+type revokeSessionResponse struct {
+	Status  string `json:"status"`
+	Current bool   `json:"current"`
 }
 

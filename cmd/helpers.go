@@ -144,21 +144,23 @@ type registerResult struct {
 }
 
 // doRegister posts credentials to /v1/auth/register. When the response
-// includes a token (first-user auto-login), the session is persisted to
-// disk so the caller can use it directly without a follow-up doLogin.
-func doRegister(address, email, password, deviceLabel string) (*registerResult, error) {
+// includes a token (first-user auto-login), the session is also saved
+// to disk and returned so the caller can use it directly without a
+// follow-up /v1/auth/login. Returns (result, sess, err); sess is nil
+// when verification is required.
+func doRegister(address, email, password, deviceLabel string) (*registerResult, *session.ClientSession, error) {
 	body, err := json.Marshal(map[string]string{
 		"email":        email,
 		"password":     password,
 		"device_label": deviceLabel,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	resp, err := http.Post(address+"/v1/auth/register", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("could not reach server at %s: %w", address, err)
+		return nil, nil, fmt.Errorf("could not reach server at %s: %w", address, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -170,23 +172,25 @@ func doRegister(address, email, password, deviceLabel string) (*registerResult, 
 
 	if resp.StatusCode >= 400 {
 		if result.Error != "" {
-			return nil, fmt.Errorf("%s", result.Error)
+			return nil, nil, fmt.Errorf("%s", result.Error)
 		}
-		return nil, fmt.Errorf("registration failed with status %d", resp.StatusCode)
+		return nil, nil, fmt.Errorf("registration failed with status %d", resp.StatusCode)
 	}
 
-	if result.Token != "" {
-		sess := &session.ClientSession{
-			Token:   result.Token,
-			Address: address,
-			Email:   email,
-		}
-		if err := session.Save(sess); err != nil {
-			return nil, fmt.Errorf("saving session: %w", err)
-		}
+	if result.Token == "" {
+		return &result.registerResult, nil, nil
 	}
 
-	return &result.registerResult, nil
+	sess := &session.ClientSession{
+		Token:       result.Token,
+		Address:     address,
+		Email:       email,
+		DeviceLabel: deviceLabel,
+	}
+	if err := session.Save(sess); err != nil {
+		return nil, nil, fmt.Errorf("saving session: %w", err)
+	}
+	return &result.registerResult, sess, nil
 }
 
 // doLogin posts credentials to /v1/auth/login, saves the session on
@@ -373,15 +377,12 @@ func ensureSession() (*session.ClientSession, error) {
 			return nil, err
 		}
 
-		// First-user register auto-logs in server-side and returns the
-		// token in the JSON body, so doRegister persists the session
-		// directly. We just reload it instead of running a second login.
-		if _, err := doRegister(address, email, password, defaultDeviceLabel()); err != nil {
+		_, sess, err := doRegister(address, email, password, defaultDeviceLabel())
+		if err != nil {
 			return nil, fmt.Errorf("registration failed: %w", err)
 		}
-		sess, err := session.Load()
-		if err != nil || sess == nil {
-			return nil, fmt.Errorf("auto-login after register failed: session not saved")
+		if sess == nil {
+			return nil, fmt.Errorf("auto-login after register failed: server did not return a session")
 		}
 		fmt.Fprintln(os.Stderr, successText("✓")+" Owner account created. Login successful.\n")
 		return sess, nil
@@ -413,7 +414,7 @@ func ensureSession() (*session.ClientSession, error) {
 			return nil, err
 		}
 
-		result, err := doRegister(address, email, password, defaultDeviceLabel())
+		result, _, err := doRegister(address, email, password, defaultDeviceLabel())
 		if err != nil {
 			return nil, fmt.Errorf("registration failed: %w", err)
 		}

@@ -72,11 +72,9 @@ type Server struct {
 	// single WAL writer slot. Caching the last-touch wall-clock per
 	// token keeps the steady state at one SQL write per session per
 	// touchInterval; the SQL throttle remains as a defense-in-depth
-	// backstop. Bounded by a periodic prune that drops entries older
-	// than store.TouchInterval — anything older has zero correctness
-	// value (the SQL throttle would let the next write through anyway).
-	touchCache    sync.Map // raw token (string) -> time.Time
-	touchPruneCh  chan struct{}
+	// backstop. Bounded by a periodic prune (see runTouchCachePruner)
+	// that drops entries past the throttle window.
+	touchCache sync.Map // raw token (string) -> time.Time
 }
 
 // RateLimit returns the server's rate-limit registry. Exported so the
@@ -587,7 +585,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 		logger:         logger,
 		rateLimit:      rl,
 		logSink:        requestlog.Nop{},
-		touchPruneCh:   make(chan struct{}),
 	}
 
 	ipAuth := s.tier(ratelimit.TierAuth, s.ipKeyer())
@@ -791,7 +788,9 @@ func (s *Server) Start() error {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-	go s.runTouchCachePruner()
+	pruneCtx, stopPruner := context.WithCancel(context.Background())
+	defer stopPruner()
+	go s.runTouchCachePruner(pruneCtx)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -840,7 +839,6 @@ func (s *Server) Start() error {
 	defer cancel()
 
 	fmt.Println("shutting down server...")
-	close(s.touchPruneCh)
 	if s.mitm != nil {
 		if err := s.mitm.Shutdown(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: mitm proxy shutdown: %v\n", err)
@@ -866,13 +864,10 @@ type loginRequest struct {
 	DeviceLabel string `json:"device_label,omitempty"` // optional, e.g. CLI hostname
 }
 
-// maxDeviceLabelRunes caps device_label values written to the session
-// row. Counts runes (not bytes) so a multi-byte character at the boundary
-// can't be sliced mid-encoding into invalid UTF-8. 64 runes covers any
-// hostname (RFC 1035 = 253 ASCII bytes is well above this) plus a CI
-// suffix; the worst-case storage cost is 64 × 4 = 256 bytes per row,
-// which is still well below the table-bloat threshold the original
-// constant was tuned for.
+// maxDeviceLabelRunes caps device_label values. Counts runes (not bytes)
+// so a multi-byte character at the boundary can't be sliced mid-encoding
+// into invalid UTF-8. 64 runes covers any RFC 1035 hostname plus a CI
+// suffix at a worst-case 256-byte storage cost.
 const maxDeviceLabelRunes = 64
 
 // truncateDeviceLabel sanitizes the user-supplied label: strips control
@@ -899,6 +894,21 @@ func truncateDeviceLabel(label string) string {
 type loginResponse struct {
 	Token     string `json:"token"`
 	ExpiresAt string `json:"expires_at"`
+}
+
+// registerResponse is the JSON shape returned by POST /v1/auth/register.
+// Token and ExpiresAt are populated only on the auto-login path
+// (currently: the first-user owner registration); other paths leave them
+// empty and set RequiresVerification.
+type registerResponse struct {
+	Email                string `json:"email"`
+	Role                 string `json:"role,omitempty"`
+	RequiresVerification bool   `json:"requires_verification"`
+	EmailSent            bool   `json:"email_sent"`
+	Authenticated        bool   `json:"authenticated"`
+	Message              string `json:"message"`
+	Token                string `json:"token,omitempty"`
+	ExpiresAt            string `json:"expires_at,omitempty"`
 }
 
 // userSessionAbsoluteTTL caps how long a user-login session can survive
@@ -1009,7 +1019,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		s.maybeTouchSession(r, sess, token)
+		s.maybeTouchSession(r.Context(), sess, token, clientIP(r), r.UserAgent())
 
 		ctx := context.WithValue(r.Context(), sessionContextKey, sess)
 		next(w, r.WithContext(ctx))
@@ -1031,7 +1041,7 @@ func (s *Server) optionalAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		if token != "" {
 			if sess, err := s.store.GetSession(r.Context(), token); err == nil && sess != nil && !sess.IsExpired(time.Now()) {
-				s.maybeTouchSession(r, sess, token)
+				s.maybeTouchSession(r.Context(), sess, token, clientIP(r), r.UserAgent())
 				ctx := context.WithValue(r.Context(), sessionContextKey, sess)
 				next(w, r.WithContext(ctx))
 				return
@@ -1043,11 +1053,12 @@ func (s *Server) optionalAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // maybeTouchSession bumps last_used_at on user sessions and refreshes
-// last_ip / last_user_agent from the request, gated by an in-memory cache
-// so the SQL layer is hit at most once per session per TouchInterval.
-// The store-side WHERE-clause throttle is preserved as defense in depth
-// (e.g. a process restart resets the cache).
-func (s *Server) maybeTouchSession(r *http.Request, sess *store.Session, rawToken string) {
+// last_ip / last_user_agent, gated by an in-memory cache so the SQL
+// layer is hit at most once per session per TouchInterval. The store-
+// side WHERE-clause throttle is preserved as defense in depth (e.g. a
+// process restart resets the cache). Empty ip/ua leave existing column
+// values unchanged via COALESCE in the store.
+func (s *Server) maybeTouchSession(ctx context.Context, sess *store.Session, rawToken, ip, userAgent string) {
 	if sess == nil || sess.UserID == "" {
 		return
 	}
@@ -1058,16 +1069,16 @@ func (s *Server) maybeTouchSession(r *http.Request, sess *store.Session, rawToke
 		}
 	}
 	s.touchCache.Store(rawToken, now)
-	_ = s.store.TouchSession(r.Context(), rawToken, clientIP(r), r.UserAgent())
+	_ = s.store.TouchSession(ctx, rawToken, ip, userAgent)
 }
 
-// pruneTouchCache drops entries older than store.TouchInterval. Anything
-// older is past the SQL throttle window — the next request would issue
-// an UPDATE regardless — so retaining the entry has no correctness value
-// and just leaks memory across logout, revoke, and password-change
-// invalidation paths that don't hold the raw token.
+// pruneTouchCache drops entries past the throttle window. We use 2×
+// TouchInterval so a still-active session — touched within the last
+// minute — isn't evicted only to be re-stored on its next request;
+// anything older than that has zero correctness value because the SQL
+// throttle would let the next write through anyway.
 func (s *Server) pruneTouchCache() {
-	cutoff := time.Now().Add(-store.TouchInterval)
+	cutoff := time.Now().Add(-2 * store.TouchInterval)
 	s.touchCache.Range(func(key, val any) bool {
 		if t, ok := val.(time.Time); ok && t.Before(cutoff) {
 			s.touchCache.Delete(key)
@@ -1076,14 +1087,16 @@ func (s *Server) pruneTouchCache() {
 	})
 }
 
-// runTouchCachePruner drives pruneTouchCache on a ticker until Start's
-// shutdown closes touchPruneCh. Spawned by Start.
-func (s *Server) runTouchCachePruner() {
+// runTouchCachePruner drives pruneTouchCache on a ticker until ctx is
+// cancelled. Spawned by Start; stopped via the deferred WithCancel
+// cancel so a Start error path or a second Start cycle never leaks the
+// goroutine or panics on a re-closed channel.
+func (s *Server) runTouchCachePruner(ctx context.Context) {
 	ticker := time.NewTicker(store.TouchInterval)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-s.touchPruneCh:
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			s.pruneTouchCache()
