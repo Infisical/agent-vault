@@ -72,9 +72,11 @@ jobs:
       - name: Build frontend (tsc + vite)
         run: cd web && npm ci && npm run build
 
+  # Security-critical: always run on every PR. Path-gating these would mean
+  # a missed filter entry (e.g. a new //go:embed target) silently turns the
+  # required check green with no Go signal. For a credential broker that's
+  # too large a failure mode for the speedup it would buy.
   go-test:
-    needs: changes
-    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -95,9 +97,8 @@ jobs:
       - name: Run tests
         run: go test -race -count=1 ./...
 
+  # Security-critical: always run on every PR (see go-test for rationale).
   go-lint:
-    needs: changes
-    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
