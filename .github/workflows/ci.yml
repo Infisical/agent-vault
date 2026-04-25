@@ -34,19 +34,15 @@ jobs:
         uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3.0.3
         with:
           filters: |
+            # Only gates `go-mod-tidy`. `go-test` and `go-lint` run on every
+            # PR unconditionally, so they don't need embedded-asset paths
+            # listed here.
             go:
               - '**/*.go'
               - 'go.mod'
               - 'go.sum'
               - '.golangci.yml'
               - '.github/workflows/ci.yml'
-              # Non-Go assets compiled into the binary via //go:embed.
-              # A change to any of these must trigger go-test / go-lint.
-              - 'internal/store/migrations/**'
-              - 'internal/sandbox/assets/**'
-              - 'internal/server/*.html'
-              - 'internal/server/*.txt'
-              - 'cmd/skill_*.md'
             web:
               - 'web/**'
               - '.github/workflows/ci.yml'
