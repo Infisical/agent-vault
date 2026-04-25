@@ -10,11 +10,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type revokeSessionResponse struct {
-	Status  string `json:"status"`
-	Current bool   `json:"current"`
-}
-
 var authSessionsCmd = &cobra.Command{
 	Use:   "sessions",
 	Short: "Manage your active CLI/web logins (parity with `gh auth status`)",
@@ -64,7 +59,10 @@ var authSessionsRevokeCmd = &cobra.Command{
 	Short: "Revoke a session by id (from `auth sessions list`)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		resp, err := fetchAndDecode[revokeSessionResponse]("DELETE", "/v1/auth/sessions/"+args[0])
+		resp, err := fetchAndDecode[struct {
+			Status  string `json:"status"`
+			Current bool   `json:"current"`
+		}]("DELETE", "/v1/auth/sessions/"+args[0])
 		if err != nil {
 			return err
 		}

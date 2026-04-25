@@ -342,7 +342,12 @@ func (s *Server) handleOAuthDisconnect(w http.ResponseWriter, r *http.Request) {
 
 // createOAuthSession creates a session for an OAuth user and redirects.
 func (s *Server) createOAuthSession(w http.ResponseWriter, r *http.Request, user *store.User, redirectURL string) {
-	session, err := s.store.CreateUserSession(r.Context(), newUserSessionParams(r, user.ID))
+	params := newUserSessionParams(r, user.ID)
+	// Browser sign-ins don't carry a device_label in the request, but
+	// the User-Agent is enough to distinguish "Chrome on macOS" from
+	// "Firefox on Linux" in `auth sessions list`.
+	params.DeviceLabel = truncateDeviceLabel(r.UserAgent())
+	session, err := s.store.CreateUserSession(r.Context(), params)
 	if err != nil {
 		s.oauthErrorRedirect(w, r, "session_failed")
 		return

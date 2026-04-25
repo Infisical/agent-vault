@@ -788,8 +788,8 @@ func (s *Server) Start() error {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-	pruneCtx, stopPruner := context.WithCancel(context.Background())
-	defer stopPruner()
+	pruneCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	go s.runTouchCachePruner(pruneCtx)
 
 	errCh := make(chan error, 1)

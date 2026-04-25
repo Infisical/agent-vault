@@ -1439,16 +1439,20 @@ func TestListAndRevokeAuthSessionsRoute(t *testing.T) {
 		t.Fatalf("expected 2 sessions, got %d", len(listResp.Sessions))
 	}
 	currentCount := 0
-	var otherID string
+	var currentID, otherID string
 	for _, s := range listResp.Sessions {
 		if s.Current {
 			currentCount++
+			currentID = s.ID
 		} else {
 			otherID = s.ID
 		}
 	}
 	if currentCount != 1 {
 		t.Fatalf("expected exactly one Current=true session, got %d", currentCount)
+	}
+	if want := ms.sessions[login1.Token].PublicID; currentID != want {
+		t.Fatalf("Current=true row ID %q does not match login1's public_id %q", currentID, want)
 	}
 
 	// Revoke the other session via DELETE.

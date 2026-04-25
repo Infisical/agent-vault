@@ -787,6 +787,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	if token != "" {
 		_ = s.store.DeleteSession(r.Context(), token)
+		s.touchCache.Delete(token)
 	}
 	http.SetCookie(w, sessionCookie(r, s.baseURL, "", -1))
 	jsonOK(w, map[string]string{"status": "ok"})
