@@ -97,7 +97,7 @@ var serverCmd = &cobra.Command{
 		// master password just to learn the port is taken.
 		if pid, err := pidfile.Read(); err == nil {
 			if pidfile.IsRunning(pid) {
-				return fmt.Errorf("server is already running (PID %d). Use 'agent-vault server stop' to stop it, or pass --port to run a second instance", pid)
+				return fmt.Errorf("server is already running (PID %d). Use 'agent-vault server stop' to stop it first", pid)
 			}
 			_ = pidfile.Remove()
 		}
