@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -64,11 +65,28 @@ var authSessionsRevokeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		var resp struct {
+			Status  string `json:"status"`
+			Current bool   `json:"current"`
+		}
 		err = withReauthRetry(sess, sess.Address, func(s *session.ClientSession) error {
-			return doAdminRequest("DELETE", s.Address+"/v1/auth/sessions/"+id, s.Token, nil)
+			body, ierr := doAdminRequestWithBody("DELETE", s.Address+"/v1/auth/sessions/"+id, s.Token, nil)
+			if ierr != nil {
+				return ierr
+			}
+			return json.Unmarshal(body, &resp)
 		})
 		if err != nil {
 			return err
+		}
+		// Self-revoke: drop the on-disk token immediately so the next
+		// CLI call doesn't 401 against a session we just killed.
+		if resp.Current {
+			if err := session.Clear(); err != nil {
+				return fmt.Errorf("session revoked but local clear failed: %w", err)
+			}
+			fmt.Fprintln(os.Stderr, successText("✓")+" Session revoked. Run `agent-vault auth login` to log in again.")
+			return nil
 		}
 		fmt.Fprintln(os.Stderr, successText("✓")+" Session revoked.")
 		return nil

@@ -64,8 +64,9 @@ func (s *Server) generateAndSendVerificationCode(ctx context.Context, email stri
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email       string `json:"email"`
+		Password    string `json:"password"`
+		DeviceLabel string `json:"device_label,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
@@ -157,8 +158,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// First user: owner created successfully.
 		s.initialized = true
 
-		// Auto-login: create session and set cookie.
-		session, err := s.store.CreateUserSession(ctx, newUserSessionParams(r, user.ID))
+		// Auto-login: create session and set cookie. Token + expires_at
+		// are also returned in the JSON body so non-cookie clients (the
+		// CLI) can persist the session without a follow-up /v1/auth/login
+		// — mirroring the browser's cookie-based auto-login.
+		params := newUserSessionParams(r, user.ID)
+		params.DeviceLabel = truncateDeviceLabel(req.DeviceLabel)
+		session, err := s.store.CreateUserSession(ctx, params)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "Failed to create session")
 			return
@@ -171,6 +177,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			"requires_verification": false,
 			"authenticated":         true,
 			"message":               "Owner account created.",
+			"token":                 session.ID,
+			"expires_at":            formatExpiresAt(session.ExpiresAt),
 		})
 		return
 	}

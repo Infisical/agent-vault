@@ -136,10 +136,16 @@ func (m *mockStore) CreateSession(ctx context.Context, userID string, expiresAt 
 	return m.CreateUserSession(ctx, store.CreateUserSessionParams{UserID: userID, ExpiresAt: expiresAt})
 }
 
-func (m *mockStore) TouchSession(_ context.Context, rawToken string) error {
+func (m *mockStore) TouchSession(_ context.Context, rawToken, ip, userAgent string) error {
 	if sess, ok := m.sessions[rawToken]; ok && sess != nil {
 		now := time.Now()
 		sess.LastUsedAt = &now
+		if ip != "" {
+			sess.LastIP = ip
+		}
+		if userAgent != "" {
+			sess.LastUserAgent = userAgent
+		}
 	}
 	return nil
 }
@@ -1507,6 +1513,18 @@ func TestSelfRevokeClearsCookie(t *testing.T) {
 	if cleared.MaxAge >= 0 || cleared.Value != "" {
 		t.Fatalf("expected expired empty av_session cookie, got value=%q max_age=%d", cleared.Value, cleared.MaxAge)
 	}
+	// Self-revoke must also surface `current: true` so non-cookie
+	// clients (the CLI) know to drop their on-disk session.
+	var resp struct {
+		Status  string `json:"status"`
+		Current bool   `json:"current"`
+	}
+	if err := json.Unmarshal(delRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode revoke response: %v", err)
+	}
+	if !resp.Current {
+		t.Fatalf("self-revoke should report current=true, got %+v", resp)
+	}
 }
 
 func TestRevokeOtherSessionLeavesCookieAlone(t *testing.T) {
@@ -1534,6 +1552,83 @@ func TestRevokeOtherSessionLeavesCookieAlone(t *testing.T) {
 		if c.Name == "av_session" {
 			t.Fatalf("revoking another session must not touch our own cookie, got %+v", c)
 		}
+	}
+	var resp struct {
+		Current bool `json:"current"`
+	}
+	if err := json.Unmarshal(delRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode revoke response: %v", err)
+	}
+	if resp.Current {
+		t.Fatalf("revoking another session should report current=false, got %+v", resp)
+	}
+}
+
+func TestRegisterFirstUserReturnsToken(t *testing.T) {
+	ms := newMockStore()
+	srv := newTestServer(withStore(ms))
+
+	body := `{"email":"owner@test.com","password":"test-password-123","device_label":"my-laptop"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", strings.NewReader(body))
+	req.Header.Set("User-Agent", "agent-vault-cli/test")
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("register: %d %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Authenticated bool   `json:"authenticated"`
+		Token         string `json:"token"`
+		ExpiresAt     string `json:"expires_at"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Authenticated || resp.Token == "" || resp.ExpiresAt == "" {
+		t.Fatalf("first-user register should return authenticated session, got %+v", resp)
+	}
+	if sess := ms.sessions[resp.Token]; sess == nil || sess.DeviceLabel != "my-laptop" {
+		t.Fatalf("expected stored session with device_label='my-laptop', got %+v", sess)
+	}
+	// Exactly one session row was created — no orphan from a duplicate auto-login.
+	if len(ms.sessions) != 1 {
+		t.Fatalf("expected 1 session after first-user register, got %d", len(ms.sessions))
+	}
+}
+
+func TestTouchSessionRefreshesIPAndUserAgent(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "admin@test.com", "test-password-123")
+	srv := newTestServer(withStore(ms))
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/v1/auth/login",
+		strings.NewReader(`{"email":"admin@test.com","password":"test-password-123"}`))
+	loginReq.Header.Set("User-Agent", "first-agent/1.0")
+	loginReq.RemoteAddr = "10.0.0.1:1234"
+	loginRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(loginRec, loginReq)
+	var login loginResponse
+	_ = json.NewDecoder(loginRec.Body).Decode(&login)
+
+	// Force the cache miss so requireAuth's maybeTouchSession actually
+	// reaches the store on the next request.
+	srv.touchCache.Delete(login.Token)
+
+	meReq := httptest.NewRequest(http.MethodGet, "/v1/auth/me", nil)
+	meReq.Header.Set("Authorization", "Bearer "+login.Token)
+	meReq.Header.Set("User-Agent", "second-agent/2.0")
+	meReq.RemoteAddr = "192.168.1.1:5678"
+	meRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(meRec, meReq)
+	if meRec.Code != http.StatusOK {
+		t.Fatalf("/me: %d %s", meRec.Code, meRec.Body.String())
+	}
+
+	updated := ms.sessions[login.Token]
+	if updated.LastUserAgent != "second-agent/2.0" {
+		t.Fatalf("expected user-agent to refresh on touch, got %q", updated.LastUserAgent)
+	}
+	if updated.LastIP != "192.168.1.1" {
+		t.Fatalf("expected last_ip to refresh on touch, got %q", updated.LastIP)
 	}
 }
 

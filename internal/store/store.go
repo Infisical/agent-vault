@@ -349,10 +349,12 @@ type Store interface {
 	CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*Session, error)
 	GetSession(ctx context.Context, id string) (*Session, error)
 	DeleteSession(ctx context.Context, id string) error
-	// TouchSession bumps last_used_at for the given raw token; throttled
-	// internally so per-request calls collapse to one write per minute.
-	// Returns no error when the session is missing (best-effort).
-	TouchSession(ctx context.Context, rawToken string) error
+	// TouchSession bumps last_used_at for the given raw token and
+	// refreshes last_ip + last_user_agent (empty values leave the
+	// existing column unchanged). Throttled internally so per-request
+	// calls collapse to one write per minute. Returns no error when the
+	// session is missing (best-effort).
+	TouchSession(ctx context.Context, rawToken, ip, userAgent string) error
 	// ListUserSessions returns every non-expired user session for userID
 	// (ordered most-recent activity first). Used by the auth-sessions UI.
 	ListUserSessions(ctx context.Context, userID string) ([]Session, error)

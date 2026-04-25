@@ -76,13 +76,14 @@ func (s *Server) handleRevokeUserSession(w http.ResponseWriter, r *http.Request)
 		jsonError(w, http.StatusInternalServerError, "Failed to revoke session")
 		return
 	}
-	// Self-revoke: clear the av_session cookie so a browser caller drops
-	// the now-dead cookie immediately instead of carrying it until the
-	// next 401. Mirrors handleLogout / handleDeleteAccount. CLI Bearer
-	// callers don't carry the cookie and ignore Set-Cookie headers.
-	if caller.PublicID == publicID {
+	// Self-revoke handling: clear the av_session cookie so a browser
+	// drops the dead cookie immediately, and signal `current: true` in
+	// the JSON body so non-cookie clients (the CLI) can clear their own
+	// on-disk session.json without a follow-up sniffing call.
+	selfRevoke := caller.PublicID == publicID
+	if selfRevoke {
 		http.SetCookie(w, sessionCookie(r, s.baseURL, "", -1))
 	}
-	jsonOK(w, map[string]string{"status": "revoked"})
+	jsonOK(w, map[string]interface{}{"status": "revoked", "current": selfRevoke})
 }
 

@@ -833,19 +833,26 @@ func (s *SQLiteStore) GetSession(ctx context.Context, rawToken string) (*Session
 // consistent with the store-side throttle.
 const TouchInterval = 60 * time.Second
 
-// TouchSession bumps last_used_at on a user session, throttled by
-// touchInterval so per-request calls collapse to one write per minute.
-// No-op for agent tokens and scoped sessions (their rows have user_id IS NULL).
-func (s *SQLiteStore) TouchSession(ctx context.Context, rawToken string) error {
+// TouchSession bumps last_used_at on a user session and refreshes
+// last_ip + last_user_agent so the auth-sessions view reflects the
+// caller's most recent request rather than only the login. Throttled by
+// TouchInterval so per-request calls collapse to one write per minute.
+// No-op for agent tokens and scoped sessions (rows with user_id IS NULL).
+// Empty ip/userAgent leave the existing column value untouched via
+// COALESCE — handy when a caller can't determine them.
+func (s *SQLiteStore) TouchSession(ctx context.Context, rawToken, ip, userAgent string) error {
 	tokenHash := hashSessionToken(rawToken)
 	now := time.Now().UTC().Format(time.DateTime)
 	cutoff := time.Now().UTC().Add(-TouchInterval).Format(time.DateTime)
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET last_used_at = ?
-		 WHERE id = ?
-		   AND user_id IS NOT NULL
-		   AND (last_used_at IS NULL OR last_used_at < ?)`,
-		now, tokenHash, cutoff,
+		`UPDATE sessions
+		    SET last_used_at    = ?,
+		        last_ip         = COALESCE(NULLIF(?, ''), last_ip),
+		        last_user_agent = COALESCE(NULLIF(?, ''), last_user_agent)
+		  WHERE id = ?
+		    AND user_id IS NOT NULL
+		    AND (last_used_at IS NULL OR last_used_at < ?)`,
+		now, ip, userAgent, tokenHash, cutoff,
 	)
 	if err != nil {
 		return fmt.Errorf("touching session: %w", err)

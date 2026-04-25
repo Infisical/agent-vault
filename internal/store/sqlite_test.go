@@ -476,7 +476,7 @@ func TestTouchSessionThrottlesAndAdvances(t *testing.T) {
 		t.Fatalf("forcing last_used_at: %v", err)
 	}
 
-	if err := s.TouchSession(ctx, sess.ID); err != nil {
+	if err := s.TouchSession(ctx, sess.ID, "10.0.0.1", "agent-vault-cli/test"); err != nil {
 		t.Fatalf("TouchSession: %v", err)
 	}
 
@@ -490,15 +490,38 @@ func TestTouchSessionThrottlesAndAdvances(t *testing.T) {
 	if time.Since(*got.LastUsedAt) > time.Minute {
 		t.Fatalf("LastUsedAt should be ~now after Touch, got %v ago", time.Since(*got.LastUsedAt))
 	}
+	if got.LastIP != "10.0.0.1" || got.LastUserAgent != "agent-vault-cli/test" {
+		t.Fatalf("touch should refresh last_ip/last_user_agent, got ip=%q ua=%q", got.LastIP, got.LastUserAgent)
+	}
 
-	// Throttle: a second touch within touchInterval is a no-op.
+	// Throttle: a second touch within TouchInterval is a no-op, and
+	// non-empty ip/ua args still don't bleed through the throttle.
 	frozen := *got.LastUsedAt
-	if err := s.TouchSession(ctx, sess.ID); err != nil {
+	if err := s.TouchSession(ctx, sess.ID, "10.0.0.99", "other-agent"); err != nil {
 		t.Fatalf("TouchSession (second): %v", err)
 	}
 	got2, _ := s.GetSession(ctx, sess.ID)
 	if !got2.LastUsedAt.Equal(frozen) {
 		t.Fatalf("expected throttled write to leave last_used_at = %v, got %v", frozen, got2.LastUsedAt)
+	}
+	if got2.LastIP != "10.0.0.1" {
+		t.Fatalf("throttled touch must not overwrite last_ip, got %q", got2.LastIP)
+	}
+
+	// Empty ip/ua leaves existing values untouched even when the
+	// throttle window expires.
+	if _, err := s.db.ExecContext(ctx,
+		"UPDATE sessions SET last_used_at = ? WHERE id = ?",
+		time.Now().Add(-2*time.Hour).UTC().Format(time.DateTime), hashSessionToken(sess.ID),
+	); err != nil {
+		t.Fatalf("forcing last_used_at: %v", err)
+	}
+	if err := s.TouchSession(ctx, sess.ID, "", ""); err != nil {
+		t.Fatalf("TouchSession (empty ip/ua): %v", err)
+	}
+	got3, _ := s.GetSession(ctx, sess.ID)
+	if got3.LastIP != "10.0.0.1" || got3.LastUserAgent != "agent-vault-cli/test" {
+		t.Fatalf("empty ip/ua should preserve previous values, got ip=%q ua=%q", got3.LastIP, got3.LastUserAgent)
 	}
 }
 
@@ -594,7 +617,7 @@ func TestPreMigrationSessionStillUsable(t *testing.T) {
 
 	// Touch a legacy session: should populate last_used_at without
 	// retroactively enabling the idle check.
-	if err := s.TouchSession(ctx, rawToken); err != nil {
+	if err := s.TouchSession(ctx, rawToken, "127.0.0.1", "test"); err != nil {
 		t.Fatalf("TouchSession: %v", err)
 	}
 	got, _ = s.GetSession(ctx, rawToken)

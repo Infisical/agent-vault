@@ -140,7 +140,7 @@ type Store interface {
 	GetSession(ctx context.Context, id string) (*store.Session, error)
 	DeleteSession(ctx context.Context, id string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
-	TouchSession(ctx context.Context, rawToken string) error
+	TouchSession(ctx context.Context, rawToken, ip, userAgent string) error
 	ListUserSessions(ctx context.Context, userID string) ([]store.Session, error)
 	RevokeUserSession(ctx context.Context, userID, publicID string) error
 
@@ -1009,7 +1009,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		s.maybeTouchSession(r.Context(), sess, token)
+		s.maybeTouchSession(r, sess, token)
 
 		ctx := context.WithValue(r.Context(), sessionContextKey, sess)
 		next(w, r.WithContext(ctx))
@@ -1031,7 +1031,7 @@ func (s *Server) optionalAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		if token != "" {
 			if sess, err := s.store.GetSession(r.Context(), token); err == nil && sess != nil && !sess.IsExpired(time.Now()) {
-				s.maybeTouchSession(r.Context(), sess, token)
+				s.maybeTouchSession(r, sess, token)
 				ctx := context.WithValue(r.Context(), sessionContextKey, sess)
 				next(w, r.WithContext(ctx))
 				return
@@ -1042,11 +1042,12 @@ func (s *Server) optionalAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// maybeTouchSession bumps last_used_at on user sessions, gated by an
-// in-memory cache so the SQL layer is hit at most once per session per
-// touchInterval. The store-side WHERE-clause throttle is preserved as
-// defense in depth (e.g. a process restart resets the cache).
-func (s *Server) maybeTouchSession(ctx context.Context, sess *store.Session, rawToken string) {
+// maybeTouchSession bumps last_used_at on user sessions and refreshes
+// last_ip / last_user_agent from the request, gated by an in-memory cache
+// so the SQL layer is hit at most once per session per TouchInterval.
+// The store-side WHERE-clause throttle is preserved as defense in depth
+// (e.g. a process restart resets the cache).
+func (s *Server) maybeTouchSession(r *http.Request, sess *store.Session, rawToken string) {
 	if sess == nil || sess.UserID == "" {
 		return
 	}
@@ -1057,7 +1058,7 @@ func (s *Server) maybeTouchSession(ctx context.Context, sess *store.Session, raw
 		}
 	}
 	s.touchCache.Store(rawToken, now)
-	_ = s.store.TouchSession(ctx, rawToken)
+	_ = s.store.TouchSession(r.Context(), rawToken, clientIP(r), r.UserAgent())
 }
 
 // pruneTouchCache drops entries older than store.TouchInterval. Anything

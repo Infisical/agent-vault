@@ -76,7 +76,7 @@ var registerCmd = &cobra.Command{
 			return fmt.Errorf("password must be at least 8 characters")
 		}
 
-		result, err := doRegister(address, email, password)
+		result, err := doRegister(address, email, password, defaultDeviceLabel())
 		if err != nil {
 			return err
 		}
