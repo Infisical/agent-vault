@@ -72,8 +72,11 @@ type Server struct {
 	// single WAL writer slot. Caching the last-touch wall-clock per
 	// token keeps the steady state at one SQL write per session per
 	// touchInterval; the SQL throttle remains as a defense-in-depth
-	// backstop. Size is bounded by the number of active sessions.
-	touchCache sync.Map // raw token (string) -> time.Time
+	// backstop. Bounded by a periodic prune that drops entries older
+	// than store.TouchInterval — anything older has zero correctness
+	// value (the SQL throttle would let the next write through anyway).
+	touchCache    sync.Map // raw token (string) -> time.Time
+	touchPruneCh  chan struct{}
 }
 
 // RateLimit returns the server's rate-limit registry. Exported so the
@@ -584,6 +587,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 		logger:         logger,
 		rateLimit:      rl,
 		logSink:        requestlog.Nop{},
+		touchPruneCh:   make(chan struct{}),
 	}
 
 	ipAuth := s.tier(ratelimit.TierAuth, s.ipKeyer())
@@ -787,6 +791,8 @@ func (s *Server) Start() error {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
+	go s.runTouchCachePruner()
+
 	errCh := make(chan error, 1)
 	go func() {
 		fmt.Printf("Agent Vault server listening on %s\n", s.baseURL)
@@ -834,6 +840,7 @@ func (s *Server) Start() error {
 	defer cancel()
 
 	fmt.Println("shutting down server...")
+	close(s.touchPruneCh)
 	if s.mitm != nil {
 		if err := s.mitm.Shutdown(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: mitm proxy shutdown: %v\n", err)
@@ -859,20 +866,23 @@ type loginRequest struct {
 	DeviceLabel string `json:"device_label,omitempty"` // optional, e.g. CLI hostname
 }
 
-// maxDeviceLabelLen caps device_label values written to the session row.
-// Long enough for hostnames (RFC 1035 = 253) plus a CI suffix; short
-// enough that a flood of long labels can't bloat the sessions table.
-const maxDeviceLabelLen = 64
+// maxDeviceLabelRunes caps device_label values written to the session
+// row. Counts runes (not bytes) so a multi-byte character at the boundary
+// can't be sliced mid-encoding into invalid UTF-8. 64 runes covers any
+// hostname (RFC 1035 = 253 ASCII bytes is well above this) plus a CI
+// suffix; the worst-case storage cost is 64 × 4 = 256 bytes per row,
+// which is still well below the table-bloat threshold the original
+// constant was tuned for.
+const maxDeviceLabelRunes = 64
 
 // truncateDeviceLabel sanitizes the user-supplied label: strips control
-// characters, collapses whitespace, and caps the length. Empty input
-// returns "" (caller decides on a default).
+// characters and caps the length in runes. Empty input returns ""
+// (caller decides on a default).
 func truncateDeviceLabel(label string) string {
 	label = strings.TrimSpace(label)
 	if label == "" {
 		return ""
 	}
-	// Drop control chars; we keep printable ASCII + UTF-8 letters/numbers.
 	cleaned := make([]rune, 0, len(label))
 	for _, r := range label {
 		if r < 0x20 || r == 0x7f {
@@ -880,11 +890,10 @@ func truncateDeviceLabel(label string) string {
 		}
 		cleaned = append(cleaned, r)
 	}
-	out := string(cleaned)
-	if len(out) > maxDeviceLabelLen {
-		out = out[:maxDeviceLabelLen]
+	if len(cleaned) > maxDeviceLabelRunes {
+		cleaned = cleaned[:maxDeviceLabelRunes]
 	}
-	return out
+	return string(cleaned)
 }
 
 type loginResponse struct {
@@ -1049,6 +1058,36 @@ func (s *Server) maybeTouchSession(ctx context.Context, sess *store.Session, raw
 	}
 	s.touchCache.Store(rawToken, now)
 	_ = s.store.TouchSession(ctx, rawToken)
+}
+
+// pruneTouchCache drops entries older than store.TouchInterval. Anything
+// older is past the SQL throttle window — the next request would issue
+// an UPDATE regardless — so retaining the entry has no correctness value
+// and just leaks memory across logout, revoke, and password-change
+// invalidation paths that don't hold the raw token.
+func (s *Server) pruneTouchCache() {
+	cutoff := time.Now().Add(-store.TouchInterval)
+	s.touchCache.Range(func(key, val any) bool {
+		if t, ok := val.(time.Time); ok && t.Before(cutoff) {
+			s.touchCache.Delete(key)
+		}
+		return true
+	})
+}
+
+// runTouchCachePruner drives pruneTouchCache on a ticker until Start's
+// shutdown closes touchPruneCh. Spawned by Start.
+func (s *Server) runTouchCachePruner() {
+	ticker := time.NewTicker(store.TouchInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.touchPruneCh:
+			return
+		case <-ticker.C:
+			s.pruneTouchCache()
+		}
+	}
 }
 
 const (

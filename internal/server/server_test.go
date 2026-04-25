@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Infisical/agent-vault/internal/auth"
 	"github.com/Infisical/agent-vault/internal/crypto"
@@ -1469,6 +1470,105 @@ func TestListAndRevokeAuthSessionsRoute(t *testing.T) {
 	srv.httpServer.Handler.ServeHTTP(delAgainRec, delAgain)
 	if delAgainRec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 on duplicate revoke, got %d", delAgainRec.Code)
+	}
+}
+
+func TestSelfRevokeClearsCookie(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "admin@test.com", "test-password-123")
+	srv := newTestServer(withStore(ms))
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/v1/auth/login",
+		strings.NewReader(`{"email":"admin@test.com","password":"test-password-123","device_label":"laptop"}`))
+	loginRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login: %d %s", loginRec.Code, loginRec.Body.String())
+	}
+	var login loginResponse
+	_ = json.NewDecoder(loginRec.Body).Decode(&login)
+	myPub := ms.sessions[login.Token].PublicID
+
+	delReq := httptest.NewRequest(http.MethodDelete, "/v1/auth/sessions/"+myPub, nil)
+	delReq.Header.Set("Authorization", "Bearer "+login.Token)
+	delRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(delRec, delReq)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("self-revoke: %d %s", delRec.Code, delRec.Body.String())
+	}
+	var cleared *http.Cookie
+	for _, c := range delRec.Result().Cookies() {
+		if c.Name == "av_session" {
+			cleared = c
+		}
+	}
+	if cleared == nil {
+		t.Fatal("expected Set-Cookie clearing av_session on self-revoke")
+	}
+	if cleared.MaxAge >= 0 || cleared.Value != "" {
+		t.Fatalf("expected expired empty av_session cookie, got value=%q max_age=%d", cleared.Value, cleared.MaxAge)
+	}
+}
+
+func TestRevokeOtherSessionLeavesCookieAlone(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "admin@test.com", "test-password-123")
+	srv := newTestServer(withStore(ms))
+
+	body := `{"email":"admin@test.com","password":"test-password-123","device_label":"laptop"}`
+	rec1 := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec1, httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(body)))
+	rec2 := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec2, httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(body)))
+	var login1, login2 loginResponse
+	_ = json.NewDecoder(rec1.Body).Decode(&login1)
+	_ = json.NewDecoder(rec2.Body).Decode(&login2)
+
+	otherPub := ms.sessions[login2.Token].PublicID
+	delReq := httptest.NewRequest(http.MethodDelete, "/v1/auth/sessions/"+otherPub, nil)
+	delReq.Header.Set("Authorization", "Bearer "+login1.Token)
+	delRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(delRec, delReq)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("revoke other: %d %s", delRec.Code, delRec.Body.String())
+	}
+	for _, c := range delRec.Result().Cookies() {
+		if c.Name == "av_session" {
+			t.Fatalf("revoking another session must not touch our own cookie, got %+v", c)
+		}
+	}
+}
+
+func TestTruncateDeviceLabelKeepsValidUTF8(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"33 accents (boundary at 64 bytes)", strings.Repeat("é", 33)},
+		{"17 emoji (boundary at 64 bytes)", strings.Repeat("🚀", 17)},
+		{"22 cjk runes (boundary at 64 bytes)", strings.Repeat("世", 22)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := truncateDeviceLabel(tc.in)
+			if !utf8.ValidString(out) {
+				t.Fatalf("truncated label is not valid UTF-8: %q", out)
+			}
+			if utf8.RuneCountInString(out) > maxDeviceLabelRunes {
+				t.Fatalf("rune count %d exceeds cap %d", utf8.RuneCountInString(out), maxDeviceLabelRunes)
+			}
+		})
+	}
+}
+
+func TestPruneTouchCacheDropsStaleEntries(t *testing.T) {
+	srv := newTestServer()
+	srv.touchCache.Store("fresh-token", time.Now())
+	srv.touchCache.Store("stale-token", time.Now().Add(-2*store.TouchInterval))
+	srv.pruneTouchCache()
+	if _, ok := srv.touchCache.Load("fresh-token"); !ok {
+		t.Fatal("fresh entry should be retained")
+	}
+	if _, ok := srv.touchCache.Load("stale-token"); ok {
+		t.Fatal("stale entry should be evicted")
 	}
 }
 
