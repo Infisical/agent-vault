@@ -1600,6 +1600,91 @@ func TestRegisterFirstUserReturnsToken(t *testing.T) {
 	}
 }
 
+func TestVerifyReturnsTokenAndPersistsDeviceLabel(t *testing.T) {
+	ms := newMockStore()
+	// Inactive user with a pending verification code — the same shape
+	// handleRegister produces on the second-user-onwards path.
+	hash, salt, kdfP, err := auth.HashUserPassword([]byte("test-password-123"))
+	if err != nil {
+		t.Fatalf("HashUserPassword: %v", err)
+	}
+	ms.users["new@test.com"] = &store.User{
+		ID: "u-new", Email: "new@test.com",
+		PasswordHash: hash, PasswordSalt: salt,
+		KDFTime: kdfP.Time, KDFMemory: kdfP.Memory, KDFThreads: kdfP.Threads,
+		Role: "member", IsActive: false,
+	}
+	if _, err := ms.CreateEmailVerification(context.Background(), "new@test.com", "123456", time.Now().Add(15*time.Minute)); err != nil {
+		t.Fatalf("CreateEmailVerification: %v", err)
+	}
+
+	srv := newTestServer(withStore(ms))
+	body := `{"email":"new@test.com","code":"123456","device_label":"verify-device"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/verify", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("verify: %d %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Authenticated bool   `json:"authenticated"`
+		Token         string `json:"token"`
+		ExpiresAt     string `json:"expires_at"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Authenticated || resp.Token == "" || resp.ExpiresAt == "" {
+		t.Fatalf("verify should return authenticated session, got %+v", resp)
+	}
+	sess := ms.sessions[resp.Token]
+	if sess == nil {
+		t.Fatal("verify should persist the session row")
+	}
+	if sess.DeviceLabel != "verify-device" {
+		t.Fatalf("expected device_label 'verify-device', got %q", sess.DeviceLabel)
+	}
+	// Exactly one session row — verify must not produce an orphan that
+	// a follow-up /v1/auth/login would duplicate.
+	if len(ms.sessions) != 1 {
+		t.Fatalf("expected 1 session after verify, got %d", len(ms.sessions))
+	}
+}
+
+func TestChangePasswordPreservesDeviceLabel(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "admin@test.com", "old-password-123")
+	srv := newTestServer(withStore(ms))
+
+	// Login with a custom device label so we can prove it survives the
+	// post-change-password DeleteUserSessions + CreateUserSession round-trip.
+	body := `{"email":"admin@test.com","password":"old-password-123","device_label":"original-laptop"}`
+	loginRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(loginRec,
+		httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(body)))
+	var login loginResponse
+	_ = json.NewDecoder(loginRec.Body).Decode(&login)
+
+	cpBody := `{"current_password":"old-password-123","new_password":"new-password-456"}`
+	cpReq := httptest.NewRequest(http.MethodPost, "/v1/auth/change-password", strings.NewReader(cpBody))
+	cpReq.Header.Set("Authorization", "Bearer "+login.Token)
+	cpRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(cpRec, cpReq)
+	if cpRec.Code != http.StatusOK {
+		t.Fatalf("change-password: %d %s", cpRec.Code, cpRec.Body.String())
+	}
+	var cp loginResponse
+	_ = json.NewDecoder(cpRec.Body).Decode(&cp)
+
+	newSess := ms.sessions[cp.Token]
+	if newSess == nil {
+		t.Fatal("expected post-change session to be persisted")
+	}
+	if newSess.DeviceLabel != "original-laptop" {
+		t.Fatalf("change-password should carry device_label across the new session, got %q", newSess.DeviceLabel)
+	}
+}
+
 func TestTouchSessionRefreshesIPAndUserAgent(t *testing.T) {
 	ms := setupMockStoreWithUser(t, "admin@test.com", "test-password-123")
 	srv := newTestServer(withStore(ms))
