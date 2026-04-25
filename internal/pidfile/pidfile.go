@@ -21,6 +21,10 @@ func Path() (string, error) {
 	return filepath.Join(home, ".agent-vault", fileName), nil
 }
 
+// ErrAlreadyRunning is returned by WriteIfFree when the PID file is already
+// owned by a live process other than the caller.
+var ErrAlreadyRunning = errors.New("pidfile owned by another live process")
+
 // Write atomically writes the given PID to the PID file.
 func Write(pid int) error {
 	path, err := Path()
@@ -36,6 +40,20 @@ func Write(pid int) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// WriteIfFree atomically writes pid only if no live process other than the
+// caller owns the file. Stale files (process gone) are overwritten. Returns
+// ErrAlreadyRunning when the existing PID points at a different live process —
+// callers should treat this as "another server beat me to it" and avoid
+// removing the file on shutdown.
+func WriteIfFree(pid int) error {
+	if existing, err := Read(); err == nil {
+		if existing != pid && IsRunning(existing) {
+			return ErrAlreadyRunning
+		}
+	}
+	return Write(pid)
 }
 
 // Read reads the PID from the PID file.

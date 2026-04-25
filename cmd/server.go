@@ -93,6 +93,15 @@ var serverCmd = &cobra.Command{
 			return runDetachedChild(host, addr, mitmPort, logger)
 		}
 
+		// Pre-flight before unlocking the vault: don't make the user type a
+		// master password just to learn the port is taken.
+		if pid, err := pidfile.Read(); err == nil {
+			if pidfile.IsRunning(pid) {
+				return fmt.Errorf("server is already running (PID %d). Use 'agent-vault server stop' to stop it, or pass --port to run a second instance", pid)
+			}
+			_ = pidfile.Remove()
+		}
+
 		dbPath, err := store.DefaultDBPath()
 		if err != nil {
 			return fmt.Errorf("resolving db path: %w", err)
@@ -476,15 +485,6 @@ func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger) erro
 // invocation (no env var) still takes effect after re-exec.
 func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bool, host string, port, mitmPort int, addr string, explicitLogLevel *string) error {
 	defer masterKey.Wipe()
-
-	// Check if a server is already running.
-	if pid, err := pidfile.Read(); err == nil {
-		if pidfile.IsRunning(pid) {
-			return fmt.Errorf("server is already running (PID %d). Use 'agent-vault server stop' to stop it first", pid)
-		}
-		// Stale PID file — clean up.
-		_ = pidfile.Remove()
-	}
 
 	exe, err := os.Executable()
 	if err != nil {

@@ -2,9 +2,13 @@ package cmd
 
 import (
 	"bytes"
+	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/Infisical/agent-vault/internal/pidfile"
 	"github.com/Infisical/agent-vault/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -239,6 +243,46 @@ func TestServerSubcommandsRegistered(t *testing.T) {
 		if !registered[name] {
 			t.Errorf("expected server subcommand %q to be registered, but it was not", name)
 		}
+	}
+}
+
+// TestServerCmd_RefusesWhenPIDFileLive ensures the server command bails out
+// at the pre-flight stage when another live server already owns the PID file,
+// without prompting for a password and without touching the file.
+func TestServerCmd_RefusesWhenPIDFileLive(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	if err := os.MkdirAll(filepath.Join(tmp, ".agent-vault"), 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Seed the PID file with our own PID — guaranteed to be a live process.
+	owner := os.Getpid()
+	if err := pidfile.Write(owner); err != nil {
+		t.Fatalf("seed pidfile: %v", err)
+	}
+
+	// Set a master password env var that would normally drive setup; the
+	// pre-flight check must fire before we ever reach unlockOrSetup, so this
+	// value should be irrelevant.
+	t.Setenv("AGENT_VAULT_MASTER_PASSWORD", "irrelevant-because-we-bail-first")
+
+	_, err := executeCommand("server", "--port", "0", "--mitm-port", "0")
+	if err == nil {
+		t.Fatal("expected error when another live server holds the PID file, got nil")
+	}
+	wantSubstr := fmt.Sprintf("server is already running (PID %d)", owner)
+	if !strings.Contains(err.Error(), wantSubstr) {
+		t.Errorf("error %q does not name the live PID — want substring %q", err.Error(), wantSubstr)
+	}
+
+	// PID file must be untouched.
+	got, err := pidfile.Read()
+	if err != nil {
+		t.Fatalf("Read after refusal: %v", err)
+	}
+	if got != owner {
+		t.Errorf("pidfile contents = %d, want %d (file should not have been overwritten)", got, owner)
 	}
 }
 

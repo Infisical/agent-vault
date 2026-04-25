@@ -763,6 +763,14 @@ func (s *Server) Start() error {
 		}
 	}
 
+	// Bind synchronously so EADDRINUSE returns from Start() before any pidfile
+	// work happens. Keeps a foreground invocation against an already-running
+	// daemon from clobbering the daemon's PID file.
+	httpLn, err := net.Listen("tcp", s.httpServer.Addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", s.httpServer.Addr, err)
+	}
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
@@ -772,7 +780,7 @@ func (s *Server) Start() error {
 		if !s.initialized {
 			fmt.Printf("Run `agent-vault auth register` or visit %s to create the owner account\n", s.baseURL)
 		}
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.httpServer.Serve(httpLn); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 	}()
@@ -793,10 +801,15 @@ func (s *Server) Start() error {
 		}()
 	}
 
-	if err := pidfile.Write(os.Getpid()); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not write PID file: %v\n", err)
+	if err := pidfile.WriteIfFree(os.Getpid()); err != nil {
+		if errors.Is(err, pidfile.ErrAlreadyRunning) {
+			s.logger.Warn("pidfile owned by another process; not claiming or removing it")
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: could not write PID file: %v\n", err)
+		}
+	} else {
+		defer func() { _ = pidfile.Remove() }()
 	}
-	defer func() { _ = pidfile.Remove() }()
 
 	select {
 	case err := <-errCh:

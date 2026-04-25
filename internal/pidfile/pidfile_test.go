@@ -1,6 +1,7 @@
 package pidfile
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -77,5 +78,85 @@ func TestIsRunning(t *testing.T) {
 	// A very high PID should not exist.
 	if IsRunning(4194304) {
 		t.Error("IsRunning(4194304) = true, want false")
+	}
+}
+
+func TestWriteIfFreeNoExistingFile(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	os.MkdirAll(filepath.Join(tmp, ".agent-vault"), 0700)
+
+	if err := WriteIfFree(os.Getpid()); err != nil {
+		t.Fatalf("WriteIfFree on empty slot: %v", err)
+	}
+	got, err := Read()
+	if err != nil {
+		t.Fatalf("Read after WriteIfFree: %v", err)
+	}
+	if got != os.Getpid() {
+		t.Errorf("Read = %d, want %d", got, os.Getpid())
+	}
+}
+
+func TestWriteIfFreeStalePID(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	os.MkdirAll(filepath.Join(tmp, ".agent-vault"), 0700)
+
+	// Seed with a PID that cannot be live.
+	if err := Write(4194304); err != nil {
+		t.Fatalf("seed Write: %v", err)
+	}
+	if err := WriteIfFree(os.Getpid()); err != nil {
+		t.Fatalf("WriteIfFree over stale PID: %v", err)
+	}
+	got, err := Read()
+	if err != nil {
+		t.Fatalf("Read after WriteIfFree: %v", err)
+	}
+	if got != os.Getpid() {
+		t.Errorf("Read = %d, want %d (stale PID should have been overwritten)", got, os.Getpid())
+	}
+}
+
+func TestWriteIfFreeLiveOwner(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	os.MkdirAll(filepath.Join(tmp, ".agent-vault"), 0700)
+
+	// Seed with our own PID, which is definitely live.
+	owner := os.Getpid()
+	if err := Write(owner); err != nil {
+		t.Fatalf("seed Write: %v", err)
+	}
+
+	// A different PID asking to claim the slot should be rejected.
+	err := WriteIfFree(owner + 1)
+	if !errors.Is(err, ErrAlreadyRunning) {
+		t.Fatalf("WriteIfFree against live owner: got %v, want ErrAlreadyRunning", err)
+	}
+
+	// File contents must be unchanged.
+	got, err := Read()
+	if err != nil {
+		t.Fatalf("Read after rejected WriteIfFree: %v", err)
+	}
+	if got != owner {
+		t.Errorf("Read = %d, want %d (file should be untouched)", got, owner)
+	}
+}
+
+func TestWriteIfFreeSamePIDNoOp(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	os.MkdirAll(filepath.Join(tmp, ".agent-vault"), 0700)
+
+	// Same PID re-claiming its own slot must succeed (idempotent).
+	owner := os.Getpid()
+	if err := Write(owner); err != nil {
+		t.Fatalf("seed Write: %v", err)
+	}
+	if err := WriteIfFree(owner); err != nil {
+		t.Fatalf("WriteIfFree with same PID: %v", err)
 	}
 }
