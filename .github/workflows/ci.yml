@@ -8,6 +8,9 @@ on:
 
 permissions:
   contents: read
+  # dorny/paths-filter calls pulls.listFiles on PR events; without this scope
+  # GitHub returns 403 and every PR's `changes` job fails closed.
+  pull-requests: read
 
 # Cancel in-flight runs on the same PR when a new commit is pushed.
 # Main-branch runs are NOT cancelled (preserves post-merge signal).
@@ -37,6 +40,13 @@ jobs:
               - 'go.sum'
               - '.golangci.yml'
               - '.github/workflows/ci.yml'
+              # Non-Go assets compiled into the binary via //go:embed.
+              # A change to any of these must trigger go-test / go-lint.
+              - 'internal/store/migrations/**'
+              - 'internal/sandbox/assets/**'
+              - 'internal/server/*.html'
+              - 'internal/server/*.txt'
+              - 'cmd/skill_*.md'
             web:
               - 'web/**'
               - '.github/workflows/ci.yml'
