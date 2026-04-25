@@ -109,16 +109,63 @@ func (m *mockStore) CountUsers(_ context.Context) (int, error) {
 	return len(m.users), nil
 }
 
-func (m *mockStore) CreateSession(_ context.Context, userID string, expiresAt time.Time) (*store.Session, error) {
+func (m *mockStore) CreateUserSession(_ context.Context, p store.CreateUserSessionParams) (*store.Session, error) {
 	m.sessionCounter++
+	exp := p.ExpiresAt
+	now := time.Now()
 	s := &store.Session{
-		ID:        fmt.Sprintf("test-session-id-%d", m.sessionCounter),
-		UserID:    userID,
-		ExpiresAt: &expiresAt,
-		CreatedAt: time.Now(),
+		ID:            fmt.Sprintf("test-session-id-%d", m.sessionCounter),
+		UserID:        p.UserID,
+		ExpiresAt:     &exp,
+		CreatedAt:     now,
+		PublicID:      fmt.Sprintf("pub-%d", m.sessionCounter),
+		LastUsedAt:    &now,
+		IdleTTL:       p.IdleTTL,
+		DeviceLabel:   p.DeviceLabel,
+		LastIP:        p.LastIP,
+		LastUserAgent: p.LastUserAgent,
 	}
 	m.sessions[s.ID] = s
 	return s, nil
+}
+
+// CreateSession is a convenience for older test sites that pre-date
+// CreateUserSession. New tests should call CreateUserSession directly.
+func (m *mockStore) CreateSession(ctx context.Context, userID string, expiresAt time.Time) (*store.Session, error) {
+	return m.CreateUserSession(ctx, store.CreateUserSessionParams{UserID: userID, ExpiresAt: expiresAt})
+}
+
+func (m *mockStore) TouchSession(_ context.Context, rawToken string) error {
+	if sess, ok := m.sessions[rawToken]; ok && sess != nil {
+		now := time.Now()
+		sess.LastUsedAt = &now
+	}
+	return nil
+}
+
+func (m *mockStore) ListUserSessions(_ context.Context, userID string) ([]store.Session, error) {
+	var out []store.Session
+	now := time.Now()
+	for _, sess := range m.sessions {
+		if sess.UserID != userID {
+			continue
+		}
+		if sess.IsExpired(now) {
+			continue
+		}
+		out = append(out, *sess)
+	}
+	return out, nil
+}
+
+func (m *mockStore) RevokeUserSession(_ context.Context, userID, publicID string) error {
+	for id, sess := range m.sessions {
+		if sess.UserID == userID && sess.PublicID == publicID {
+			delete(m.sessions, id)
+			return nil
+		}
+	}
+	return sql.ErrNoRows
 }
 
 func (m *mockStore) CreateScopedSession(_ context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error) {
@@ -1312,6 +1359,116 @@ func TestLoginSuccess(t *testing.T) {
 	}
 	if resp.ExpiresAt == "" {
 		t.Fatal("expected non-empty expires_at")
+	}
+}
+
+func TestLoginRecordsDeviceMetadata(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "admin@test.com", "test-password-123")
+	srv := newTestServer(withStore(ms))
+
+	body := `{"email":"admin@test.com","password":"test-password-123","device_label":"tony-mbp"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(body))
+	req.Header.Set("User-Agent", "agent-vault-cli/test")
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp loginResponse
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	sess := ms.sessions[resp.Token]
+	if sess == nil {
+		t.Fatal("expected session to be persisted")
+	}
+	if sess.DeviceLabel != "tony-mbp" {
+		t.Fatalf("expected device_label 'tony-mbp', got %q", sess.DeviceLabel)
+	}
+	if sess.LastUserAgent != "agent-vault-cli/test" {
+		t.Fatalf("expected user-agent recorded, got %q", sess.LastUserAgent)
+	}
+	if sess.IdleTTL != userSessionIdleTTL {
+		t.Fatalf("expected idle ttl %v, got %v", userSessionIdleTTL, sess.IdleTTL)
+	}
+}
+
+func TestListAndRevokeAuthSessionsRoute(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "admin@test.com", "test-password-123")
+	srv := newTestServer(withStore(ms))
+
+	// Two logins → two sessions for the same user.
+	loginBody := `{"email":"admin@test.com","password":"test-password-123","device_label":"laptop"}`
+	rec1 := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec1,
+		httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(loginBody)))
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("login 1: %d %s", rec1.Code, rec1.Body.String())
+	}
+	var login1 loginResponse
+	_ = json.NewDecoder(rec1.Body).Decode(&login1)
+
+	loginBody2 := `{"email":"admin@test.com","password":"test-password-123","device_label":"server"}`
+	rec2 := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec2,
+		httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(loginBody2)))
+	var login2 loginResponse
+	_ = json.NewDecoder(rec2.Body).Decode(&login2)
+
+	// GET /v1/auth/sessions using session #1.
+	listReq := httptest.NewRequest(http.MethodGet, "/v1/auth/sessions", nil)
+	listReq.Header.Set("Authorization", "Bearer "+login1.Token)
+	listRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list sessions: %d %s", listRec.Code, listRec.Body.String())
+	}
+	var listResp struct {
+		Sessions []userSessionView `json:"sessions"`
+	}
+	if err := json.NewDecoder(listRec.Body).Decode(&listResp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(listResp.Sessions) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(listResp.Sessions))
+	}
+	currentCount := 0
+	var otherID string
+	for _, s := range listResp.Sessions {
+		if s.Current {
+			currentCount++
+		} else {
+			otherID = s.ID
+		}
+	}
+	if currentCount != 1 {
+		t.Fatalf("expected exactly one Current=true session, got %d", currentCount)
+	}
+
+	// Revoke the other session via DELETE.
+	delReq := httptest.NewRequest(http.MethodDelete, "/v1/auth/sessions/"+otherID, nil)
+	delReq.Header.Set("Authorization", "Bearer "+login1.Token)
+	delRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(delRec, delReq)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("revoke session: %d %s", delRec.Code, delRec.Body.String())
+	}
+
+	// Session #2's token should no longer authenticate.
+	meReq := httptest.NewRequest(http.MethodGet, "/v1/auth/me", nil)
+	meReq.Header.Set("Authorization", "Bearer "+login2.Token)
+	meRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(meRec, meReq)
+	if meRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 after revoke, got %d", meRec.Code)
+	}
+
+	// Revoking again returns 404.
+	delAgain := httptest.NewRequest(http.MethodDelete, "/v1/auth/sessions/"+otherID, nil)
+	delAgain.Header.Set("Authorization", "Bearer "+login1.Token)
+	delAgainRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(delAgainRec, delAgain)
+	if delAgainRec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 on duplicate revoke, got %d", delAgainRec.Code)
 	}
 }
 

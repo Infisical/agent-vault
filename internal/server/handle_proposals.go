@@ -73,7 +73,7 @@ func (s *Server) handleProposalApproveDetails(w http.ResponseWriter, r *http.Req
 	userEmail := ""
 	if c, err := r.Cookie("av_session"); err == nil && c.Value != "" {
 		sess, err := s.store.GetSession(ctx, c.Value)
-		if err == nil && sess != nil && !sessionExpired(sess) && sess.UserID != "" {
+		if err == nil && sess != nil && !sess.IsExpired(time.Now()) && sess.UserID != "" {
 			actor, err := s.actorFromSession(ctx, sess)
 			if err == nil && actor != nil && actor.User != nil {
 				authenticated = true

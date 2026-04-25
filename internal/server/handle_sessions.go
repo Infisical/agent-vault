@@ -38,9 +38,12 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 
 	// Validate TTL bounds if provided.
 	if req.TTLSeconds != nil {
-		ttl := *req.TTLSeconds
+		ttl := time.Duration(*req.TTLSeconds) * time.Second
 		if ttl < scopedSessionMinTTL || ttl > scopedSessionMaxTTL {
-			jsonError(w, http.StatusBadRequest, fmt.Sprintf("ttl_seconds must be between %d and %d", scopedSessionMinTTL, scopedSessionMaxTTL))
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf(
+				"ttl_seconds must be between %d and %d",
+				int(scopedSessionMinTTL.Seconds()), int(scopedSessionMaxTTL.Seconds()),
+			))
 			return
 		}
 	}
@@ -76,7 +79,7 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 		t := time.Now().Add(time.Duration(*req.TTLSeconds) * time.Second)
 		expiresAt = &t
 	} else {
-		t := time.Now().Add(sessionTTL)
+		t := time.Now().Add(scopedSessionDefaultTTL)
 		expiresAt = &t
 	}
 

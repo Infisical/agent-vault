@@ -81,7 +81,7 @@ func (r *StoreSessionResolver) ResolveForProxy(ctx context.Context, token, vault
 	if now == nil {
 		now = time.Now
 	}
-	if sess.ExpiresAt != nil && now().After(*sess.ExpiresAt) {
+	if sess.IsExpired(now()) {
 		return nil, ErrInvalidSession
 	}
 

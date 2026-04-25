@@ -170,9 +170,17 @@ func doRegister(address, email, password string) (*registerResult, error) {
 	return &result.registerResult, nil
 }
 
-// doLogin posts credentials to /v1/auth/login, saves the session on success, and returns it.
-func doLogin(address, email, password string) (*session.ClientSession, error) {
-	body, err := json.Marshal(map[string]string{"email": email, "password": password})
+// doLogin posts credentials to /v1/auth/login, saves the session on
+// success, and returns it. deviceLabel is sent as `device_label` so the
+// server records this login in the user's active-sessions list. Callers
+// resolve the label themselves (the cobra command honors --device-label;
+// internal callers default to defaultDeviceLabel()).
+func doLogin(address, email, password, deviceLabel string) (*session.ClientSession, error) {
+	body, err := json.Marshal(map[string]string{
+		"email":        email,
+		"password":     password,
+		"device_label": deviceLabel,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +248,7 @@ func reauthInteractive(sess *session.ClientSession) (*session.ClientSession, err
 		return nil, err
 	}
 
-	newSess, err := doLogin(sess.Address, email, password)
+	newSess, err := doLogin(sess.Address, email, password, defaultDeviceLabel())
 	if err != nil {
 		return nil, err
 	}
@@ -343,7 +351,7 @@ func ensureSession() (*session.ClientSession, error) {
 		}
 		fmt.Fprintln(os.Stderr, successText("✓")+" Owner account created. Logging in...")
 
-		sess, err := doLogin(address, email, password)
+		sess, err := doLogin(address, email, password, defaultDeviceLabel())
 		if err != nil {
 			return nil, fmt.Errorf("auto-login failed: %w", err)
 		}
@@ -392,7 +400,7 @@ func ensureSession() (*session.ClientSession, error) {
 		}
 
 		fmt.Fprintln(os.Stderr, successText("✓")+" "+result.Message)
-		sess, err := doLogin(address, email, password)
+		sess, err := doLogin(address, email, password, defaultDeviceLabel())
 		if err != nil {
 			return nil, fmt.Errorf("auto-login failed: %w", err)
 		}
@@ -410,7 +418,7 @@ func ensureSession() (*session.ClientSession, error) {
 		return nil, err
 	}
 
-	sess, err = doLogin(address, email, password)
+	sess, err = doLogin(address, email, password, defaultDeviceLabel())
 	if err != nil {
 		return nil, err
 	}

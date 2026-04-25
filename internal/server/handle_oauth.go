@@ -342,13 +342,13 @@ func (s *Server) handleOAuthDisconnect(w http.ResponseWriter, r *http.Request) {
 
 // createOAuthSession creates a session for an OAuth user and redirects.
 func (s *Server) createOAuthSession(w http.ResponseWriter, r *http.Request, user *store.User, redirectURL string) {
-	session, err := s.store.CreateSession(r.Context(), user.ID, time.Now().Add(sessionTTL))
+	session, err := s.store.CreateUserSession(r.Context(), newUserSessionParams(r, user.ID))
 	if err != nil {
 		s.oauthErrorRedirect(w, r, "session_failed")
 		return
 	}
 
-	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(sessionTTL.Seconds())))
+	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(userSessionAbsoluteTTL.Seconds())))
 
 	target := "/"
 	if redirectURL != "" && isValidOAuthRedirect(redirectURL) {

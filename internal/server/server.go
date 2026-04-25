@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -66,6 +67,13 @@ type Server struct {
 	logger         *slog.Logger         // structured logger for per-request observability
 	rateLimit      *ratelimit.Registry  // tiered rate limiter; shared with the MITM ingress
 	logSink        requestlog.Sink      // per-request persistence sink; never nil (Nop default)
+	// touchCache short-circuits per-request session-touch writes. With
+	// db.SetMaxOpenConns(1), every UPDATE — even a no-op — opens the
+	// single WAL writer slot. Caching the last-touch wall-clock per
+	// token keeps the steady state at one SQL write per session per
+	// touchInterval; the SQL throttle remains as a defense-in-depth
+	// backstop. Size is bounded by the number of active sessions.
+	touchCache sync.Map // raw token (string) -> time.Time
 }
 
 // RateLimit returns the server's rate-limit registry. Exported so the
@@ -124,11 +132,14 @@ type Store interface {
 	DeleteUser(ctx context.Context, userID string) error
 	CountUsers(ctx context.Context) (int, error)
 	RegisterFirstUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, defaultVaultID string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*store.User, error)
-	CreateSession(ctx context.Context, userID string, expiresAt time.Time) (*store.Session, error)
+	CreateUserSession(ctx context.Context, p store.CreateUserSessionParams) (*store.Session, error)
 	CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error)
 	GetSession(ctx context.Context, id string) (*store.Session, error)
 	DeleteSession(ctx context.Context, id string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
+	TouchSession(ctx context.Context, rawToken string) error
+	ListUserSessions(ctx context.Context, userID string) ([]store.Session, error)
+	RevokeUserSession(ctx context.Context, userID, publicID string) error
 
 	// Vaults
 	CreateVault(ctx context.Context, name string) (*store.Vault, error)
@@ -595,6 +606,8 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("POST /v1/auth/login", s.requireInitialized(ipAuth(limitBody(s.handleLogin))))
 	mux.HandleFunc("POST /v1/auth/change-password", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleChangePassword)))))
 	mux.HandleFunc("DELETE /v1/auth/account", s.requireInitialized(s.requireAuth(actorAuthed(s.handleDeleteAccount))))
+	mux.HandleFunc("GET /v1/auth/sessions", s.requireInitialized(s.requireAuth(actorAuthed(s.handleListUserSessions))))
+	mux.HandleFunc("DELETE /v1/auth/sessions/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleRevokeUserSession))))
 	mux.HandleFunc("POST /v1/sessions", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleScopedSession)))))
 	mux.HandleFunc("GET /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(s.handleCredentialsList))))
 	mux.HandleFunc("POST /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleCredentialsSet)))))
@@ -841,8 +854,37 @@ const passwordResetTTL = 15 * time.Minute
 const maxPendingPasswordResets = 3
 
 type loginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email       string `json:"email"`
+	Password    string `json:"password"`
+	DeviceLabel string `json:"device_label,omitempty"` // optional, e.g. CLI hostname
+}
+
+// maxDeviceLabelLen caps device_label values written to the session row.
+// Long enough for hostnames (RFC 1035 = 253) plus a CI suffix; short
+// enough that a flood of long labels can't bloat the sessions table.
+const maxDeviceLabelLen = 64
+
+// truncateDeviceLabel sanitizes the user-supplied label: strips control
+// characters, collapses whitespace, and caps the length. Empty input
+// returns "" (caller decides on a default).
+func truncateDeviceLabel(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return ""
+	}
+	// Drop control chars; we keep printable ASCII + UTF-8 letters/numbers.
+	cleaned := make([]rune, 0, len(label))
+	for _, r := range label {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		cleaned = append(cleaned, r)
+	}
+	out := string(cleaned)
+	if len(out) > maxDeviceLabelLen {
+		out = out[:maxDeviceLabelLen]
+	}
+	return out
 }
 
 type loginResponse struct {
@@ -850,7 +892,16 @@ type loginResponse struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
-const sessionTTL = 24 * time.Hour
+// userSessionAbsoluteTTL caps how long a user-login session can survive
+// regardless of activity. userSessionIdleTTL is the inactivity window:
+// any user session whose last_used_at is older than this is rejected at
+// auth time (see Session.IsExpired). Tuned for "log in once, stay logged
+// in" — a year max, drops dead after a month of disuse so a stolen
+// session.json doesn't grant indefinite undetected access.
+const (
+	userSessionAbsoluteTTL = 365 * 24 * time.Hour
+	userSessionIdleTTL     = 30 * 24 * time.Hour
+)
 
 // trustedProxyCIDRs holds parsed CIDR ranges from AGENT_VAULT_TRUSTED_PROXIES.
 // When non-empty, X-Forwarded-For is only trusted if RemoteAddr matches one of these.
@@ -944,10 +995,12 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			jsonError(w, http.StatusUnauthorized, "Invalid or expired session")
 			return
 		}
-		if sessionExpired(sess) {
+		if sess.IsExpired(time.Now()) {
 			jsonError(w, http.StatusUnauthorized, "Session expired")
 			return
 		}
+
+		s.maybeTouchSession(r.Context(), sess, token)
 
 		ctx := context.WithValue(r.Context(), sessionContextKey, sess)
 		next(w, r.WithContext(ctx))
@@ -968,7 +1021,8 @@ func (s *Server) optionalAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		if token != "" {
-			if sess, err := s.store.GetSession(r.Context(), token); err == nil && sess != nil && !sessionExpired(sess) {
+			if sess, err := s.store.GetSession(r.Context(), token); err == nil && sess != nil && !sess.IsExpired(time.Now()) {
+				s.maybeTouchSession(r.Context(), sess, token)
 				ctx := context.WithValue(r.Context(), sessionContextKey, sess)
 				next(w, r.WithContext(ctx))
 				return
@@ -979,9 +1033,28 @@ func (s *Server) optionalAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// maybeTouchSession bumps last_used_at on user sessions, gated by an
+// in-memory cache so the SQL layer is hit at most once per session per
+// touchInterval. The store-side WHERE-clause throttle is preserved as
+// defense in depth (e.g. a process restart resets the cache).
+func (s *Server) maybeTouchSession(ctx context.Context, sess *store.Session, rawToken string) {
+	if sess == nil || sess.UserID == "" {
+		return
+	}
+	now := time.Now()
+	if last, ok := s.touchCache.Load(rawToken); ok {
+		if t, _ := last.(time.Time); now.Sub(t) < store.TouchInterval {
+			return
+		}
+	}
+	s.touchCache.Store(rawToken, now)
+	_ = s.store.TouchSession(ctx, rawToken)
+}
+
 const (
-	scopedSessionMinTTL = 5 * 60        // 5 minutes
-	scopedSessionMaxTTL = 7 * 24 * 3600 // 7 days
+	scopedSessionMinTTL     = 5 * time.Minute
+	scopedSessionMaxTTL     = 7 * 24 * time.Hour
+	scopedSessionDefaultTTL = 24 * time.Hour // when ttl_seconds is unset
 )
 
 // sessionCookie builds an av_session cookie with all hardening flags set.
@@ -1001,18 +1074,14 @@ func sessionCookie(r *http.Request, baseURL, value string, maxAge int) *http.Coo
 // timePtr returns a pointer to the given time value.
 func timePtr(t time.Time) *time.Time { return &t }
 
-// formatExpiresAt returns a formatted RFC3339 string for an optional expiry time,
-// or an empty string if the session never expires.
+// formatExpiresAt returns a formatted RFC3339 (UTC) string for an optional
+// time, or an empty string if the time is nil. Used for any *time.Time we
+// surface to API clients — expiry, last-used, etc.
 func formatExpiresAt(t *time.Time) string {
 	if t == nil {
 		return ""
 	}
-	return t.Format(time.RFC3339)
-}
-
-// sessionExpired returns true if the session has a finite expiry and that time has passed.
-func sessionExpired(s *store.Session) bool {
-	return s.ExpiresAt != nil && time.Now().After(*s.ExpiresAt)
+	return t.UTC().Format(time.RFC3339)
 }
 
 const settingAllowedDomains = "allowed_email_domains"

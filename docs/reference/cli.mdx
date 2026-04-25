@@ -117,11 +117,30 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     Authenticate with email and password. Prompts interactively by default. Rejects inactive (unverified) accounts.
 
+    Sessions are long-lived: 1 year absolute, 30 days idle. Active operators effectively never have to log in again. A session that goes 30 days without making a request is automatically expired.
+
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--address` | | Server URL |
     | `--email` | | Email address |
     | `--password-stdin` | `false` | Read password from stdin |
+    | `--device-label` | hostname | Label shown in `auth sessions list` |
+  </Accordion>
+
+  <Accordion title="agent-vault auth sessions list">
+    ```bash
+    agent-vault auth sessions list
+    ```
+
+    List active sessions for your account, with the device label, last IP, last activity, and expiry. The session being used for this request is marked with a checkmark in the `Current` column.
+  </Accordion>
+
+  <Accordion title="agent-vault auth sessions revoke">
+    ```bash
+    agent-vault auth sessions revoke <id>
+    ```
+
+    Revoke a specific session by id (from `auth sessions list`). Use this to invalidate a stolen `~/.agent-vault/session.json` or to log out a forgotten device. Revoking your current session forces you to log in again on this device.
   </Accordion>
 </AccordionGroup>
 
