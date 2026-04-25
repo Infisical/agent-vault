@@ -64,8 +64,9 @@ func (s *Server) generateAndSendVerificationCode(ctx context.Context, email stri
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email       string `json:"email"`
+		Password    string `json:"password"`
+		DeviceLabel string `json:"device_label,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
@@ -157,20 +158,26 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// First user: owner created successfully.
 		s.initialized = true
 
-		// Auto-login: create session and set cookie.
-		session, err := s.store.CreateSession(ctx, user.ID, time.Now().Add(sessionTTL))
+		// Auto-login: token + expires_at are returned alongside the
+		// cookie so non-cookie clients (the CLI) can persist the
+		// session without a follow-up /v1/auth/login.
+		params := newUserSessionParams(r, user.ID)
+		params.DeviceLabel = truncateDeviceLabel(req.DeviceLabel)
+		session, err := s.store.CreateUserSession(ctx, params)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "Failed to create session")
 			return
 		}
-		http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(sessionTTL.Seconds())))
+		http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(userSessionAbsoluteTTL.Seconds())))
 
-		jsonCreated(w, map[string]interface{}{
-			"email":                 user.Email,
-			"role":                  "owner",
-			"requires_verification": false,
-			"authenticated":         true,
-			"message":               "Owner account created.",
+		jsonCreated(w, registerResponse{
+			Email:                user.Email,
+			Role:                 "owner",
+			RequiresVerification: false,
+			Authenticated:        true,
+			Message:              "Owner account created.",
+			Token:                session.ID,
+			ExpiresAt:            formatExpiresAt(session.ExpiresAt),
 		})
 		return
 	}
@@ -218,8 +225,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Email string `json:"email"`
-		Code  string `json:"code"`
+		Email       string `json:"email"`
+		Code        string `json:"code"`
+		DeviceLabel string `json:"device_label,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
@@ -270,19 +278,37 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	// Reset rate limit on successful verification.
 	s.rateLimit.FailureReset(ratelimit.TierVerifyFailure, verifyKey)
 
-	// Auto-login: create session and set cookie.
-	session, err := s.store.CreateSession(ctx, user.ID, time.Now().Add(sessionTTL))
+	// Auto-login: token + expires_at are returned alongside the cookie
+	// so non-cookie clients (the CLI) can persist the session without a
+	// follow-up /v1/auth/login. Mirrors handleRegister's first-user path.
+	params := newUserSessionParams(r, user.ID)
+	params.DeviceLabel = truncateDeviceLabel(req.DeviceLabel)
+	session, err := s.store.CreateUserSession(ctx, params)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
 	}
-	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(sessionTTL.Seconds())))
+	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(userSessionAbsoluteTTL.Seconds())))
 
-	jsonOK(w, map[string]interface{}{
-		"email":         user.Email,
-		"authenticated": true,
-		"message":       "Account verified.",
+	jsonOK(w, verifyResponse{
+		Email:         user.Email,
+		Authenticated: true,
+		Message:       "Account verified.",
+		Token:         session.ID,
+		ExpiresAt:     formatExpiresAt(session.ExpiresAt),
 	})
+}
+
+// verifyResponse is the JSON shape returned by POST /v1/auth/verify on
+// success. Mirrors registerResponse so the CLI's verify path can persist
+// the auto-login session without a follow-up /v1/auth/login (which would
+// orphan the verify-time row for the full 30-day idle window).
+type verifyResponse struct {
+	Email         string `json:"email"`
+	Authenticated bool   `json:"authenticated"`
+	Message       string `json:"message"`
+	Token         string `json:"token,omitempty"`
+	ExpiresAt     string `json:"expires_at,omitempty"`
 }
 
 func (s *Server) handleResendVerification(w http.ResponseWriter, r *http.Request) {
@@ -398,6 +424,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		Email       string `json:"email"`
 		Code        string `json:"code"`
 		NewPassword string `json:"new_password"`
+		DeviceLabel string `json:"device_label,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
@@ -464,7 +491,9 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	s.rateLimit.FailureReset(ratelimit.TierVerifyFailure, resetKey)
 
 	// Create new session and auto-login.
-	session, err := s.store.CreateSession(ctx, user.ID, time.Now().Add(sessionTTL))
+	resetParams := newUserSessionParams(r, user.ID)
+	resetParams.DeviceLabel = truncateDeviceLabel(req.DeviceLabel)
+	session, err := s.store.CreateUserSession(ctx, resetParams)
 	if err != nil {
 		// Password was reset but session creation failed — user can re-login.
 		jsonOK(w, map[string]interface{}{
@@ -474,7 +503,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(sessionTTL.Seconds())))
+	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(userSessionAbsoluteTTL.Seconds())))
 
 	jsonOK(w, map[string]interface{}{
 		"message":       "Password reset successfully.",
@@ -581,6 +610,22 @@ func init() {
 	dummyPasswordHash, dummyPasswordSalt, dummyKDFParams, _ = auth.HashUserPassword([]byte("sb-dummy-timing-equalization"))
 }
 
+// newUserSessionParams builds a CreateUserSessionParams populated with the
+// caller's IP and User-Agent. Centralized so every login path (password,
+// OAuth, verification, password reset) records the same shape and applies
+// the same TTLs. DeviceLabel is left empty here because only the password
+// login path receives one in the request body — other paths set it
+// post-construction if needed.
+func newUserSessionParams(r *http.Request, userID string) store.CreateUserSessionParams {
+	return store.CreateUserSessionParams{
+		UserID:        userID,
+		ExpiresAt:     time.Now().Add(userSessionAbsoluteTTL),
+		IdleTTL:       userSessionIdleTTL,
+		LastIP:        clientIP(r),
+		LastUserAgent: r.UserAgent(),
+	}
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" || req.Password == "" {
@@ -630,13 +675,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := s.store.CreateSession(ctx, user.ID, time.Now().Add(sessionTTL))
+	params := newUserSessionParams(r, user.ID)
+	params.DeviceLabel = truncateDeviceLabel(req.DeviceLabel)
+	session, err := s.store.CreateUserSession(ctx, params)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
 	}
 
-	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(sessionTTL.Seconds())))
+	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(userSessionAbsoluteTTL.Seconds())))
 
 	jsonOK(w, loginResponse{
 		Token:     session.ID,
@@ -699,17 +746,27 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Carry the caller's device_label onto the post-change session so
+	// `auth sessions list` keeps showing the same DEVICE label across
+	// password changes. Captured before DeleteUserSessions wipes the row.
+	var carryDeviceLabel string
+	if caller := sessionFromContext(ctx); caller != nil {
+		carryDeviceLabel = caller.DeviceLabel
+	}
+
 	// Invalidate all existing sessions, then create a fresh one for this request.
 	_ = s.store.DeleteUserSessions(ctx, user.ID)
 
-	newSess, err := s.store.CreateSession(ctx, user.ID, time.Now().Add(sessionTTL))
+	params := newUserSessionParams(r, user.ID)
+	params.DeviceLabel = carryDeviceLabel
+	newSess, err := s.store.CreateUserSession(ctx, params)
 	if err != nil {
 		// Password was changed but session creation failed — user can re-login.
 		jsonError(w, http.StatusInternalServerError, "Password changed but failed to create new session")
 		return
 	}
 
-	http.SetCookie(w, sessionCookie(r, s.baseURL, newSess.ID, int(sessionTTL.Seconds())))
+	http.SetCookie(w, sessionCookie(r, s.baseURL, newSess.ID, int(userSessionAbsoluteTTL.Seconds())))
 
 	jsonOK(w, loginResponse{
 		Token:     newSess.ID,
@@ -762,6 +819,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	if token != "" {
 		_ = s.store.DeleteSession(r.Context(), token)
+		s.touchCache.Delete(token)
 	}
 	http.SetCookie(w, sessionCookie(r, s.baseURL, "", -1))
 	jsonOK(w, map[string]string{"status": "ok"})

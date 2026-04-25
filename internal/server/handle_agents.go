@@ -1024,12 +1024,14 @@ func (s *Server) handleAgentInviteCreate(w http.ResponseWriter, r *http.Request)
 
 	// Cap finite session TTL.
 	if req.SessionTTLSeconds != nil && *req.SessionTTLSeconds > 0 {
+		minSecs := int(scopedSessionMinTTL.Seconds())
+		maxSecs := int(scopedSessionMaxTTL.Seconds())
 		ttl := *req.SessionTTLSeconds
-		if ttl < scopedSessionMinTTL {
-			ttl = scopedSessionMinTTL
+		if ttl < minSecs {
+			ttl = minSecs
 			req.SessionTTLSeconds = &ttl
-		} else if ttl > scopedSessionMaxTTL {
-			ttl = scopedSessionMaxTTL
+		} else if ttl > maxSecs {
+			ttl = maxSecs
 			req.SessionTTLSeconds = &ttl
 		}
 	}

@@ -129,28 +129,38 @@ func checkServerStatus(address string) (*serverStatus, error) {
 	return &status, nil
 }
 
-// registerResult holds the parsed register API response.
+// registerResult holds the parsed register API response. Token and
+// ExpiresAt are populated only when the server auto-logs the caller in
+// (currently: the first-user register path). Other paths return them as
+// "" and the caller is expected to drive the verification flow.
 type registerResult struct {
 	Email                string `json:"email"`
 	Role                 string `json:"role"`
 	RequiresVerification bool   `json:"requires_verification"`
 	EmailSent            bool   `json:"email_sent"`
 	Message              string `json:"message"`
+	Token                string `json:"token,omitempty"`
+	ExpiresAt            string `json:"expires_at,omitempty"`
 }
 
-// doRegister posts credentials to /v1/auth/register and returns the result.
-func doRegister(address, email, password string) (*registerResult, error) {
+// doRegister posts credentials to /v1/auth/register. When the response
+// includes a token (first-user auto-login), the session is also saved
+// to disk and returned so the caller can use it directly without a
+// follow-up /v1/auth/login. Returns (result, sess, err); sess is nil
+// when verification is required.
+func doRegister(address, email, password, deviceLabel string) (*registerResult, *session.ClientSession, error) {
 	body, err := json.Marshal(map[string]string{
-		"email":    email,
-		"password": password,
+		"email":        email,
+		"password":     password,
+		"device_label": deviceLabel,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	resp, err := http.Post(address+"/v1/auth/register", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("could not reach server at %s: %w", address, err)
+		return nil, nil, fmt.Errorf("could not reach server at %s: %w", address, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -162,17 +172,38 @@ func doRegister(address, email, password string) (*registerResult, error) {
 
 	if resp.StatusCode >= 400 {
 		if result.Error != "" {
-			return nil, fmt.Errorf("%s", result.Error)
+			return nil, nil, fmt.Errorf("%s", result.Error)
 		}
-		return nil, fmt.Errorf("registration failed with status %d", resp.StatusCode)
+		return nil, nil, fmt.Errorf("registration failed with status %d", resp.StatusCode)
 	}
 
-	return &result.registerResult, nil
+	if result.Token == "" {
+		return &result.registerResult, nil, nil
+	}
+
+	sess := &session.ClientSession{
+		Token:       result.Token,
+		Address:     address,
+		Email:       email,
+		DeviceLabel: deviceLabel,
+	}
+	if err := session.Save(sess); err != nil {
+		return nil, nil, fmt.Errorf("saving session: %w", err)
+	}
+	return &result.registerResult, sess, nil
 }
 
-// doLogin posts credentials to /v1/auth/login, saves the session on success, and returns it.
-func doLogin(address, email, password string) (*session.ClientSession, error) {
-	body, err := json.Marshal(map[string]string{"email": email, "password": password})
+// doLogin posts credentials to /v1/auth/login, saves the session on
+// success, and returns it. deviceLabel is sent as `device_label` so the
+// server records this login in the user's active-sessions list. Callers
+// resolve the label themselves (the cobra command honors --device-label;
+// internal callers default to defaultDeviceLabel()).
+func doLogin(address, email, password, deviceLabel string) (*session.ClientSession, error) {
+	body, err := json.Marshal(map[string]string{
+		"email":        email,
+		"password":     password,
+		"device_label": deviceLabel,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -207,9 +238,10 @@ func doLogin(address, email, password string) (*session.ClientSession, error) {
 	}
 
 	sess := &session.ClientSession{
-		Token:   result.Token,
-		Address: address,
-		Email:   email,
+		Token:       result.Token,
+		Address:     address,
+		Email:       email,
+		DeviceLabel: deviceLabel,
 	}
 	if err := session.Save(sess); err != nil {
 		return nil, fmt.Errorf("saving session: %w", err)
@@ -240,7 +272,14 @@ func reauthInteractive(sess *session.ClientSession) (*session.ClientSession, err
 		return nil, err
 	}
 
-	newSess, err := doLogin(sess.Address, email, password)
+	// Preserve the operator's original --device-label choice across
+	// silent re-auth; fall back to hostname only when the saved session
+	// pre-dates the DeviceLabel field.
+	label := sess.DeviceLabel
+	if label == "" {
+		label = defaultDeviceLabel()
+	}
+	newSess, err := doLogin(sess.Address, email, password, label)
 	if err != nil {
 		return nil, err
 	}
@@ -338,16 +377,14 @@ func ensureSession() (*session.ClientSession, error) {
 			return nil, err
 		}
 
-		if _, err := doRegister(address, email, password); err != nil {
+		_, sess, err := doRegister(address, email, password, defaultDeviceLabel())
+		if err != nil {
 			return nil, fmt.Errorf("registration failed: %w", err)
 		}
-		fmt.Fprintln(os.Stderr, successText("✓")+" Owner account created. Logging in...")
-
-		sess, err := doLogin(address, email, password)
-		if err != nil {
-			return nil, fmt.Errorf("auto-login failed: %w", err)
+		if sess == nil {
+			return nil, fmt.Errorf("auto-login after register failed: server did not return a session")
 		}
-		fmt.Fprintln(os.Stderr, successText("✓")+" Login successful.\n")
+		fmt.Fprintln(os.Stderr, successText("✓")+" Owner account created. Login successful.\n")
 		return sess, nil
 	}
 
@@ -377,7 +414,7 @@ func ensureSession() (*session.ClientSession, error) {
 			return nil, err
 		}
 
-		result, err := doRegister(address, email, password)
+		result, _, err := doRegister(address, email, password, defaultDeviceLabel())
 		if err != nil {
 			return nil, fmt.Errorf("registration failed: %w", err)
 		}
@@ -392,7 +429,7 @@ func ensureSession() (*session.ClientSession, error) {
 		}
 
 		fmt.Fprintln(os.Stderr, successText("✓")+" "+result.Message)
-		sess, err := doLogin(address, email, password)
+		sess, err := doLogin(address, email, password, defaultDeviceLabel())
 		if err != nil {
 			return nil, fmt.Errorf("auto-login failed: %w", err)
 		}
@@ -410,7 +447,7 @@ func ensureSession() (*session.ClientSession, error) {
 		return nil, err
 	}
 
-	sess, err = doLogin(address, email, password)
+	sess, err = doLogin(address, email, password, defaultDeviceLabel())
 	if err != nil {
 		return nil, err
 	}

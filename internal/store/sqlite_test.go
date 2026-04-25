@@ -28,8 +28,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 39 {
-		t.Fatalf("expected migration version 39, got %d", version)
+	if version != 40 {
+		t.Fatalf("expected migration version 40, got %d", version)
 	}
 }
 
@@ -298,11 +298,12 @@ func TestSessionCRUD(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 
+	u, _ := s.CreateUser(ctx, "session-crud@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
 	expires := time.Now().Add(1 * time.Hour).UTC().Truncate(time.Second)
 
-	sess, err := s.CreateSession(ctx, "", expires)
+	sess, err := s.CreateUserSession(ctx, CreateUserSessionParams{UserID: u.ID, ExpiresAt: expires})
 	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
+		t.Fatalf("CreateUserSession: %v", err)
 	}
 	if sess.ID == "" {
 		t.Fatal("expected non-empty session ID")
@@ -364,10 +365,11 @@ func TestGlobalSessionHasEmptyVaultID(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 
+	u, _ := s.CreateUser(ctx, "global-session@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
 	expires := time.Now().Add(1 * time.Hour).UTC().Truncate(time.Second)
-	sess, err := s.CreateSession(ctx, "", expires)
+	sess, err := s.CreateUserSession(ctx, CreateUserSessionParams{UserID: u.ID, ExpiresAt: expires})
 	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
+		t.Fatalf("CreateUserSession: %v", err)
 	}
 
 	got, err := s.GetSession(ctx, sess.ID)
@@ -386,6 +388,252 @@ func TestDeleteSessionNotFound(t *testing.T) {
 	err := s.DeleteSession(ctx, "nonexistent")
 	if err != sql.ErrNoRows {
 		t.Fatalf("expected sql.ErrNoRows, got %v", err)
+	}
+}
+
+func TestSessionIsExpired(t *testing.T) {
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	past := now.Add(-time.Hour)
+	future := now.Add(time.Hour)
+
+	cases := []struct {
+		name string
+		sess Session
+		want bool
+	}{
+		{"never expires", Session{}, false},
+		{"absolute future", Session{ExpiresAt: &future}, false},
+		{"absolute past", Session{ExpiresAt: &past}, true},
+		{"idle within window", Session{IdleTTL: time.Hour, LastUsedAt: ptrTime(now.Add(-30 * time.Minute))}, false},
+		{"idle past window", Session{IdleTTL: time.Minute, LastUsedAt: ptrTime(now.Add(-time.Hour))}, true},
+		{"idle ttl zero ignored", Session{IdleTTL: 0, LastUsedAt: ptrTime(now.Add(-365 * 24 * time.Hour))}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.sess.IsExpired(now); got != tc.want {
+				t.Fatalf("IsExpired = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }
+
+func TestCreateUserSessionPopulatesMetadata(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "meta@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	exp := time.Now().Add(365 * 24 * time.Hour).UTC().Truncate(time.Second)
+	sess, err := s.CreateUserSession(ctx, CreateUserSessionParams{
+		UserID:        u.ID,
+		ExpiresAt:     exp,
+		IdleTTL:       30 * 24 * time.Hour,
+		DeviceLabel:   "tony-mbp",
+		LastIP:        "127.0.0.1",
+		LastUserAgent: "agent-vault-cli/0.4",
+	})
+	if err != nil {
+		t.Fatalf("CreateUserSession: %v", err)
+	}
+	if sess.PublicID == "" {
+		t.Fatal("expected PublicID to be populated")
+	}
+	got, err := s.GetSession(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.DeviceLabel != "tony-mbp" || got.LastIP != "127.0.0.1" || got.LastUserAgent != "agent-vault-cli/0.4" {
+		t.Fatalf("metadata round-trip mismatch: %+v", got)
+	}
+	if got.IdleTTL != 30*24*time.Hour {
+		t.Fatalf("expected IdleTTL %v, got %v", 30*24*time.Hour, got.IdleTTL)
+	}
+	if got.PublicID != sess.PublicID {
+		t.Fatalf("PublicID mismatch: %q vs %q", got.PublicID, sess.PublicID)
+	}
+	if got.LastUsedAt == nil {
+		t.Fatal("expected LastUsedAt to be populated on creation")
+	}
+}
+
+func TestTouchSessionThrottlesAndAdvances(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "touch@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	sess, _ := s.CreateUserSession(ctx, CreateUserSessionParams{
+		UserID:    u.ID,
+		ExpiresAt: time.Now().Add(time.Hour),
+		IdleTTL:   30 * 24 * time.Hour,
+	})
+
+	// Force last_used_at far enough in the past that a touch will succeed.
+	if _, err := s.db.ExecContext(ctx,
+		"UPDATE sessions SET last_used_at = ? WHERE user_id = ?",
+		time.Now().Add(-2*time.Hour).UTC().Format(time.DateTime), u.ID,
+	); err != nil {
+		t.Fatalf("forcing last_used_at: %v", err)
+	}
+
+	if err := s.TouchSession(ctx, sess.ID, "10.0.0.1", "agent-vault-cli/test"); err != nil {
+		t.Fatalf("TouchSession: %v", err)
+	}
+
+	got, err := s.GetSession(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.LastUsedAt == nil {
+		t.Fatal("LastUsedAt should be populated after Touch")
+	}
+	if time.Since(*got.LastUsedAt) > time.Minute {
+		t.Fatalf("LastUsedAt should be ~now after Touch, got %v ago", time.Since(*got.LastUsedAt))
+	}
+	if got.LastIP != "10.0.0.1" || got.LastUserAgent != "agent-vault-cli/test" {
+		t.Fatalf("touch should refresh last_ip/last_user_agent, got ip=%q ua=%q", got.LastIP, got.LastUserAgent)
+	}
+
+	// Throttle: a second touch within TouchInterval is a no-op, and
+	// non-empty ip/ua args still don't bleed through the throttle.
+	frozen := *got.LastUsedAt
+	if err := s.TouchSession(ctx, sess.ID, "10.0.0.99", "other-agent"); err != nil {
+		t.Fatalf("TouchSession (second): %v", err)
+	}
+	got2, _ := s.GetSession(ctx, sess.ID)
+	if !got2.LastUsedAt.Equal(frozen) {
+		t.Fatalf("expected throttled write to leave last_used_at = %v, got %v", frozen, got2.LastUsedAt)
+	}
+	if got2.LastIP != "10.0.0.1" {
+		t.Fatalf("throttled touch must not overwrite last_ip, got %q", got2.LastIP)
+	}
+
+	// Empty ip/ua leaves existing values untouched even when the
+	// throttle window expires.
+	if _, err := s.db.ExecContext(ctx,
+		"UPDATE sessions SET last_used_at = ? WHERE id = ?",
+		time.Now().Add(-2*time.Hour).UTC().Format(time.DateTime), hashSessionToken(sess.ID),
+	); err != nil {
+		t.Fatalf("forcing last_used_at: %v", err)
+	}
+	if err := s.TouchSession(ctx, sess.ID, "", ""); err != nil {
+		t.Fatalf("TouchSession (empty ip/ua): %v", err)
+	}
+	got3, _ := s.GetSession(ctx, sess.ID)
+	if got3.LastIP != "10.0.0.1" || got3.LastUserAgent != "agent-vault-cli/test" {
+		t.Fatalf("empty ip/ua should preserve previous values, got ip=%q ua=%q", got3.LastIP, got3.LastUserAgent)
+	}
+}
+
+func TestListAndRevokeUserSessions(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "multi@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	a, _ := s.CreateUserSession(ctx, CreateUserSessionParams{UserID: u.ID, ExpiresAt: time.Now().Add(time.Hour), DeviceLabel: "a"})
+	b, _ := s.CreateUserSession(ctx, CreateUserSessionParams{UserID: u.ID, ExpiresAt: time.Now().Add(time.Hour), DeviceLabel: "b"})
+
+	rows, err := s.ListUserSessions(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("ListUserSessions: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(rows))
+	}
+
+	// Revoke "a" by its public id.
+	if err := s.RevokeUserSession(ctx, u.ID, a.PublicID); err != nil {
+		t.Fatalf("RevokeUserSession: %v", err)
+	}
+	if _, err := s.GetSession(ctx, a.ID); err != sql.ErrNoRows {
+		t.Fatalf("expected revoked session to be gone, got %v", err)
+	}
+	if _, err := s.GetSession(ctx, b.ID); err != nil {
+		t.Fatalf("other session should still exist: %v", err)
+	}
+
+	// Revoke twice → ErrNoRows.
+	if err := s.RevokeUserSession(ctx, u.ID, a.PublicID); err != sql.ErrNoRows {
+		t.Fatalf("expected sql.ErrNoRows on second revoke, got %v", err)
+	}
+
+	// Cross-account revoke is a no-op (returns ErrNoRows).
+	other, _ := s.CreateUser(ctx, "other@test.com", []byte("h"), []byte("s"), "member", 3, 65536, 4)
+	if err := s.RevokeUserSession(ctx, other.ID, b.PublicID); err != sql.ErrNoRows {
+		t.Fatalf("cross-account revoke should be ErrNoRows, got %v", err)
+	}
+	if _, err := s.GetSession(ctx, b.ID); err != nil {
+		t.Fatalf("session should still exist after cross-account revoke attempt: %v", err)
+	}
+}
+
+// TestPreMigrationSessionStillUsable simulates a session row created before
+// migration 040 — populated id/user_id/expires_at, NULL on the columns
+// added by 040 except for public_id (backfilled by the migration's UPDATE).
+// It must continue to authenticate, enumerate, and revoke without
+// requiring the user to re-login.
+func TestPreMigrationSessionStillUsable(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "legacy@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+
+	// Forge a row that looks like one minted by the pre-040 server: just
+	// id/user_id/expires_at/created_at, no idle_ttl, no last_used_at, but
+	// with the backfilled public_id the migration would have written.
+	rawToken := "av_sess_legacy_test_token_value_with_padding_to_64_chars_xxxxxxx"
+	tokenHash := hashSessionToken(rawToken)
+	expiresAt := time.Now().Add(time.Hour).UTC().Format(time.DateTime)
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO sessions (id, user_id, expires_at, created_at, public_id)
+		 VALUES (?, ?, ?, datetime('now'), ?)`,
+		tokenHash, u.ID, expiresAt, "legacypub01",
+	)
+	if err != nil {
+		t.Fatalf("forging legacy session row: %v", err)
+	}
+
+	got, err := s.GetSession(ctx, rawToken)
+	if err != nil {
+		t.Fatalf("GetSession on legacy row: %v", err)
+	}
+	if got.IdleTTL != 0 {
+		t.Fatalf("legacy row IdleTTL should be 0 (idle disabled), got %v", got.IdleTTL)
+	}
+	if got.LastUsedAt != nil {
+		t.Fatalf("legacy row LastUsedAt should be nil, got %v", got.LastUsedAt)
+	}
+	if got.IsExpired(time.Now()) {
+		t.Fatal("legacy row inside its absolute TTL must not be expired")
+	}
+
+	rows, err := s.ListUserSessions(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("ListUserSessions: %v", err)
+	}
+	if len(rows) != 1 || rows[0].PublicID != "legacypub01" {
+		t.Fatalf("expected legacy row in list with public_id 'legacypub01', got %+v", rows)
+	}
+
+	// Touch a legacy session: should populate last_used_at without
+	// retroactively enabling the idle check.
+	if err := s.TouchSession(ctx, rawToken, "127.0.0.1", "test"); err != nil {
+		t.Fatalf("TouchSession: %v", err)
+	}
+	got, _ = s.GetSession(ctx, rawToken)
+	if got.LastUsedAt == nil {
+		t.Fatal("touch should populate last_used_at on legacy row")
+	}
+	if got.IdleTTL != 0 {
+		t.Fatal("touch must not retroactively enable idle expiry on legacy row")
+	}
+
+	// Revoke by the backfilled public_id works.
+	if err := s.RevokeUserSession(ctx, u.ID, "legacypub01"); err != nil {
+		t.Fatalf("RevokeUserSession on legacy row: %v", err)
+	}
+	if _, err := s.GetSession(ctx, rawToken); err != sql.ErrNoRows {
+		t.Fatalf("revoked legacy session should be gone, got %v", err)
 	}
 }
 
@@ -1357,7 +1605,7 @@ func TestDeleteUserSessions(t *testing.T) {
 	ctx := context.Background()
 
 	u, _ := s.CreateUser(ctx, "user@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
-	sess, _ := s.CreateSession(ctx, u.ID, time.Now().Add(24*time.Hour))
+	sess, _ := s.CreateUserSession(ctx, CreateUserSessionParams{UserID: u.ID, ExpiresAt: time.Now().Add(24 * time.Hour)})
 
 	if err := s.DeleteUserSessions(ctx, u.ID); err != nil {
 		t.Fatalf("DeleteUserSessions: %v", err)

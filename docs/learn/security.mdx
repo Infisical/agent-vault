@@ -58,13 +58,16 @@ KDF parameters are stored per user, so Agent Vault can upgrade hashing parameter
 
 Changing a password (`agent-vault account change-password` or `POST /v1/auth/change-password`) invalidates all existing sessions and issues a fresh token.
 
+User sessions are **long-lived but idle-expired**. A login is good for up to a year of activity; if a session goes 30 days without making a request, it is automatically rejected as expired. Active operators effectively never have to log in again, while a stolen `~/.agent-vault/session.json` that goes unused loses access in 30 days. Operators can view and revoke individual sessions with `agent-vault auth sessions list / revoke`, or invalidate every session at once via `account change-password`.
+
 ## Token model
 
 All tokens are generated from `crypto/rand` (256 bits of entropy) and hashed before storage. The raw token is returned to the caller exactly once; Agent Vault only stores the hash.
 
 | Token | Prefix | Storage hash | TTL | Notes |
 | ----- | ------ | ------------ | --- | ----- |
-| Session | `av_sess_` | SHA-256 | Configurable (or no expiry) | Vault-scoped or user-global |
+| User session | `av_sess_` | SHA-256 | 1 year absolute, 30-day idle | Bumped on each authenticated request |
+| Scoped session | `av_sess_` | SHA-256 | Configurable (5 min – 7 days, default 24h) | Vault-bound, minted by `vault run` |
 | Agent token | `av_agt_` | SHA-256 | Configurable (or no expiry) | Instance-level agent identity |
 | Invite | `av_inv_` | SHA-256 | 15 minutes | Single-use, burned on redemption |
 | Approval | `av_appr_` | SHA-256 | 24 hours | Grants read-only access to a [proposal](/learn/proposals) |

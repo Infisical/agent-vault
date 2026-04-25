@@ -53,6 +53,25 @@ func nullableInt(n int) interface{} {
 	return n
 }
 
+// nullableString returns nil for empty strings, enabling SQL NULL inserts.
+func nullableString(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// newPublicID returns a short, opaque, URL-safe handle (80 random bits as
+// 20 hex chars). Used as the {id} path parameter in /v1/auth/sessions/{id}
+// so the underlying token hash never appears in logs or URLs.
+func newPublicID() string {
+	var b [10]byte
+	if _, err := io.ReadFull(rand.Reader, b[:]); err != nil {
+		panic("crypto/rand: " + err.Error())
+	}
+	return hex.EncodeToString(b[:])
+}
+
 // SQLiteStore implements Store backed by a SQLite database.
 type SQLiteStore struct {
 	db *sql.DB
@@ -691,27 +710,55 @@ func (s *SQLiteStore) DeleteUserSessions(ctx context.Context, userID string) err
 
 // --- Sessions ---
 
-func (s *SQLiteStore) CreateSession(ctx context.Context, userID string, expiresAt time.Time) (*Session, error) {
+// CreateUserSession persists a user login session with sliding-expiry
+// metadata. Both ExpiresAt (absolute cap) and IdleTTL (inactivity window)
+// are enforced on read via Session.IsExpired.
+func (s *SQLiteStore) CreateUserSession(ctx context.Context, p CreateUserSessionParams) (*Session, error) {
+	if p.UserID == "" {
+		return nil, fmt.Errorf("CreateUserSession: UserID is required")
+	}
 	rawToken := newSessionToken()
 	tokenHash := hashSessionToken(rawToken)
+	publicID := newPublicID()
 	now := time.Now().UTC()
 
-	var uid sql.NullString
-	if userID != "" {
-		uid = sql.NullString{String: userID, Valid: true}
+	var idleSecs sql.NullInt64
+	if p.IdleTTL > 0 {
+		idleSecs = sql.NullInt64{Int64: int64(p.IdleTTL.Seconds()), Valid: true}
 	}
 
 	_, err := s.db.ExecContext(ctx,
-		"INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
-		tokenHash, uid, expiresAt.UTC().Format(time.DateTime), now.Format(time.DateTime),
+		`INSERT INTO sessions
+		   (id, user_id, expires_at, created_at, last_used_at, idle_ttl_seconds,
+		    device_label, last_ip, last_user_agent, public_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		tokenHash, p.UserID,
+		p.ExpiresAt.UTC().Format(time.DateTime),
+		now.Format(time.DateTime),
+		now.Format(time.DateTime),
+		idleSecs,
+		nullableString(p.DeviceLabel),
+		nullableString(p.LastIP),
+		nullableString(p.LastUserAgent),
+		publicID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating session: %w", err)
 	}
 
-	exp := expiresAt.UTC()
-	// Return the raw token as ID so the caller can send it to the client.
-	return &Session{ID: rawToken, UserID: userID, ExpiresAt: &exp, CreatedAt: now}, nil
+	exp := p.ExpiresAt.UTC()
+	return &Session{
+		ID:            rawToken,
+		UserID:        p.UserID,
+		ExpiresAt:     &exp,
+		CreatedAt:     now,
+		PublicID:      publicID,
+		LastUsedAt:    &now,
+		IdleTTL:       p.IdleTTL,
+		DeviceLabel:   p.DeviceLabel,
+		LastIP:        p.LastIP,
+		LastUserAgent: p.LastUserAgent,
+	}, nil
 }
 
 func (s *SQLiteStore) CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*Session, error) {
@@ -738,14 +785,19 @@ func (s *SQLiteStore) CreateScopedSession(ctx context.Context, vaultID, vaultRol
 func (s *SQLiteStore) GetSession(ctx context.Context, rawToken string) (*Session, error) {
 	tokenHash := hashSessionToken(rawToken)
 	row := s.db.QueryRowContext(ctx,
-		"SELECT id, user_id, vault_id, agent_id, vault_role, expires_at, created_at FROM sessions WHERE id = ?", tokenHash,
+		`SELECT id, user_id, vault_id, agent_id, vault_role, expires_at, created_at,
+		        last_used_at, idle_ttl_seconds, device_label, last_ip, last_user_agent, public_id
+		 FROM sessions WHERE id = ?`, tokenHash,
 	)
 
 	var sess Session
 	var storedID string
 	var userID, vaultID, agentID, vaultRole, expiresAt sql.NullString
+	var lastUsedAt, deviceLabel, lastIP, lastUserAgent, publicID sql.NullString
+	var idleSecs sql.NullInt64
 	var createdAt string
-	if err := row.Scan(&storedID, &userID, &vaultID, &agentID, &vaultRole, &expiresAt, &createdAt); err != nil {
+	if err := row.Scan(&storedID, &userID, &vaultID, &agentID, &vaultRole, &expiresAt, &createdAt,
+		&lastUsedAt, &idleSecs, &deviceLabel, &lastIP, &lastUserAgent, &publicID); err != nil {
 		return nil, err
 	}
 	// Return the raw token as ID (not the hash) so callers can reference it.
@@ -759,7 +811,132 @@ func (s *SQLiteStore) GetSession(ctx context.Context, rawToken string) (*Session
 		sess.ExpiresAt = &t
 	}
 	sess.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
+	if lastUsedAt.Valid {
+		t, _ := time.Parse(time.DateTime, lastUsedAt.String)
+		sess.LastUsedAt = &t
+	}
+	if idleSecs.Valid {
+		sess.IdleTTL = time.Duration(idleSecs.Int64) * time.Second
+	}
+	sess.DeviceLabel = deviceLabel.String
+	sess.LastIP = lastIP.String
+	sess.LastUserAgent = lastUserAgent.String
+	sess.PublicID = publicID.String
 	return &sess, nil
+}
+
+// TouchInterval is the minimum gap between last_used_at writes for a
+// single session. Per-request UPDATEs would serialize SQLite writes during
+// a proxy storm; collapsing to one write per minute keeps the idle window
+// accurate to within a minute while leaving headroom for concurrent reads.
+// Exported so callers (e.g. the server's in-memory touch cache) can stay
+// consistent with the store-side throttle.
+const TouchInterval = 60 * time.Second
+
+// TouchSession bumps last_used_at on a user session and refreshes
+// last_ip + last_user_agent so the auth-sessions view reflects the
+// caller's most recent request rather than only the login. Throttled by
+// TouchInterval so per-request calls collapse to one write per minute.
+// No-op for agent tokens and scoped sessions (rows with user_id IS NULL).
+// Empty ip/userAgent leave the existing column value untouched via
+// COALESCE — handy when a caller can't determine them.
+func (s *SQLiteStore) TouchSession(ctx context.Context, rawToken, ip, userAgent string) error {
+	tokenHash := hashSessionToken(rawToken)
+	now := time.Now().UTC().Format(time.DateTime)
+	cutoff := time.Now().UTC().Add(-TouchInterval).Format(time.DateTime)
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sessions
+		    SET last_used_at    = ?,
+		        last_ip         = COALESCE(NULLIF(?, ''), last_ip),
+		        last_user_agent = COALESCE(NULLIF(?, ''), last_user_agent)
+		  WHERE id = ?
+		    AND user_id IS NOT NULL
+		    AND (last_used_at IS NULL OR last_used_at < ?)`,
+		now, ip, userAgent, tokenHash, cutoff,
+	)
+	if err != nil {
+		return fmt.Errorf("touching session: %w", err)
+	}
+	return nil
+}
+
+// ListUserSessions returns active (non-expired) user sessions for userID,
+// most recently used first. Idle expiry is enforced at the row level so
+// stale rows don't leak into the UI.
+func (s *SQLiteStore) ListUserSessions(ctx context.Context, userID string) ([]Session, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, expires_at, created_at, last_used_at, idle_ttl_seconds,
+		        device_label, last_ip, last_user_agent, public_id
+		 FROM sessions
+		 WHERE user_id = ?
+		   AND (expires_at IS NULL OR expires_at > datetime('now'))
+		 ORDER BY COALESCE(last_used_at, created_at) DESC`,
+		userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing user sessions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []Session
+	now := time.Now().UTC()
+	for rows.Next() {
+		var sess Session
+		var hashedID, createdAt string
+		var expiresAt, lastUsedAt, deviceLabel, lastIP, lastUserAgent, publicID sql.NullString
+		var idleSecs sql.NullInt64
+		if err := rows.Scan(&hashedID, &expiresAt, &createdAt, &lastUsedAt, &idleSecs,
+			&deviceLabel, &lastIP, &lastUserAgent, &publicID); err != nil {
+			return nil, fmt.Errorf("scanning session: %w", err)
+		}
+		sess.UserID = userID
+		// ID is intentionally left empty — the raw token only lives on the
+		// client. Callers identify sessions by PublicID.
+		sess.PublicID = publicID.String
+		sess.DeviceLabel = deviceLabel.String
+		sess.LastIP = lastIP.String
+		sess.LastUserAgent = lastUserAgent.String
+		if expiresAt.Valid {
+			t, _ := time.Parse(time.DateTime, expiresAt.String)
+			sess.ExpiresAt = &t
+		}
+		sess.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
+		if lastUsedAt.Valid {
+			t, _ := time.Parse(time.DateTime, lastUsedAt.String)
+			sess.LastUsedAt = &t
+		}
+		if idleSecs.Valid {
+			sess.IdleTTL = time.Duration(idleSecs.Int64) * time.Second
+		}
+		// Skip rows past their idle window — same rule as IsExpired.
+		if sess.IsExpired(now) {
+			continue
+		}
+		out = append(out, sess)
+	}
+	return out, rows.Err()
+}
+
+// RevokeUserSession deletes a single session by (userID, publicID).
+// Returns sql.ErrNoRows if no matching session exists — important so a
+// caller can distinguish "already gone" from a successful revoke without
+// a separate lookup.
+func (s *SQLiteStore) RevokeUserSession(ctx context.Context, userID, publicID string) error {
+	if userID == "" || publicID == "" {
+		return sql.ErrNoRows
+	}
+	res, err := s.db.ExecContext(ctx,
+		"DELETE FROM sessions WHERE user_id = ? AND public_id = ?",
+		userID, publicID,
+	)
+	if err != nil {
+		return fmt.Errorf("revoking session: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *SQLiteStore) DeleteSession(ctx context.Context, rawToken string) error {

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Infisical/agent-vault/internal/auth"
+	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -76,7 +77,7 @@ var registerCmd = &cobra.Command{
 			return fmt.Errorf("password must be at least 8 characters")
 		}
 
-		result, err := doRegister(address, email, password)
+		result, _, err := doRegister(address, email, password, defaultDeviceLabel())
 		if err != nil {
 			return err
 		}
@@ -108,9 +109,11 @@ var registerCmd = &cobra.Command{
 		}
 		code := strings.TrimSpace(codeLine)
 
+		deviceLabel := defaultDeviceLabel()
 		verifyBody, _ := json.Marshal(map[string]string{
-			"email": email,
-			"code":  code,
+			"email":        email,
+			"code":         code,
+			"device_label": deviceLabel,
 		})
 
 		verifyResp, err := http.Post(address+"/v1/auth/verify", "application/json", bytes.NewReader(verifyBody))
@@ -120,8 +123,10 @@ var registerCmd = &cobra.Command{
 		defer func() { _ = verifyResp.Body.Close() }()
 
 		var verifyResult struct {
-			Message string `json:"message"`
-			Error   string `json:"error"`
+			Message   string `json:"message"`
+			Token     string `json:"token"`
+			ExpiresAt string `json:"expires_at"`
+			Error     string `json:"error"`
 		}
 		_ = json.NewDecoder(verifyResp.Body).Decode(&verifyResult)
 
@@ -130,6 +135,23 @@ var registerCmd = &cobra.Command{
 				return fmt.Errorf("verification failed: %s", verifyResult.Error)
 			}
 			return fmt.Errorf("verification failed with status %d", verifyResp.StatusCode)
+		}
+
+		// Persist the verify-time auto-login so the next CLI call doesn't
+		// have to run /v1/auth/login (which would mint a second session
+		// row that lingers for the full 30-day idle TTL).
+		if verifyResult.Token != "" {
+			sess := &session.ClientSession{
+				Token:       verifyResult.Token,
+				Address:     address,
+				Email:       email,
+				DeviceLabel: deviceLabel,
+			}
+			if err := session.Save(sess); err != nil {
+				return fmt.Errorf("verification succeeded but saving session failed: %w", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s Account verified. You're logged in.\n", successText("✓"))
+			return nil
 		}
 
 		fmt.Fprintf(cmd.OutOrStdout(), "%s Account verified. You can now log in with 'agent-vault auth login'.\n", successText("✓"))
