@@ -137,10 +137,10 @@ func newTrustingClient(proxyURL *url.URL, userInfo *url.Userinfo, roots *x509.Ce
 }
 
 func TestMITMInjectsCredentials(t *testing.T) {
-	var sawAuth, sawClientAuth, sawProxyAuth string
+	var sawAuth, sawClientHeader, sawProxyAuth string
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawAuth = r.Header.Get("Authorization")
-		sawClientAuth = r.Header.Get("X-Client-Auth")
+		sawClientHeader = r.Header.Get("X-Client-Header")
 		sawProxyAuth = r.Header.Get("Proxy-Authorization")
 		w.Header().Set("X-Upstream", "hello")
 		_, _ = io.WriteString(w, "upstream-body")
@@ -172,10 +172,12 @@ func TestMITMInjectsCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	// Client-supplied Authorization must be dropped and replaced by injection.
+	// Client-supplied Authorization must be dropped and replaced by injection
+	// (the auth slot is the only header the broker shadows).
 	req.Header.Set("Authorization", "Bearer client-should-not-win")
-	// Arbitrary non-allowlisted header must also be dropped.
-	req.Header.Set("X-Client-Auth", "leaked")
+	// Arbitrary client headers must flow through to the upstream — the
+	// broker only owns the auth slot.
+	req.Header.Set("X-Client-Header", "client-value")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -193,8 +195,8 @@ func TestMITMInjectsCredentials(t *testing.T) {
 	if sawAuth != "Bearer injected-secret" {
 		t.Fatalf("upstream saw Authorization %q, want injected value", sawAuth)
 	}
-	if sawClientAuth != "" {
-		t.Fatalf("upstream saw X-Client-Auth %q; non-allowlisted header must be dropped", sawClientAuth)
+	if sawClientHeader != "client-value" {
+		t.Fatalf("upstream X-Client-Header = %q, want passthrough of client value", sawClientHeader)
 	}
 	if sawProxyAuth != "" {
 		t.Fatalf("upstream saw Proxy-Authorization %q; must be stripped", sawProxyAuth)
@@ -223,7 +225,6 @@ func TestMITMPassthroughForwardsClientAuthorization(t *testing.T) {
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{
 			MatchedHost: upstreamHost,
-			Passthrough: true,
 		}},
 	}}
 
@@ -275,6 +276,72 @@ func TestMITMPassthroughForwardsClientAuthorization(t *testing.T) {
 	}
 	if sawProxyAuth != "" {
 		t.Fatalf("upstream saw Proxy-Authorization %q; must be stripped on passthrough", sawProxyAuth)
+	}
+}
+
+func TestMITMBearerForwardsArbitraryClientHeaders(t *testing.T) {
+	// On credentialed auth, only the auth-slot header is shadowed by the
+	// broker; vendor and tracing headers reach the upstream.
+	var sawAuth, sawAnthropicVersion, sawAnthropicBeta, sawTrace string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuth = r.Header.Get("Authorization")
+		sawAnthropicVersion = r.Header.Get("Anthropic-Version")
+		sawAnthropicBeta = r.Header.Get("Anthropic-Beta")
+		sawTrace = r.Header.Get("X-Trace-Id")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{
+			MatchedHost: upstreamHost,
+			Headers:     map[string]string{"Authorization": "Bearer real-token"},
+		}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    upstreamRoots,
+	}
+
+	client := newTrustingClient(proxyURL, url.User("av_sess_ok"), clientRoots)
+	req, err := http.NewRequest("GET", upstream.URL+"/v1/messages", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer client-supplied-should-be-shadowed")
+	req.Header.Set("Anthropic-Version", "2023-06-01")
+	req.Header.Set("Anthropic-Beta", "messages-2024-04-04")
+	req.Header.Set("X-Trace-Id", "trace-123")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if sawAuth != "Bearer real-token" {
+		t.Fatalf("upstream Authorization = %q, want injected value (client must not shadow)", sawAuth)
+	}
+	if sawAnthropicVersion != "2023-06-01" {
+		t.Fatalf("upstream Anthropic-Version = %q, want passthrough of client value", sawAnthropicVersion)
+	}
+	if sawAnthropicBeta != "messages-2024-04-04" {
+		t.Fatalf("upstream Anthropic-Beta = %q, want passthrough", sawAnthropicBeta)
+	}
+	if sawTrace != "trace-123" {
+		t.Fatalf("upstream X-Trace-Id = %q, want passthrough", sawTrace)
 	}
 }
 
@@ -522,7 +589,6 @@ func TestMITMSubstitutionCaseSensitive(t *testing.T) {
 				Value:       "AC12345",
 				In:          []string{"path"},
 			}},
-			Passthrough: true,
 		}},
 	}}
 
@@ -563,7 +629,6 @@ func TestMITMSubstitutionRewritesQueryAndHeader(t *testing.T) {
 				{Placeholder: "__api_key__", Value: "real&secret", In: []string{"query"}},
 				{Placeholder: "__tenant__", Value: "acme-co", In: []string{"header"}},
 			},
-			Passthrough: true,
 		}},
 	}}
 

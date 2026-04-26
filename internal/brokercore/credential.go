@@ -30,14 +30,6 @@ type InjectResult struct {
 	// carry this for diagnostic logging.
 	CredentialKeys []string
 
-	// Passthrough indicates the matched service opts out of credential
-	// injection. The ingress should forward client request headers via
-	// the denylist (CopyPassthroughRequestHeaders) rather than the
-	// PassthroughHeaders allowlist, and must not perform the injection
-	// merge step. A passthrough service may still have Substitutions —
-	// those apply independently of header injection.
-	Passthrough bool
-
 	// Substitutions are resolved placeholder rewrites the ingress must
 	// apply via ApplySubstitutions before forwarding. Each entry carries
 	// a SECRET Value — never log; placeholder names are safe.
@@ -121,7 +113,6 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	result := &InjectResult{
 		MatchedHost:    matched.Host,
 		CredentialKeys: matched.CredentialKeys(),
-		Passthrough:    matched.Auth.Type == "passthrough",
 	}
 
 	// Resolve substitutions before auth so passthrough services (which

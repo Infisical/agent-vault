@@ -269,11 +269,8 @@ func TestInject_Passthrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if !res.Passthrough {
-		t.Fatal("expected Passthrough=true")
-	}
 	if res.Headers != nil {
-		t.Fatalf("expected nil Headers, got %v", res.Headers)
+		t.Fatalf("expected nil Headers on passthrough, got %v", res.Headers)
 	}
 	if res.MatchedHost != "api.example.com" {
 		t.Fatalf("MatchedHost = %q, want %q", res.MatchedHost, "api.example.com")
@@ -354,8 +351,11 @@ func TestInject_PassthroughPortStripped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if !res.Passthrough {
-		t.Fatal("expected Passthrough=true for host:port match")
+	if res.Headers != nil {
+		t.Fatalf("expected nil Headers on passthrough host:port match, got %v", res.Headers)
+	}
+	if res.MatchedHost != "api.example.com" {
+		t.Fatalf("MatchedHost = %q, want %q", res.MatchedHost, "api.example.com")
 	}
 }
 
@@ -414,11 +414,8 @@ func TestInject_ResolvesSubstitutionOnPassthrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if !res.Passthrough {
-		t.Fatal("expected Passthrough=true")
-	}
 	if res.Headers != nil {
-		t.Fatalf("expected nil headers on passthrough, got %v", res.Headers)
+		t.Fatalf("expected nil Headers on passthrough, got %v", res.Headers)
 	}
 	if len(res.Substitutions) != 1 || res.Substitutions[0].Value != "AC12345" {
 		t.Fatalf("expected substitution resolved on passthrough service, got %+v", res.Substitutions)

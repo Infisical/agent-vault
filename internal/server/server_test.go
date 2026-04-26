@@ -2662,6 +2662,52 @@ func TestProxyPassthroughDoesNotReadCredentials(t *testing.T) {
 	}
 }
 
+func TestProxyBearerForwardsArbitraryClientHeaders(t *testing.T) {
+	// /proxy ingress: client's Authorization carries the AV session
+	// token and must be replaced by the injected credential, not leaked.
+	// Vendor headers must still reach the upstream.
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer sk_live_xxx" {
+			t.Errorf("Authorization: got %q, want injected stored credential", got)
+		}
+		if got := r.Header.Get("Anthropic-Version"); got != "2023-06-01" {
+			t.Errorf("Anthropic-Version: got %q, want passthrough", got)
+		}
+		if got := r.Header.Get("X-Trace-Id"); got != "trace-123" {
+			t.Errorf("X-Trace-Id: got %q, want passthrough", got)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`bearer-ok`))
+	}))
+	defer upstream.Close()
+
+	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
+	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
+	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, serviceHost)
+	ms, token, encKey := setupProxyTest(t, services)
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+
+	origClient := proxyClient
+	proxyClient = upstream.Client()
+	defer func() { proxyClient = origClient }()
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer "+token) // session auth — must not leak
+	req.Header.Set("Anthropic-Version", "2023-06-01")
+	req.Header.Set("X-Trace-Id", "trace-123")
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body, _ := io.ReadAll(rec.Body)
+	if string(body) != "bearer-ok" {
+		t.Fatalf("unexpected body: %s", body)
+	}
+}
+
 func TestProxyMissingCredential(t *testing.T) {
 	services := `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"nonexistent_key"}}]`
 	ms, token, encKey := setupProxyTest(t, services)

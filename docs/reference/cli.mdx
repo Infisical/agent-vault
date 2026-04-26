@@ -460,7 +460,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--api-key-prefix` | | Prefix for api-key value |
     | `--disabled` | `false` | Create the service in a disabled state (proxy traffic returns 403 until enabled) |
 
-    The `passthrough` auth type accepts no credential flags; Agent Vault allowlists the host and forwards the client's request headers unchanged, stripping only hop-by-hop and broker-scoped headers (`X-Vault`, `Proxy-Authorization`).
+    The `passthrough` auth type accepts no credential flags; Agent Vault allowlists the host but does not store or inject a credential. See [Header forwarding](/learn/services#header-forwarding) for the rules that apply across every auth type — passthrough simply has no auth slot to override.
 
     New services are **enabled by default**. Pass `--disabled` to create the service in a disabled state, or use `agent-vault vault service disable <host>` after creation.
 

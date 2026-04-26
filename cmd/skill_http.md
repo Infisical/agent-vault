@@ -96,10 +96,12 @@ bearer      -- Authorization: Bearer <token>          {"auth": {"type": "bearer"
 basic       -- HTTP Basic (user, optional password)    {"auth": {"type": "basic", "username": "API_KEY"}}
 api-key     -- key in a named header, optional prefix  {"auth": {"type": "api-key", "key": "SECRET", "header": "x-api-key"}}
 custom      -- freeform header templates               {"auth": {"type": "custom", "headers": {"X-Key": "{{ SECRET }}"}}}
-passthrough -- forward client headers, inject nothing  {"auth": {"type": "passthrough"}}
+passthrough -- allowlist host only, no credential   {"auth": {"type": "passthrough"}}
 ```
 
 Common services: Stripe (bearer), GitHub (bearer), OpenAI (bearer), Ashby (basic -- API key as username), Jira (basic -- email + token), Anthropic (api-key, header: x-api-key). If unlisted, check the API docs.
+
+**Header forwarding.** Agent Vault forwards your request headers to the upstream unchanged, except for hop-by-hop headers (RFC 7230, including `Proxy-Connection`), broker-scoped headers (`X-Vault`, `Proxy-Authorization`), and the specific header(s) the configured auth type manages. With `auth.type: bearer`, for example, the broker overrides `Authorization` and leaves all other client headers untouched — so vendor headers like `anthropic-version` and `OpenAI-Beta` reach the upstream. Custom auth strips every header listed in `auth.headers` and replaces them with the resolved values.
 
 **Passthrough** allowlists a host but does not store or inject a credential. Use it only when the operator has decided their client already holds the credential and wants netguard / audit / MITM coverage without putting the secret in the vault. For the default case (agent needs the credential from the vault), use one of the credentialed types above. Passthrough auth entries reject all credential fields (`token`, `username`, `password`, `key`, `header`, `prefix`, `headers`).
 

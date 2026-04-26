@@ -9,12 +9,11 @@ This page covers the cryptographic primitives, token model, network protections,
 
 <Note>
   [Passthrough services](/learn/services#passthrough) are an operator-chosen
-  exception: they allowlist a host without storing or injecting any credential,
-  so the client's own request headers flow through unchanged. The guarantees
-  below apply to credentials *stored in the vault* — a credential the client
-  holds outside the vault is not protected by Agent Vault, but the host
-  allowlist, [netguard](#network-security), TLS interception, and audit
-  logging still apply.
+  exception: they allowlist a host without storing or injecting any credential.
+  The guarantees below apply to credentials *stored in the vault* — a
+  credential the client holds outside the vault is not protected by Agent
+  Vault, but the host allowlist, [netguard](#network-security), TLS
+  interception, and audit logging still apply.
 </Note>
 
 ## Encryption at rest
@@ -107,7 +106,9 @@ Agent Vault resolves hostnames to IP addresses, validates every resolved IP agai
 
 ## Transport security
 
-All proxied requests are forwarded over **HTTPS**, regardless of how the agent connects to Agent Vault locally. The agent's `Authorization` header (containing its Agent Vault token) is stripped before forwarding; real credentials are injected server-side based on the vault's [services](/learn/services).
+All proxied requests are forwarded over **HTTPS**, regardless of how the agent connects to Agent Vault locally. The agent's session token never reaches the target service: on the explicit `/proxy` ingress it travels in `Authorization` and is stripped; on the transparent `HTTPS_PROXY` ingress it travels in `Proxy-Authorization` (which is hop-by-hop and never forwarded). Real credentials are injected server-side based on the vault's [services](/learn/services).
+
+Other client request headers — vendor headers like `anthropic-version`, conditional request headers, tracing IDs — flow through to the upstream unchanged. The broker only takes over the headers it is responsible for injecting (the auth slot for the configured auth type) plus hop-by-hop and broker-scoped headers; see [Header forwarding](/learn/services#header-forwarding) for the precise rules.
 
 This means:
 - Agents authenticate to Agent Vault with a token that grants no direct access to credentials.
