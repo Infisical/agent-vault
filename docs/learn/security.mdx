@@ -90,7 +90,7 @@ Cloud provider metadata endpoints are blocked unconditionally — including when
 - `169.254.169.254/32` (AWS, GCP, Azure instance metadata)
 - `fd00:ec2::254/128` (AWS IMDSv2 IPv6)
 
-### Blocked when `ALLOW_PRIVATE_RANGES=false`
+### Blocked when `AGENT_VAULT_ALLOW_PRIVATE_RANGES=false`
 
 RFC-1918 and other reserved ranges are additionally blocked under the default policy, unless explicitly allowlisted:
 
