@@ -125,6 +125,7 @@ main() {
     # ── Fetch latest version ─────────────────────────────────────────────
 
     info "Fetching latest release..."
+    # shellcheck disable=SC2086 # CURL_HARDEN is a flag list — word-splitting is intentional
     LATEST="$(curl $CURL_HARDEN -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
         | grep '"tag_name"' | head -1 | sed 's/.*"tag_name":[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/')"
 
@@ -142,6 +143,7 @@ main() {
     TMP_DIR="$(mktemp -d)"
     info "Downloading ${ARCHIVE}..."
 
+    # shellcheck disable=SC2086 # CURL_HARDEN is a flag list — word-splitting is intentional
     if ! curl $CURL_HARDEN -fSL --progress-bar -o "${TMP_DIR}/${ARCHIVE}" "$URL"; then
         error "Download failed. The release may not include a binary for ${OS}/${ARCH}."
     fi
@@ -194,6 +196,7 @@ main() {
         if [ -n "$EXISTING_VERSION" ] && [ "$EXISTING_VERSION" != "unknown" ]; then
             EVENT="upgrade"
         fi
+        # shellcheck disable=SC2086 # CURL_HARDEN is a flag list — word-splitting is intentional
         curl $CURL_HARDEN -fsS -m 3 "https://get.agent-vault.dev/ok?os=${OS}&arch=${ARCH}&v=${LATEST}&event=${EVENT}" >/dev/null 2>&1 || true
     fi
 }
