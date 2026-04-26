@@ -485,6 +485,21 @@ func TestValidateSubstitutionsRejectsReservedURLChars(t *testing.T) {
 	}
 }
 
+func TestValidateSubstitutionsRejectsAllSymbol(t *testing.T) {
+	// All-delimiter strings would aggressively match URL punctuation.
+	cases := []string{"____", "~~~~", "----", "....", "~-.~"}
+	for _, p := range cases {
+		t.Run(p, func(t *testing.T) {
+			s := Service{Host: "api.example.com", Substitutions: []Substitution{
+				{Key: "K_X", Placeholder: p, In: []string{"path"}},
+			}}
+			if err := s.ValidateSubstitutions(); err == nil {
+				t.Fatalf("expected error for all-symbol placeholder %q", p)
+			}
+		})
+	}
+}
+
 func TestValidateSubstitutionsRejectsEmptyPlaceholder(t *testing.T) {
 	s := Service{Host: "api.example.com", Substitutions: []Substitution{
 		{Key: "ACCOUNT_SID", Placeholder: "", In: []string{"path"}},

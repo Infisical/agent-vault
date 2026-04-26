@@ -357,10 +357,11 @@ func (s *Service) ValidateSubstitutions() error {
 	return nil
 }
 
-// validatePlaceholder enforces length, character set, and a boundary
+// validatePlaceholder enforces length, character set, a boundary
 // requirement (either "__" or a non-word character) so bare identifiers
 // like "account_sid" — which legitimately appear as URL path segments —
-// cannot be picked as placeholders.
+// cannot be picked as placeholders, and at least one alphanumeric so
+// all-symbol strings like "____" or "~~~~" are rejected.
 func validatePlaceholder(p string) error {
 	if p == "" {
 		return fmt.Errorf("\"placeholder\" is required (recommended convention: __name__)")
@@ -369,16 +370,23 @@ func validatePlaceholder(p string) error {
 		return fmt.Errorf("placeholder %q is too short — must be at least 4 characters (recommended convention: __name__)", p)
 	}
 	hasBoundary := false
+	hasAlnum := false
 	for i := 0; i < len(p); i++ {
 		c := p[i]
 		if !placeholderCharAllowed(c) {
 			return fmt.Errorf("placeholder %q contains disallowed character %q — only RFC 3986 unreserved characters [A-Za-z0-9_-.~] are permitted (recommended convention: __name__)", p, c)
+		}
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			hasAlnum = true
 		}
 		if !placeholderWordChar(c) {
 			hasBoundary = true
 		} else if c == '_' && i+1 < len(p) && p[i+1] == '_' {
 			hasBoundary = true
 		}
+	}
+	if !hasAlnum {
+		return fmt.Errorf("placeholder %q must contain at least one alphanumeric character (recommended convention: __name__)", p)
 	}
 	if !hasBoundary {
 		return fmt.Errorf("placeholder %q must contain a delimiter — either \"__\" or a character outside [A-Za-z0-9_] — to avoid matching legitimate URL words (recommended convention: __name__)", p)

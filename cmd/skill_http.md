@@ -112,7 +112,9 @@ How it works:
 - Your request must embed the placeholder verbatim. The broker resolves the credential, URL-encodes the value, and substitutes it in.
 - `in` declares which surfaces the broker is allowed to scan: subset of `["path", "query", "header"]`, defaulting to `["path", "query"]`. `header` must be explicit. `body` is not supported.
 - **Scoping is the security boundary.** The broker only scans surfaces in `in`. Embedding the placeholder anywhere else means the literal string passes through unmodified — the operator's `in` declaration cannot be overridden by request shape.
+- When `header` is in `in`, the broker scans every outbound header for the placeholder, not a specific named header. Use a unique placeholder so it cannot land in headers you didn't intend to rewrite.
 - Substitutions compose with all auth types, including `passthrough`.
+- Updating an existing service: a `set` proposal that omits `substitutions` (or sends an empty list) preserves the service's existing substitutions, even when `auth` is replaced. To change the list, supply the new non-empty list. To clear all substitutions, delete and recreate the service.
 
 Example proposal (Twilio: basic auth header + path SID substitution):
 
@@ -140,7 +142,7 @@ Content-Type: application/json
 
 Once approved, the agent makes requests like `GET https://api.twilio.com/2010-04-01/Accounts/__account_sid__/Messages.json` (via `/proxy/api.twilio.com/...` or `HTTPS_PROXY`). The broker rewrites the path to `/Accounts/AC.../Messages.json` and injects the basic auth header.
 
-Placeholder safety: must be ≥4 characters, contain a `__` boundary or non-`[A-Za-z0-9_]` character (so bare words like `account_sid` are rejected — they would match legitimate URL words), and use only RFC 3986 unreserved characters `[A-Za-z0-9_-.~]`. The recommended convention is `__name__`.
+Placeholder safety: must be ≥4 characters, contain at least one alphanumeric character, contain a `__` boundary or non-`[A-Za-z0-9_]` character (so bare words like `account_sid` are rejected — they would match legitimate URL words), and use only RFC 3986 unreserved characters `[A-Za-z0-9_-.~]`. The recommended convention is `__name__`.
 
 ### Creating a Proposal
 

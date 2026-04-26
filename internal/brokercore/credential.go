@@ -126,23 +126,26 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 
 	// Resolve substitutions before auth so passthrough services (which
 	// skip the auth branch) still surface ErrCredentialMissing here.
+	// Hold locally and attach only on success — error returns must not
+	// expose resolved secret values via result.
+	var resolvedSubs []ResolvedSubstitution
 	if len(matched.Substitutions) > 0 {
-		resolved := make([]ResolvedSubstitution, 0, len(matched.Substitutions))
+		resolvedSubs = make([]ResolvedSubstitution, 0, len(matched.Substitutions))
 		for _, sub := range matched.Substitutions {
 			val, err := getCredential(sub.Key)
 			if err != nil {
 				return result, fmt.Errorf("%w: %v", ErrCredentialMissing, err)
 			}
-			resolved = append(resolved, ResolvedSubstitution{
+			resolvedSubs = append(resolvedSubs, ResolvedSubstitution{
 				Placeholder: sub.Placeholder,
 				Value:       val,
 				In:          sub.NormalizedIn(),
 			})
 		}
-		result.Substitutions = resolved
 	}
 
 	if matched.Auth.Type == "passthrough" {
+		result.Substitutions = resolvedSubs
 		return result, nil
 	}
 
@@ -152,5 +155,6 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	}
 
 	result.Headers = headers
+	result.Substitutions = resolvedSubs
 	return result, nil
 }

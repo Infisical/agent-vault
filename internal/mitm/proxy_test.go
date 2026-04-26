@@ -544,6 +544,61 @@ func TestMITMSubstitutionCaseSensitive(t *testing.T) {
 	}
 }
 
+func TestMITMSubstitutionRewritesQueryAndHeader(t *testing.T) {
+	var sawQuery, sawTenant string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawQuery = r.URL.RawQuery
+		sawTenant = r.Header.Get("X-Tenant")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{
+			Substitutions: []brokercore.ResolvedSubstitution{
+				{Placeholder: "__api_key__", Value: "real&secret", In: []string{"query"}},
+				{Placeholder: "__tenant__", Value: "acme-co", In: []string{"header"}},
+			},
+			Passthrough: true,
+		}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+
+	client := newTrustingClient(proxyURL, url.User("av_sess_ok"), clientRoots)
+	req, _ := http.NewRequest("GET", upstream.URL+"/data?api_key=__api_key__&format=json", nil)
+	req.Header.Set("X-Tenant", "tenant=__tenant__")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	parsed, err := url.ParseQuery(sawQuery)
+	if err != nil {
+		t.Fatalf("parse query %q: %v", sawQuery, err)
+	}
+	if parsed.Get("api_key") != "real&secret" {
+		t.Fatalf("query api_key: got %q, want round-tripped 'real&secret'", parsed.Get("api_key"))
+	}
+	if parsed.Get("format") != "json" {
+		t.Fatalf("non-substituted query param dropped: got %q", parsed.Get("format"))
+	}
+	if sawTenant != "tenant=acme-co" {
+		t.Fatalf("X-Tenant header: got %q, want 'tenant=acme-co'", sawTenant)
+	}
+}
+
 func TestIsValidHost(t *testing.T) {
 	cases := []struct {
 		in   string

@@ -443,6 +443,36 @@ func TestInject_SubstitutionMissingCredentialErrorsLikeAuth(t *testing.T) {
 	}
 }
 
+func TestInject_AuthFailureLeavesSubstitutionsNil(t *testing.T) {
+	// Substitution resolves successfully, then auth resolution fails.
+	// The error path must NOT leak the resolved (secret) substitution
+	// values via result.Substitutions — callers that log result on
+	// errors would otherwise expose plaintext credential values.
+	key32 := make32(0x77)
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "api.twilio.com",
+		Auth: broker.Auth{Type: "bearer", Token: "MISSING_AUTH_KEY"},
+		Substitutions: []broker.Substitution{
+			{Key: "PRESENT_SUB_KEY", Placeholder: "__sid__", In: []string{"path"}},
+		},
+	}})
+	f.setCred(t, key32, "v1", "PRESENT_SUB_KEY", "SECRET-VALUE")
+	// MISSING_AUTH_KEY is intentionally not set.
+
+	p := NewStoreCredentialProvider(f, key32)
+	res, err := p.Inject(context.Background(), "v1", "api.twilio.com")
+	if !errors.Is(err, ErrCredentialMissing) {
+		t.Fatalf("expected ErrCredentialMissing, got %v", err)
+	}
+	if res == nil {
+		t.Fatal("expected result returned alongside error for diagnostic logging")
+	}
+	if res.Substitutions != nil {
+		t.Fatalf("expected res.Substitutions=nil on auth error to avoid leaking secrets, got %+v", res.Substitutions)
+	}
+}
+
 func TestInject_CredentialKeysIncludesSubstitution(t *testing.T) {
 	key32 := make32(0x12)
 	f := newFakeCredStore()

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -2939,6 +2940,80 @@ func TestProxySubstitutionMissingCredentialReturns502(t *testing.T) {
 	}
 	if upstreamHit {
 		t.Fatal("upstream must not be contacted when substitution credential is missing")
+	}
+}
+
+func TestProxySubstitutionRewritesQuery(t *testing.T) {
+	var sawQuery string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
+	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
+	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"},"substitutions":[{"key":"LEGACY_API_KEY","placeholder":"__api_key__","in":["query"]}]}]`, serviceHost)
+	ms, token, encKey := setupProxyTest(t, services)
+	ct, nonce, _ := crypto.Encrypt([]byte("real-key&with=specials"), encKey)
+	ms.credentials["root-ns-id:LEGACY_API_KEY"] = &store.Credential{ID: "c-key", VaultID: "root-ns-id", Key: "LEGACY_API_KEY", Ciphertext: ct, Nonce: nonce}
+
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+	origClient := proxyClient
+	proxyClient = upstream.Client()
+	defer func() { proxyClient = origClient }()
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/data?api_key=__api_key__&format=json", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	parsed, err := url.ParseQuery(sawQuery)
+	if err != nil {
+		t.Fatalf("parse query %q: %v", sawQuery, err)
+	}
+	if parsed.Get("api_key") != "real-key&with=specials" {
+		t.Fatalf("expected query api_key to round-trip the encoded secret, got %q", parsed.Get("api_key"))
+	}
+	if parsed.Get("format") != "json" {
+		t.Fatalf("expected non-substituted query param preserved, got %q", parsed.Get("format"))
+	}
+}
+
+func TestProxySubstitutionRewritesHeader(t *testing.T) {
+	var sawTenant string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawTenant = r.Header.Get("X-Tenant")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
+	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
+	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"},"substitutions":[{"key":"TENANT_ID","placeholder":"__tenant__","in":["header"]}]}]`, serviceHost)
+	ms, token, encKey := setupProxyTest(t, services)
+	ct, nonce, _ := crypto.Encrypt([]byte("acme-co"), encKey)
+	ms.credentials["root-ns-id:TENANT_ID"] = &store.Credential{ID: "c-tenant", VaultID: "root-ns-id", Key: "TENANT_ID", Ciphertext: ct, Nonce: nonce}
+
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+	origClient := proxyClient
+	proxyClient = upstream.Client()
+	defer func() { proxyClient = origClient }()
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/items", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Tenant", "tenant=__tenant__")
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if sawTenant != "tenant=acme-co" {
+		t.Fatalf("expected header rewritten to 'tenant=acme-co', got %q", sawTenant)
 	}
 }
 

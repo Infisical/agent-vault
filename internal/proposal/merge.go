@@ -42,7 +42,15 @@ func MergeServices(existing []broker.Service, proposed []Service) ([]broker.Serv
 				// preserve Auth and Description, overlay just the flag.
 				merged[idx].Enabled = p.Enabled
 			case exists:
-				merged[idx] = toBrokerService(p)
+				next := toBrokerService(p)
+				// Empty Substitutions means "leave existing alone"; clear
+				// by delete+recreate. The aliased slice is safe — the
+				// caller marshals the merged config to JSON and does not
+				// mutate it.
+				if len(p.Substitutions) == 0 {
+					next.Substitutions = merged[idx].Substitutions
+				}
+				merged[idx] = next
 			default:
 				hostIndex[p.Host] = len(merged)
 				merged = append(merged, toBrokerService(p))

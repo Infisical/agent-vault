@@ -198,7 +198,12 @@ The validator rejects placeholders that would cause false-positive substitutions
 
 - **Length** ≥ 4 characters.
 - **Must contain a `__` sequence or a non-`[A-Za-z0-9_]` character** — so a bare word like `account_sid` is rejected (it could appear as a real path segment), while `__account_sid__`, `sid.value`, `sid-val`, and `~sid~` all pass.
+- **At least one alphanumeric character** — strings made entirely of delimiters like `____` or `~~~~` are rejected because they would aggressively match URL punctuation.
 - **Only RFC 3986 unreserved characters** `[A-Za-z0-9_-.~]` are permitted, so the placeholder survives any HTTP client / SDK / middlebox without percent-encoding round-trips.
+
+### `header` scope is request-wide
+
+When `in` includes `header`, the broker scans every outbound header for the placeholder — not one specific named header. Pick a unique placeholder so a typo or a copy-pasted value can't accidentally land in a header you didn't intend to rewrite. (Path and query are scoped to those URL components and don't have this concern.)
 
 ### Composes with all auth types
 
@@ -209,10 +214,9 @@ Substitutions and auth are independent. A service can use either, both, or neith
 - A pure-substitution case (e.g. an internal API where the only secret lives in the path): `auth: passthrough` + path substitution.
 
 <Warning>
-  Substitutions and auth must be supplied together when changing a service.
-  An enable/disable-only proposal preserves both, but you cannot add or
-  modify substitutions on an existing service without re-supplying the auth
-  config in the same change.
+  Modifying substitutions requires re-supplying auth in the same proposal.
+  Auth-only or enable/disable-only `set` proposals preserve existing
+  substitutions; to clear them, delete and recreate the service.
 </Warning>
 
 ## Host matching

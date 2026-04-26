@@ -109,8 +109,10 @@ How it works:
 - Your request must embed the placeholder verbatim: `GET https://api.twilio.com/2010-04-01/Accounts/__account_sid__/Messages.json`. The broker resolves `key` from the vault, URL-encodes the value, and substitutes it in.
 - `in` declares which surfaces the broker is allowed to scan: subset of `["path", "query", "header"]`. Defaults to `["path", "query"]` if omitted. `header` must be explicit. `body` is not supported.
 - **Scoping is the security boundary.** The broker only scans surfaces in `in`. Embedding the placeholder anywhere else (a non-declared surface, a body) means the literal string passes through unmodified — there is no way to coerce the broker into substituting somewhere the operator did not authorize.
+- When `header` is in `in`, the broker scans **every outbound header** for the placeholder, not a specific named header. Pick a unique placeholder so it can only appear where you intended.
 - Substitutions compose with auth: a Twilio service uses both `auth: basic` (header injection) and a substitution for the path SID.
-- Placeholder safety: must be ≥4 characters, contain a `__` boundary or non-`[A-Za-z0-9_]` character (so bare words like `account_sid` are rejected — they would match legitimate URL words), and use only RFC 3986 unreserved characters `[A-Za-z0-9_-.~]`. The recommended convention is `__name__`.
+- Placeholder safety: must be ≥4 characters, contain at least one alphanumeric character, contain a `__` boundary or non-`[A-Za-z0-9_]` character (so bare words like `account_sid` are rejected — they would match legitimate URL words), and use only RFC 3986 unreserved characters `[A-Za-z0-9_-.~]`. The recommended convention is `__name__`.
+- Updating an existing service: a `set` proposal that omits `substitutions` (or sends an empty list) preserves the service's existing substitutions, even when `auth` is replaced. To change the list, supply the new non-empty list. To clear all substitutions, delete and recreate the service.
 
 Substitutions are configured via JSON only — no flag form. Place a `substitutions` array under any `services[]` entry in `proposal create -f file.json` or `agent-vault service set -f services.yaml`.
 
