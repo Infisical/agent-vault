@@ -150,6 +150,9 @@ func TestBuildRunArgs_HostAgentDirBindMount(t *testing.T) {
 		t.Fatalf("create config: %v", err)
 	}
 	_ = f.Close()
+	cfg.HostAgentConfig = agentConfig
+	cfg.ContainerAgentDir = ContainerAgentHome(".claude")
+	cfg.ContainerConfig = ContainerAgentConfig(".claude.json")
 	cfg.HostUID = 501
 	cfg.HostGID = 20
 
@@ -159,11 +162,11 @@ func TestBuildRunArgs_HostAgentDirBindMount(t *testing.T) {
 	}
 
 	resolvedDir, _ := filepath.EvalSymlinks(agentDir)
-	if !hasFlagValue(args, "-v", resolvedDir+":"+ContainerClaudeHome) {
+	if !hasFlagValue(args, "-v", resolvedDir+":"+ContainerAgentHome(".claude")) {
 		t.Errorf("expected host-agent-dir bind in args, got %v", args)
 	}
 	resolvedCfg, _ := filepath.EvalSymlinks(agentConfig)
-	if !hasFlagValue(args, "-v", resolvedCfg+":"+ContainerClaudeConfig) {
+	if !hasFlagValue(args, "-v", resolvedCfg+":"+ContainerAgentConfig(".claude.json")) {
 		t.Errorf("expected host-agent-config bind in args, got %v", args)
 	}
 	for _, a := range args {
@@ -180,11 +183,11 @@ func TestBuildRunArgs_HostAgentDirBindMount(t *testing.T) {
 }
 
 func TestBuildRunArgs_HostAgentDirSkipsAbsentConfig(t *testing.T) {
-	// If the sibling .claude.json doesn't exist, BuildRunArgs must
-	// omit the config bind entirely — otherwise docker would
-	// auto-create a directory where Claude expects a file.
+	// If HostAgentConfig isn't set, BuildRunArgs must omit the config
+	// bind entirely.
 	cfg := baseConfig(t)
 	cfg.HostAgentDir = t.TempDir()
+	cfg.ContainerAgentDir = ContainerAgentHome(".cursor")
 
 	args, err := BuildRunArgs(cfg)
 	if err != nil {
@@ -192,7 +195,27 @@ func TestBuildRunArgs_HostAgentDirSkipsAbsentConfig(t *testing.T) {
 	}
 	for _, a := range args {
 		if strings.HasSuffix(a, ":"+ContainerClaudeConfig) {
-			t.Errorf("expected no config bind when sibling .claude.json absent; got %q", a)
+			t.Errorf("expected no config bind when HostAgentConfig is empty; got %q", a)
+		}
+	}
+}
+
+func TestBuildRunArgs_HostAgentDirCursorBindMount(t *testing.T) {
+	cfg := baseConfig(t)
+	cfg.HostAgentDir = t.TempDir()
+	cfg.ContainerAgentDir = ContainerAgentHome(".cursor")
+
+	args, err := BuildRunArgs(cfg)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	resolvedDir, _ := filepath.EvalSymlinks(cfg.HostAgentDir)
+	if !hasFlagValue(args, "-v", resolvedDir+":"+ContainerAgentHome(".cursor")) {
+		t.Fatalf("expected cursor host-agent-dir bind in args, got %v", args)
+	}
+	for _, a := range args {
+		if strings.HasSuffix(a, ":"+ContainerClaudeConfig) {
+			t.Fatalf("did not expect sibling config bind for cursor, got %q", a)
 		}
 	}
 }
@@ -350,6 +373,59 @@ func TestParseAndValidateMount_RejectReservedContainerDst(t *testing.T) {
 				t.Errorf("expected reserved-path error for dst=%s, got %v", dst, err)
 			}
 		})
+	}
+}
+
+func TestBuildRunArgs_RejectUserMountActiveAgentDir(t *testing.T) {
+	cfg := baseConfig(t)
+	cfg.ContainerAgentDir = ContainerAgentHome(".cursor")
+	cfg.Mounts = []string{cfg.WorkDir + ":" + ContainerAgentHome(".cursor")}
+	_, err := BuildRunArgs(cfg)
+	if err == nil {
+		t.Fatal("expected reserved-path rejection for active ContainerAgentDir")
+	}
+	if !strings.Contains(err.Error(), ContainerAgentHome(".cursor")) {
+		t.Errorf("err = %q, want to mention %q", err.Error(), ContainerAgentHome(".cursor"))
+	}
+}
+
+func TestBuildRunArgs_HostAgentSkillsDirBindMount(t *testing.T) {
+	// Codex is the canonical case: skills at ~/.agents (baseDir),
+	// state at ~/.codex (effective state dir). Both must be mounted
+	// so the agent-vault skill installed by maybeInstallSkills is
+	// visible inside the sandbox alongside the state dir.
+	cfg := baseConfig(t)
+	cfg.HostAgentDir = t.TempDir()
+	cfg.ContainerAgentDir = ContainerAgentHome(".codex")
+	cfg.HostAgentSkillsDir = t.TempDir()
+	cfg.ContainerAgentSkillsDir = ContainerAgentHome(".agents")
+
+	args, err := BuildRunArgs(cfg)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	resolvedState, _ := filepath.EvalSymlinks(cfg.HostAgentDir)
+	if !hasFlagValue(args, "-v", resolvedState+":"+ContainerAgentHome(".codex")) {
+		t.Errorf("expected state-dir bind %q:%q in args, got %v",
+			resolvedState, ContainerAgentHome(".codex"), args)
+	}
+	resolvedSkills, _ := filepath.EvalSymlinks(cfg.HostAgentSkillsDir)
+	if !hasFlagValue(args, "-v", resolvedSkills+":"+ContainerAgentHome(".agents")) {
+		t.Errorf("expected skills-dir bind %q:%q in args, got %v",
+			resolvedSkills, ContainerAgentHome(".agents"), args)
+	}
+}
+
+func TestBuildRunArgs_RejectUserMountActiveSkillsDir(t *testing.T) {
+	cfg := baseConfig(t)
+	cfg.ContainerAgentSkillsDir = ContainerAgentHome(".agents")
+	cfg.Mounts = []string{cfg.WorkDir + ":" + ContainerAgentHome(".agents")}
+	_, err := BuildRunArgs(cfg)
+	if err == nil {
+		t.Fatal("expected reserved-path rejection for active ContainerAgentSkillsDir")
+	}
+	if !strings.Contains(err.Error(), ContainerAgentHome(".agents")) {
+		t.Errorf("err = %q, want to mention %q", err.Error(), ContainerAgentHome(".agents"))
 	}
 }
 

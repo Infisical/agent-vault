@@ -1,12 +1,13 @@
 package cmd
 
 import (
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 )
-
 
 func TestSandboxFlagsRegistered(t *testing.T) {
 	vCmd := findSubcommand(rootCmd, "vault")
@@ -142,4 +143,104 @@ func newRunCommandForTest() *cobra.Command {
 	c.Flags().Bool("share-agent-dir", false, "")
 	c.Flags().Bool("no-mitm", false, "")
 	return c
+}
+
+func TestAgentContainerInfo_KnownAgents(t *testing.T) {
+	tests := []struct {
+		cmd            string
+		wantBaseDir    string
+		wantStateDir   string
+		wantSiblingCfg string
+		wantHostSetup  bool
+	}{
+		{"claude", ".claude", ".claude", ".claude.json", true},
+		{"cursor", ".cursor", ".cursor", "", false},
+		{"agent", ".cursor", ".cursor", "", false},
+		{"codex", ".agents", ".codex", "", false},
+		{"hermes", ".hermes", ".hermes", "", false},
+		{"opencode", ".opencode", ".opencode", "", false},
+		{"/usr/local/bin/codex", ".agents", ".codex", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.cmd, func(t *testing.T) {
+			info, ok := agentContainerInfo(tc.cmd)
+			if !ok {
+				t.Fatalf("agentContainerInfo(%q): expected known agent", tc.cmd)
+			}
+			if info.baseDir != tc.wantBaseDir {
+				t.Errorf("baseDir = %q, want %q", info.baseDir, tc.wantBaseDir)
+			}
+			if got := info.effectiveStateDir(); got != tc.wantStateDir {
+				t.Errorf("effectiveStateDir() = %q, want %q", got, tc.wantStateDir)
+			}
+			if info.siblingConfig != tc.wantSiblingCfg {
+				t.Errorf("siblingConfig = %q, want %q", info.siblingConfig, tc.wantSiblingCfg)
+			}
+			if (info.hostSetup != nil) != tc.wantHostSetup {
+				t.Errorf("hostSetup != nil = %v, want %v", info.hostSetup != nil, tc.wantHostSetup)
+			}
+		})
+	}
+}
+
+func TestAgentContainerInfo_Unknown(t *testing.T) {
+	if _, ok := agentContainerInfo("unknown-agent"); ok {
+		t.Fatal("expected unknown-agent to be rejected")
+	}
+}
+
+func TestRequireCustomImageForNonClaudeShare(t *testing.T) {
+	claude, _ := agentContainerInfo("claude")
+	codex, _ := agentContainerInfo("codex")
+	cursor, _ := agentContainerInfo("cursor")
+
+	tests := []struct {
+		name    string
+		agent   knownAgent
+		image   string
+		cmdName string
+		wantErr string
+	}{
+		{"claude with bundled image passes", claude, "", "claude", ""},
+		{"claude with custom image passes", claude, "my/image:v1", "claude", ""},
+		{"codex with bundled image is rejected", codex, "", "codex", "--image"},
+		{"codex with custom image passes", codex, "my/codex:v1", "codex", ""},
+		{"cursor with bundled image is rejected", cursor, "", "cursor", "--image"},
+		{"cursor with custom image passes", cursor, "my/cursor:v1", "cursor", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := requireCustomImageForNonClaudeShare(tc.agent, tc.image, tc.cmdName)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Errorf("expected nil, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("err = %v, want substring %q", err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), tc.cmdName) {
+				t.Errorf("err = %v, want substring %q (the command name)", err, tc.cmdName)
+			}
+		})
+	}
+}
+
+func TestKnownAgentBases(t *testing.T) {
+	got := knownAgentBases()
+	want := []string{"claude", "cursor", "agent", "codex", "hermes", "opencode"}
+	if len(got) != len(want) {
+		t.Fatalf("len(knownAgentBases) = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for _, base := range want {
+		if !slices.Contains(got, base) {
+			t.Errorf("knownAgentBases missing %q in %v", base, got)
+		}
+	}
+	for _, base := range got {
+		if strings.Contains(base, string(filepath.Separator)) {
+			t.Errorf("knownAgentBases entry %q must be a base command", base)
+		}
+	}
 }
