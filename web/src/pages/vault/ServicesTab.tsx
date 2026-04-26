@@ -645,12 +645,10 @@ function ServiceModal({
 
           {authType === "passthrough" && (
             <div className="rounded-lg border border-border bg-bg p-3 text-sm text-text-muted leading-relaxed">
-              Passthrough forwards your client's request headers unchanged to
-              the target. Agent Vault will not look up or inject a credential,
-              and will strip only hop-by-hop headers and broker-scoped headers
-              (<span className="font-mono">X-Vault</span>,{" "}
-              <span className="font-mono">Proxy-Authorization</span>). Use this
-              when the agent already holds the credential.
+              Passthrough allowlists the host without injecting a credential —
+              same header forwarding as every other auth type, just with no
+              broker-injected auth header on top. Use this when the agent
+              already holds the credential.
             </div>
           )}
 

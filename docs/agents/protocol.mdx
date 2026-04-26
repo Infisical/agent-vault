@@ -76,7 +76,7 @@ The `X-Vault` header is required for instance-level agent tokens. Vault-scoped s
 
 ## Route requests through HTTPS_PROXY
 
-The canonical way for an agent to reach an upstream host is to call the real URL directly. `agent-vault vault run` pre-configures `HTTPS_PROXY` and the CA trust chain on the child process, so every standard HTTP client — `curl`, `fetch`, `requests`, `axios`, the Go stdlib, SDKs like `stripe-node`, CLIs like `gh` and `stripe` — transparently routes through the broker. Agent Vault intercepts the CONNECT, matches the target host against the vault's [services](/learn/services), strips any client-supplied auth, and injects the stored credential.
+The canonical way for an agent to reach an upstream host is to call the real URL directly. `agent-vault vault run` pre-configures `HTTPS_PROXY` and the CA trust chain on the child process, so every standard HTTP client — `curl`, `fetch`, `requests`, `axios`, the Go stdlib, SDKs like `stripe-node`, CLIs like `gh` and `stripe` — transparently routes through the broker. Agent Vault intercepts the CONNECT, matches the target host against the vault's [services](/learn/services), and injects the stored credential into the auth header for that service. Other client headers (vendor headers like `anthropic-version`, tracing IDs, etc.) flow through unchanged — see [Header forwarding](/learn/services#header-forwarding) for the precise rules.
 
 ```
 GET https://api.stripe.com/v1/charges?limit=10

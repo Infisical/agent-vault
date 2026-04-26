@@ -128,7 +128,7 @@ services:
 
 ### Passthrough
 
-Allowlists the host without injecting a credential. The client's request headers (including `Authorization` and `Cookie`) flow through to the target unchanged; Agent Vault strips only hop-by-hop headers and broker-scoped headers (`X-Vault`, `Proxy-Authorization`). No credential is stored, read, or attached.
+Allowlists the host without injecting a credential. No credential is stored, read, or attached; client request headers (including `Authorization` and `Cookie`) flow through to the upstream — same as for credentialed services, just without a broker-injected auth header on top.
 
 ```yaml
 services:
@@ -139,6 +139,16 @@ services:
 ```
 
 Use passthrough when the operator has decided their client already holds the credential (for example, an existing tool that manages its own token) and wants Agent Vault to provide the host allowlist, [netguard](/learn/security), TLS interception, and audit logging without putting the secret in the vault. All the other auth types are the default — reach for passthrough only when you explicitly want Agent Vault *not* to broker the credential.
+
+### Header forwarding
+
+Agent Vault forwards your client's request headers to the upstream unchanged, except for:
+
+- **Hop-by-hop headers** per RFC 7230 (`Connection`, `Keep-Alive`, `Proxy-Authenticate`, `Proxy-Authorization`, `Proxy-Connection`, `Te`, `Trailer`, `Transfer-Encoding`, `Upgrade`).
+- **Broker-scoped headers** that authenticate the client to Agent Vault itself (`X-Vault`, `Proxy-Authorization`).
+- **The auth slot** — the specific header(s) the configured auth type manages. With `auth.type: bearer` or `basic`, the broker overrides `Authorization`. With `api-key`, it overrides whatever you named in `auth.header`. With `custom`, it overrides every key in `auth.headers`. With `passthrough`, nothing.
+
+This means vendor headers like `anthropic-version`, `OpenAI-Beta`, `If-Match`, and tracing IDs reach the upstream regardless of auth type. The broker only takes over the headers it's responsible for injecting.
 
 <Warning>
   Passthrough auth configs reject every credential field (`token`, `username`,

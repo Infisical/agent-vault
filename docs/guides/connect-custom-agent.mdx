@@ -67,7 +67,7 @@ When the agent is launched via `vault run`, these additional variables are also 
 
 ## Make requests
 
-When your agent is launched via `vault run`, HTTPS traffic already routes through Agent Vault transparently. Call the real API URL — standard HTTP clients honor `HTTPS_PROXY` automatically. Agent Vault intercepts the CONNECT, matches the host against the vault's [services](/learn/services), strips client auth, and injects the stored credential over HTTPS.
+When your agent is launched via `vault run`, HTTPS traffic already routes through Agent Vault transparently. Call the real API URL — standard HTTP clients honor `HTTPS_PROXY` automatically. Agent Vault intercepts the CONNECT, matches the host against the vault's [services](/learn/services), and injects the stored credential into the auth header for that service over HTTPS.
 
 <CodeGroup>
 

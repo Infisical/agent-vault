@@ -30,12 +30,14 @@ const MaxResponseBytes = 100 << 20
 const ProxyErrorHeader = "X-Agent-Vault-Proxy-Error"
 
 // HopByHopHeaders are HTTP/1.1 hop-by-hop headers that must not be
-// forwarded by a proxy.
+// forwarded by a proxy. Includes Proxy-Connection — non-RFC but emitted
+// by some HTTP/1.0 clients and conventionally treated as hop-by-hop.
 var HopByHopHeaders = map[string]bool{
 	"Connection":          true,
 	"Keep-Alive":          true,
 	"Proxy-Authenticate":  true,
 	"Proxy-Authorization": true,
+	"Proxy-Connection":    true,
 	"Te":                  true,
 	"Trailer":             true,
 	"Transfer-Encoding":   true,
@@ -64,30 +66,10 @@ func IsValidHost(h string) bool {
 	return !strings.HasPrefix(h, ".") && !strings.HasSuffix(h, ".")
 }
 
-// PassthroughHeaders is the allowlist of headers forwarded from agent
-// requests to upstream services for credentialed (non-passthrough) auth
-// types. All other agent headers are dropped; in particular Authorization
-// is NOT on this list so injected credentials always win over any
-// client-supplied value.
-//
-// Passthrough services use CopyPassthroughRequestHeaders instead, which
-// is a denylist — the client's request is forwarded unchanged apart from
-// hop-by-hop headers and broker-scoped headers.
-var PassthroughHeaders = []string{
-	"Content-Type",
-	"Content-Encoding",
-	"Accept",
-	"Accept-Encoding",
-	"Accept-Language",
-	"User-Agent",
-	"Idempotency-Key",
-	"X-Request-Id",
-}
-
 // brokerScopedRequestHeaders are headers that authenticate the client to
 // Agent Vault itself (explicit /proxy ingress uses X-Vault;
 // HTTPS_PROXY-compatible ingress uses Proxy-Authorization). They must
-// never traverse the broker → target hop, even on passthrough services.
+// never traverse the broker → target hop.
 var brokerScopedRequestHeaders = map[string]bool{
 	"X-Vault":             true,
 	"Proxy-Authorization": true,
@@ -100,15 +82,29 @@ func IsBrokerScopedRequestHeader(name string) bool {
 	return brokerScopedRequestHeaders[http.CanonicalHeaderKey(name)]
 }
 
-// CopyPassthroughRequestHeaders forwards headers from src to dst for
-// passthrough services: everything except hop-by-hop, broker-scoped
-// (X-Vault, Proxy-Authorization), and any extra names in extraStrip.
-// Callers pass the header that authenticates the client to Agent Vault
-// on their ingress so that credential never reaches the target.
-func CopyPassthroughRequestHeaders(src, dst http.Header, extraStrip ...string) {
-	strip := make(map[string]bool, len(extraStrip))
+// ApplyInjection writes outbound headers for a resolved InjectResult.
+// Client headers pass through except hop-by-hop, broker-scoped (X-Vault,
+// Proxy-Authorization), the keys of inject.Headers, and any names in
+// extraStrip (the ingress's session-token header). Pre-stripping
+// inject.Headers keys is what preserves the "injected always wins"
+// security invariant; it is not a perf shortcut. Per RFC 7230 §6.1,
+// any header named in the client's Connection field is also hop-by-hop
+// for that connection and is stripped. Both ingresses share this so
+// their header handling stays in lockstep.
+func ApplyInjection(src, dst http.Header, inject *InjectResult, extraStrip ...string) {
+	strip := make(map[string]bool, len(extraStrip)+len(inject.Headers))
 	for _, s := range extraStrip {
 		strip[http.CanonicalHeaderKey(s)] = true
+	}
+	for k := range inject.Headers {
+		strip[http.CanonicalHeaderKey(k)] = true
+	}
+	for _, c := range src.Values("Connection") {
+		for _, f := range strings.Split(c, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				strip[http.CanonicalHeaderKey(f)] = true
+			}
+		}
 	}
 	for k, vv := range src {
 		ck := http.CanonicalHeaderKey(k)
@@ -117,24 +113,6 @@ func CopyPassthroughRequestHeaders(src, dst http.Header, extraStrip ...string) {
 		}
 		for _, v := range vv {
 			dst.Add(ck, v)
-		}
-	}
-}
-
-// ApplyInjection writes the outbound request headers for a resolved
-// InjectResult. Passthrough services forward client headers via the
-// denylist (hop-by-hop + broker-scoped + extraStrip); credentialed
-// services copy the PassthroughHeaders allowlist and then overlay
-// injected credentials. Used by both ingress paths so header handling
-// for the two branches stays in lockstep.
-func ApplyInjection(src, dst http.Header, inject *InjectResult, extraStrip ...string) {
-	if inject.Passthrough {
-		CopyPassthroughRequestHeaders(src, dst, extraStrip...)
-		return
-	}
-	for _, k := range PassthroughHeaders {
-		for _, v := range src.Values(k) {
-			dst.Add(k, v)
 		}
 	}
 	for k, v := range inject.Headers {

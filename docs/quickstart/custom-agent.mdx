@@ -24,7 +24,7 @@ agent-vault vault run --vault myproject -- my-agent
 
 ## Try it out
 
-Your agent calls real API URLs directly. `HTTPS_PROXY` routes the request through Agent Vault, which matches the host against the vault's [services](/learn/services), strips client auth, and injects the stored credential.
+Your agent calls real API URLs directly. `HTTPS_PROXY` routes the request through Agent Vault, which matches the host against the vault's [services](/learn/services) and injects the stored credential into the auth header for that service.
 
 <CodeGroup>
 
