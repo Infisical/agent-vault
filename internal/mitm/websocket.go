@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
@@ -62,7 +64,7 @@ func (p *Proxy) forwardWebSocket(
 		return
 	}
 
-	if err := resp.Write(clientConn); err != nil {
+	if err := writeWebSocketSwitchingResponse(clientConn, resp); err != nil {
 		_ = clientConn.Close()
 		_ = upstreamConn.Close()
 		emit(http.StatusBadGateway, "upstream_error")
@@ -108,6 +110,8 @@ func (p *Proxy) dialWebSocketUpstream(
 	}
 	_ = tlsConn.SetDeadline(time.Time{})
 
+	headerTimeout := p.responseHeaderTimeout()
+	_ = tlsConn.SetDeadline(time.Now().Add(headerTimeout))
 	if err := outReq.Write(tlsConn); err != nil {
 		_ = tlsConn.Close()
 		return nil, nil, nil, err
@@ -119,6 +123,7 @@ func (p *Proxy) dialWebSocketUpstream(
 		_ = tlsConn.Close()
 		return nil, nil, nil, err
 	}
+	_ = tlsConn.SetDeadline(time.Time{})
 
 	return tlsConn, reader, resp, nil
 }
@@ -130,20 +135,71 @@ func (p *Proxy) tlsHandshakeTimeout() time.Duration {
 	return 10 * time.Second
 }
 
+func (p *Proxy) responseHeaderTimeout() time.Duration {
+	if p.upstream.ResponseHeaderTimeout > 0 {
+		return p.upstream.ResponseHeaderTimeout
+	}
+	return 30 * time.Second
+}
+
+func writeWebSocketSwitchingResponse(w io.Writer, resp *http.Response) error {
+	out := &http.Response{
+		Status:        resp.Status,
+		StatusCode:    resp.StatusCode,
+		Proto:         resp.Proto,
+		ProtoMajor:    resp.ProtoMajor,
+		ProtoMinor:    resp.ProtoMinor,
+		Header:        make(http.Header),
+		ContentLength: -1,
+	}
+	for k, vv := range resp.Header {
+		if !isSafeWebSocketSwitchHeader(k) {
+			continue
+		}
+		for _, v := range vv {
+			out.Header.Add(k, v)
+		}
+	}
+	return out.Write(w)
+}
+
+func isSafeWebSocketSwitchHeader(name string) bool {
+	switch http.CanonicalHeaderKey(name) {
+	case "Connection",
+		"Upgrade",
+		"Sec-Websocket-Accept",
+		"Sec-Websocket-Extensions",
+		"Sec-Websocket-Protocol":
+		return true
+	default:
+		return !brokercore.ShouldStripResponseHeader(name) && !strings.HasPrefix(http.CanonicalHeaderKey(name), "Sec-")
+	}
+}
+
 func pipeWebSocket(clientConn net.Conn, clientReader *bufio.Reader, upstreamConn net.Conn, upstreamReader *bufio.Reader) {
 	done := make(chan struct{}, 2)
+	var closeOnce sync.Once
+	closeBoth := func() {
+		closeOnce.Do(func() {
+			_ = clientConn.Close()
+			_ = upstreamConn.Close()
+		})
+	}
 	go func() {
+		defer func() {
+			done <- struct{}{}
+			closeBoth()
+		}()
 		_, _ = io.Copy(upstreamConn, io.MultiReader(clientReader, clientConn))
-		done <- struct{}{}
 	}()
 	go func() {
+		defer func() {
+			done <- struct{}{}
+			closeBoth()
+		}()
 		_, _ = io.Copy(clientConn, io.MultiReader(upstreamReader, upstreamConn))
-		done <- struct{}{}
 	}()
 
-	go func() {
-		<-done
-		_ = clientConn.Close()
-		_ = upstreamConn.Close()
-	}()
+	<-done
+	<-done
 }

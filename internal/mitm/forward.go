@@ -96,13 +96,17 @@ func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope
 			return
 		}
 
-		// No extraStrip: Proxy-Authorization (the broker-scoped credential
-		// on this ingress) is already filtered by the denylist, and
-		// Authorization is the client's own upstream header.
-		brokercore.ApplyInjection(r.Header, outReq.Header, inject)
-		if isWebSocketUpgrade(r) {
+		wsUpgrade := isWebSocketUpgrade(r)
+		if wsUpgrade {
 			copyWebSocketHandshakeHeaders(r.Header, outReq.Header)
 		}
+
+		// No extraStrip: Proxy-Authorization (the broker-scoped credential
+		// on this ingress) is already filtered by the denylist, and
+		// Authorization is the client's own upstream header. For WebSocket
+		// requests, copy the handshake headers first so injected custom auth
+		// on overlapping headers still wins.
+		brokercore.ApplyInjection(r.Header, outReq.Header, inject)
 
 		// Apply any declared substitutions to the outbound URL and
 		// headers. Surfaces not listed in the substitution's `in:` are
@@ -113,7 +117,7 @@ func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope
 			return
 		}
 
-		if isWebSocketUpgrade(r) {
+		if wsUpgrade {
 			p.forwardWebSocket(w, r, outReq, emit)
 			return
 		}
