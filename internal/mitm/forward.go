@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
@@ -99,6 +100,9 @@ func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope
 		// on this ingress) is already filtered by the denylist, and
 		// Authorization is the client's own upstream header.
 		brokercore.ApplyInjection(r.Header, outReq.Header, inject)
+		if isWebSocketUpgrade(r) {
+			copyWebSocketHandshakeHeaders(r.Header, outReq.Header)
+		}
 
 		// Apply any declared substitutions to the outbound URL and
 		// headers. Surfaces not listed in the substitution's `in:` are
@@ -106,6 +110,11 @@ func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope
 		if err := brokercore.ApplySubstitutions(outReq.URL, outReq.Header, inject.Substitutions); err != nil {
 			http.Error(w, "bad gateway", http.StatusBadGateway)
 			emit(http.StatusBadGateway, "substitution_error")
+			return
+		}
+
+		if isWebSocketUpgrade(r) {
+			p.forwardWebSocket(w, r, outReq, emit)
 			return
 		}
 
@@ -136,4 +145,35 @@ func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope
 		_, _ = io.Copy(w, io.LimitReader(resp.Body, brokercore.MaxResponseBytes))
 		emit(resp.StatusCode, "")
 	})
+}
+
+func isWebSocketUpgrade(r *http.Request) bool {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return false
+	}
+	for _, header := range r.Header.Values("Connection") {
+		for _, token := range strings.Split(header, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func copyWebSocketHandshakeHeaders(src, dst http.Header) {
+	for _, name := range []string{
+		"Connection",
+		"Origin",
+		"Sec-Websocket-Extensions",
+		"Sec-Websocket-Key",
+		"Sec-Websocket-Protocol",
+		"Sec-Websocket-Version",
+		"Upgrade",
+	} {
+		dst.Del(name)
+		for _, value := range src.Values(name) {
+			dst.Add(name, value)
+		}
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -203,6 +204,144 @@ func TestMITMInjectsCredentials(t *testing.T) {
 	}
 }
 
+func TestMITMWebSocketInjectsCredentialsAndPipesFrames(t *testing.T) {
+	var sawAuth, sawClientAuth, sawProxyAuth, sawUpgrade string
+	serverDone := make(chan error, 1)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuth = r.Header.Get("Authorization")
+		sawClientAuth = r.Header.Get("X-Client-Auth")
+		sawProxyAuth = r.Header.Get("Proxy-Authorization")
+		sawUpgrade = r.Header.Get("Upgrade")
+
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			serverDone <- fmt.Errorf("upstream response writer cannot hijack")
+			return
+		}
+		conn, rw, err := hj.Hijack()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+		key := r.Header.Get("Sec-Websocket-Key")
+		_, _ = fmt.Fprintf(conn,
+			"HTTP/1.1 101 Switching Protocols\r\n"+
+				"Upgrade: websocket\r\n"+
+				"Connection: Upgrade\r\n"+
+				"Sec-WebSocket-Accept: %s\r\n\r\n",
+			websocketAccept(key),
+		)
+
+		text, err := readWebSocketTextFrame(rw.Reader)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if text != "ping" {
+			serverDone <- fmt.Errorf("upstream frame = %q, want ping", text)
+			return
+		}
+		if err := writeWebSocketTextFrame(conn, "pong", false); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- nil
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	upstreamTarget := strings.TrimPrefix(upstream.URL, "https://")
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{
+			Headers: map[string]string{"Authorization": "Bearer injected-ws-secret"},
+		}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    upstreamRoots,
+	}
+
+	conn := openMITMTunnel(t, proxyURL, clientRoots, upstreamTarget, "av_sess_ok")
+	defer func() { _ = conn.Close() }()
+
+	tlsConn := tls.Client(conn, &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    clientRoots,
+		ServerName: upstreamHost,
+	})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("client tls handshake: %v", err)
+	}
+	defer func() { _ = tlsConn.Close() }()
+	_ = tlsConn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	key := "dGhlIHNhbXBsZSBub25jZQ=="
+	_, _ = fmt.Fprintf(tlsConn,
+		"GET /socket?mode=test HTTP/1.1\r\n"+
+			"Host: %s\r\n"+
+			"Upgrade: websocket\r\n"+
+			"Connection: Upgrade\r\n"+
+			"Sec-WebSocket-Key: %s\r\n"+
+			"Sec-WebSocket-Version: 13\r\n"+
+			"Authorization: Bearer client-should-not-win\r\n"+
+			"X-Client-Auth: leaked\r\n\r\n",
+		upstreamTarget,
+		key,
+	)
+
+	reader := bufio.NewReader(tlsConn)
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read websocket response: %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", resp.StatusCode)
+	}
+
+	if err := writeWebSocketTextFrame(tlsConn, "ping", true); err != nil {
+		t.Fatalf("write websocket frame: %v", err)
+	}
+	text, err := readWebSocketTextFrame(reader)
+	if err != nil {
+		t.Fatalf("read websocket frame: %v", err)
+	}
+	if text != "pong" {
+		t.Fatalf("websocket frame = %q, want pong", text)
+	}
+
+	select {
+	case err := <-serverDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream websocket handler timed out")
+	}
+	if sawAuth != "Bearer injected-ws-secret" {
+		t.Fatalf("upstream saw Authorization %q, want injected value", sawAuth)
+	}
+	if sawClientAuth != "" {
+		t.Fatalf("upstream saw X-Client-Auth %q; non-allowlisted header must be dropped", sawClientAuth)
+	}
+	if sawProxyAuth != "" {
+		t.Fatalf("upstream saw Proxy-Authorization %q; must be stripped", sawProxyAuth)
+	}
+	if !strings.EqualFold(sawUpgrade, "websocket") {
+		t.Fatalf("upstream Upgrade = %q, want websocket", sawUpgrade)
+	}
+}
+
 func TestMITMPassthroughForwardsClientAuthorization(t *testing.T) {
 	// On the MITM ingress, Proxy-Authorization is the broker-scoped credential
 	// and Authorization is the client's own upstream header — it must flow
@@ -343,6 +482,106 @@ func TestMITMBearerForwardsArbitraryClientHeaders(t *testing.T) {
 	if sawTrace != "trace-123" {
 		t.Fatalf("upstream X-Trace-Id = %q, want passthrough", sawTrace)
 	}
+}
+
+func openMITMTunnel(t *testing.T, proxyURL *url.URL, roots *x509.CertPool, target, token string) net.Conn {
+	t.Helper()
+	conn, err := tls.Dial("tcp", proxyURL.Host, &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    roots,
+	})
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+
+	auth := base64.StdEncoding.EncodeToString([]byte(token + ":"))
+	_, _ = fmt.Fprintf(conn,
+		"CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic %s\r\n\r\n",
+		target,
+		target,
+		auth,
+	)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		_ = conn.Close()
+		t.Fatalf("read connect response: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		_ = conn.Close()
+		t.Fatalf("connect status = %d, want 200", resp.StatusCode)
+	}
+	return conn
+}
+
+func websocketAccept(key string) string {
+	sum := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func writeWebSocketTextFrame(w io.Writer, text string, masked bool) error {
+	payload := []byte(text)
+	header := []byte{0x81, byte(len(payload))}
+	if masked {
+		header[1] |= 0x80
+	}
+	if _, err := w.Write(header); err != nil {
+		return err
+	}
+
+	mask := []byte{1, 2, 3, 4}
+	if masked {
+		if _, err := w.Write(mask); err != nil {
+			return err
+		}
+	}
+	for i := range payload {
+		if masked {
+			payload[i] ^= mask[i%len(mask)]
+		}
+	}
+	_, err := w.Write(payload)
+	return err
+}
+
+func readWebSocketTextFrame(r io.Reader) (string, error) {
+	header := make([]byte, 2)
+	if _, err := io.ReadFull(r, header); err != nil {
+		return "", err
+	}
+	if header[0]&0x0f != 1 {
+		return "", fmt.Errorf("opcode = %d, want text", header[0]&0x0f)
+	}
+
+	masked := header[1]&0x80 != 0
+	length := int(header[1] & 0x7f)
+	if length == 126 {
+		extended := make([]byte, 2)
+		if _, err := io.ReadFull(r, extended); err != nil {
+			return "", err
+		}
+		length = int(extended[0])<<8 | int(extended[1])
+	} else if length == 127 {
+		return "", fmt.Errorf("large websocket frames are not supported by test helper")
+	}
+
+	mask := []byte{0, 0, 0, 0}
+	if masked {
+		if _, err := io.ReadFull(r, mask); err != nil {
+			return "", err
+		}
+	}
+
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return "", err
+	}
+	for i := range payload {
+		if masked {
+			payload[i] ^= mask[i%len(mask)]
+		}
+	}
+	return string(payload), nil
 }
 
 // rawConnect dials the proxy over TLS, sends a CONNECT request with the
@@ -688,4 +927,3 @@ func TestIsValidHost(t *testing.T) {
 		}
 	}
 }
-
