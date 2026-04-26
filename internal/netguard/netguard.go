@@ -56,7 +56,7 @@ func ParseCIDRList(raw, envName string) []net.IPNet {
 		if !strings.Contains(p, "/") {
 			ip := net.ParseIP(p)
 			if ip == nil {
-				slog.Warn("netguard: invalid IP, skipping",
+				slog.Warn("netguard: invalid IP, skipping", //nolint:gosec // G706: structured slog attrs, handlers quote control chars
 					slog.String("env", envName), slog.String("value", p))
 				continue
 			}
@@ -69,13 +69,13 @@ func ParseCIDRList(raw, envName string) []net.IPNet {
 
 		_, ipNet, err := net.ParseCIDR(cidr)
 		if err != nil {
-			slog.Warn("netguard: invalid CIDR, skipping",
+			slog.Warn("netguard: invalid CIDR, skipping", //nolint:gosec // G706: structured slog attrs, handlers quote control chars
 				slog.String("env", envName), slog.String("value", p), slog.String("error", err.Error()))
 			continue
 		}
 
 		if mask, _ := ipNet.Mask.Size(); mask == 0 {
-			slog.Warn("netguard: CIDR list entry covers an entire address family",
+			slog.Warn("netguard: CIDR list entry covers an entire address family", //nolint:gosec // G706: structured slog attrs, handlers quote control chars
 				slog.String("env", envName), slog.String("value", p))
 		}
 
@@ -83,7 +83,7 @@ func ParseCIDRList(raw, envName string) []net.IPNet {
 	}
 
 	if len(out) > 0 {
-		slog.Debug("netguard: loaded CIDR list",
+		slog.Debug("netguard: loaded CIDR list", //nolint:gosec // G706: structured slog attrs, handlers quote control chars
 			slog.String("env", envName), slog.Int("count", len(out)))
 	}
 
