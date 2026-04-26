@@ -24,17 +24,18 @@ type InjectResult struct {
 	// target (e.g. "api.github.com"). Safe to log.
 	MatchedHost string
 
-	// CredentialKeys are the upper-snake-case credential key names the
-	// matched service references. These are names, not values — safe to
-	// log. Populated before credential resolution, so a credential-missing
-	// failure still carries this metadata. Empty for passthrough services.
+	// CredentialKeys are the credential key names referenced by the
+	// matched service (auth + substitutions). Names only — safe to log.
+	// Populated before resolution so credential-missing errors still
+	// carry this for diagnostic logging.
 	CredentialKeys []string
 
 	// Passthrough indicates the matched service opts out of credential
 	// injection. The ingress should forward client request headers via
 	// the denylist (CopyPassthroughRequestHeaders) rather than the
 	// PassthroughHeaders allowlist, and must not perform the injection
-	// merge step.
+	// merge step. A passthrough service may still have Substitutions —
+	// those apply independently of header injection.
 	Passthrough bool
 
 	// ExtraPassthroughHeaders is the per-service extension of the core
@@ -47,6 +48,11 @@ type InjectResult struct {
 	// the contents: Authorization, Proxy-Authorization, X-Vault, and hop-
 	// by-hop headers are already filtered out. Safe to log.
 	ExtraPassthroughHeaders []string
+
+	// Substitutions are resolved placeholder rewrites the ingress must
+	// apply via ApplySubstitutions before forwarding. Each entry carries
+	// a SECRET Value — never log; placeholder names are safe.
+	Substitutions []ResolvedSubstitution
 }
 
 // CredentialProvider resolves a broker service for targetHost inside vaultID
@@ -101,25 +107,13 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 		return nil, ErrServiceDisabled
 	}
 
-	// Passthrough services opt out of credential injection entirely. No
-	// vault read, no CredentialKeys (nothing to resolve). The ingress
-	// branches on Passthrough to forward client headers via the denylist.
-	if matched.Auth.Type == "passthrough" {
-		return &InjectResult{
-			MatchedHost: matched.Host,
-			Passthrough: true,
-		}, nil
-	}
-
-	// Capture non-secret metadata up front so a downstream credential-missing
-	// error still carries it for the caller (e.g. for debug logging).
-	result := &InjectResult{
-		MatchedHost:             matched.Host,
-		CredentialKeys:          matched.Auth.CredentialKeys(),
-		ExtraPassthroughHeaders: matched.ExtraPassthroughHeaders,
-	}
-
-	headers, err := matched.Auth.Resolve(func(key string) (string, error) {
+	// Memoize per-key lookups so a credential shared by auth and a
+	// substitution decrypts only once.
+	cache := make(map[string]string)
+	getCredential := func(key string) (string, error) {
+		if v, ok := cache[key]; ok {
+			return v, nil
+		}
 		cred, err := p.Store.GetCredential(ctx, vaultID, key)
 		if err != nil || cred == nil {
 			return "", fmt.Errorf("credential %q not found", key)
@@ -128,12 +122,51 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 		if err != nil {
 			return "", fmt.Errorf("failed to decrypt credential %q", key)
 		}
-		return string(plaintext), nil
-	})
+		s := string(plaintext)
+		cache[key] = s
+		return s, nil
+	}
+
+	// Capture non-secret metadata up front so a downstream credential-missing
+	// error still carries it for diagnostic logging.
+	result := &InjectResult{
+		MatchedHost:             matched.Host,
+		CredentialKeys:          matched.CredentialKeys(),
+		Passthrough:             matched.Auth.Type == "passthrough",
+		ExtraPassthroughHeaders: matched.ExtraPassthroughHeaders,
+	}
+
+	// Resolve substitutions before auth so passthrough services (which
+	// skip the auth branch) still surface ErrCredentialMissing here.
+	// Hold locally and attach only on success — error returns must not
+	// expose resolved secret values via result.
+	var resolvedSubs []ResolvedSubstitution
+	if len(matched.Substitutions) > 0 {
+		resolvedSubs = make([]ResolvedSubstitution, 0, len(matched.Substitutions))
+		for _, sub := range matched.Substitutions {
+			val, err := getCredential(sub.Key)
+			if err != nil {
+				return result, fmt.Errorf("%w: %v", ErrCredentialMissing, err)
+			}
+			resolvedSubs = append(resolvedSubs, ResolvedSubstitution{
+				Placeholder: sub.Placeholder,
+				Value:       val,
+				In:          sub.NormalizedIn(),
+			})
+		}
+	}
+
+	if matched.Auth.Type == "passthrough" {
+		result.Substitutions = resolvedSubs
+		return result, nil
+	}
+
+	headers, err := matched.Auth.Resolve(getCredential)
 	if err != nil {
 		return result, fmt.Errorf("%w: %v", ErrCredentialMissing, err)
 	}
 
 	result.Headers = headers
+	result.Substitutions = resolvedSubs
 	return result, nil
 }

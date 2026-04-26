@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   useVaultParams,
   LoadingSpinner,
@@ -7,12 +7,18 @@ import {
 import DropdownMenu from "../../components/DropdownMenu";
 import DataTable, { type Column } from "../../components/DataTable";
 import Modal from "../../components/Modal";
+import Sheet from "../../components/Sheet";
 import Button from "../../components/Button";
 import Input from "../../components/Input";
 import FormField from "../../components/FormField";
-import Select from "../../components/Select";
 import Toggle from "../../components/Toggle";
-import { type Auth, AUTH_TYPE_LABELS } from "../../components/ProposalPreview";
+import {
+  type Auth,
+  type Substitution,
+  AUTH_TYPE_LABELS,
+  SUBSTITUTION_SURFACES,
+  DEFAULT_SUBSTITUTION_SURFACES,
+} from "../../components/ProposalPreview";
 import { apiFetch, apiRequest } from "../../lib/api";
 
 interface Service {
@@ -20,7 +26,10 @@ interface Service {
   description?: string;
   enabled?: boolean;
   auth: Auth;
+  substitutions?: Substitution[];
 }
+
+type SubstitutionSurface = (typeof SUBSTITUTION_SURFACES)[number];
 
 interface CatalogTemplate {
   id: string;
@@ -37,11 +46,13 @@ function isEnabled(service: Service): boolean {
   return service.enabled !== false;
 }
 
-const AUTH_TYPE_OPTIONS: { value: string; label: string }[] = [
-  { value: "bearer", label: "Bearer token" },
-  { value: "basic", label: "HTTP Basic Auth" },
+type AuthType = "bearer" | "basic" | "api-key" | "custom" | "passthrough";
+
+const AUTH_TYPE_OPTIONS: { value: AuthType; label: string }[] = [
+  { value: "bearer", label: "Bearer" },
+  { value: "basic", label: "Basic" },
   { value: "api-key", label: "API key" },
-  { value: "custom", label: "Custom headers" },
+  { value: "custom", label: "Custom" },
   { value: "passthrough", label: "Passthrough" },
 ];
 
@@ -171,9 +182,15 @@ export default function ServicesTab() {
       header: "Auth",
       render: (service) => {
         const label = AUTH_TYPE_LABELS[service.auth?.type] || service.auth?.type || "\u2014";
+        const subCount = service.substitutions?.length ?? 0;
         return (
           <div className="text-sm text-text">
             {label}
+            {subCount > 0 && (
+              <span className="ml-2 text-xs text-text-muted">
+                + {subCount} substitution{subCount === 1 ? "" : "s"}
+              </span>
+            )}
           </div>
         );
       },
@@ -324,7 +341,7 @@ function ServiceModal({
   const [host, setHost] = useState(initial?.host ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [enabled, setEnabled] = useState(initial ? initial.enabled !== false : true);
-  const [authType, setAuthType] = useState(initial?.auth?.type ?? "bearer");
+  const [authType, setAuthType] = useState<AuthType>((initial?.auth?.type as AuthType) ?? "bearer");
 
   // Bearer fields
   const [token, setToken] = useState(initial?.auth?.token ?? "");
@@ -346,6 +363,18 @@ function ServiceModal({
     return [{ name: "", value: "" }];
   });
 
+  // Substitution editor state — independent of auth type so it composes
+  // with all of them (including passthrough).
+  const [subs, setSubs] = useState<Substitution[]>(() =>
+    initial?.substitutions
+      ? initial.substitutions.map((s) => ({
+          key: s.key,
+          placeholder: s.placeholder,
+          in: s.in && s.in.length > 0 ? [...s.in] : [...DEFAULT_SUBSTITUTION_SURFACES],
+        }))
+      : []
+  );
+
   // Snapshot the catalog at open time so a fetch resolving mid-form doesn't
   // shift the preset picker into view above fields the user is already editing.
   const [catalogSnapshot] = useState<CatalogTemplate[]>(() => catalog);
@@ -363,6 +392,7 @@ function ServiceModal({
     setApiKeyHeader("");
     setApiKeyPrefix("");
     setCustomHeaders([{ name: "", value: "" }]);
+    setSubs([]);
   }
 
   function applyPreset(id: string) {
@@ -373,7 +403,7 @@ function ServiceModal({
     if (!tpl) return;
     setHost(tpl.host);
     setDescription(tpl.description);
-    setAuthType(tpl.auth_type);
+    setAuthType(tpl.auth_type as AuthType);
     if (tpl.auth_type === "bearer") setToken(tpl.suggested_credential_key);
     // Catalogued basic-auth services (Twilio, Jira) carry a token that belongs
     // in the password slot — the username (AccountSID, email) is user-specific.
@@ -387,6 +417,7 @@ function ServiceModal({
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [subsExpanded, setSubsExpanded] = useState(subs.length > 0);
 
   const canSubmit = (() => {
     if (!host.trim()) return false;
@@ -435,8 +466,17 @@ function ServiceModal({
     }
   }
 
+  const cleanedSubs = subs
+    .map((s) => ({
+      key: s.key.trim(),
+      placeholder: s.placeholder.trim(),
+      in: s.in && s.in.length > 0 ? s.in : DEFAULT_SUBSTITUTION_SURFACES,
+    }))
+    .filter((s) => s.key !== "" || s.placeholder !== "");
+  const subsValid = cleanedSubs.every((s) => s.key !== "" && s.placeholder !== "");
+
   async function handleSubmit() {
-    if (!canSubmit) return;
+    if (!canSubmit || !subsValid) return;
     setSaving(true);
     setError("");
     try {
@@ -445,6 +485,7 @@ function ServiceModal({
         ...(description.trim() && { description: description.trim() }),
         ...(enabled ? {} : { enabled: false }),
         auth: buildAuth(),
+        ...(cleanedSubs.length > 0 && { substitutions: cleanedSubs }),
       };
       await onSave(service);
     } catch (err: unknown) {
@@ -455,11 +496,20 @@ function ServiceModal({
   }
 
   return (
-    <Modal
+    <Sheet
       open
       onClose={onClose}
+      eyebrow="Service"
       title={title}
-      description="Services define which hosts are proxied and how credentials are injected."
+      headerExtra={
+        showPresets ? (
+          <PresetPicker
+            catalog={catalogSnapshot}
+            selected={selectedPreset}
+            onSelect={applyPreset}
+          />
+        ) : undefined
+      }
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>
@@ -467,7 +517,7 @@ function ServiceModal({
           </Button>
           <Button
             onClick={handleSubmit}
-            disabled={!canSubmit}
+            disabled={!canSubmit || !subsValid}
             loading={saving}
           >
             {initial ? "Save" : "Add service"}
@@ -475,155 +525,136 @@ function ServiceModal({
         </>
       }
     >
-      <div className="space-y-4">
-        {showPresets && (
-          <FormField
-            label="Start from preset"
-            helperText="Pick a catalogued service to pre-fill the form, or leave as Custom to configure manually."
-          >
-            <Select
-              value={selectedPreset}
-              onChange={(e) => applyPreset(e.target.value)}
-            >
-              <option value="">Custom (blank)</option>
-              {catalogSnapshot.map((tpl) => (
-                <option key={tpl.id} value={tpl.id}>
-                  {tpl.name} — {tpl.host}
-                </option>
-              ))}
-            </Select>
-          </FormField>
-        )}
-        <FormField label="Host Pattern">
-          <Input
-            placeholder="e.g. api.stripe.com"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-            autoFocus
-          />
-        </FormField>
-        <FormField label="Description">
-          <Input
-            placeholder="e.g. Stripe API"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-          />
-        </FormField>
-        <FormField
-          label="Enabled"
-          helperText="Disabled services remain configured but return 403 to agents until re-enabled."
-        >
-          <Toggle checked={enabled} onChange={setEnabled} ariaLabel="Enabled" />
-        </FormField>
-        <FormField label="Authentication Method">
-          <select
-            className="w-full px-4 py-3 bg-surface-raised border border-border rounded-lg text-sm text-text focus:outline-none focus:border-border-focus focus:shadow-[0_0_0_3px_var(--color-primary-ring)]"
-            value={authType}
-            onChange={(e) => setAuthType(e.target.value)}
-          >
-            {AUTH_TYPE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </FormField>
-
-        {authType === "bearer" && (
-          <FormField
-            label="Token Credential Key"
-            helperText="The UPPER_SNAKE_CASE name of the credential storing the token."
-          >
+      <div className="space-y-6">
+        <Section title="Basics">
+          <FormField label="Host Pattern">
             <Input
-              placeholder="e.g. STRIPE_KEY"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleSubmit();
-              }}
+              placeholder="e.g. api.stripe.com"
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+              autoFocus
             />
           </FormField>
-        )}
-
-        {authType === "basic" && (
-          <>
-            <FormField
-              label="Username Credential Key"
-              helperText="Credential key for the Basic Auth username."
-            >
-              <Input
-                placeholder="e.g. ASHBY_API_KEY"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-              />
-            </FormField>
-            <FormField
-              label="Password Credential Key"
-              helperText="Optional — leave empty if the service only requires a username."
-            >
-              <Input
-                placeholder="e.g. ASHBY_PASSWORD"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSubmit();
-                }}
-              />
-            </FormField>
-          </>
-        )}
-
-        {authType === "api-key" && (
-          <>
-            <FormField
-              label="API Key Credential"
-              helperText="The UPPER_SNAKE_CASE name of the credential storing the API key."
-            >
-              <Input
-                placeholder="e.g. OPENAI_API_KEY"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-              />
-            </FormField>
-            <FormField
-              label="Header Name"
-              helperText="Which header to inject. Defaults to Authorization."
-            >
-              <Input
-                placeholder="Authorization"
-                value={apiKeyHeader}
-                onChange={(e) => setApiKeyHeader(e.target.value)}
-              />
-            </FormField>
-            <FormField
-              label="Prefix"
-              helperText='Optional prefix before the key value (e.g. "Bearer ").'
-            >
-              <Input
-                placeholder='e.g. Bearer '
-                value={apiKeyPrefix}
-                onChange={(e) => setApiKeyPrefix(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSubmit();
-                }}
-              />
-            </FormField>
-          </>
-        )}
-
-        {authType === "passthrough" && (
-          <div className="rounded-lg border border-border bg-bg p-3 text-sm text-text-muted leading-relaxed">
-            Passthrough forwards your client's request headers unchanged to
-            the target. Agent Vault will not look up or inject a credential,
-            and will strip only hop-by-hop headers and broker-scoped headers
-            (<span className="font-mono">X-Vault</span>,{" "}
-            <span className="font-mono">Proxy-Authorization</span>). Use this
-            when the agent already holds the credential.
+          <FormField label="Description">
+            <Input
+              placeholder="e.g. Stripe API"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+            />
+          </FormField>
+          <div className="flex items-start justify-between gap-4 pt-1">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-text">Enabled</div>
+              <div className="text-xs text-text-muted mt-0.5">
+                Disabled services return 403 until re-enabled.
+              </div>
+            </div>
+            <Toggle checked={enabled} onChange={setEnabled} ariaLabel="Enabled" />
           </div>
-        )}
+        </Section>
 
-        {authType === "custom" && (
-          <div className="space-y-3">
+        <Section title="Authentication">
+          <SegmentedTabs
+            options={AUTH_TYPE_OPTIONS}
+            value={authType}
+            onChange={setAuthType}
+            ariaLabel="Authentication method"
+          />
+
+          {authType === "bearer" && (
+            <FormField
+              label="Token Credential Key"
+              helperText="The UPPER_SNAKE_CASE name of the credential storing the token."
+            >
+              <Input
+                placeholder="e.g. STRIPE_KEY"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSubmit();
+                }}
+              />
+            </FormField>
+          )}
+
+          {authType === "basic" && (
+            <>
+              <FormField
+                label="Username Credential Key"
+                helperText="Credential key for the Basic Auth username."
+              >
+                <Input
+                  placeholder="e.g. ASHBY_API_KEY"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                />
+              </FormField>
+              <FormField
+                label="Password Credential Key"
+                helperText="Optional — leave empty if the service only requires a username."
+              >
+                <Input
+                  placeholder="e.g. ASHBY_PASSWORD"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSubmit();
+                  }}
+                />
+              </FormField>
+            </>
+          )}
+
+          {authType === "api-key" && (
+            <>
+              <FormField
+                label="API Key Credential"
+                helperText="The UPPER_SNAKE_CASE name of the credential storing the API key."
+              >
+                <Input
+                  placeholder="e.g. OPENAI_API_KEY"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                />
+              </FormField>
+              <FormField
+                label="Header Name"
+                helperText="Which header to inject. Defaults to Authorization."
+              >
+                <Input
+                  placeholder="Authorization"
+                  value={apiKeyHeader}
+                  onChange={(e) => setApiKeyHeader(e.target.value)}
+                />
+              </FormField>
+              <FormField
+                label="Prefix"
+                helperText='Optional prefix before the key value (e.g. "Bearer ").'
+              >
+                <Input
+                  placeholder="e.g. Bearer "
+                  value={apiKeyPrefix}
+                  onChange={(e) => setApiKeyPrefix(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSubmit();
+                  }}
+                />
+              </FormField>
+            </>
+          )}
+
+          {authType === "passthrough" && (
+            <div className="rounded-lg border border-border bg-bg p-3 text-sm text-text-muted leading-relaxed">
+              Passthrough forwards your client's request headers unchanged to
+              the target. Agent Vault will not look up or inject a credential,
+              and will strip only hop-by-hop headers and broker-scoped headers
+              (<span className="font-mono">X-Vault</span>,{" "}
+              <span className="font-mono">Proxy-Authorization</span>). Use this
+              when the agent already holds the credential.
+            </div>
+          )}
+
+          {authType === "custom" && (
             <FormField
               label="Headers"
               helperText="Type {{ CREDENTIAL_KEY }} to reference a stored credential."
@@ -653,39 +684,384 @@ function ServiceModal({
                       }}
                     />
                     {customHeaders.length > 1 && (
-                      <button
-                        onClick={() => setCustomHeaders((prev) => prev.filter((_, j) => j !== i))}
-                        className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-lg text-text-dim hover:text-danger hover:bg-danger-bg transition-colors"
-                      >
-                        <svg
-                          className="w-4 h-4"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        >
-                          <line x1="18" y1="6" x2="6" y2="18" />
-                          <line x1="6" y1="6" x2="18" y2="18" />
-                        </svg>
-                      </button>
+                      <IconButton
+                        onClick={() =>
+                          setCustomHeaders((prev) => prev.filter((_, j) => j !== i))
+                        }
+                        ariaLabel="Remove header"
+                      />
                     )}
                   </div>
                 ))}
+                <button
+                  onClick={() =>
+                    setCustomHeaders((prev) => [...prev, { name: "", value: "" }])
+                  }
+                  className="text-sm font-medium text-primary hover:text-primary-hover transition-colors"
+                >
+                  + Add another
+                </button>
               </div>
             </FormField>
+          )}
+        </Section>
+
+        <CollapsibleSection
+          title="URL substitutions"
+          badge="Optional"
+          summary={
+            subs.length === 0
+              ? "None configured"
+              : `${subs.length} configured`
+          }
+          expanded={subsExpanded}
+          onToggle={() => setSubsExpanded((v) => !v)}
+        >
+          <p className="text-xs text-text-muted leading-relaxed">
+            The broker rewrites the placeholder in the selected surfaces with
+            the credential's value before forwarding the request.
+          </p>
+          <div className="space-y-3">
+            {subs.map((sub, i) => (
+              <div
+                key={i}
+                className="rounded-lg border border-border bg-bg p-4 flex items-start gap-3"
+              >
+                <div className="flex-1 flex flex-wrap items-center gap-x-2 gap-y-2 text-sm text-text-muted">
+                  <span>Replace</span>
+                  <InlineInput
+                    widthClass="w-44"
+                    placeholder="__placeholder__"
+                    value={sub.placeholder}
+                    onChange={(value) =>
+                      setSubs((prev) =>
+                        prev.map((s, j) => (j === i ? { ...s, placeholder: value } : s))
+                      )
+                    }
+                  />
+                  <span>in</span>
+                  {SUBSTITUTION_SURFACES.map((surface) => {
+                    const checked = (sub.in ?? DEFAULT_SUBSTITUTION_SURFACES).includes(
+                      surface
+                    );
+                    return (
+                      <button
+                        key={surface}
+                        type="button"
+                        role="switch"
+                        aria-checked={checked}
+                        onClick={() => {
+                          setSubs((prev) =>
+                            prev.map((s, j) => {
+                              if (j !== i) return s;
+                              const current = new Set<SubstitutionSurface>(
+                                (s.in ?? DEFAULT_SUBSTITUTION_SURFACES) as SubstitutionSurface[]
+                              );
+                              if (current.has(surface)) current.delete(surface);
+                              else current.add(surface);
+                              return {
+                                ...s,
+                                in: SUBSTITUTION_SURFACES.filter((sf) => current.has(sf)),
+                              };
+                            })
+                          );
+                        }}
+                        className={`px-2.5 py-1 rounded-md font-mono text-xs border transition-colors ${
+                          checked
+                            ? "border-primary text-primary bg-[var(--color-primary-ring)]"
+                            : "border-border text-text-dim hover:text-text-muted"
+                        }`}
+                      >
+                        {surface}
+                      </button>
+                    );
+                  })}
+                  <span>with value of</span>
+                  <InlineInput
+                    widthClass="w-48"
+                    placeholder="CREDENTIAL_KEY"
+                    value={sub.key}
+                    onChange={(value) =>
+                      setSubs((prev) =>
+                        prev.map((s, j) => (j === i ? { ...s, key: value } : s))
+                      )
+                    }
+                  />
+                </div>
+                <IconButton
+                  onClick={() => setSubs((prev) => prev.filter((_, j) => j !== i))}
+                  ariaLabel="Remove substitution"
+                />
+              </div>
+            ))}
             <button
-              onClick={() => setCustomHeaders((prev) => [...prev, { name: "", value: "" }])}
+              onClick={() =>
+                setSubs((prev) => [
+                  ...prev,
+                  { key: "", placeholder: "", in: [...DEFAULT_SUBSTITUTION_SURFACES] },
+                ])
+              }
               className="text-sm font-medium text-primary hover:text-primary-hover transition-colors"
             >
-              + Add another
+              + Add substitution
             </button>
           </div>
-        )}
+        </CollapsibleSection>
 
         {error && <ErrorBanner message={error} />}
       </div>
-    </Modal>
+    </Sheet>
+  );
+}
+
+/* -- Layout helpers -- */
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="space-y-3">
+      <h3 className="text-[11px] font-mono uppercase tracking-[0.18em] text-text-muted">
+        {title}
+      </h3>
+      <div className="space-y-4">{children}</div>
+    </section>
+  );
+}
+
+function CollapsibleSection({
+  title,
+  badge,
+  summary,
+  expanded,
+  onToggle,
+  children,
+}: {
+  title: string;
+  badge?: string;
+  summary?: string;
+  expanded: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-lg border border-border">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-bg transition-colors rounded-lg"
+      >
+        <svg
+          className={`w-3.5 h-3.5 text-text-muted transition-transform ${expanded ? "rotate-90" : ""}`}
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <polyline points="9 6 15 12 9 18" />
+        </svg>
+        <span className="text-[11px] font-mono uppercase tracking-[0.18em] text-text">
+          {title}
+        </span>
+        {badge && (
+          <span className="text-[11px] font-mono uppercase tracking-[0.18em] text-text-dim">
+            {badge}
+          </span>
+        )}
+        {summary && (
+          <span className="ml-auto text-xs text-text-muted">{summary}</span>
+        )}
+      </button>
+      {expanded && <div className="px-3 pb-3 pt-1 space-y-3">{children}</div>}
+    </section>
+  );
+}
+
+function SegmentedTabs<T extends string>({
+  options,
+  value,
+  onChange,
+  ariaLabel,
+}: {
+  options: { value: T; label: string }[];
+  value: T;
+  onChange: (next: T) => void;
+  ariaLabel?: string;
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label={ariaLabel}
+      className="inline-flex flex-wrap gap-1 p-1 bg-bg border border-border rounded-lg"
+    >
+      {options.map((opt) => {
+        const active = opt.value === value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(opt.value)}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+              active
+                ? "bg-surface-raised text-text border border-border"
+                : "text-text-muted hover:text-text border border-transparent"
+            }`}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function InlineInput({
+  widthClass,
+  placeholder,
+  value,
+  onChange,
+}: {
+  widthClass: string;
+  placeholder: string;
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  return (
+    <input
+      className={`${widthClass} px-3 py-1.5 bg-surface-raised border border-border rounded-md font-mono text-sm text-text outline-none transition-colors focus:border-border-focus focus:shadow-[0_0_0_3px_var(--color-primary-ring)]`}
+      placeholder={placeholder}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
+}
+
+function IconButton({ onClick, ariaLabel }: { onClick: () => void; ariaLabel: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={ariaLabel}
+      className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-lg text-text-dim hover:text-danger hover:bg-danger-bg transition-colors"
+    >
+      <svg
+        className="w-4 h-4"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <line x1="18" y1="6" x2="6" y2="18" />
+        <line x1="6" y1="6" x2="18" y2="18" />
+      </svg>
+    </button>
+  );
+}
+
+function PresetPicker({
+  catalog,
+  selected,
+  onSelect,
+}: {
+  catalog: CatalogTemplate[];
+  selected: string;
+  onSelect: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (
+        popoverRef.current &&
+        !popoverRef.current.contains(e.target as Node) &&
+        triggerRef.current &&
+        !triggerRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [open]);
+
+  const selectedTpl = catalog.find((t) => t.id === selected);
+  const triggerLabel = selectedTpl ? selectedTpl.name : "Preset…";
+
+  return (
+    <div className="flex items-center gap-3 text-sm text-text-muted">
+      <span>Start from</span>
+      <div className="relative">
+        <button
+          ref={triggerRef}
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-bg border border-border text-text text-sm font-medium hover:bg-surface-hover transition-colors"
+        >
+          <svg
+            className="w-3.5 h-3.5 text-primary"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+          >
+            <path d="M12 2l1.5 5.5L19 9l-5.5 1.5L12 16l-1.5-5.5L5 9l5.5-1.5L12 2z" />
+          </svg>
+          {triggerLabel}
+          <svg
+            className={`w-3.5 h-3.5 text-text-muted transition-transform ${open ? "rotate-180" : ""}`}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
+        {open && (
+          <div
+            ref={popoverRef}
+            className="absolute left-0 top-full mt-2 w-[320px] max-h-[320px] overflow-y-auto bg-surface border border-border rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.3)] py-1 z-10"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                onSelect("");
+                setOpen(false);
+              }}
+              className={`w-full text-left px-3 py-2 text-sm hover:bg-bg transition-colors ${
+                selected === "" ? "text-text" : "text-text-muted"
+              }`}
+            >
+              Custom (blank)
+            </button>
+            {catalog.map((tpl) => (
+              <button
+                key={tpl.id}
+                type="button"
+                onClick={() => {
+                  onSelect(tpl.id);
+                  setOpen(false);
+                }}
+                className={`w-full text-left px-3 py-2 text-sm transition-colors ${
+                  selected === tpl.id ? "bg-bg" : "hover:bg-bg"
+                }`}
+              >
+                <div className="font-medium">{tpl.name}</div>
+                <div className="text-xs text-text-muted truncate">{tpl.host}</div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <span className="text-xs">or configure manually below</span>
+    </div>
   );
 }

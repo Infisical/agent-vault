@@ -4,6 +4,7 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -111,16 +112,11 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		addr = sess.Address
 	}
 
-	// 2. Resolve the target vault: --vault flag > context > interactive select > "default".
-	vault, err := resolveVaultForRun(cmd, addr, sess.Token)
-	if err != nil {
-		return err
-	}
-
-	// 3. Request a vault-scoped session token from the server.
+	// 2-3. Resolve the vault and mint a vault-scoped session token,
+	//      retrying on session expiry. Shared with `vault token`.
 	role, _ := cmd.Flags().GetString("role")
 	ttl, _ := cmd.Flags().GetInt("ttl")
-	scopedToken, err := requestScopedSession(addr, sess.Token, vault, role, ttl)
+	vault, scopedToken, err := mintScopedSession(cmd, sess, addr, role, ttl)
 	if err != nil {
 		return err
 	}
@@ -266,7 +262,15 @@ func resolveVaultForRun(cmd *cobra.Command, addr, token string) (string, error) 
 	// Fetch vaults from the server to decide.
 	vaults, err := fetchUserVaults(addr, token)
 	if err != nil {
-		// If we can't list vaults, fall back to "default".
+		// Bubble session-expiry so the outer retry can re-auth and
+		// resolve the user's actual vault membership; otherwise a
+		// multi-vault user would be silently demoted to "default".
+		if errors.Is(err, errSessionExpired) {
+			return "", err
+		}
+		// For any other failure (offline, server down) keep the
+		// historical silent fallback to "default" so single-vault
+		// users on flaky networks still get something working.
 		return store.DefaultVault, nil
 	}
 
@@ -308,7 +312,18 @@ func fetchUserVaults(addr, token string) ([]string, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&errResp)
+		msg := errResp.Error
+		if msg == "" {
+			msg = fmt.Sprintf("status %d", resp.StatusCode)
+		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			return nil, &sessionExpiredError{msg: "listing vaults: " + msg}
+		}
+		return nil, fmt.Errorf("listing vaults: %s", msg)
 	}
 
 	var result struct {
@@ -419,6 +434,32 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 	return env, port, true, nil
 }
 
+// mintScopedSession resolves the target vault and mints a vault-scoped
+// session token, with inline re-auth on a 401 from the admin session.
+// The interactive vault picker (huh.NewSelect for multi-vault users with
+// no override) runs at most once across retries — re-prompting after
+// re-auth would be a UX regression, and the user's earlier choice is
+// still valid because vault membership is rechecked server-side when
+// requestScopedSession fires.
+func mintScopedSession(cmd *cobra.Command, sess *session.ClientSession, addr, role string, ttl int) (vault, scopedToken string, err error) {
+	err = withReauthRetry(sess, addr, func(s *session.ClientSession) error {
+		if vault == "" {
+			v, verr := resolveVaultForRun(cmd, addr, s.Token)
+			if verr != nil {
+				return verr
+			}
+			vault = v
+		}
+		token, terr := requestScopedSession(addr, s.Token, vault, role, ttl)
+		if terr != nil {
+			return terr
+		}
+		scopedToken = token
+		return nil
+	})
+	return
+}
+
 // requestScopedSession calls the server to create a vault-scoped session
 // and returns the scoped token.
 func requestScopedSession(addr, adminToken, vault, role string, ttlSeconds int) (string, error) {
@@ -452,10 +493,14 @@ func requestScopedSession(addr, adminToken, vault, role string, ttlSeconds int) 
 			Error string `json:"error"`
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&errResp)
-		if errResp.Error != "" {
-			return "", fmt.Errorf("failed to create scoped session: %s", errResp.Error)
+		msg := errResp.Error
+		if msg == "" {
+			msg = fmt.Sprintf("status %d", resp.StatusCode)
 		}
-		return "", fmt.Errorf("failed to create scoped session (status %d)", resp.StatusCode)
+		if resp.StatusCode == http.StatusUnauthorized {
+			return "", &sessionExpiredError{msg: "failed to create scoped session: " + msg}
+		}
+		return "", fmt.Errorf("failed to create scoped session: %s", msg)
 	}
 
 	var result struct {

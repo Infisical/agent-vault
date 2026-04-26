@@ -103,6 +103,47 @@ Common services: Stripe (bearer), GitHub (bearer), OpenAI (bearer), Ashby (basic
 
 **Passthrough** allowlists a host but does not store or inject a credential. Use it only when the operator has decided their client already holds the credential and wants netguard / audit / MITM coverage without putting the secret in the vault. For the default case (agent needs the credential from the vault), use one of the credentialed types above. Passthrough auth entries reject all credential fields (`token`, `username`, `password`, `key`, `header`, `prefix`, `headers`).
 
+### URL Substitutions
+
+Auth types only inject headers. For APIs that want a credential value in the URL path or query string (Twilio's `/Accounts/{AccountSID}/Messages.json`, legacy `?api_key=` services), add a `substitutions` field on the service. The broker rewrites a placeholder string in declared surfaces only.
+
+How it works:
+- The operator declares the exact `placeholder` string. The broker matches it case-sensitively as a literal — no auto-wrapping, no transformations.
+- Your request must embed the placeholder verbatim. The broker resolves the credential, URL-encodes the value, and substitutes it in.
+- `in` declares which surfaces the broker is allowed to scan: subset of `["path", "query", "header"]`, defaulting to `["path", "query"]`. `header` must be explicit. `body` is not supported.
+- **Scoping is the security boundary.** The broker only scans surfaces in `in`. Embedding the placeholder anywhere else means the literal string passes through unmodified — the operator's `in` declaration cannot be overridden by request shape.
+- When `header` is in `in`, the broker scans every outbound header for the placeholder, not a specific named header. Use a unique placeholder so it cannot land in headers you didn't intend to rewrite.
+- Substitutions compose with all auth types, including `passthrough`.
+- Updating an existing service: a `set` proposal that omits `substitutions` (or sends an empty list) preserves the service's existing substitutions, even when `auth` is replaced. To change the list, supply the new non-empty list. To clear all substitutions, delete and recreate the service.
+
+Example proposal (Twilio: basic auth header + path SID substitution):
+
+```
+POST {AGENT_VAULT_ADDR}/v1/proposals
+Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Content-Type: application/json
+
+{
+  "services": [{
+    "action": "set",
+    "host": "api.twilio.com",
+    "auth": {"type": "basic", "username": "TWILIO_ACCOUNT_SID", "password": "TWILIO_AUTH_TOKEN"},
+    "substitutions": [
+      {"key": "TWILIO_ACCOUNT_SID", "placeholder": "__account_sid__", "in": ["path"]}
+    ]
+  }],
+  "credentials": [
+    {"action": "set", "key": "TWILIO_ACCOUNT_SID", "description": "Twilio Account SID", "obtain": "https://console.twilio.com"},
+    {"action": "set", "key": "TWILIO_AUTH_TOKEN", "description": "Twilio Auth Token"}
+  ],
+  "message": "Twilio messaging — agent embeds __account_sid__ in the URL path"
+}
+```
+
+Once approved, the agent makes requests like `GET https://api.twilio.com/2010-04-01/Accounts/__account_sid__/Messages.json` (via `/proxy/api.twilio.com/...` or `HTTPS_PROXY`). The broker rewrites the path to `/Accounts/AC.../Messages.json` and injects the basic auth header.
+
+Placeholder safety: must be ≥4 characters, contain at least one alphanumeric character, contain a `__` boundary or non-`[A-Za-z0-9_]` character (so bare words like `account_sid` are rejected — they would match legitimate URL words), and use only RFC 3986 unreserved characters `[A-Za-z0-9_-.~]`. The recommended convention is `__name__`.
+
 ### Creating a Proposal
 
 ```
@@ -121,6 +162,7 @@ Content-Type: application/json
 Key fields:
 - `services[].action` -- `"set"` (upsert, needs `host` + `auth` **or** an `enabled` change) or `"delete"` (needs `host` only)
 - `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates), `passthrough` (no credential fields)
+- `services[].substitutions` -- optional list of URL/header rewrites. Each entry has `key` (UPPER_SNAKE_CASE credential reference), `placeholder` (the exact wire string the broker matches case-sensitively, e.g. `__account_sid__`), and optional `in` (subset of `["path", "query", "header"]`; defaults to `["path", "query"]`). Surfaces not in `in` are not scanned. Must be paired with an `auth` change in the same proposal — substitutions cannot be added on an enable/disable-only update. See the URL Substitutions section above.
 - `services[].enabled` -- optional boolean. Omitted means "enabled" for new services. A `"set"` proposal may supply `enabled` alone (no `auth`) to flip an existing service's state without replacing its auth config -- useful for staged rollouts where the operator wires credentials before flipping traffic on
 - `credentials[].action` -- `"set"` (omit `value` for human to supply; include `value` to store back) or `"delete"`
 - `credentials` -- only declare credentials not already in `available_credentials`. Every credential referenced in auth configs must resolve to a slot or existing credential (400 otherwise)

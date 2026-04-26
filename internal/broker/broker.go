@@ -31,11 +31,21 @@ type Config struct {
 // not include Authorization, Proxy-Authorization, or hop-by-hop headers
 // — see Auth.validateExtraPassthroughHeaders for the full denylist.
 type Service struct {
-	Host                    string   `yaml:"host" json:"host"`
-	Description             *string  `yaml:"description,omitempty" json:"description"`
-	Enabled                 *bool    `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	Auth                    Auth     `yaml:"auth" json:"auth"`
-	ExtraPassthroughHeaders []string `yaml:"extra_passthrough_headers,omitempty" json:"extra_passthrough_headers,omitempty"`
+	Host                    string         `yaml:"host" json:"host"`
+	Description             *string        `yaml:"description,omitempty" json:"description"`
+	Enabled                 *bool          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Auth                    Auth           `yaml:"auth" json:"auth"`
+	ExtraPassthroughHeaders []string       `yaml:"extra_passthrough_headers,omitempty" json:"extra_passthrough_headers,omitempty"`
+	Substitutions           []Substitution `yaml:"substitutions,omitempty" json:"substitutions,omitempty"`
+}
+
+// Substitution declares a placeholder string the broker rewrites with a
+// credential value at request time, scanned only on surfaces listed in
+// In — that scoping is the security boundary.
+type Substitution struct {
+	Key         string   `yaml:"key" json:"key"`
+	Placeholder string   `yaml:"placeholder" json:"placeholder"`
+	In          []string `yaml:"in,omitempty" json:"in,omitempty"`
 }
 
 // IsEnabled reports whether the service should serve proxy traffic. A
@@ -76,6 +86,30 @@ var SupportedAuthTypes = []string{"bearer", "basic", "api-key", "custom", "passt
 
 // CredentialKeyPattern validates credential key names: UPPER_SNAKE_CASE.
 var CredentialKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
+// SubstitutionSurfaces lists the surfaces a substitution may declare in
+// its In list. "body" is reserved for a future version.
+var SubstitutionSurfaces = []string{"path", "query", "header"}
+
+// DefaultSubstitutionSurfaces is applied when a substitution omits In.
+// "header" is a deliberate opt-in (CRLF guard required) so it is not
+// in the default set.
+var DefaultSubstitutionSurfaces = []string{"path", "query"}
+
+// placeholderCharAllowed reports whether c may appear inside a
+// substitution placeholder. Restricted to RFC 3986 unreserved
+// characters so encoded and decoded forms are identical — the runtime
+// can match on the wire-encoded path without encoding round-trips.
+func placeholderCharAllowed(c byte) bool {
+	return placeholderWordChar(c) || c == '-' || c == '.' || c == '~'
+}
+
+// placeholderWordChar reports whether c is a word-class character
+// inside a placeholder: alphanumeric or underscore. Used by the
+// boundary check in validatePlaceholder.
+func placeholderWordChar(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
 
 // Validate checks that an Auth configuration is well-formed and returns
 // descriptive errors that help agents self-correct.
@@ -301,6 +335,9 @@ func Validate(cfg *Config) error {
 		if err := validateExtraPassthroughHeaders(s.ExtraPassthroughHeaders, s.Auth.Type); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
+		if err := s.ValidateSubstitutions(); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
+		}
 	}
 	return nil
 }
@@ -368,6 +405,129 @@ func validateExtraPassthroughHeaders(headers []string, authType string) error {
 		seen[ck] = true
 	}
 	return nil
+}
+
+// ValidateSubstitutions checks each substitution for length, character
+// set, surface allowlist, and intra-service uniqueness. Errors recommend
+// the __name__ convention by example.
+func (s *Service) ValidateSubstitutions() error {
+	if len(s.Substitutions) == 0 {
+		return nil
+	}
+	seen := make(map[string]int, len(s.Substitutions))
+	for i, sub := range s.Substitutions {
+		if sub.Key == "" {
+			return fmt.Errorf("substitution %d: \"key\" is required", i)
+		}
+		if err := validateCredentialKey("key", sub.Key); err != nil {
+			return fmt.Errorf("substitution %d: %w", i, err)
+		}
+		if err := validatePlaceholder(sub.Placeholder); err != nil {
+			return fmt.Errorf("substitution %d: %w", i, err)
+		}
+		if prev, dup := seen[sub.Placeholder]; dup {
+			return fmt.Errorf("substitution %d: placeholder %q already declared by substitution %d", i, sub.Placeholder, prev)
+		}
+		seen[sub.Placeholder] = i
+		if err := validateSubstitutionSurfaces(sub.In); err != nil {
+			return fmt.Errorf("substitution %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// validatePlaceholder enforces length, character set, a boundary
+// requirement (either "__" or a non-word character) so bare identifiers
+// like "account_sid" — which legitimately appear as URL path segments —
+// cannot be picked as placeholders, and at least one alphanumeric so
+// all-symbol strings like "____" or "~~~~" are rejected.
+func validatePlaceholder(p string) error {
+	if p == "" {
+		return fmt.Errorf("\"placeholder\" is required (recommended convention: __name__)")
+	}
+	if len(p) < 4 {
+		return fmt.Errorf("placeholder %q is too short — must be at least 4 characters (recommended convention: __name__)", p)
+	}
+	hasBoundary := false
+	hasAlnum := false
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		if !placeholderCharAllowed(c) {
+			return fmt.Errorf("placeholder %q contains disallowed character %q — only RFC 3986 unreserved characters [A-Za-z0-9_-.~] are permitted (recommended convention: __name__)", p, c)
+		}
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			hasAlnum = true
+		}
+		if !placeholderWordChar(c) {
+			hasBoundary = true
+		} else if c == '_' && i+1 < len(p) && p[i+1] == '_' {
+			hasBoundary = true
+		}
+	}
+	if !hasAlnum {
+		return fmt.Errorf("placeholder %q must contain at least one alphanumeric character (recommended convention: __name__)", p)
+	}
+	if !hasBoundary {
+		return fmt.Errorf("placeholder %q must contain a delimiter — either \"__\" or a character outside [A-Za-z0-9_] — to avoid matching legitimate URL words (recommended convention: __name__)", p)
+	}
+	return nil
+}
+
+// validateSubstitutionSurfaces checks that every entry of in is a known
+// surface. Empty is accepted (runtime applies DefaultSubstitutionSurfaces).
+func validateSubstitutionSurfaces(in []string) error {
+	allowed := map[string]bool{}
+	for _, s := range SubstitutionSurfaces {
+		allowed[s] = true
+	}
+	seen := make(map[string]bool, len(in))
+	for _, surface := range in {
+		if surface == "body" {
+			return fmt.Errorf("substitution surface \"body\" is reserved for a future version — pick from %s", strings.Join(SubstitutionSurfaces, ", "))
+		}
+		if !allowed[surface] {
+			return fmt.Errorf("invalid substitution surface %q — must be one of %s", surface, strings.Join(SubstitutionSurfaces, ", "))
+		}
+		if seen[surface] {
+			return fmt.Errorf("substitution surface %q listed more than once", surface)
+		}
+		seen[surface] = true
+	}
+	return nil
+}
+
+// NormalizedIn returns the surfaces this substitution applies to,
+// applying DefaultSubstitutionSurfaces when In is empty. Callers must
+// treat the returned slice as read-only.
+func (s *Substitution) NormalizedIn() []string {
+	if len(s.In) == 0 {
+		return DefaultSubstitutionSurfaces
+	}
+	return s.In
+}
+
+// CredentialKeys returns the union of credential keys referenced by
+// auth and substitutions, deduplicated, auth keys first.
+func (s *Service) CredentialKeys() []string {
+	authKeys := s.Auth.CredentialKeys()
+	if len(s.Substitutions) == 0 {
+		return authKeys
+	}
+	seen := make(map[string]bool, len(authKeys)+len(s.Substitutions))
+	out := make([]string, 0, len(authKeys)+len(s.Substitutions))
+	for _, k := range authKeys {
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	for _, sub := range s.Substitutions {
+		if !seen[sub.Key] {
+			seen[sub.Key] = true
+			out = append(out, sub.Key)
+		}
+	}
+	return out
 }
 
 // CredentialRef matches {{ credential_name }} placeholders in header values.

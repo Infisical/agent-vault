@@ -10,6 +10,17 @@ import (
 	"golang.org/x/term"
 )
 
+// defaultDeviceLabel returns os.Hostname() so a login from a typical
+// workstation is recognizable in `auth sessions list`. Falls back to "cli"
+// if the OS refuses to give us a hostname.
+func defaultDeviceLabel() string {
+	h, err := os.Hostname()
+	if err != nil || strings.TrimSpace(h) == "" {
+		return "cli"
+	}
+	return h
+}
+
 // readLoginEmail reads the email either from --email flag or by prompting interactively.
 func readLoginEmail(cmd *cobra.Command) (string, error) {
 	email, _ := cmd.Flags().GetString("email")
@@ -91,7 +102,12 @@ var loginCmd = &cobra.Command{
 			return err
 		}
 
-		if _, err := doLogin(address, email, password); err != nil {
+		deviceLabel, _ := cmd.Flags().GetString("device-label")
+		if deviceLabel == "" {
+			deviceLabel = defaultDeviceLabel()
+		}
+
+		if _, err := doLogin(address, email, password, deviceLabel); err != nil {
 			return err
 		}
 
@@ -104,4 +120,5 @@ func init() {
 	loginCmd.Flags().String("address", DefaultAddress, "server address")
 	loginCmd.Flags().String("email", "", "account email address")
 	loginCmd.Flags().Bool("password-stdin", false, "read password from stdin (for non-interactive use)")
+	loginCmd.Flags().String("device-label", "", "label shown in 'auth sessions list' (defaults to hostname)")
 }

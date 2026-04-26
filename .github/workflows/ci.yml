@@ -8,60 +8,205 @@ on:
 
 permissions:
   contents: read
+  # dorny/paths-filter calls pulls.listFiles on PR events; without this scope
+  # GitHub returns 403 and every PR's `changes` job fails closed.
+  pull-requests: read
+
+# Cancel in-flight runs on the same PR when a new commit is pushed.
+# Main-branch runs are NOT cancelled (preserves post-merge signal).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+      web: ${{ steps.filter.outputs.web }}
+      sdk_ts: ${{ steps.filter.outputs.sdk_ts }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Detect changed paths
+        id: filter
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        with:
+          filters: |
+            # Only gates `go-mod-tidy`. `go-test` and `go-lint` run on every
+            # PR unconditionally, so they don't need embedded-asset paths
+            # listed here.
+            go:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - '.golangci.yml'
+              - '.github/workflows/ci.yml'
+            web:
+              - 'web/**'
+              - '.github/workflows/ci.yml'
+            sdk_ts:
+              - 'sdks/sdk-typescript/**'
+              - '.github/workflows/ci.yml'
+
+  frontend-build:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend (tsc + vite)
+        run: cd web && npm ci && npm run build
+
+  # Security-critical: always run on every PR. Path-gating these would mean
+  # a missed filter entry (e.g. a new //go:embed target) silently turns the
+  # required check green with no Go signal. For a credential broker that's
+  # too large a failure mode for the speedup it would buy.
+  go-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version-file: go.mod
 
-      - name: Set up Node.js
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Build frontend
-        run: cd web && npm ci && npm run build
-
-      - name: Check go mod tidy
-        run: go mod tidy && git diff --exit-code go.mod go.sum
+      # go:embed all:webdist needs the directory at compile time;
+      # real Vite output is validated by the frontend-build job.
+      - name: Stub webdist for go:embed
+        run: |
+          mkdir -p internal/server/webdist
+          printf '<!doctype html><title>ci-stub</title>' > internal/server/webdist/index.html
 
       - name: Run tests
         run: go test -race -count=1 ./...
 
-      - name: TypeScript SDK — install, typecheck, test, build
-        run: cd sdks/sdk-typescript && npm ci && npm run typecheck && npm test && npm run build
-
-  lint:
+  # Security-critical: always run on every PR (see go-test for rationale).
+  go-lint:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version-file: go.mod
 
-      - name: Set up Node.js
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Build frontend
-        run: cd web && npm ci && npm run build
+      # go:embed all:webdist needs the directory at compile time;
+      # real Vite output is validated by the frontend-build job.
+      - name: Stub webdist for go:embed
+        run: |
+          mkdir -p internal/server/webdist
+          printf '<!doctype html><title>ci-stub</title>' > internal/server/webdist/index.html
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v6.5.0
         with:
           version: v2.11
+
+  go-mod-tidy:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+
+      - name: Check go mod tidy
+        run: go mod tidy && git diff --exit-code go.mod go.sum
+
+  sdk-ts:
+    needs: changes
+    if: needs.changes.outputs.sdk_ts == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/sdk-typescript
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sdks/sdk-typescript/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  # Single required status check. `if: always()` is mandatory — without it,
+  # a skipped upstream job would mark this job as skipped, and a skipped
+  # required check blocks merging.
+  ci-summary:
+    if: always()
+    needs: [changes, frontend-build, go-test, go-lint, go-mod-tidy, sdk-ts]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required jobs
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          FRONTEND_BUILD: ${{ needs.frontend-build.result }}
+          GO_TEST: ${{ needs.go-test.result }}
+          GO_LINT: ${{ needs.go-lint.result }}
+          GO_MOD_TIDY: ${{ needs.go-mod-tidy.result }}
+          SDK_TS: ${{ needs.sdk-ts.result }}
+        run: |
+          fail=0
+          check() {
+            case "$2" in
+              success|skipped) echo "$1: $2" ;;
+              *)               echo "$1: $2 (FAILED)"; fail=1 ;;
+            esac
+          }
+          # `changes` must succeed — every other gate hangs off its outputs.
+          if [ "$CHANGES" != "success" ]; then
+            echo "changes: $CHANGES (must be success)"
+            fail=1
+          fi
+          check frontend-build "$FRONTEND_BUILD"
+          check go-test        "$GO_TEST"
+          check go-lint        "$GO_LINT"
+          check go-mod-tidy    "$GO_MOD_TIDY"
+          check sdk-ts         "$SDK_TS"
+          exit $fail

@@ -3,6 +3,8 @@ title: "Installation"
 description: "Install Agent Vault, start a server, and log in."
 ---
 
+import InstallCommand from "/snippets/install-command.mdx";
+
 Agent Vault ships as a single binary that acts as both a server and CLI client. Install it once, then use `agent-vault server` to run a server and `agent-vault auth login` to interact with it.
 
 ## Install
@@ -12,18 +14,12 @@ Agent Vault ships as a single binary that acts as both a server and CLI client. 
     Auto-detects your OS and architecture, downloads the latest release, and installs.
     Works for both fresh installs and upgrades (backs up your database before upgrading).
 
-    ```bash
-    curl -fsSL https://get.agent-vault.dev | sh
-    ```
+    <InstallCommand />
 
     Supports macOS (Intel + Apple Silicon) and Linux (x86\_64 + ARM64).
 
     <Note>
-      On a successful install the script sends an anonymous ping (OS, architecture, version — nothing else) so we can count installs for the launch. Opt out by placing `AGENT_VAULT_NO_TELEMETRY=1` in front of `sh`, not `curl`:
-
-      ```bash
-      curl -fsSL https://get.agent-vault.dev | AGENT_VAULT_NO_TELEMETRY=1 sh
-      ```
+      The install script sends an anonymous beacon (OS, architecture, version). Set `AGENT_VAULT_NO_TELEMETRY=1` in front of `sh` to opt out.
     </Note>
 
   </Tab>
@@ -80,9 +76,7 @@ cosign verify-blob \
   <Tab title="Script">
     Re-run the same install command — the script detects your existing installation, stops the running server, backs up your database, and installs the latest version:
 
-    ```bash
-    curl -fsSL https://get.agent-vault.dev | sh
-    ```
+    <InstallCommand />
 
     Restart the server afterward:
 

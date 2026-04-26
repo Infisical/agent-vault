@@ -358,3 +358,140 @@ func TestInject_PassthroughPortStripped(t *testing.T) {
 		t.Fatal("expected Passthrough=true for host:port match")
 	}
 }
+
+// --- Substitution resolution tests ---
+
+func TestInject_ResolvesSubstitutionAlongsideAuth(t *testing.T) {
+	key32 := make32(0xAB)
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "api.twilio.com",
+		Auth: broker.Auth{Type: "basic", Username: "TWILIO_ACCOUNT_SID", Password: "TWILIO_AUTH_TOKEN"},
+		Substitutions: []broker.Substitution{
+			{Key: "TWILIO_ACCOUNT_SID", Placeholder: "__account_sid__", In: []string{"path"}},
+		},
+	}})
+	f.setCred(t, key32, "v1", "TWILIO_ACCOUNT_SID", "AC12345")
+	f.setCred(t, key32, "v1", "TWILIO_AUTH_TOKEN", "tok-shh")
+
+	p := NewStoreCredentialProvider(f, key32)
+	res, err := p.Inject(context.Background(), "v1", "api.twilio.com")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(res.Substitutions) != 1 {
+		t.Fatalf("expected 1 resolved substitution, got %+v", res.Substitutions)
+	}
+	if res.Substitutions[0].Placeholder != "__account_sid__" || res.Substitutions[0].Value != "AC12345" {
+		t.Fatalf("unexpected substitution: %+v", res.Substitutions[0])
+	}
+	if got := res.Substitutions[0].In; len(got) != 1 || got[0] != "path" {
+		t.Fatalf("expected normalized In=[path], got %v", got)
+	}
+	// Cred shared with auth should be decrypted only once thanks to memo.
+	if f.getCredentialCalls != 2 {
+		t.Fatalf("expected exactly 2 credential lookups (one per unique key), got %d", f.getCredentialCalls)
+	}
+	if res.Headers["Authorization"] == "" {
+		t.Fatal("expected basic auth header still injected")
+	}
+}
+
+func TestInject_ResolvesSubstitutionOnPassthrough(t *testing.T) {
+	key32 := make32(0xCD)
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "api.twilio.com",
+		Auth: broker.Auth{Type: "passthrough"},
+		Substitutions: []broker.Substitution{
+			{Key: "TWILIO_ACCOUNT_SID", Placeholder: "__account_sid__", In: []string{"path"}},
+		},
+	}})
+	f.setCred(t, key32, "v1", "TWILIO_ACCOUNT_SID", "AC12345")
+
+	p := NewStoreCredentialProvider(f, key32)
+	res, err := p.Inject(context.Background(), "v1", "api.twilio.com")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !res.Passthrough {
+		t.Fatal("expected Passthrough=true")
+	}
+	if res.Headers != nil {
+		t.Fatalf("expected nil headers on passthrough, got %v", res.Headers)
+	}
+	if len(res.Substitutions) != 1 || res.Substitutions[0].Value != "AC12345" {
+		t.Fatalf("expected substitution resolved on passthrough service, got %+v", res.Substitutions)
+	}
+}
+
+func TestInject_SubstitutionMissingCredentialErrorsLikeAuth(t *testing.T) {
+	key32 := make32(0xEF)
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "api.twilio.com",
+		Auth: broker.Auth{Type: "passthrough"},
+		Substitutions: []broker.Substitution{
+			{Key: "TWILIO_ACCOUNT_SID", Placeholder: "__account_sid__", In: []string{"path"}},
+		},
+	}})
+	// No credential set → lookup returns "not found".
+	p := NewStoreCredentialProvider(f, key32)
+	_, err := p.Inject(context.Background(), "v1", "api.twilio.com")
+	if !errors.Is(err, ErrCredentialMissing) {
+		t.Fatalf("expected ErrCredentialMissing, got %v", err)
+	}
+}
+
+func TestInject_AuthFailureLeavesSubstitutionsNil(t *testing.T) {
+	// Substitution resolves successfully, then auth resolution fails.
+	// The error path must NOT leak the resolved (secret) substitution
+	// values via result.Substitutions — callers that log result on
+	// errors would otherwise expose plaintext credential values.
+	key32 := make32(0x77)
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "api.twilio.com",
+		Auth: broker.Auth{Type: "bearer", Token: "MISSING_AUTH_KEY"},
+		Substitutions: []broker.Substitution{
+			{Key: "PRESENT_SUB_KEY", Placeholder: "__sid__", In: []string{"path"}},
+		},
+	}})
+	f.setCred(t, key32, "v1", "PRESENT_SUB_KEY", "SECRET-VALUE")
+	// MISSING_AUTH_KEY is intentionally not set.
+
+	p := NewStoreCredentialProvider(f, key32)
+	res, err := p.Inject(context.Background(), "v1", "api.twilio.com")
+	if !errors.Is(err, ErrCredentialMissing) {
+		t.Fatalf("expected ErrCredentialMissing, got %v", err)
+	}
+	if res == nil {
+		t.Fatal("expected result returned alongside error for diagnostic logging")
+	}
+	if res.Substitutions != nil {
+		t.Fatalf("expected res.Substitutions=nil on auth error to avoid leaking secrets, got %+v", res.Substitutions)
+	}
+}
+
+func TestInject_CredentialKeysIncludesSubstitution(t *testing.T) {
+	key32 := make32(0x12)
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "api.twilio.com",
+		Auth: broker.Auth{Type: "bearer", Token: "TWILIO_AUTH_TOKEN"},
+		Substitutions: []broker.Substitution{
+			{Key: "TWILIO_ACCOUNT_SID", Placeholder: "__account_sid__", In: []string{"path"}},
+		},
+	}})
+	f.setCred(t, key32, "v1", "TWILIO_AUTH_TOKEN", "tok")
+	// No SID credential → expect ErrCredentialMissing, but CredentialKeys
+	// must already be populated for diagnostic logging.
+	p := NewStoreCredentialProvider(f, key32)
+	res, err := p.Inject(context.Background(), "v1", "api.twilio.com")
+	if !errors.Is(err, ErrCredentialMissing) {
+		t.Fatalf("expected ErrCredentialMissing, got %v", err)
+	}
+	if res == nil || len(res.CredentialKeys) != 2 {
+		t.Fatalf("expected CredentialKeys to include both auth and substitution keys, got %+v", res)
+	}
+}

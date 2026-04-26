@@ -28,12 +28,15 @@ const (
 // When Enabled is provided without Auth and the host already exists,
 // the merge preserves the existing service's Auth/Description and
 // overlays only the Enabled flag — this is the enable/disable flow.
+// Substitutions must accompany Auth (Validate rejects set+Substitutions
+// without Auth) since the merge only carries them on full replacements.
 type Service struct {
-	Action      Action       `json:"action"`
-	Host        string       `json:"host"`
-	Description string       `json:"description,omitempty"`
-	Enabled     *bool        `json:"enabled,omitempty"`
-	Auth        *broker.Auth `json:"auth,omitempty"`
+	Action        Action                `json:"action"`
+	Host          string                `json:"host"`
+	Description   string                `json:"description,omitempty"`
+	Enabled       *bool                 `json:"enabled,omitempty"`
+	Auth          *broker.Auth          `json:"auth,omitempty"`
+	Substitutions []broker.Substitution `json:"substitutions,omitempty"`
 }
 
 // CredentialSlot declares a credential operation in a proposal.

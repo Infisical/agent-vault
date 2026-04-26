@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/mitm"
+	"github.com/Infisical/agent-vault/internal/netguard"
 	"github.com/Infisical/agent-vault/internal/notify"
 	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/pidfile"
@@ -66,6 +68,14 @@ type Server struct {
 	logger         *slog.Logger         // structured logger for per-request observability
 	rateLimit      *ratelimit.Registry  // tiered rate limiter; shared with the MITM ingress
 	logSink        requestlog.Sink      // per-request persistence sink; never nil (Nop default)
+	// touchCache short-circuits per-request session-touch writes. With
+	// db.SetMaxOpenConns(1), every UPDATE — even a no-op — opens the
+	// single WAL writer slot. Caching the last-touch wall-clock per
+	// token keeps the steady state at one SQL write per session per
+	// touchInterval; the SQL throttle remains as a defense-in-depth
+	// backstop. Bounded by a periodic prune (see runTouchCachePruner)
+	// that drops entries past the throttle window.
+	touchCache sync.Map // raw token (string) -> time.Time
 }
 
 // RateLimit returns the server's rate-limit registry. Exported so the
@@ -124,11 +134,14 @@ type Store interface {
 	DeleteUser(ctx context.Context, userID string) error
 	CountUsers(ctx context.Context) (int, error)
 	RegisterFirstUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, defaultVaultID string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*store.User, error)
-	CreateSession(ctx context.Context, userID string, expiresAt time.Time) (*store.Session, error)
+	CreateUserSession(ctx context.Context, p store.CreateUserSessionParams) (*store.Session, error)
 	CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error)
 	GetSession(ctx context.Context, id string) (*store.Session, error)
 	DeleteSession(ctx context.Context, id string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
+	TouchSession(ctx context.Context, rawToken, ip, userAgent string) error
+	ListUserSessions(ctx context.Context, userID string) ([]store.Session, error)
+	RevokeUserSession(ctx context.Context, userID, publicID string) error
 
 	// Vaults
 	CreateVault(ctx context.Context, name string) (*store.Vault, error)
@@ -547,7 +560,7 @@ func limitBody(next http.HandlerFunc) http.HandlerFunc {
 func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string, oauthProviders map[string]oauth.Provider, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
 
-	// Initialize proxy client once (reads AGENT_VAULT_NETWORK_MODE after env is configured).
+	// Initialize proxy client once (reads AGENT_VAULT_ALLOW_PRIVATE_RANGES after env is configured).
 	if proxyClient == nil {
 		proxyClient = newProxyClient()
 	}
@@ -595,6 +608,8 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("POST /v1/auth/login", s.requireInitialized(ipAuth(limitBody(s.handleLogin))))
 	mux.HandleFunc("POST /v1/auth/change-password", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleChangePassword)))))
 	mux.HandleFunc("DELETE /v1/auth/account", s.requireInitialized(s.requireAuth(actorAuthed(s.handleDeleteAccount))))
+	mux.HandleFunc("GET /v1/auth/sessions", s.requireInitialized(s.requireAuth(actorAuthed(s.handleListUserSessions))))
+	mux.HandleFunc("DELETE /v1/auth/sessions/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleRevokeUserSession))))
 	mux.HandleFunc("POST /v1/sessions", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleScopedSession)))))
 	mux.HandleFunc("GET /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(s.handleCredentialsList))))
 	mux.HandleFunc("POST /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleCredentialsSet)))))
@@ -774,6 +789,10 @@ func (s *Server) Start() error {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
+	pruneCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.runTouchCachePruner(pruneCtx)
+
 	errCh := make(chan error, 1)
 	go func() {
 		fmt.Printf("Agent Vault server listening on %s\n", s.baseURL)
@@ -841,8 +860,36 @@ const passwordResetTTL = 15 * time.Minute
 const maxPendingPasswordResets = 3
 
 type loginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email       string `json:"email"`
+	Password    string `json:"password"`
+	DeviceLabel string `json:"device_label,omitempty"` // optional, e.g. CLI hostname
+}
+
+// maxDeviceLabelRunes caps device_label values. Counts runes (not bytes)
+// so a multi-byte character at the boundary can't be sliced mid-encoding
+// into invalid UTF-8. 64 runes covers any RFC 1035 hostname plus a CI
+// suffix at a worst-case 256-byte storage cost.
+const maxDeviceLabelRunes = 64
+
+// truncateDeviceLabel sanitizes the user-supplied label: strips control
+// characters and caps the length in runes. Empty input returns ""
+// (caller decides on a default).
+func truncateDeviceLabel(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return ""
+	}
+	cleaned := make([]rune, 0, len(label))
+	for _, r := range label {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		cleaned = append(cleaned, r)
+	}
+	if len(cleaned) > maxDeviceLabelRunes {
+		cleaned = cleaned[:maxDeviceLabelRunes]
+	}
+	return string(cleaned)
 }
 
 type loginResponse struct {
@@ -850,32 +897,38 @@ type loginResponse struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
-const sessionTTL = 24 * time.Hour
+// registerResponse is the JSON shape returned by POST /v1/auth/register.
+// Token and ExpiresAt are populated only on the auto-login path
+// (currently: the first-user owner registration); other paths leave them
+// empty and set RequiresVerification.
+type registerResponse struct {
+	Email                string `json:"email"`
+	Role                 string `json:"role,omitempty"`
+	RequiresVerification bool   `json:"requires_verification"`
+	EmailSent            bool   `json:"email_sent"`
+	Authenticated        bool   `json:"authenticated"`
+	Message              string `json:"message"`
+	Token                string `json:"token,omitempty"`
+	ExpiresAt            string `json:"expires_at,omitempty"`
+}
+
+// userSessionAbsoluteTTL caps how long a user-login session can survive
+// regardless of activity. userSessionIdleTTL is the inactivity window:
+// any user session whose last_used_at is older than this is rejected at
+// auth time (see Session.IsExpired). Tuned for "log in once, stay logged
+// in" — a year max, drops dead after a month of disuse so a stolen
+// session.json doesn't grant indefinite undetected access.
+const (
+	userSessionAbsoluteTTL = 365 * 24 * time.Hour
+	userSessionIdleTTL     = 30 * 24 * time.Hour
+)
 
 // trustedProxyCIDRs holds parsed CIDR ranges from AGENT_VAULT_TRUSTED_PROXIES.
 // When non-empty, X-Forwarded-For is only trusted if RemoteAddr matches one of these.
-var trustedProxyCIDRs []*net.IPNet
+var trustedProxyCIDRs []net.IPNet
 
 func init() {
-	if raw := os.Getenv("AGENT_VAULT_TRUSTED_PROXIES"); raw != "" {
-		for _, cidr := range strings.Split(raw, ",") {
-			cidr = strings.TrimSpace(cidr)
-			if cidr == "" {
-				continue
-			}
-			// Allow bare IPs (e.g. "10.0.0.1") by appending /32 or /128.
-			if !strings.Contains(cidr, "/") {
-				if strings.Contains(cidr, ":") {
-					cidr += "/128"
-				} else {
-					cidr += "/32"
-				}
-			}
-			if _, ipNet, err := net.ParseCIDR(cidr); err == nil {
-				trustedProxyCIDRs = append(trustedProxyCIDRs, ipNet)
-			}
-		}
-	}
+	trustedProxyCIDRs = netguard.ParseCIDRList(os.Getenv("AGENT_VAULT_TRUSTED_PROXIES"), "AGENT_VAULT_TRUSTED_PROXIES")
 }
 
 // ipKeyer returns a ratelimit.Keyer that keys on the request's client IP
@@ -944,10 +997,12 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			jsonError(w, http.StatusUnauthorized, "Invalid or expired session")
 			return
 		}
-		if sessionExpired(sess) {
+		if sess.IsExpired(time.Now()) {
 			jsonError(w, http.StatusUnauthorized, "Session expired")
 			return
 		}
+
+		s.maybeTouchSession(r.Context(), sess, token, clientIP(r), r.UserAgent())
 
 		ctx := context.WithValue(r.Context(), sessionContextKey, sess)
 		next(w, r.WithContext(ctx))
@@ -968,7 +1023,8 @@ func (s *Server) optionalAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		if token != "" {
-			if sess, err := s.store.GetSession(r.Context(), token); err == nil && sess != nil && !sessionExpired(sess) {
+			if sess, err := s.store.GetSession(r.Context(), token); err == nil && sess != nil && !sess.IsExpired(time.Now()) {
+				s.maybeTouchSession(r.Context(), sess, token, clientIP(r), r.UserAgent())
 				ctx := context.WithValue(r.Context(), sessionContextKey, sess)
 				next(w, r.WithContext(ctx))
 				return
@@ -979,9 +1035,62 @@ func (s *Server) optionalAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// maybeTouchSession bumps last_used_at on user sessions and refreshes
+// last_ip / last_user_agent, gated by an in-memory cache so the SQL
+// layer is hit at most once per session per TouchInterval. The store-
+// side WHERE-clause throttle is preserved as defense in depth (e.g. a
+// process restart resets the cache). Empty ip/ua leave existing column
+// values unchanged via COALESCE in the store.
+func (s *Server) maybeTouchSession(ctx context.Context, sess *store.Session, rawToken, ip, userAgent string) {
+	if sess == nil || sess.UserID == "" {
+		return
+	}
+	now := time.Now()
+	if last, ok := s.touchCache.Load(rawToken); ok {
+		if t, _ := last.(time.Time); now.Sub(t) < store.TouchInterval {
+			return
+		}
+	}
+	s.touchCache.Store(rawToken, now)
+	_ = s.store.TouchSession(ctx, rawToken, ip, userAgent)
+}
+
+// pruneTouchCache drops entries past the throttle window. We use 2×
+// TouchInterval so a still-active session — touched within the last
+// minute — isn't evicted only to be re-stored on its next request;
+// anything older than that has zero correctness value because the SQL
+// throttle would let the next write through anyway.
+func (s *Server) pruneTouchCache() {
+	cutoff := time.Now().Add(-2 * store.TouchInterval)
+	s.touchCache.Range(func(key, val any) bool {
+		if t, ok := val.(time.Time); ok && t.Before(cutoff) {
+			s.touchCache.Delete(key)
+		}
+		return true
+	})
+}
+
+// runTouchCachePruner drives pruneTouchCache on a ticker until ctx is
+// cancelled. Spawned by Start; stopped via the deferred WithCancel
+// cancel so a Start error path or a second Start cycle never leaks the
+// goroutine or panics on a re-closed channel.
+func (s *Server) runTouchCachePruner(ctx context.Context) {
+	ticker := time.NewTicker(store.TouchInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.pruneTouchCache()
+		}
+	}
+}
+
 const (
-	scopedSessionMinTTL = 5 * 60        // 5 minutes
-	scopedSessionMaxTTL = 7 * 24 * 3600 // 7 days
+	scopedSessionMinTTL     = 5 * time.Minute
+	scopedSessionMaxTTL     = 7 * 24 * time.Hour
+	scopedSessionDefaultTTL = 24 * time.Hour // when ttl_seconds is unset
 )
 
 // sessionCookie builds an av_session cookie with all hardening flags set.
@@ -1001,18 +1110,14 @@ func sessionCookie(r *http.Request, baseURL, value string, maxAge int) *http.Coo
 // timePtr returns a pointer to the given time value.
 func timePtr(t time.Time) *time.Time { return &t }
 
-// formatExpiresAt returns a formatted RFC3339 string for an optional expiry time,
-// or an empty string if the session never expires.
+// formatExpiresAt returns a formatted RFC3339 (UTC) string for an optional
+// time, or an empty string if the time is nil. Used for any *time.Time we
+// surface to API clients — expiry, last-used, etc.
 func formatExpiresAt(t *time.Time) string {
 	if t == nil {
 		return ""
 	}
-	return t.Format(time.RFC3339)
-}
-
-// sessionExpired returns true if the session has a finite expiry and that time has passed.
-func sessionExpired(s *store.Session) bool {
-	return s.ExpiresAt != nil && time.Now().After(*s.ExpiresAt)
+	return t.UTC().Format(time.RFC3339)
 }
 
 const settingAllowedDomains = "allowed_email_domains"

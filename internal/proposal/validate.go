@@ -141,10 +141,23 @@ func Validate(services []Service, credentials []CredentialSlot) error {
 					return fmt.Errorf("service %d: %w", i, err)
 				}
 			}
+			if len(s.Substitutions) > 0 {
+				// Coupled to Auth here (not in broker.Validate) because
+				// broker.Service.Auth is non-pointer — the direct write
+				// path can't express "substitutions without auth", but
+				// proposals can via Auth==nil enable-only updates.
+				if s.Auth == nil {
+					return fmt.Errorf("service %d: substitutions require auth — to change substitutions on an existing service, re-supply the auth config", i)
+				}
+				synthetic := broker.Service{Host: s.Host, Substitutions: s.Substitutions}
+				if err := synthetic.ValidateSubstitutions(); err != nil {
+					return fmt.Errorf("service %d: %w", i, err)
+				}
+			}
 		}
 	}
 
-	// Collect all credential references from set-action services.
+	// Collect all credential references from set-action services (auth + substitutions).
 	refs := make(map[string]bool)
 	for _, s := range services {
 		if s.Action != ActionSet || s.Auth == nil {
@@ -152,6 +165,9 @@ func Validate(services []Service, credentials []CredentialSlot) error {
 		}
 		for _, key := range s.Auth.CredentialKeys() {
 			refs[key] = true
+		}
+		for _, sub := range s.Substitutions {
+			refs[sub.Key] = true
 		}
 	}
 
@@ -214,7 +230,8 @@ func ValidateCredentialRefs(services []Service, slots []CredentialSlot, existing
 		available[k] = true
 	}
 
-	// Check every credential key ref in set-action service auth configs resolves.
+	// Check every credential key ref in set-action service auth configs and
+	// substitutions resolves to either a proposal slot or an existing key.
 	for _, svc := range services {
 		if svc.Action != ActionSet || svc.Auth == nil {
 			continue
@@ -222,6 +239,11 @@ func ValidateCredentialRefs(services []Service, slots []CredentialSlot, existing
 		for _, key := range svc.Auth.CredentialKeys() {
 			if !available[key] {
 				return fmt.Errorf("credential %q referenced in service for %q is not provided in this proposal and does not exist in the vault", key, svc.Host)
+			}
+		}
+		for _, sub := range svc.Substitutions {
+			if !available[sub.Key] {
+				return fmt.Errorf("credential %q referenced in substitution for %q is not provided in this proposal and does not exist in the vault", sub.Key, svc.Host)
 			}
 		}
 	}

@@ -67,7 +67,7 @@ type Options struct {
 // listening until ListenAndServe is called.
 func New(addr string, opts Options) *Proxy {
 	upstream := &http.Transport{
-		DialContext:           netguard.SafeDialContext(netguard.ModeFromEnv()),
+		DialContext:           netguard.SafeDialContext(netguard.AllowPrivateFromEnv()),
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 		ForceAttemptHTTP2:     false,
 		MaxIdleConns:          100,

@@ -73,6 +73,40 @@ type Session struct {
 	VaultRole string     // set for user scoped sessions; empty for agent tokens (resolved per-request)
 	ExpiresAt *time.Time // nil = never expires
 	CreatedAt time.Time
+
+	// User-session sliding-expiry fields. Populated by CreateUserSession;
+	// left zero for scoped sessions and agent tokens.
+	PublicID      string        // short opaque handle for revoke endpoint; empty for scoped/agent
+	LastUsedAt    *time.Time    // last time the token was successfully resolved
+	IdleTTL       time.Duration // 0 = no idle expiry (agent tokens, legacy rows)
+	DeviceLabel   string        // user-visible label, e.g. hostname
+	LastIP        string
+	LastUserAgent string
+}
+
+// IsExpired reports whether the session is past its absolute expiry or its
+// idle window. Single source of truth for expiry checks across the server
+// (requireAuth) and proxy ingress (brokercore.SessionResolver).
+func (s *Session) IsExpired(now time.Time) bool {
+	if s.ExpiresAt != nil && now.After(*s.ExpiresAt) {
+		return true
+	}
+	if s.IdleTTL > 0 && s.LastUsedAt != nil && now.Sub(*s.LastUsedAt) > s.IdleTTL {
+		return true
+	}
+	return false
+}
+
+// CreateUserSessionParams carries all the fields persisted on a fresh
+// user-login session. Captured as a struct so login, OAuth callback, and
+// password-change call sites stay aligned without positional drift.
+type CreateUserSessionParams struct {
+	UserID        string
+	ExpiresAt     time.Time
+	IdleTTL       time.Duration
+	DeviceLabel   string
+	LastIP        string
+	LastUserAgent string
 }
 
 // User represents a human user account.
@@ -311,10 +345,22 @@ type Store interface {
 	DeleteUserSessions(ctx context.Context, userID string) error
 
 	// Sessions
-	CreateSession(ctx context.Context, userID string, expiresAt time.Time) (*Session, error)
+	CreateUserSession(ctx context.Context, p CreateUserSessionParams) (*Session, error)
 	CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*Session, error)
 	GetSession(ctx context.Context, id string) (*Session, error)
 	DeleteSession(ctx context.Context, id string) error
+	// TouchSession bumps last_used_at for the given raw token and
+	// refreshes last_ip + last_user_agent (empty values leave the
+	// existing column unchanged). Throttled internally so per-request
+	// calls collapse to one write per minute. Returns no error when the
+	// session is missing (best-effort).
+	TouchSession(ctx context.Context, rawToken, ip, userAgent string) error
+	// ListUserSessions returns every non-expired user session for userID
+	// (ordered most-recent activity first). Used by the auth-sessions UI.
+	ListUserSessions(ctx context.Context, userID string) ([]Session, error)
+	// RevokeUserSession deletes a session matching both userID
+	// and publicID. Scoping by userID prevents cross-account revocation.
+	RevokeUserSession(ctx context.Context, userID, publicID string) error
 
 	// Broker configs
 	SetBrokerConfig(ctx context.Context, vaultID string, servicesJSON string) (*BrokerConfig, error)

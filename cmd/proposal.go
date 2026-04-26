@@ -57,6 +57,17 @@ func printServices(w io.Writer, servicesJSON string) {
 			if r.Action == proposal.ActionSet && r.Auth != nil {
 				fmt.Fprintf(w, "      %s: %s\n", mutedText("auth"), r.Auth.Type)
 			}
+			if r.Action == proposal.ActionSet && len(r.Substitutions) > 0 {
+				fmt.Fprintf(w, "      %s:\n", mutedText("substitutions"))
+				for _, sub := range r.Substitutions {
+					in := sub.NormalizedIn()
+					fmt.Fprintf(w, "        %s → %s %s\n",
+						sub.Placeholder,
+						sub.Key,
+						mutedText("in: ["+strings.Join(in, ", ")+"]"),
+					)
+				}
+			}
 		}
 	}
 }

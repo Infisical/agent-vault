@@ -117,11 +117,30 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     Authenticate with email and password. Prompts interactively by default. Rejects inactive (unverified) accounts.
 
+    Sessions are long-lived: 1 year absolute, 30 days idle. Active operators effectively never have to log in again. A session that goes 30 days without making a request is automatically expired.
+
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--address` | | Server URL |
     | `--email` | | Email address |
     | `--password-stdin` | `false` | Read password from stdin |
+    | `--device-label` | hostname | Label shown in `auth sessions list` |
+  </Accordion>
+
+  <Accordion title="agent-vault auth sessions list">
+    ```bash
+    agent-vault auth sessions list
+    ```
+
+    List active sessions for your account, with the device label, last IP, last activity, and expiry. The session being used for this request is marked with a checkmark in the `Current` column.
+  </Accordion>
+
+  <Accordion title="agent-vault auth sessions revoke">
+    ```bash
+    agent-vault auth sessions revoke <id>
+    ```
+
+    Revoke a specific session by id (from `auth sessions list`). Use this to invalidate a stolen `~/.agent-vault/session.json` or to log out a forgotten device. Revoking your current session forces you to log in again on this device.
   </Accordion>
 </AccordionGroup>
 
@@ -444,6 +463,8 @@ description: "Complete reference for all Agent Vault CLI commands."
     The `passthrough` auth type accepts no credential flags; Agent Vault allowlists the host and forwards the client's request headers unchanged, stripping only hop-by-hop and broker-scoped headers (`X-Vault`, `Proxy-Authorization`).
 
     New services are **enabled by default**. Pass `--disabled` to create the service in a disabled state, or use `agent-vault vault service disable <host>` after creation.
+
+    URL [substitutions](/learn/services#substitutions) are file-only — there are no flags. Configure them under the `substitutions:` block of a service entry in a YAML file passed via `-f`.
   </Accordion>
 
   <Accordion title="agent-vault vault service enable">
@@ -615,6 +636,8 @@ description: "Complete reference for all Agent Vault CLI commands."
     # JSON file: complex multi-service proposal
     agent-vault vault proposal create -f proposal.json
     ```
+
+    URL [substitutions](/learn/services#substitutions) are JSON-only — there are no flags. Add a `substitutions` array under the relevant `services[]` entry in the file passed via `-f`.
   </Accordion>
 
   <Accordion title="agent-vault vault proposal approve">
@@ -985,8 +1008,8 @@ Manage the master password that wraps the data encryption key (DEK). All command
 
 ## Installer
 
-The [`install.sh`](https://github.com/Infisical/agent-vault/blob/main/install.sh) script (`curl -fsSL https://get.agent-vault.dev | sh`) is not part of the `agent-vault` binary but reads one environment variable:
+The [`install.sh`](https://github.com/Infisical/agent-vault/blob/main/install.sh) script (`curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | sh`) is not part of the `agent-vault` binary but reads one environment variable:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AGENT_VAULT_NO_TELEMETRY` | (unset) | When set to any non-empty value, skips the anonymous install/upgrade beacon (OS, architecture, version — nothing else). Must be placed in front of `sh`, not `curl`: `curl -fsSL https://get.agent-vault.dev \| AGENT_VAULT_NO_TELEMETRY=1 sh`. |
+| `AGENT_VAULT_NO_TELEMETRY` | (unset) | When set to any non-empty value, skips the anonymous install/upgrade beacon (OS, architecture, version — nothing else). Must be placed in front of `sh`, not `curl`: `curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev \| AGENT_VAULT_NO_TELEMETRY=1 sh`. |

@@ -2,20 +2,24 @@
 set -e
 
 # Agent Vault installer
-# Usage: curl -fsSL https://get.agent-vault.dev | sh
+# Usage: curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | sh
 #
 # Supports: macOS (Intel + Apple Silicon), Linux (amd64 + arm64)
 # Works for both fresh install and upgrade.
 #
 # Privacy: on successful install, sends an anonymous ping with OS, arch,
 # and version only — no identifiers, no IP retention. Opt out with:
-#   curl -fsSL https://get.agent-vault.dev | AGENT_VAULT_NO_TELEMETRY=1 sh
+#   curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | AGENT_VAULT_NO_TELEMETRY=1 sh
 
 REPO="Infisical/agent-vault"
 INSTALL_DIR="/usr/local/bin"
 DATA_DIR="$HOME/.agent-vault"
 PID_FILE="$DATA_DIR/agent-vault.pid"
 DB_FILE="$DATA_DIR/agent-vault.db"
+
+# HTTPS-only on initial request and on any redirect; refuse legacy TLS.
+# Defends against an HTTP redirect-downgrade on the supply-chain path.
+CURL_HARDEN="--proto =https --proto-redir =https --tlsv1.2"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -121,7 +125,8 @@ main() {
     # ── Fetch latest version ─────────────────────────────────────────────
 
     info "Fetching latest release..."
-    LATEST="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+    # shellcheck disable=SC2086 # CURL_HARDEN is a flag list — word-splitting is intentional
+    LATEST="$(curl $CURL_HARDEN -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
         | grep '"tag_name"' | head -1 | sed 's/.*"tag_name":[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/')"
 
     if [ -z "$LATEST" ]; then
@@ -138,7 +143,8 @@ main() {
     TMP_DIR="$(mktemp -d)"
     info "Downloading ${ARCHIVE}..."
 
-    if ! curl -fSL --progress-bar -o "${TMP_DIR}/${ARCHIVE}" "$URL"; then
+    # shellcheck disable=SC2086 # CURL_HARDEN is a flag list — word-splitting is intentional
+    if ! curl $CURL_HARDEN -fSL --progress-bar -o "${TMP_DIR}/${ARCHIVE}" "$URL"; then
         error "Download failed. The release may not include a binary for ${OS}/${ARCH}."
     fi
 
@@ -190,7 +196,8 @@ main() {
         if [ -n "$EXISTING_VERSION" ] && [ "$EXISTING_VERSION" != "unknown" ]; then
             EVENT="upgrade"
         fi
-        curl -fsS -m 3 "https://get.agent-vault.dev/ok?os=${OS}&arch=${ARCH}&v=${LATEST}&event=${EVENT}" >/dev/null 2>&1 || true
+        # shellcheck disable=SC2086 # CURL_HARDEN is a flag list — word-splitting is intentional
+        curl $CURL_HARDEN -fsS -m 3 "https://get.agent-vault.dev/ok?os=${OS}&arch=${ARCH}&v=${LATEST}&event=${EVENT}" >/dev/null 2>&1 || true
     fi
 }
 

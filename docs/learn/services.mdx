@@ -195,6 +195,69 @@ Injection still wins: if a service both adds a header to `extra_passthrough_head
 - **Passthrough auth**: `extra_passthrough_headers` is rejected on `passthrough` services — they already forward every non-denylisted header, so the allowlist extension has no meaning.
 - **Sending secrets through the hop**: if the header itself carries credentials (for example a provider-specific API key that isn't modeled in your auth config), store it as a credential and inject it via `custom` auth instead of passing it through.
 
+## Substitutions
+
+Auth types only inject HTTP headers. Some upstream APIs want a credential value in the URL path or query string instead — Twilio's `/Accounts/{AccountSID}/Messages.json`, legacy services that take `?api_key=`. For those, declare a `substitutions` block alongside the auth.
+
+```yaml
+services:
+  - host: api.twilio.com
+    description: Twilio Messaging API
+    auth:
+      type: basic
+      username: TWILIO_ACCOUNT_SID
+      password: TWILIO_AUTH_TOKEN
+    substitutions:
+      - key: TWILIO_ACCOUNT_SID
+        placeholder: __account_sid__
+        in: [path]
+```
+
+The agent then sends `GET https://api.twilio.com/2010-04-01/Accounts/__account_sid__/Messages.json` (via the explicit `/proxy/...` ingress or `HTTPS_PROXY`). Agent Vault:
+
+1. Resolves the basic auth credentials and injects `Authorization: Basic <base64(SID:TOKEN)>`.
+2. Scans only the path (the only surface in `in:`), finds `__account_sid__`, replaces it with the URL-encoded SID.
+3. Forwards the request.
+
+### Field reference
+
+- `key` — UPPER_SNAKE_CASE credential reference. Must resolve to a credential in the vault or a slot in the same proposal.
+- `placeholder` — the exact wire string Agent Vault matches **case-sensitively** as a literal. Operators choose the string; the broker does not auto-wrap delimiters around it. The recommended convention is `__name__` (double-underscore-bounded snake_case).
+- `in` — list of surfaces the broker is allowed to scan. Subset of `path`, `query`, `header`. Defaults to `[path, query]` if omitted. `body` is reserved for a future version.
+
+### Scoping is the security boundary
+
+Agent Vault only scans surfaces listed in `in`. If an agent embeds the placeholder in a non-declared surface (a JSON body to round-trip via an echo upstream, a header that wasn't declared), the literal string passes through to upstream — the broker will not substitute. There is no way to coerce the broker into substituting somewhere the operator did not authorize.
+
+Use this property to pick a narrow `in` for strong secrets that happen to live in URLs (legacy `?api_key=` APIs): keep `in: [query]` and the agent cannot exfiltrate the value through a body or a different header.
+
+### Placeholder safety rules
+
+The validator rejects placeholders that would cause false-positive substitutions in legitimate URL content:
+
+- **Length** ≥ 4 characters.
+- **Must contain a `__` sequence or a non-`[A-Za-z0-9_]` character** — so a bare word like `account_sid` is rejected (it could appear as a real path segment), while `__account_sid__`, `sid.value`, `sid-val`, and `~sid~` all pass.
+- **At least one alphanumeric character** — strings made entirely of delimiters like `____` or `~~~~` are rejected because they would aggressively match URL punctuation.
+- **Only RFC 3986 unreserved characters** `[A-Za-z0-9_-.~]` are permitted, so the placeholder survives any HTTP client / SDK / middlebox without percent-encoding round-trips.
+
+### `header` scope is request-wide
+
+When `in` includes `header`, the broker scans every outbound header for the placeholder — not one specific named header. Pick a unique placeholder so a typo or a copy-pasted value can't accidentally land in a header you didn't intend to rewrite. (Path and query are scoped to those URL components and don't have this concern.)
+
+### Composes with all auth types
+
+Substitutions and auth are independent. A service can use either, both, or neither:
+
+- Twilio: `auth: basic` (header) + path substitution for the SID.
+- Legacy `?api_key=` API: `auth: api-key` for an audit header + query substitution for the actual key.
+- A pure-substitution case (e.g. an internal API where the only secret lives in the path): `auth: passthrough` + path substitution.
+
+<Warning>
+  Modifying substitutions requires re-supplying auth in the same proposal.
+  Auth-only or enable/disable-only `set` proposals preserve existing
+  substitutions; to clear them, delete and recreate the service.
+</Warning>
+
 ## Host matching
 
 Agent Vault supports two host matching modes:

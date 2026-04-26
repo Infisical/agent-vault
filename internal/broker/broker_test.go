@@ -525,3 +525,219 @@ func TestValidateExtraPassthroughHeadersRejectedOnPassthroughAuth(t *testing.T) 
 		t.Fatalf("expected extra_passthrough_headers on passthrough auth to be rejected")
 	}
 }
+
+// --- Substitution validation tests ---
+
+func TestValidateSubstitutionsValid(t *testing.T) {
+	cases := []struct {
+		name string
+		sub  Substitution
+	}{
+		{"underscore convention", Substitution{Key: "TWILIO_ACCOUNT_SID", Placeholder: "__account_sid__", In: []string{"path"}}},
+		{"dot delimiter", Substitution{Key: "ACCOUNT_SID", Placeholder: "sid.value", In: []string{"path", "query"}}},
+		{"hyphen delimiter", Substitution{Key: "ACCOUNT_SID", Placeholder: "sid-val", In: []string{"path"}}},
+		{"tilde delimiter", Substitution{Key: "ACCOUNT_SID", Placeholder: "~sid~val", In: []string{"path"}}},
+		{"in defaulted", Substitution{Key: "ACCOUNT_SID", Placeholder: "__sid__"}},
+		{"header surface", Substitution{Key: "TENANT_ID", Placeholder: "__tenant__", In: []string{"header"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := Service{Host: "api.example.com", Auth: Auth{Type: "passthrough"}, Substitutions: []Substitution{tc.sub}}
+			if err := s.ValidateSubstitutions(); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateSubstitutionsRejectsBareWord(t *testing.T) {
+	s := Service{Host: "api.example.com", Auth: Auth{Type: "passthrough"}, Substitutions: []Substitution{
+		{Key: "ACCOUNT_SID", Placeholder: "account_sid", In: []string{"path"}},
+	}}
+	if err := s.ValidateSubstitutions(); err == nil {
+		t.Fatal("expected error for bare alphanumeric placeholder (would match URL words)")
+	}
+}
+
+func TestValidateSubstitutionsRejectsTooShort(t *testing.T) {
+	s := Service{Host: "api.example.com", Substitutions: []Substitution{
+		{Key: "K", Placeholder: "__x", In: []string{"path"}},
+	}}
+	if err := s.ValidateSubstitutions(); err == nil {
+		t.Fatal("expected error for placeholder shorter than 4 chars")
+	}
+}
+
+func TestValidateSubstitutionsRejectsControlChars(t *testing.T) {
+	cases := []string{"__a\nb__", "__a\rb__", "__a b__", "__a\tb__"}
+	for _, p := range cases {
+		t.Run(p, func(t *testing.T) {
+			s := Service{Host: "api.example.com", Substitutions: []Substitution{
+				{Key: "K_X", Placeholder: p, In: []string{"path"}},
+			}}
+			if err := s.ValidateSubstitutions(); err == nil {
+				t.Fatalf("expected error for placeholder containing control/whitespace char: %q", p)
+			}
+		})
+	}
+}
+
+func TestValidateSubstitutionsRejectsReservedURLChars(t *testing.T) {
+	cases := []string{"__a/b__", "__a?b__", "__a#b__", "__a&b__", "{sid}", "<sid>", "%%SID%%"}
+	for _, p := range cases {
+		t.Run(p, func(t *testing.T) {
+			s := Service{Host: "api.example.com", Substitutions: []Substitution{
+				{Key: "K_X", Placeholder: p, In: []string{"path"}},
+			}}
+			if err := s.ValidateSubstitutions(); err == nil {
+				t.Fatalf("expected error for placeholder containing URL-reserved char: %q", p)
+			}
+		})
+	}
+}
+
+func TestValidateSubstitutionsRejectsAllSymbol(t *testing.T) {
+	// All-delimiter strings would aggressively match URL punctuation.
+	cases := []string{"____", "~~~~", "----", "....", "~-.~"}
+	for _, p := range cases {
+		t.Run(p, func(t *testing.T) {
+			s := Service{Host: "api.example.com", Substitutions: []Substitution{
+				{Key: "K_X", Placeholder: p, In: []string{"path"}},
+			}}
+			if err := s.ValidateSubstitutions(); err == nil {
+				t.Fatalf("expected error for all-symbol placeholder %q", p)
+			}
+		})
+	}
+}
+
+func TestValidateSubstitutionsRejectsEmptyPlaceholder(t *testing.T) {
+	s := Service{Host: "api.example.com", Substitutions: []Substitution{
+		{Key: "ACCOUNT_SID", Placeholder: "", In: []string{"path"}},
+	}}
+	if err := s.ValidateSubstitutions(); err == nil {
+		t.Fatal("expected error for empty placeholder")
+	}
+}
+
+func TestValidateSubstitutionsRejectsEmptyKey(t *testing.T) {
+	s := Service{Host: "api.example.com", Substitutions: []Substitution{
+		{Key: "", Placeholder: "__sid__", In: []string{"path"}},
+	}}
+	if err := s.ValidateSubstitutions(); err == nil {
+		t.Fatal("expected error for empty key")
+	}
+}
+
+func TestValidateSubstitutionsRejectsLowerCaseKey(t *testing.T) {
+	s := Service{Host: "api.example.com", Substitutions: []Substitution{
+		{Key: "account_sid", Placeholder: "__sid__", In: []string{"path"}},
+	}}
+	if err := s.ValidateSubstitutions(); err == nil {
+		t.Fatal("expected error for non-UPPER_SNAKE_CASE key")
+	}
+}
+
+func TestValidateSubstitutionsRejectsBodySurface(t *testing.T) {
+	s := Service{Host: "api.example.com", Substitutions: []Substitution{
+		{Key: "K_X", Placeholder: "__sid__", In: []string{"body"}},
+	}}
+	if err := s.ValidateSubstitutions(); err == nil {
+		t.Fatal("expected error for body surface (deferred in v1)")
+	}
+}
+
+func TestValidateSubstitutionsRejectsUnknownSurface(t *testing.T) {
+	s := Service{Host: "api.example.com", Substitutions: []Substitution{
+		{Key: "K_X", Placeholder: "__sid__", In: []string{"cookie"}},
+	}}
+	if err := s.ValidateSubstitutions(); err == nil {
+		t.Fatal("expected error for unknown surface")
+	}
+}
+
+func TestValidateSubstitutionsRejectsDuplicatePlaceholder(t *testing.T) {
+	s := Service{Host: "api.example.com", Substitutions: []Substitution{
+		{Key: "K_ONE", Placeholder: "__sid__", In: []string{"path"}},
+		{Key: "K_TWO", Placeholder: "__sid__", In: []string{"query"}},
+	}}
+	if err := s.ValidateSubstitutions(); err == nil {
+		t.Fatal("expected error for duplicate placeholder within service")
+	}
+}
+
+func TestValidateSubstitutionsRejectsDuplicateSurface(t *testing.T) {
+	s := Service{Host: "api.example.com", Substitutions: []Substitution{
+		{Key: "K_X", Placeholder: "__sid__", In: []string{"path", "path"}},
+	}}
+	if err := s.ValidateSubstitutions(); err == nil {
+		t.Fatal("expected error for duplicate surface in In")
+	}
+}
+
+func TestValidateSubstitutionsEmptyOk(t *testing.T) {
+	s := Service{Host: "api.example.com"}
+	if err := s.ValidateSubstitutions(); err != nil {
+		t.Fatalf("unexpected error for empty substitutions: %v", err)
+	}
+}
+
+func TestValidateConfigInvalidSubstitution(t *testing.T) {
+	cfg := &Config{
+		Vault: "default",
+		Services: []Service{
+			{
+				Host: "api.example.com",
+				Auth: Auth{Type: "bearer", Token: "MY_KEY"},
+				Substitutions: []Substitution{
+					{Key: "MY_KEY", Placeholder: "tooshort", In: []string{"path"}}, // no non-alnum char
+				},
+			},
+		},
+	}
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected Validate to surface substitution error")
+	}
+}
+
+func TestSubstitutionNormalizedInDefaults(t *testing.T) {
+	s := Substitution{Key: "K", Placeholder: "__x__"}
+	got := s.NormalizedIn()
+	if len(got) != 2 || got[0] != "path" || got[1] != "query" {
+		t.Fatalf("expected default [path query], got %v", got)
+	}
+}
+
+func TestSubstitutionNormalizedInExplicit(t *testing.T) {
+	s := Substitution{Key: "K", Placeholder: "__x__", In: []string{"header"}}
+	got := s.NormalizedIn()
+	if len(got) != 1 || got[0] != "header" {
+		t.Fatalf("expected [header], got %v", got)
+	}
+}
+
+func TestServiceCredentialKeysCombines(t *testing.T) {
+	s := Service{
+		Host: "api.twilio.com",
+		Auth: Auth{Type: "basic", Username: "TWILIO_ACCOUNT_SID", Password: "TWILIO_AUTH_TOKEN"},
+		Substitutions: []Substitution{
+			{Key: "TWILIO_ACCOUNT_SID", Placeholder: "__account_sid__", In: []string{"path"}}, // dup of auth
+			{Key: "TWILIO_REGION", Placeholder: "__region__", In: []string{"path"}},           // unique
+		},
+	}
+	keys := s.CredentialKeys()
+	if len(keys) != 3 {
+		t.Fatalf("expected 3 unique keys, got %v", keys)
+	}
+	if keys[0] != "TWILIO_ACCOUNT_SID" || keys[1] != "TWILIO_AUTH_TOKEN" || keys[2] != "TWILIO_REGION" {
+		t.Fatalf("expected auth keys first then unique substitution keys, got %v", keys)
+	}
+}
+
+func TestServiceCredentialKeysOnlyAuth(t *testing.T) {
+	s := Service{Host: "api.example.com", Auth: Auth{Type: "bearer", Token: "MY_KEY"}}
+	keys := s.CredentialKeys()
+	if len(keys) != 1 || keys[0] != "MY_KEY" {
+		t.Fatalf("expected [MY_KEY], got %v", keys)
+	}
+}

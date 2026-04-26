@@ -3,6 +3,7 @@ package mitm
 import (
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"time"
@@ -99,8 +100,24 @@ func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope
 		// Authorization is the client's own upstream header.
 		brokercore.ApplyInjection(r.Header, outReq.Header, inject)
 
+		// Apply any declared substitutions to the outbound URL and
+		// headers. Surfaces not listed in the substitution's `in:` are
+		// not scanned — scope is the security boundary.
+		if err := brokercore.ApplySubstitutions(outReq.URL, outReq.Header, inject.Substitutions); err != nil {
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			emit(http.StatusBadGateway, "substitution_error")
+			return
+		}
+
 		resp, err := p.upstream.RoundTrip(outReq)
 		if err != nil {
+			// Log the actual error for operators while sending generic message to client.
+			p.logger.Debug("upstream request failed",
+				slog.String("vault_id", scope.VaultID),
+				slog.String("vault_name", scope.VaultName),
+				slog.String("target_host", target),
+				slog.String("error", err.Error()),
+			)
 			http.Error(w, "bad gateway", http.StatusBadGateway)
 			emit(http.StatusBadGateway, "upstream_error")
 			return

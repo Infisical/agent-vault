@@ -3,15 +3,18 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Infisical/agent-vault/internal/auth"
 	"github.com/Infisical/agent-vault/internal/crypto"
@@ -109,16 +112,69 @@ func (m *mockStore) CountUsers(_ context.Context) (int, error) {
 	return len(m.users), nil
 }
 
-func (m *mockStore) CreateSession(_ context.Context, userID string, expiresAt time.Time) (*store.Session, error) {
+func (m *mockStore) CreateUserSession(_ context.Context, p store.CreateUserSessionParams) (*store.Session, error) {
 	m.sessionCounter++
+	exp := p.ExpiresAt
+	now := time.Now()
 	s := &store.Session{
-		ID:        fmt.Sprintf("test-session-id-%d", m.sessionCounter),
-		UserID:    userID,
-		ExpiresAt: &expiresAt,
-		CreatedAt: time.Now(),
+		ID:            fmt.Sprintf("test-session-id-%d", m.sessionCounter),
+		UserID:        p.UserID,
+		ExpiresAt:     &exp,
+		CreatedAt:     now,
+		PublicID:      fmt.Sprintf("pub-%d", m.sessionCounter),
+		LastUsedAt:    &now,
+		IdleTTL:       p.IdleTTL,
+		DeviceLabel:   p.DeviceLabel,
+		LastIP:        p.LastIP,
+		LastUserAgent: p.LastUserAgent,
 	}
 	m.sessions[s.ID] = s
 	return s, nil
+}
+
+// CreateSession is a convenience for older test sites that pre-date
+// CreateUserSession. New tests should call CreateUserSession directly.
+func (m *mockStore) CreateSession(ctx context.Context, userID string, expiresAt time.Time) (*store.Session, error) {
+	return m.CreateUserSession(ctx, store.CreateUserSessionParams{UserID: userID, ExpiresAt: expiresAt})
+}
+
+func (m *mockStore) TouchSession(_ context.Context, rawToken, ip, userAgent string) error {
+	if sess, ok := m.sessions[rawToken]; ok && sess != nil {
+		now := time.Now()
+		sess.LastUsedAt = &now
+		if ip != "" {
+			sess.LastIP = ip
+		}
+		if userAgent != "" {
+			sess.LastUserAgent = userAgent
+		}
+	}
+	return nil
+}
+
+func (m *mockStore) ListUserSessions(_ context.Context, userID string) ([]store.Session, error) {
+	var out []store.Session
+	now := time.Now()
+	for _, sess := range m.sessions {
+		if sess.UserID != userID {
+			continue
+		}
+		if sess.IsExpired(now) {
+			continue
+		}
+		out = append(out, *sess)
+	}
+	return out, nil
+}
+
+func (m *mockStore) RevokeUserSession(_ context.Context, userID, publicID string) error {
+	for id, sess := range m.sessions {
+		if sess.UserID == userID && sess.PublicID == publicID {
+			delete(m.sessions, id)
+			return nil
+		}
+	}
+	return sql.ErrNoRows
 }
 
 func (m *mockStore) CreateScopedSession(_ context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error) {
@@ -1315,6 +1371,395 @@ func TestLoginSuccess(t *testing.T) {
 	}
 }
 
+func TestLoginRecordsDeviceMetadata(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "admin@test.com", "test-password-123")
+	srv := newTestServer(withStore(ms))
+
+	body := `{"email":"admin@test.com","password":"test-password-123","device_label":"tony-mbp"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(body))
+	req.Header.Set("User-Agent", "agent-vault-cli/test")
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp loginResponse
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	sess := ms.sessions[resp.Token]
+	if sess == nil {
+		t.Fatal("expected session to be persisted")
+	}
+	if sess.DeviceLabel != "tony-mbp" {
+		t.Fatalf("expected device_label 'tony-mbp', got %q", sess.DeviceLabel)
+	}
+	if sess.LastUserAgent != "agent-vault-cli/test" {
+		t.Fatalf("expected user-agent recorded, got %q", sess.LastUserAgent)
+	}
+	if sess.IdleTTL != userSessionIdleTTL {
+		t.Fatalf("expected idle ttl %v, got %v", userSessionIdleTTL, sess.IdleTTL)
+	}
+}
+
+func TestListAndRevokeAuthSessionsRoute(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "admin@test.com", "test-password-123")
+	srv := newTestServer(withStore(ms))
+
+	// Two logins → two sessions for the same user.
+	loginBody := `{"email":"admin@test.com","password":"test-password-123","device_label":"laptop"}`
+	rec1 := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec1,
+		httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(loginBody)))
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("login 1: %d %s", rec1.Code, rec1.Body.String())
+	}
+	var login1 loginResponse
+	_ = json.NewDecoder(rec1.Body).Decode(&login1)
+
+	loginBody2 := `{"email":"admin@test.com","password":"test-password-123","device_label":"server"}`
+	rec2 := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec2,
+		httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(loginBody2)))
+	var login2 loginResponse
+	_ = json.NewDecoder(rec2.Body).Decode(&login2)
+
+	// GET /v1/auth/sessions using session #1.
+	listReq := httptest.NewRequest(http.MethodGet, "/v1/auth/sessions", nil)
+	listReq.Header.Set("Authorization", "Bearer "+login1.Token)
+	listRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list sessions: %d %s", listRec.Code, listRec.Body.String())
+	}
+	var listResp struct {
+		Sessions []userSessionView `json:"sessions"`
+	}
+	if err := json.NewDecoder(listRec.Body).Decode(&listResp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(listResp.Sessions) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(listResp.Sessions))
+	}
+	currentCount := 0
+	var currentID, otherID string
+	for _, s := range listResp.Sessions {
+		if s.Current {
+			currentCount++
+			currentID = s.ID
+		} else {
+			otherID = s.ID
+		}
+	}
+	if currentCount != 1 {
+		t.Fatalf("expected exactly one Current=true session, got %d", currentCount)
+	}
+	if want := ms.sessions[login1.Token].PublicID; currentID != want {
+		t.Fatalf("Current=true row ID %q does not match login1's public_id %q", currentID, want)
+	}
+
+	// Revoke the other session via DELETE.
+	delReq := httptest.NewRequest(http.MethodDelete, "/v1/auth/sessions/"+otherID, nil)
+	delReq.Header.Set("Authorization", "Bearer "+login1.Token)
+	delRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(delRec, delReq)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("revoke session: %d %s", delRec.Code, delRec.Body.String())
+	}
+
+	// Session #2's token should no longer authenticate.
+	meReq := httptest.NewRequest(http.MethodGet, "/v1/auth/me", nil)
+	meReq.Header.Set("Authorization", "Bearer "+login2.Token)
+	meRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(meRec, meReq)
+	if meRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 after revoke, got %d", meRec.Code)
+	}
+
+	// Revoking again returns 404.
+	delAgain := httptest.NewRequest(http.MethodDelete, "/v1/auth/sessions/"+otherID, nil)
+	delAgain.Header.Set("Authorization", "Bearer "+login1.Token)
+	delAgainRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(delAgainRec, delAgain)
+	if delAgainRec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 on duplicate revoke, got %d", delAgainRec.Code)
+	}
+}
+
+func TestSelfRevokeClearsCookie(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "admin@test.com", "test-password-123")
+	srv := newTestServer(withStore(ms))
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/v1/auth/login",
+		strings.NewReader(`{"email":"admin@test.com","password":"test-password-123","device_label":"laptop"}`))
+	loginRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login: %d %s", loginRec.Code, loginRec.Body.String())
+	}
+	var login loginResponse
+	_ = json.NewDecoder(loginRec.Body).Decode(&login)
+	myPub := ms.sessions[login.Token].PublicID
+
+	delReq := httptest.NewRequest(http.MethodDelete, "/v1/auth/sessions/"+myPub, nil)
+	delReq.Header.Set("Authorization", "Bearer "+login.Token)
+	delRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(delRec, delReq)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("self-revoke: %d %s", delRec.Code, delRec.Body.String())
+	}
+	var cleared *http.Cookie
+	for _, c := range delRec.Result().Cookies() {
+		if c.Name == "av_session" {
+			cleared = c
+		}
+	}
+	if cleared == nil {
+		t.Fatal("expected Set-Cookie clearing av_session on self-revoke")
+	}
+	if cleared.MaxAge >= 0 || cleared.Value != "" {
+		t.Fatalf("expected expired empty av_session cookie, got value=%q max_age=%d", cleared.Value, cleared.MaxAge)
+	}
+	// Self-revoke must also surface `current: true` so non-cookie
+	// clients (the CLI) know to drop their on-disk session.
+	var resp struct {
+		Status  string `json:"status"`
+		Current bool   `json:"current"`
+	}
+	if err := json.Unmarshal(delRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode revoke response: %v", err)
+	}
+	if !resp.Current {
+		t.Fatalf("self-revoke should report current=true, got %+v", resp)
+	}
+}
+
+func TestRevokeOtherSessionLeavesCookieAlone(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "admin@test.com", "test-password-123")
+	srv := newTestServer(withStore(ms))
+
+	body := `{"email":"admin@test.com","password":"test-password-123","device_label":"laptop"}`
+	rec1 := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec1, httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(body)))
+	rec2 := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec2, httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(body)))
+	var login1, login2 loginResponse
+	_ = json.NewDecoder(rec1.Body).Decode(&login1)
+	_ = json.NewDecoder(rec2.Body).Decode(&login2)
+
+	otherPub := ms.sessions[login2.Token].PublicID
+	delReq := httptest.NewRequest(http.MethodDelete, "/v1/auth/sessions/"+otherPub, nil)
+	delReq.Header.Set("Authorization", "Bearer "+login1.Token)
+	delRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(delRec, delReq)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("revoke other: %d %s", delRec.Code, delRec.Body.String())
+	}
+	for _, c := range delRec.Result().Cookies() {
+		if c.Name == "av_session" {
+			t.Fatalf("revoking another session must not touch our own cookie, got %+v", c)
+		}
+	}
+	var resp struct {
+		Current bool `json:"current"`
+	}
+	if err := json.Unmarshal(delRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode revoke response: %v", err)
+	}
+	if resp.Current {
+		t.Fatalf("revoking another session should report current=false, got %+v", resp)
+	}
+}
+
+func TestRegisterFirstUserReturnsToken(t *testing.T) {
+	ms := newMockStore()
+	srv := newTestServer(withStore(ms))
+
+	body := `{"email":"owner@test.com","password":"test-password-123","device_label":"my-laptop"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", strings.NewReader(body))
+	req.Header.Set("User-Agent", "agent-vault-cli/test")
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("register: %d %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Authenticated bool   `json:"authenticated"`
+		Token         string `json:"token"`
+		ExpiresAt     string `json:"expires_at"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Authenticated || resp.Token == "" || resp.ExpiresAt == "" {
+		t.Fatalf("first-user register should return authenticated session, got %+v", resp)
+	}
+	if sess := ms.sessions[resp.Token]; sess == nil || sess.DeviceLabel != "my-laptop" {
+		t.Fatalf("expected stored session with device_label='my-laptop', got %+v", sess)
+	}
+	// Exactly one session row was created — no orphan from a duplicate auto-login.
+	if len(ms.sessions) != 1 {
+		t.Fatalf("expected 1 session after first-user register, got %d", len(ms.sessions))
+	}
+}
+
+func TestVerifyReturnsTokenAndPersistsDeviceLabel(t *testing.T) {
+	ms := newMockStore()
+	// Inactive user with a pending verification code — the same shape
+	// handleRegister produces on the second-user-onwards path.
+	hash, salt, kdfP, err := auth.HashUserPassword([]byte("test-password-123"))
+	if err != nil {
+		t.Fatalf("HashUserPassword: %v", err)
+	}
+	ms.users["new@test.com"] = &store.User{
+		ID: "u-new", Email: "new@test.com",
+		PasswordHash: hash, PasswordSalt: salt,
+		KDFTime: kdfP.Time, KDFMemory: kdfP.Memory, KDFThreads: kdfP.Threads,
+		Role: "member", IsActive: false,
+	}
+	if _, err := ms.CreateEmailVerification(context.Background(), "new@test.com", "123456", time.Now().Add(15*time.Minute)); err != nil {
+		t.Fatalf("CreateEmailVerification: %v", err)
+	}
+
+	srv := newTestServer(withStore(ms))
+	body := `{"email":"new@test.com","code":"123456","device_label":"verify-device"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/verify", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("verify: %d %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Authenticated bool   `json:"authenticated"`
+		Token         string `json:"token"`
+		ExpiresAt     string `json:"expires_at"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Authenticated || resp.Token == "" || resp.ExpiresAt == "" {
+		t.Fatalf("verify should return authenticated session, got %+v", resp)
+	}
+	sess := ms.sessions[resp.Token]
+	if sess == nil {
+		t.Fatal("verify should persist the session row")
+	}
+	if sess.DeviceLabel != "verify-device" {
+		t.Fatalf("expected device_label 'verify-device', got %q", sess.DeviceLabel)
+	}
+	// Exactly one session row — verify must not produce an orphan that
+	// a follow-up /v1/auth/login would duplicate.
+	if len(ms.sessions) != 1 {
+		t.Fatalf("expected 1 session after verify, got %d", len(ms.sessions))
+	}
+}
+
+func TestChangePasswordPreservesDeviceLabel(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "admin@test.com", "old-password-123")
+	srv := newTestServer(withStore(ms))
+
+	// Login with a custom device label so we can prove it survives the
+	// post-change-password DeleteUserSessions + CreateUserSession round-trip.
+	body := `{"email":"admin@test.com","password":"old-password-123","device_label":"original-laptop"}`
+	loginRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(loginRec,
+		httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(body)))
+	var login loginResponse
+	_ = json.NewDecoder(loginRec.Body).Decode(&login)
+
+	cpBody := `{"current_password":"old-password-123","new_password":"new-password-456"}`
+	cpReq := httptest.NewRequest(http.MethodPost, "/v1/auth/change-password", strings.NewReader(cpBody))
+	cpReq.Header.Set("Authorization", "Bearer "+login.Token)
+	cpRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(cpRec, cpReq)
+	if cpRec.Code != http.StatusOK {
+		t.Fatalf("change-password: %d %s", cpRec.Code, cpRec.Body.String())
+	}
+	var cp loginResponse
+	_ = json.NewDecoder(cpRec.Body).Decode(&cp)
+
+	newSess := ms.sessions[cp.Token]
+	if newSess == nil {
+		t.Fatal("expected post-change session to be persisted")
+	}
+	if newSess.DeviceLabel != "original-laptop" {
+		t.Fatalf("change-password should carry device_label across the new session, got %q", newSess.DeviceLabel)
+	}
+}
+
+func TestTouchSessionRefreshesIPAndUserAgent(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "admin@test.com", "test-password-123")
+	srv := newTestServer(withStore(ms))
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/v1/auth/login",
+		strings.NewReader(`{"email":"admin@test.com","password":"test-password-123"}`))
+	loginReq.Header.Set("User-Agent", "first-agent/1.0")
+	loginReq.RemoteAddr = "10.0.0.1:1234"
+	loginRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(loginRec, loginReq)
+	var login loginResponse
+	_ = json.NewDecoder(loginRec.Body).Decode(&login)
+
+	// Force the cache miss so requireAuth's maybeTouchSession actually
+	// reaches the store on the next request.
+	srv.touchCache.Delete(login.Token)
+
+	meReq := httptest.NewRequest(http.MethodGet, "/v1/auth/me", nil)
+	meReq.Header.Set("Authorization", "Bearer "+login.Token)
+	meReq.Header.Set("User-Agent", "second-agent/2.0")
+	meReq.RemoteAddr = "192.168.1.1:5678"
+	meRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(meRec, meReq)
+	if meRec.Code != http.StatusOK {
+		t.Fatalf("/me: %d %s", meRec.Code, meRec.Body.String())
+	}
+
+	updated := ms.sessions[login.Token]
+	if updated.LastUserAgent != "second-agent/2.0" {
+		t.Fatalf("expected user-agent to refresh on touch, got %q", updated.LastUserAgent)
+	}
+	if updated.LastIP != "192.168.1.1" {
+		t.Fatalf("expected last_ip to refresh on touch, got %q", updated.LastIP)
+	}
+}
+
+func TestTruncateDeviceLabelKeepsValidUTF8(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"33 accents (boundary at 64 bytes)", strings.Repeat("é", 33)},
+		{"17 emoji (boundary at 64 bytes)", strings.Repeat("🚀", 17)},
+		{"22 cjk runes (boundary at 64 bytes)", strings.Repeat("世", 22)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := truncateDeviceLabel(tc.in)
+			if !utf8.ValidString(out) {
+				t.Fatalf("truncated label is not valid UTF-8: %q", out)
+			}
+			if utf8.RuneCountInString(out) > maxDeviceLabelRunes {
+				t.Fatalf("rune count %d exceeds cap %d", utf8.RuneCountInString(out), maxDeviceLabelRunes)
+			}
+		})
+	}
+}
+
+func TestPruneTouchCacheDropsStaleEntries(t *testing.T) {
+	srv := newTestServer()
+	// Cutoff is 2*TouchInterval; pick a within-window and an outside-window
+	// timestamp so the bound is exercised without coupling to wall clock.
+	srv.touchCache.Store("within-window", time.Now().Add(-store.TouchInterval))
+	srv.touchCache.Store("past-cutoff", time.Now().Add(-3*store.TouchInterval))
+	srv.pruneTouchCache()
+	if _, ok := srv.touchCache.Load("within-window"); !ok {
+		t.Fatal("entry inside the throttle grace window should be retained")
+	}
+	if _, ok := srv.touchCache.Load("past-cutoff"); ok {
+		t.Fatal("entry past the cutoff should be evicted")
+	}
+}
+
 func TestLoginWrongPassword(t *testing.T) {
 	ms := setupMockStoreWithUser(t, "admin@test.com", "correct-password-123")
 	srv := newTestServer(withStore(ms))
@@ -2366,6 +2811,209 @@ func TestProxyHeaderMerge(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- Substitution proxy tests ---
+
+func TestProxySubstitutionRewritesPathAndInjectsAuth(t *testing.T) {
+	var (
+		sawAuth string
+		sawPath string
+	)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuth = r.Header.Get("Authorization")
+		sawPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
+	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
+	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"basic","username":"TWILIO_ACCOUNT_SID","password":"TWILIO_AUTH_TOKEN"},"substitutions":[{"key":"TWILIO_ACCOUNT_SID","placeholder":"__account_sid__","in":["path"]}]}]`, serviceHost)
+	ms, token, encKey := setupProxyTest(t, services)
+
+	for k, v := range map[string]string{"TWILIO_ACCOUNT_SID": "AC12345", "TWILIO_AUTH_TOKEN": "tok-shh"} {
+		ct, nonce, err := crypto.Encrypt([]byte(v), encKey)
+		if err != nil {
+			t.Fatalf("encrypt %s: %v", k, err)
+		}
+		ms.credentials["root-ns-id:"+k] = &store.Credential{ID: "c-" + k, VaultID: "root-ns-id", Key: k, Ciphertext: ct, Nonce: nonce}
+	}
+
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+	origClient := proxyClient
+	proxyClient = upstream.Client()
+	defer func() { proxyClient = origClient }()
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/2010-04-01/Accounts/__account_sid__/Messages.json", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("AC12345:tok-shh"))
+	if sawAuth != want {
+		t.Fatalf("upstream Authorization: got %q want %q", sawAuth, want)
+	}
+	if sawPath != "/2010-04-01/Accounts/AC12345/Messages.json" {
+		t.Fatalf("upstream path: got %q", sawPath)
+	}
+}
+
+func TestProxySubstitutionScopingSkipsUndeclaredSurfaces(t *testing.T) {
+	var (
+		sawPath  string
+		sawQuery string
+		sawEcho  string
+	)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath = r.URL.Path
+		sawQuery = r.URL.RawQuery
+		sawEcho = r.Header.Get("X-Echo")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
+	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
+	// Substitution declared only for "path".
+	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"},"substitutions":[{"key":"ACCOUNT_SID","placeholder":"__account_sid__","in":["path"]}]}]`, serviceHost)
+	ms, token, encKey := setupProxyTest(t, services)
+	ct, nonce, _ := crypto.Encrypt([]byte("AC-REAL"), encKey)
+	ms.credentials["root-ns-id:ACCOUNT_SID"] = &store.Credential{ID: "c-sid", VaultID: "root-ns-id", Key: "ACCOUNT_SID", Ciphertext: ct, Nonce: nonce}
+
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+	origClient := proxyClient
+	proxyClient = upstream.Client()
+	defer func() { proxyClient = origClient }()
+
+	// Agent embeds the placeholder in path (declared), query (NOT declared),
+	// and a header (NOT declared). Only the path should be rewritten.
+	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/items/__account_sid__?id=__account_sid__", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Echo", "__account_sid__")
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if sawPath != "/items/AC-REAL" {
+		t.Fatalf("path should be rewritten, got %q", sawPath)
+	}
+	if sawQuery != "id=__account_sid__" {
+		t.Fatalf("query is not in `in:`, must reach upstream untouched, got %q", sawQuery)
+	}
+	if sawEcho != "__account_sid__" {
+		t.Fatalf("header is not in `in:`, must reach upstream untouched, got %q", sawEcho)
+	}
+}
+
+func TestProxySubstitutionMissingCredentialReturns502(t *testing.T) {
+	upstreamHit := false
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
+	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
+	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"},"substitutions":[{"key":"MISSING_KEY","placeholder":"__sid__","in":["path"]}]}]`, serviceHost)
+	ms, token, encKey := setupProxyTest(t, services)
+
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+	origClient := proxyClient
+	proxyClient = upstream.Client()
+	defer func() { proxyClient = origClient }()
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/items/__sid__", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for missing substitution credential, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if upstreamHit {
+		t.Fatal("upstream must not be contacted when substitution credential is missing")
+	}
+}
+
+func TestProxySubstitutionRewritesQuery(t *testing.T) {
+	var sawQuery string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
+	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
+	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"},"substitutions":[{"key":"LEGACY_API_KEY","placeholder":"__api_key__","in":["query"]}]}]`, serviceHost)
+	ms, token, encKey := setupProxyTest(t, services)
+	ct, nonce, _ := crypto.Encrypt([]byte("real-key&with=specials"), encKey)
+	ms.credentials["root-ns-id:LEGACY_API_KEY"] = &store.Credential{ID: "c-key", VaultID: "root-ns-id", Key: "LEGACY_API_KEY", Ciphertext: ct, Nonce: nonce}
+
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+	origClient := proxyClient
+	proxyClient = upstream.Client()
+	defer func() { proxyClient = origClient }()
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/data?api_key=__api_key__&format=json", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	parsed, err := url.ParseQuery(sawQuery)
+	if err != nil {
+		t.Fatalf("parse query %q: %v", sawQuery, err)
+	}
+	if parsed.Get("api_key") != "real-key&with=specials" {
+		t.Fatalf("expected query api_key to round-trip the encoded secret, got %q", parsed.Get("api_key"))
+	}
+	if parsed.Get("format") != "json" {
+		t.Fatalf("expected non-substituted query param preserved, got %q", parsed.Get("format"))
+	}
+}
+
+func TestProxySubstitutionRewritesHeader(t *testing.T) {
+	var sawTenant string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawTenant = r.Header.Get("X-Tenant")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
+	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
+	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"},"substitutions":[{"key":"TENANT_ID","placeholder":"__tenant__","in":["header"]}]}]`, serviceHost)
+	ms, token, encKey := setupProxyTest(t, services)
+	ct, nonce, _ := crypto.Encrypt([]byte("acme-co"), encKey)
+	ms.credentials["root-ns-id:TENANT_ID"] = &store.Credential{ID: "c-tenant", VaultID: "root-ns-id", Key: "TENANT_ID", Ciphertext: ct, Nonce: nonce}
+
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+	origClient := proxyClient
+	proxyClient = upstream.Client()
+	defer func() { proxyClient = origClient }()
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/items", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Tenant", "tenant=__tenant__")
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if sawTenant != "tenant=acme-co" {
+		t.Fatalf("expected header rewritten to 'tenant=acme-co', got %q", sawTenant)
 	}
 }
 
