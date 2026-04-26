@@ -231,6 +231,15 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// use the MITM ingress, where Proxy-Authorization is broker-scoped.
 	brokercore.ApplyInjection(r.Header, outReq.Header, inject, "Authorization")
 
+	// Apply any declared substitutions to the outbound URL and headers.
+	// Surfaces not listed in the substitution's `in:` are not scanned —
+	// scope is the security boundary.
+	if err := brokercore.ApplySubstitutions(outReq.URL, outReq.Header, inject.Substitutions); err != nil {
+		proxyError(w, http.StatusBadGateway, "substitution_error", "Substitution failed before forwarding")
+		emit(http.StatusBadGateway, "substitution_error")
+		return
+	}
+
 	// 9. Forward request to target.
 	resp, err := proxyClient.Do(outReq)
 	if err != nil {

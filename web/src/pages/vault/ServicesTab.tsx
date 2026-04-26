@@ -12,7 +12,13 @@ import Input from "../../components/Input";
 import FormField from "../../components/FormField";
 import Select from "../../components/Select";
 import Toggle from "../../components/Toggle";
-import { type Auth, AUTH_TYPE_LABELS } from "../../components/ProposalPreview";
+import {
+  type Auth,
+  type Substitution,
+  AUTH_TYPE_LABELS,
+  SUBSTITUTION_SURFACES,
+  DEFAULT_SUBSTITUTION_SURFACES,
+} from "../../components/ProposalPreview";
 import { apiFetch, apiRequest } from "../../lib/api";
 
 interface Service {
@@ -20,7 +26,10 @@ interface Service {
   description?: string;
   enabled?: boolean;
   auth: Auth;
+  substitutions?: Substitution[];
 }
+
+type SubstitutionSurface = (typeof SUBSTITUTION_SURFACES)[number];
 
 interface CatalogTemplate {
   id: string;
@@ -171,9 +180,15 @@ export default function ServicesTab() {
       header: "Auth",
       render: (service) => {
         const label = AUTH_TYPE_LABELS[service.auth?.type] || service.auth?.type || "\u2014";
+        const subCount = service.substitutions?.length ?? 0;
         return (
           <div className="text-sm text-text">
             {label}
+            {subCount > 0 && (
+              <span className="ml-2 text-xs text-text-muted">
+                + {subCount} substitution{subCount === 1 ? "" : "s"}
+              </span>
+            )}
           </div>
         );
       },
@@ -346,6 +361,18 @@ function ServiceModal({
     return [{ name: "", value: "" }];
   });
 
+  // Substitution editor state — independent of auth type so it composes
+  // with all of them (including passthrough).
+  const [subs, setSubs] = useState<Substitution[]>(() =>
+    initial?.substitutions
+      ? initial.substitutions.map((s) => ({
+          key: s.key,
+          placeholder: s.placeholder,
+          in: s.in && s.in.length > 0 ? [...s.in] : [...DEFAULT_SUBSTITUTION_SURFACES],
+        }))
+      : []
+  );
+
   // Snapshot the catalog at open time so a fetch resolving mid-form doesn't
   // shift the preset picker into view above fields the user is already editing.
   const [catalogSnapshot] = useState<CatalogTemplate[]>(() => catalog);
@@ -363,6 +390,7 @@ function ServiceModal({
     setApiKeyHeader("");
     setApiKeyPrefix("");
     setCustomHeaders([{ name: "", value: "" }]);
+    setSubs([]);
   }
 
   function applyPreset(id: string) {
@@ -435,8 +463,17 @@ function ServiceModal({
     }
   }
 
+  const cleanedSubs = subs
+    .map((s) => ({
+      key: s.key.trim(),
+      placeholder: s.placeholder.trim(),
+      in: s.in && s.in.length > 0 ? s.in : DEFAULT_SUBSTITUTION_SURFACES,
+    }))
+    .filter((s) => s.key !== "" || s.placeholder !== "");
+  const subsValid = cleanedSubs.every((s) => s.key !== "" && s.placeholder !== "");
+
   async function handleSubmit() {
-    if (!canSubmit) return;
+    if (!canSubmit || !subsValid) return;
     setSaving(true);
     setError("");
     try {
@@ -445,6 +482,7 @@ function ServiceModal({
         ...(description.trim() && { description: description.trim() }),
         ...(enabled ? {} : { enabled: false }),
         auth: buildAuth(),
+        ...(cleanedSubs.length > 0 && { substitutions: cleanedSubs }),
       };
       await onSave(service);
     } catch (err: unknown) {
@@ -467,7 +505,7 @@ function ServiceModal({
           </Button>
           <Button
             onClick={handleSubmit}
-            disabled={!canSubmit}
+            disabled={!canSubmit || !subsValid}
             loading={saving}
           >
             {initial ? "Save" : "Add service"}
@@ -683,6 +721,82 @@ function ServiceModal({
             </button>
           </div>
         )}
+
+        <FormField
+          label="URL substitutions"
+          helperText="Optional. Lets the broker rewrite a placeholder string in the request path, query, or header with a stored credential value. Surfaces not declared in 'in' are not scanned."
+        >
+          <div className="space-y-3">
+            {subs.map((sub, i) => (
+                <div key={i} className="rounded-lg border border-border bg-bg p-3 space-y-2">
+                  <div className="flex gap-3 items-center">
+                    <Input
+                      placeholder="Placeholder, e.g. __account_sid__"
+                      value={sub.placeholder}
+                      onChange={(e) =>
+                        setSubs((prev) =>
+                          prev.map((s, j) => (j === i ? { ...s, placeholder: e.target.value } : s))
+                        )
+                      }
+                    />
+                    <span className="text-text-muted">→</span>
+                    <Input
+                      placeholder="Credential key, e.g. TWILIO_ACCOUNT_SID"
+                      value={sub.key}
+                      onChange={(e) =>
+                        setSubs((prev) =>
+                          prev.map((s, j) => (j === i ? { ...s, key: e.target.value } : s))
+                        )
+                      }
+                    />
+                    <button
+                      onClick={() => setSubs((prev) => prev.filter((_, j) => j !== i))}
+                      className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-lg text-text-dim hover:text-danger hover:bg-danger-bg transition-colors"
+                      aria-label="Remove substitution"
+                    >
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div className="flex gap-3 items-center text-xs text-text-muted">
+                    <span>Allowed in:</span>
+                    {SUBSTITUTION_SURFACES.map((surface) => {
+                      const checked = (sub.in ?? DEFAULT_SUBSTITUTION_SURFACES).includes(surface);
+                      return (
+                        <label key={surface} className="inline-flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              const want = e.target.checked;
+                              setSubs((prev) =>
+                                prev.map((s, j) => {
+                                  if (j !== i) return s;
+                                  const current = new Set<SubstitutionSurface>((s.in ?? DEFAULT_SUBSTITUTION_SURFACES) as SubstitutionSurface[]);
+                                  if (want) current.add(surface);
+                                  else current.delete(surface);
+                                  return { ...s, in: SUBSTITUTION_SURFACES.filter((sf) => current.has(sf)) };
+                                })
+                              );
+                            }}
+                          />
+                          <span className="font-mono">{surface}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+            ))}
+            <button
+              onClick={() => setSubs((prev) => [...prev, { key: "", placeholder: "", in: [...DEFAULT_SUBSTITUTION_SURFACES] }])}
+              className="text-sm font-medium text-primary hover:text-primary-hover transition-colors"
+            >
+              + Add substitution
+            </button>
+          </div>
+        </FormField>
 
         {error && <ErrorBanner message={error} />}
       </div>

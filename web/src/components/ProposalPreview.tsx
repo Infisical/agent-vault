@@ -11,12 +11,24 @@ export interface Auth {
   headers?: Record<string, string>;
 }
 
+export interface Substitution {
+  key: string;
+  placeholder: string;
+  in?: string[];
+}
+
+export const SUBSTITUTION_SURFACES = ["path", "query", "header"] as const;
+// Mutable-typed so callers can spread directly into Substitution.in
+// state. Treat as the source-of-truth default — do not push/splice.
+export const DEFAULT_SUBSTITUTION_SURFACES: string[] = ["path", "query"];
+
 export interface Service {
   action: string;
   host: string;
   description?: string;
   enabled?: boolean;
   auth?: Auth;
+  substitutions?: Substitution[];
 }
 
 export interface CredentialSlot {
@@ -97,6 +109,32 @@ function AuthDisplay({ auth }: { auth: Auth }) {
             ))}
           </div>
         )}
+    </div>
+  );
+}
+
+function SubstitutionsDisplay({ subs }: { subs: Substitution[] }) {
+  return (
+    <div className="mt-2 pt-2 border-t border-border">
+      <div className="text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-1.5">
+        URL substitutions
+      </div>
+      <p className="text-xs text-text-muted leading-relaxed mb-1.5">
+        The broker rewrites the placeholder string with the credential value
+        only in the surfaces listed below. Anywhere else, the literal string
+        passes through unmodified.
+      </p>
+      {subs.map((sub, i) => {
+        const surfaces = sub.in && sub.in.length > 0 ? sub.in : DEFAULT_SUBSTITUTION_SURFACES;
+        return (
+          <div key={i} className="flex items-start gap-1.5 text-xs font-mono leading-relaxed">
+            <span className="text-text break-all">{sub.placeholder}</span>
+            <span className="text-text-muted">→</span>
+            <span className="text-text break-all">{sub.key}</span>
+            <span className="text-text-muted">in: [{surfaces.join(", ")}]</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -190,6 +228,9 @@ export default function ProposalPreview({ data }: { data: ProposalData }) {
                   </div>
                 )}
                 {service.auth && <AuthDisplay auth={service.auth} />}
+                {service.substitutions && service.substitutions.length > 0 && (
+                  <SubstitutionsDisplay subs={service.substitutions} />
+                )}
               </div>
             ))}
           </div>

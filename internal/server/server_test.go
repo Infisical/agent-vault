@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -2809,6 +2810,135 @@ func TestProxyHeaderMerge(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- Substitution proxy tests ---
+
+func TestProxySubstitutionRewritesPathAndInjectsAuth(t *testing.T) {
+	var (
+		sawAuth string
+		sawPath string
+	)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuth = r.Header.Get("Authorization")
+		sawPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
+	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
+	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"basic","username":"TWILIO_ACCOUNT_SID","password":"TWILIO_AUTH_TOKEN"},"substitutions":[{"key":"TWILIO_ACCOUNT_SID","placeholder":"__account_sid__","in":["path"]}]}]`, serviceHost)
+	ms, token, encKey := setupProxyTest(t, services)
+
+	for k, v := range map[string]string{"TWILIO_ACCOUNT_SID": "AC12345", "TWILIO_AUTH_TOKEN": "tok-shh"} {
+		ct, nonce, err := crypto.Encrypt([]byte(v), encKey)
+		if err != nil {
+			t.Fatalf("encrypt %s: %v", k, err)
+		}
+		ms.credentials["root-ns-id:"+k] = &store.Credential{ID: "c-" + k, VaultID: "root-ns-id", Key: k, Ciphertext: ct, Nonce: nonce}
+	}
+
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+	origClient := proxyClient
+	proxyClient = upstream.Client()
+	defer func() { proxyClient = origClient }()
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/2010-04-01/Accounts/__account_sid__/Messages.json", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("AC12345:tok-shh"))
+	if sawAuth != want {
+		t.Fatalf("upstream Authorization: got %q want %q", sawAuth, want)
+	}
+	if sawPath != "/2010-04-01/Accounts/AC12345/Messages.json" {
+		t.Fatalf("upstream path: got %q", sawPath)
+	}
+}
+
+func TestProxySubstitutionScopingSkipsUndeclaredSurfaces(t *testing.T) {
+	var (
+		sawPath  string
+		sawQuery string
+		sawEcho  string
+	)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath = r.URL.Path
+		sawQuery = r.URL.RawQuery
+		sawEcho = r.Header.Get("X-Echo")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
+	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
+	// Substitution declared only for "path".
+	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"},"substitutions":[{"key":"ACCOUNT_SID","placeholder":"__account_sid__","in":["path"]}]}]`, serviceHost)
+	ms, token, encKey := setupProxyTest(t, services)
+	ct, nonce, _ := crypto.Encrypt([]byte("AC-REAL"), encKey)
+	ms.credentials["root-ns-id:ACCOUNT_SID"] = &store.Credential{ID: "c-sid", VaultID: "root-ns-id", Key: "ACCOUNT_SID", Ciphertext: ct, Nonce: nonce}
+
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+	origClient := proxyClient
+	proxyClient = upstream.Client()
+	defer func() { proxyClient = origClient }()
+
+	// Agent embeds the placeholder in path (declared), query (NOT declared),
+	// and a header (NOT declared). Only the path should be rewritten.
+	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/items/__account_sid__?id=__account_sid__", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Echo", "__account_sid__")
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if sawPath != "/items/AC-REAL" {
+		t.Fatalf("path should be rewritten, got %q", sawPath)
+	}
+	if sawQuery != "id=__account_sid__" {
+		t.Fatalf("query is not in `in:`, must reach upstream untouched, got %q", sawQuery)
+	}
+	if sawEcho != "__account_sid__" {
+		t.Fatalf("header is not in `in:`, must reach upstream untouched, got %q", sawEcho)
+	}
+}
+
+func TestProxySubstitutionMissingCredentialReturns502(t *testing.T) {
+	upstreamHit := false
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
+	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
+	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"},"substitutions":[{"key":"MISSING_KEY","placeholder":"__sid__","in":["path"]}]}]`, serviceHost)
+	ms, token, encKey := setupProxyTest(t, services)
+
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+	origClient := proxyClient
+	proxyClient = upstream.Client()
+	defer func() { proxyClient = origClient }()
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/items/__sid__", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for missing substitution credential, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if upstreamHit {
+		t.Fatal("upstream must not be contacted when substitution credential is missing")
 	}
 }
 

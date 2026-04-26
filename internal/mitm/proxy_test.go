@@ -445,6 +445,105 @@ func TestMITMRejectsNonConnectRequests(t *testing.T) {
 	}
 }
 
+func TestMITMSubstitutionRewritesPath(t *testing.T) {
+	var sawPath, sawQuery, sawAuth string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath = r.URL.Path
+		sawQuery = r.URL.RawQuery
+		sawAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{
+			Headers: map[string]string{"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("AC12345:tok-shh"))},
+			Substitutions: []brokercore.ResolvedSubstitution{{
+				Placeholder: "__account_sid__",
+				Value:       "AC12345",
+				In:          []string{"path"},
+			}},
+		}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+
+	client := newTrustingClient(proxyURL, url.User("av_sess_ok"), clientRoots)
+
+	// Agent embeds placeholder in path AND query — only path is in `in:`,
+	// so the query token must reach upstream untouched.
+	req, err := http.NewRequest("GET", upstream.URL+"/2010-04-01/Accounts/__account_sid__/Messages.json?id=__account_sid__", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if sawPath != "/2010-04-01/Accounts/AC12345/Messages.json" {
+		t.Fatalf("upstream path: got %q", sawPath)
+	}
+	if sawQuery != "id=__account_sid__" {
+		t.Fatalf("query is not in `in:`, must reach upstream untouched: got %q", sawQuery)
+	}
+	if !strings.HasPrefix(sawAuth, "Basic ") {
+		t.Fatalf("auth header should be injected: got %q", sawAuth)
+	}
+}
+
+func TestMITMSubstitutionCaseSensitive(t *testing.T) {
+	var sawPath string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{
+			Substitutions: []brokercore.ResolvedSubstitution{{
+				Placeholder: "__account_sid__",
+				Value:       "AC12345",
+				In:          []string{"path"},
+			}},
+			Passthrough: true,
+		}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+
+	client := newTrustingClient(proxyURL, url.User("av_sess_ok"), clientRoots)
+	// Uppercase placeholder should NOT match the lowercase declaration.
+	req, _ := http.NewRequest("GET", upstream.URL+"/items/__ACCOUNT_SID__", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if !strings.Contains(sawPath, "__ACCOUNT_SID__") {
+		t.Fatalf("expected uppercase placeholder to pass through unmodified, got %q", sawPath)
+	}
+}
+
 func TestIsValidHost(t *testing.T) {
 	cases := []struct {
 		in   string

@@ -78,5 +78,9 @@ func toBrokerService(p Service) broker.Service {
 	if p.Auth != nil {
 		svc.Auth = *p.Auth
 	}
+	if len(p.Substitutions) > 0 {
+		svc.Substitutions = make([]broker.Substitution, len(p.Substitutions))
+		copy(svc.Substitutions, p.Substitutions)
+	}
 	return svc
 }

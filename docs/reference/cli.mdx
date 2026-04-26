@@ -463,6 +463,8 @@ description: "Complete reference for all Agent Vault CLI commands."
     The `passthrough` auth type accepts no credential flags; Agent Vault allowlists the host and forwards the client's request headers unchanged, stripping only hop-by-hop and broker-scoped headers (`X-Vault`, `Proxy-Authorization`).
 
     New services are **enabled by default**. Pass `--disabled` to create the service in a disabled state, or use `agent-vault vault service disable <host>` after creation.
+
+    URL [substitutions](/learn/services#substitutions) are file-only — there are no flags. Configure them under the `substitutions:` block of a service entry in a YAML file passed via `-f`.
   </Accordion>
 
   <Accordion title="agent-vault vault service enable">
@@ -634,6 +636,8 @@ description: "Complete reference for all Agent Vault CLI commands."
     # JSON file: complex multi-service proposal
     agent-vault vault proposal create -f proposal.json
     ```
+
+    URL [substitutions](/learn/services#substitutions) are JSON-only — there are no flags. Add a `substitutions` array under the relevant `services[]` entry in the file passed via `-f`.
   </Accordion>
 
   <Accordion title="agent-vault vault proposal approve">

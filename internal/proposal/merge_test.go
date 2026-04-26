@@ -177,3 +177,45 @@ func TestMergeServicesBasicAuth(t *testing.T) {
 		t.Fatalf("expected username ASHBY_KEY, got %s", merged[0].Auth.Username)
 	}
 }
+
+func TestMergeServicesCopiesSubstitutions(t *testing.T) {
+	proposed := []Service{{
+		Action: ActionSet,
+		Host:   "api.twilio.com",
+		Auth:   &broker.Auth{Type: "basic", Username: "TWILIO_ACCOUNT_SID", Password: "TWILIO_AUTH_TOKEN"},
+		Substitutions: []broker.Substitution{
+			{Key: "TWILIO_ACCOUNT_SID", Placeholder: "__account_sid__", In: []string{"path"}},
+		},
+	}}
+	merged, _ := MergeServices(nil, proposed)
+	if len(merged) != 1 || len(merged[0].Substitutions) != 1 {
+		t.Fatalf("expected 1 substitution carried through, got %+v", merged)
+	}
+	if merged[0].Substitutions[0].Placeholder != "__account_sid__" {
+		t.Fatalf("expected placeholder copied, got %+v", merged[0].Substitutions[0])
+	}
+	// Mutating proposed must not affect merged (defensive copy).
+	proposed[0].Substitutions[0].Placeholder = "__mutated__"
+	if merged[0].Substitutions[0].Placeholder != "__account_sid__" {
+		t.Fatal("merged service substitution aliased the proposal slice")
+	}
+}
+
+func TestMergeServicesEnableOnlyPreservesSubstitutions(t *testing.T) {
+	on := false
+	existing := []broker.Service{{
+		Host: "api.twilio.com",
+		Auth: broker.Auth{Type: "basic", Username: "TWILIO_ACCOUNT_SID", Password: "TWILIO_AUTH_TOKEN"},
+		Substitutions: []broker.Substitution{
+			{Key: "TWILIO_ACCOUNT_SID", Placeholder: "__account_sid__", In: []string{"path"}},
+		},
+	}}
+	proposed := []Service{{Action: ActionSet, Host: "api.twilio.com", Enabled: &on}}
+	merged, _ := MergeServices(existing, proposed)
+	if len(merged[0].Substitutions) != 1 || merged[0].Substitutions[0].Placeholder != "__account_sid__" {
+		t.Fatalf("expected substitutions preserved on enable-only update, got %+v", merged[0])
+	}
+	if merged[0].Enabled == nil || *merged[0].Enabled != false {
+		t.Fatalf("expected enabled overlay applied, got %+v", merged[0].Enabled)
+	}
+}

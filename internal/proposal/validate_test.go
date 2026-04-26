@@ -291,3 +291,88 @@ func TestValidateCredentialRefsBasicAuth(t *testing.T) {
 		t.Fatalf("expected valid, got %v", err)
 	}
 }
+
+// --- Substitution proposal tests ---
+
+func TestValidateProposalSubstitutionWithAuth(t *testing.T) {
+	services := []Service{{
+		Action: ActionSet,
+		Host:   "api.twilio.com",
+		Auth:   &broker.Auth{Type: "basic", Username: "TWILIO_ACCOUNT_SID", Password: "TWILIO_AUTH_TOKEN"},
+		Substitutions: []broker.Substitution{
+			{Key: "TWILIO_ACCOUNT_SID", Placeholder: "__account_sid__", In: []string{"path"}},
+		},
+	}}
+	creds := []CredentialSlot{
+		{Action: ActionSet, Key: "TWILIO_ACCOUNT_SID"},
+		{Action: ActionSet, Key: "TWILIO_AUTH_TOKEN"},
+	}
+	if err := Validate(services, creds); err != nil {
+		t.Fatalf("expected valid, got %v", err)
+	}
+}
+
+func TestValidateProposalSubstitutionWithoutAuth(t *testing.T) {
+	on := true
+	services := []Service{{
+		Action:  ActionSet,
+		Host:    "api.twilio.com",
+		Enabled: &on,
+		Substitutions: []broker.Substitution{
+			{Key: "TWILIO_ACCOUNT_SID", Placeholder: "__account_sid__", In: []string{"path"}},
+		},
+	}}
+	err := Validate(services, nil)
+	if err == nil || !strings.Contains(err.Error(), "substitutions require auth") {
+		t.Fatalf("expected error coupling substitutions to auth, got %v", err)
+	}
+}
+
+func TestValidateProposalSubstitutionInvalidPlaceholder(t *testing.T) {
+	services := []Service{{
+		Action: ActionSet,
+		Host:   "api.twilio.com",
+		Auth:   bearerAuth("TWILIO_ACCOUNT_SID"),
+		Substitutions: []broker.Substitution{
+			{Key: "TWILIO_ACCOUNT_SID", Placeholder: "account_sid", In: []string{"path"}},
+		},
+	}}
+	creds := []CredentialSlot{{Action: ActionSet, Key: "TWILIO_ACCOUNT_SID"}}
+	err := Validate(services, creds)
+	if err == nil || !strings.Contains(err.Error(), "delimiter") {
+		t.Fatalf("expected delimiter error for bare-word placeholder, got %v", err)
+	}
+}
+
+func TestValidateProposalSubstitutionRequiresCredSlot(t *testing.T) {
+	services := []Service{{
+		Action: ActionSet,
+		Host:   "api.twilio.com",
+		Auth:   bearerAuth("TWILIO_AUTH_TOKEN"),
+		Substitutions: []broker.Substitution{
+			{Key: "TWILIO_ACCOUNT_SID", Placeholder: "__account_sid__", In: []string{"path"}},
+		},
+	}}
+	creds := []CredentialSlot{{Action: ActionSet, Key: "TWILIO_AUTH_TOKEN"}}
+	if err := Validate(services, creds); err != nil {
+		t.Fatalf("intra-proposal Validate should accept the slot via the auth ref check; got %v", err)
+	}
+	if err := ValidateCredentialRefs(services, creds, nil); err == nil || !strings.Contains(err.Error(), "TWILIO_ACCOUNT_SID") {
+		t.Fatalf("expected ValidateCredentialRefs to flag missing substitution credential, got %v", err)
+	}
+}
+
+func TestValidateCredentialRefsSubstitutionResolvesFromExisting(t *testing.T) {
+	services := []Service{{
+		Action: ActionSet,
+		Host:   "api.twilio.com",
+		Auth:   bearerAuth("TWILIO_AUTH_TOKEN"),
+		Substitutions: []broker.Substitution{
+			{Key: "TWILIO_ACCOUNT_SID", Placeholder: "__account_sid__", In: []string{"path"}},
+		},
+	}}
+	creds := []CredentialSlot{{Action: ActionSet, Key: "TWILIO_AUTH_TOKEN"}}
+	if err := ValidateCredentialRefs(services, creds, []string{"TWILIO_ACCOUNT_SID"}); err != nil {
+		t.Fatalf("expected substitution credential to resolve from existing vault keys, got %v", err)
+	}
+}
