@@ -8,7 +8,7 @@ on:
             - "node-sdk/v*.*.*" # version, e.g. 1.0.0
 
 permissions:
-  contents: read   # checkout only; nothing in this job writes to the repo
+  contents: read
   id-token: write  # Required for NPM OIDC auth for releases
 
 defaults:
