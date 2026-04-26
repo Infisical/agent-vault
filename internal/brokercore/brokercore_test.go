@@ -67,6 +67,29 @@ func TestApplyInjection_StripsHopByHop(t *testing.T) {
 	}
 }
 
+func TestApplyInjection_StripsConnectionExtensionHeaders(t *testing.T) {
+	// RFC 7230 §6.1: any header named in the Connection field is
+	// hop-by-hop for that connection and must not be forwarded.
+	src := http.Header{}
+	src.Set("Connection", "X-Custom-Hop, Upgrade")
+	src.Set("X-Custom-Hop", "should-be-stripped")
+	src.Set("Upgrade", "h2c")
+	src.Set("X-Trace-Id", "trace-123")
+
+	dst := http.Header{}
+	ApplyInjection(src, dst, &InjectResult{})
+
+	if dst.Get("X-Custom-Hop") != "" {
+		t.Errorf("X-Custom-Hop named in Connection must be stripped, got %q", dst.Get("X-Custom-Hop"))
+	}
+	if dst.Get("Connection") != "" {
+		t.Errorf("Connection itself must not be forwarded, got %q", dst.Get("Connection"))
+	}
+	if dst.Get("X-Trace-Id") != "trace-123" {
+		t.Errorf("unrelated headers should pass through, X-Trace-Id = %q", dst.Get("X-Trace-Id"))
+	}
+}
+
 func TestApplyInjection_StripsBrokerScoped(t *testing.T) {
 	src := http.Header{}
 	src.Set("X-Vault", "default")

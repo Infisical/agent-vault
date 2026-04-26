@@ -87,8 +87,10 @@ func IsBrokerScopedRequestHeader(name string) bool {
 // Proxy-Authorization), the keys of inject.Headers, and any names in
 // extraStrip (the ingress's session-token header). Pre-stripping
 // inject.Headers keys is what preserves the "injected always wins"
-// security invariant; it is not a perf shortcut. Both ingresses share
-// this so their header handling stays in lockstep.
+// security invariant; it is not a perf shortcut. Per RFC 7230 §6.1,
+// any header named in the client's Connection field is also hop-by-hop
+// for that connection and is stripped. Both ingresses share this so
+// their header handling stays in lockstep.
 func ApplyInjection(src, dst http.Header, inject *InjectResult, extraStrip ...string) {
 	strip := make(map[string]bool, len(extraStrip)+len(inject.Headers))
 	for _, s := range extraStrip {
@@ -96,6 +98,13 @@ func ApplyInjection(src, dst http.Header, inject *InjectResult, extraStrip ...st
 	}
 	for k := range inject.Headers {
 		strip[http.CanonicalHeaderKey(k)] = true
+	}
+	for _, c := range src.Values("Connection") {
+		for _, f := range strings.Split(c, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				strip[http.CanonicalHeaderKey(f)] = true
+			}
+		}
 	}
 	for k, vv := range src {
 		ck := http.CanonicalHeaderKey(k)
