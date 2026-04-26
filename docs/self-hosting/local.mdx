@@ -3,22 +3,18 @@ title: "Linux & macOS"
 description: "Install and run Agent Vault on Linux or macOS using the install script"
 ---
 
+import InstallCommand from "/snippets/install-command.mdx";
+
 ## Install
 
 Auto-detects your OS and architecture, downloads the latest release, and installs. Works for both fresh installs and upgrades.
 
-```bash
-curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | sh
-```
+<InstallCommand />
 
 Supports macOS (Intel + Apple Silicon) and Linux (x86\_64 + ARM64).
 
 <Note>
-  On a successful install the script sends an anonymous ping (OS, architecture, version — nothing else) so we can count installs for the launch. Opt out by placing `AGENT_VAULT_NO_TELEMETRY=1` in front of `sh`, not `curl`:
-
-  ```bash
-  curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | AGENT_VAULT_NO_TELEMETRY=1 sh
-  ```
+  The install script sends an anonymous beacon (OS, architecture, version). Set `AGENT_VAULT_NO_TELEMETRY=1` in front of `sh` to opt out.
 </Note>
 
 Verify the installation:
@@ -121,16 +117,10 @@ See the [CLI reference](/reference/cli#ca) for all `agent-vault ca fetch` flags.
 
 Re-run the same install command — the script detects your existing installation, stops the running server, backs up your database, and installs the latest version:
 
-```bash
-curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | sh
-```
+<InstallCommand />
 
 <Note>
-  On a successful upgrade the script sends the same anonymous ping (OS, architecture, version). Opt out by placing `AGENT_VAULT_NO_TELEMETRY=1` in front of `sh`, not `curl`:
-
-  ```bash
-  curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | AGENT_VAULT_NO_TELEMETRY=1 sh
-  ```
+  The upgrade sends the same anonymous beacon as install. Set `AGENT_VAULT_NO_TELEMETRY=1` in front of `sh` to opt out.
 </Note>
 
 Restart the server afterward:
