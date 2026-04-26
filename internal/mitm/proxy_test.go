@@ -81,7 +81,7 @@ func (f *fakeCredProvider) Inject(_ context.Context, _, targetHost string) (*bro
 func setupProxy(t *testing.T, sr brokercore.SessionResolver, cp brokercore.CredentialProvider) (proxyURL *url.URL, clientRoots *x509.CertPool, p *Proxy) {
 	t.Helper()
 
-	t.Setenv("AGENT_VAULT_NETWORK_MODE", "private")
+	t.Setenv("AGENT_VAULT_ALLOW_PRIVATE_RANGES", "true")
 
 	masterKey := make([]byte, 32)
 	if _, err := rand.Read(masterKey); err != nil {

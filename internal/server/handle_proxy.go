@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -43,16 +44,16 @@ func isValidProxyHost(host string) bool {
 
 // newProxyClient creates an HTTP client for outbound proxy requests.
 // It uses a safe DialContext that blocks connections to forbidden IP ranges
-// based on the AGENT_VAULT_NETWORK_MODE setting.
+// based on AGENT_VAULT_ALLOW_PRIVATE_RANGES and AGENT_VAULT_NETWORK_ALLOWLIST.
 func newProxyClient() *http.Client {
-	mode := netguard.ModeFromEnv()
+	allowPrivate := netguard.AllowPrivateFromEnv()
 	return &http.Client{
 		Timeout: 30 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 		Transport: &http.Transport{
-			DialContext: netguard.SafeDialContext(mode),
+			DialContext: netguard.SafeDialContext(allowPrivate),
 		},
 	}
 }
@@ -243,6 +244,14 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// 9. Forward request to target.
 	resp, err := proxyClient.Do(outReq)
 	if err != nil {
+		// Log the actual error for operators (includes details like TLS failures,
+		// connection refused, DNS errors, etc.) while sending sanitized message to client.
+		s.logger.Debug("upstream request failed",
+			slog.String("vault_id", ns.ID),
+			slog.String("vault_name", ns.Name),
+			slog.String("target_host", targetHost),
+			slog.String("error", err.Error()),
+		)
 		// Sanitize error — do not leak internal IPs or hostnames to the agent.
 		proxyError(w, http.StatusBadGateway, "upstream_error",
 			fmt.Sprintf("Failed to reach %s", targetHost))

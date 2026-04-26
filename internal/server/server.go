@@ -20,6 +20,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/mitm"
+	"github.com/Infisical/agent-vault/internal/netguard"
 	"github.com/Infisical/agent-vault/internal/notify"
 	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/pidfile"
@@ -559,7 +560,7 @@ func limitBody(next http.HandlerFunc) http.HandlerFunc {
 func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string, oauthProviders map[string]oauth.Provider, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
 
-	// Initialize proxy client once (reads AGENT_VAULT_NETWORK_MODE after env is configured).
+	// Initialize proxy client once (reads AGENT_VAULT_ALLOW_PRIVATE_RANGES after env is configured).
 	if proxyClient == nil {
 		proxyClient = newProxyClient()
 	}
@@ -924,28 +925,10 @@ const (
 
 // trustedProxyCIDRs holds parsed CIDR ranges from AGENT_VAULT_TRUSTED_PROXIES.
 // When non-empty, X-Forwarded-For is only trusted if RemoteAddr matches one of these.
-var trustedProxyCIDRs []*net.IPNet
+var trustedProxyCIDRs []net.IPNet
 
 func init() {
-	if raw := os.Getenv("AGENT_VAULT_TRUSTED_PROXIES"); raw != "" {
-		for _, cidr := range strings.Split(raw, ",") {
-			cidr = strings.TrimSpace(cidr)
-			if cidr == "" {
-				continue
-			}
-			// Allow bare IPs (e.g. "10.0.0.1") by appending /32 or /128.
-			if !strings.Contains(cidr, "/") {
-				if strings.Contains(cidr, ":") {
-					cidr += "/128"
-				} else {
-					cidr += "/32"
-				}
-			}
-			if _, ipNet, err := net.ParseCIDR(cidr); err == nil {
-				trustedProxyCIDRs = append(trustedProxyCIDRs, ipNet)
-			}
-		}
-	}
+	trustedProxyCIDRs = netguard.ParseCIDRList(os.Getenv("AGENT_VAULT_TRUSTED_PROXIES"), "AGENT_VAULT_TRUSTED_PROXIES")
 }
 
 // ipKeyer returns a ratelimit.Keyer that keys on the request's client IP

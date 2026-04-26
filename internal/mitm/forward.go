@@ -3,6 +3,7 @@ package mitm
 import (
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"time"
@@ -110,6 +111,13 @@ func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope
 
 		resp, err := p.upstream.RoundTrip(outReq)
 		if err != nil {
+			// Log the actual error for operators while sending generic message to client.
+			p.logger.Debug("upstream request failed",
+				slog.String("vault_id", scope.VaultID),
+				slog.String("vault_name", scope.VaultName),
+				slog.String("target_host", target),
+				slog.String("error", err.Error()),
+			)
 			http.Error(w, "bad gateway", http.StatusBadGateway)
 			emit(http.StatusBadGateway, "upstream_error")
 			return

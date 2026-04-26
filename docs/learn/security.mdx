@@ -79,25 +79,20 @@ All tokens use SHA-256 for fast lookup.
 
 Agent Vault includes a network guard that validates every outbound proxy connection at the IP level, preventing agents from using the proxy to reach internal infrastructure.
 
-### Modes
+### Policy
 
-| Mode | Behavior |
-| ---- | -------- |
-| `public` (default) | Blocks private/reserved IP ranges and cloud metadata endpoints |
-| `private` | Blocks only cloud metadata endpoints (for local/trusted networks) |
-
-Set via `AGENT_VAULT_NETWORK_MODE=private` for local deployments.
+Outbound proxy connections are validated against the resolved IP. By default, every RFC-1918, loopback, link-local, IPv6 ULA, and CGN range is blocked, plus cloud metadata endpoints. Set `AGENT_VAULT_ALLOW_PRIVATE_RANGES=true` for local/trusted deployments where the proxy needs to reach internal services on private IPs. To keep the block on but punch narrow holes for known internal services, set `AGENT_VAULT_NETWORK_ALLOWLIST=10.163.0.0/16,192.168.1.1` (CIDRs or bare IPs, comma-separated). Cloud metadata endpoints stay blocked regardless.
 
 ### Always blocked
 
-Cloud provider metadata endpoints are blocked in both modes to prevent credential theft via SSRF:
+Cloud provider metadata endpoints are blocked unconditionally — including when allowlisted — to prevent credential theft via SSRF:
 
 - `169.254.169.254/32` (AWS, GCP, Azure instance metadata)
 - `fd00:ec2::254/128` (AWS IMDSv2 IPv6)
 
-### Blocked in public mode
+### Blocked when `AGENT_VAULT_ALLOW_PRIVATE_RANGES=false`
 
-RFC-1918 and other reserved ranges are additionally blocked in public mode:
+RFC-1918 and other reserved ranges are additionally blocked under the default policy, unless explicitly allowlisted:
 
 - `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` (private)
 - `127.0.0.0/8`, `::1/128` (loopback)
