@@ -39,7 +39,7 @@ Read by [`install.sh`](https://github.com/Infisical/agent-vault/blob/main/instal
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AGENT_VAULT_NO_TELEMETRY` | (unset) | When set to any non-empty value, skips the anonymous install/upgrade beacon that reports OS, architecture, and version. Must be placed in front of `sh`, not `curl`: `curl -fsSL https://get.agent-vault.dev \| AGENT_VAULT_NO_TELEMETRY=1 sh`. |
+| `AGENT_VAULT_NO_TELEMETRY` | (unset) | When set to any non-empty value, skips the anonymous install/upgrade beacon that reports OS, architecture, and version. Must be placed in front of `sh`, not `curl`: `curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev \| AGENT_VAULT_NO_TELEMETRY=1 sh`. |
 
 ## Email SMTP configuration
 
