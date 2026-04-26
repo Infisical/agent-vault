@@ -13,7 +13,7 @@ Agent Vault ships as a single binary that acts as both a server and CLI client. 
     Works for both fresh installs and upgrades (backs up your database before upgrading).
 
     ```bash
-    curl -fsSL https://get.agent-vault.dev | sh
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | sh
     ```
 
     Supports macOS (Intel + Apple Silicon) and Linux (x86\_64 + ARM64).
@@ -22,7 +22,7 @@ Agent Vault ships as a single binary that acts as both a server and CLI client. 
       On a successful install the script sends an anonymous ping (OS, architecture, version — nothing else) so we can count installs for the launch. Opt out by placing `AGENT_VAULT_NO_TELEMETRY=1` in front of `sh`, not `curl`:
 
       ```bash
-      curl -fsSL https://get.agent-vault.dev | AGENT_VAULT_NO_TELEMETRY=1 sh
+      curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | AGENT_VAULT_NO_TELEMETRY=1 sh
       ```
     </Note>
 
@@ -81,7 +81,7 @@ cosign verify-blob \
     Re-run the same install command — the script detects your existing installation, stops the running server, backs up your database, and installs the latest version:
 
     ```bash
-    curl -fsSL https://get.agent-vault.dev | sh
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | sh
     ```
 
     Restart the server afterward:

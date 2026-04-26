@@ -39,7 +39,7 @@ See the [installation guide](https://docs.agent-vault.dev/installation) for full
 ### Script (macOS / Linux)
 
 ```bash
-curl -fsSL https://get.agent-vault.dev | sh
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | sh
 agent-vault server -d
 ```
 

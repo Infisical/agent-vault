@@ -63,7 +63,7 @@ function InviteOnlyNotice() {
   );
 }
 
-const INSTALL_COMMAND = "curl -fsSL https://get.agent-vault.dev | sh";
+const INSTALL_COMMAND = "curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | sh";
 
 function CommandBlock({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
