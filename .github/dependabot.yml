@@ -32,9 +32,6 @@ updates:
       prefix: "deps"
     cooldown:
       default-days: 7
-      semver-major-days: 14
-      semver-minor-days: 7
-      semver-patch-days: 5
 
   - package-ecosystem: docker
     directory: /internal/isolation/assets
@@ -44,9 +41,6 @@ updates:
       prefix: "deps"
     cooldown:
       default-days: 7
-      semver-major-days: 14
-      semver-minor-days: 7
-      semver-patch-days: 5
 
   - package-ecosystem: github-actions
     directory: /
