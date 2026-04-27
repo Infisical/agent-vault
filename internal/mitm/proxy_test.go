@@ -309,6 +309,12 @@ func TestMITMWebSocketInjectsCredentialsAndPipesFrames(t *testing.T) {
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("status = %d, want 101", resp.StatusCode)
 	}
+	if got := strings.Join(resp.Header.Values("Connection"), ","); strings.Contains(strings.ToLower(got), "close") {
+		t.Fatalf("client Connection header = %q, must not include close", got)
+	}
+	if got := resp.Header.Get("Upgrade"); !strings.EqualFold(got, "websocket") {
+		t.Fatalf("client Upgrade header = %q, want websocket", got)
+	}
 
 	if err := writeWebSocketTextFrame(tlsConn, "ping", true); err != nil {
 		t.Fatalf("write websocket frame: %v", err)

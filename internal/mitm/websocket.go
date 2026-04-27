@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"sync"
 	"time"
@@ -143,24 +145,40 @@ func (p *Proxy) responseHeaderTimeout() time.Duration {
 }
 
 func writeWebSocketSwitchingResponse(w io.Writer, resp *http.Response) error {
-	out := &http.Response{
-		Status:        resp.Status,
-		StatusCode:    resp.StatusCode,
-		Proto:         resp.Proto,
-		ProtoMajor:    resp.ProtoMajor,
-		ProtoMinor:    resp.ProtoMinor,
-		Header:        make(http.Header),
-		ContentLength: -1,
+	proto := resp.Proto
+	if proto == "" {
+		proto = "HTTP/1.1"
 	}
+	status := resp.Status
+	if status == "" {
+		status = fmt.Sprintf("%d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+	}
+	if _, err := fmt.Fprintf(w, "%s %s\r\n", proto, status); err != nil {
+		return err
+	}
+
+	header := make(http.Header)
 	for k, vv := range resp.Header {
 		if !isSafeWebSocketSwitchHeader(k) {
 			continue
 		}
 		for _, v := range vv {
-			out.Header.Add(k, v)
+			header.Add(k, v)
 		}
 	}
-	return out.Write(w)
+	header.Set("Connection", "Upgrade")
+	header.Set("Upgrade", "websocket")
+
+	for k, vv := range header {
+		name := textproto.CanonicalMIMEHeaderKey(k)
+		for _, v := range vv {
+			if _, err := fmt.Fprintf(w, "%s: %s\r\n", name, v); err != nil {
+				return err
+			}
+		}
+	}
+	_, err := io.WriteString(w, "\r\n")
+	return err
 }
 
 func isSafeWebSocketSwitchHeader(name string) bool {
