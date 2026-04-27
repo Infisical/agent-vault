@@ -6179,3 +6179,45 @@ func TestAdminProposalApproveRejects409OnAmbiguousDelete(t *testing.T) {
 		t.Fatalf("expected both Slack services to survive ambiguous delete, got %s", merged)
 	}
 }
+
+// TestSPACatchAllRoutes asserts every top-level frontend route serves index.html.
+func TestSPACatchAllRoutes(t *testing.T) {
+	srv := newTestServer()
+
+	// /invite/{token} is omitted: Go's ServeMux prefers the API handler's
+	// single-segment pattern over the SPA's {token...}, so a 404 there
+	// wouldn't indicate an SPA fallback bug.
+	paths := []string{
+		"/",
+		"/login",
+		"/register",
+		"/forgot-password",
+		"/users",
+		"/agents",
+		"/change-password",
+		"/account/settings",
+		"/manage/settings",
+		"/vaults/",
+		"/vaults/default",
+		"/approve/1",
+	}
+	for _, p := range paths {
+		t.Run(p, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, p, nil)
+			rec := httptest.NewRecorder()
+			srv.httpServer.Handler.ServeHTTP(rec, req)
+			if rec.Code == http.StatusNotFound {
+				t.Fatalf("expected non-404 for SPA route, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	t.Run("unknown path stays 404", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/definitely-not-a-route", nil)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for unregistered path, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
