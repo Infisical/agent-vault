@@ -1,9 +1,9 @@
 //go:build docker_integration
 
-// To run: go test -tags docker_integration ./internal/sandbox/ -run Integration -v
+// To run: go test -tags docker_integration ./internal/isolation/ -run Integration -v
 // Requires: docker daemon, network access to node:22-bookworm-slim +
 // debian apt mirrors on first run (for the image build).
-package sandbox
+package isolation
 
 import (
 	"bytes"
@@ -123,8 +123,8 @@ func TestIntegration_ImageBuildCaches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureImage (first): %v", err)
 	}
-	if !strings.HasPrefix(ref1, sandboxImageRepo+":") {
-		t.Errorf("ref = %q, want %s:<hash>", ref1, sandboxImageRepo)
+	if !strings.HasPrefix(ref1, isolationImageRepo+":") {
+		t.Errorf("ref = %q, want %s:<hash>", ref1, isolationImageRepo)
 	}
 
 	var out2 bytes.Buffer
@@ -140,7 +140,7 @@ func TestIntegration_ImageBuildCaches(t *testing.T) {
 	}
 }
 
-// runInFirewalledContainer runs a one-off bash command inside the sandbox
+// runInFirewalledContainer runs a one-off bash command inside the isolation
 // image on a per-invocation network with init-firewall.sh already applied.
 // The network is cleaned up on test exit.
 func runInFirewalledContainer(t *testing.T, ctx context.Context, shellCmd string) ([]byte, error) {
@@ -175,7 +175,7 @@ func runInFirewalledContainer(t *testing.T, ctx context.Context, shellCmd string
 // routable IPv4 literal must fail because iptables DROPs the SYN.
 func TestIntegration_EgressBlockedEndToEnd(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skip in -short mode; builds the sandbox image")
+		t.Skip("skip in -short mode; builds the isolation image")
 	}
 	requireDocker(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -195,7 +195,7 @@ func TestIntegration_EgressBlockedEndToEnd(t *testing.T) {
 }
 
 // TestIntegration_EgressBlocked_Bypasses is the "bypasses the threat
-// model actually cares about" suite. A non-cooperative sandbox has to
+// model actually cares about" suite. A non-cooperative isolation has to
 // block malicious escape attempts, not just well-behaved clients — each
 // case probes a different channel a compromised agent might try.
 //
@@ -203,7 +203,7 @@ func TestIntegration_EgressBlockedEndToEnd(t *testing.T) {
 // BLOCKED (firewall held; test passes).
 func TestIntegration_EgressBlocked_Bypasses(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skip in -short mode; builds the sandbox image")
+		t.Skip("skip in -short mode; builds the isolation image")
 	}
 	requireDocker(t)
 
@@ -255,7 +255,7 @@ func TestIntegration_EgressBlocked_Bypasses(t *testing.T) {
 // threat model is wrong.
 func TestIntegration_EntrypointDropsToClaudeUser(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skip in -short mode; builds the sandbox image")
+		t.Skip("skip in -short mode; builds the isolation image")
 	}
 	requireDocker(t)
 

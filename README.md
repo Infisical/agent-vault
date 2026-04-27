@@ -88,15 +88,15 @@ agent-vault vault run -- opencode
 
 The agent calls APIs normally (e.g. `fetch("https://api.github.com/...")`). Agent Vault intercepts the request, injects the credential, and forwards it upstream. The agent never sees secrets.
 
-For **non-cooperative** sandboxing — where the child physically cannot reach anything except the Agent Vault proxy, regardless of what it tries — launch it in a Docker container with egress locked down by iptables:
+For **non-cooperative** isolation — where the child physically cannot reach anything except the Agent Vault proxy, regardless of what it tries — launch it in a Docker container with egress locked down by iptables:
 
 ```bash
-agent-vault run --sandbox=container --share-agent-dir -- claude
+agent-vault run --isolation=container --share-agent-dir -- claude
 ```
 
-`--share-agent-dir` bind-mounts your host's `~/.claude` into the container so the sandboxed agent reuses your existing login. Currently Claude-only; support for other agents is coming soon.
+`--share-agent-dir` bind-mounts your host's `~/.claude` into the container so the agent reuses your existing login. Currently Claude-only; support for other agents is coming soon.
 
-See [Container sandbox](https://docs.agent-vault.dev/guides/container-sandbox) for the threat model and flags.
+See [Container isolation](https://docs.agent-vault.dev/guides/container-isolation) for the threat model and flags.
 
 ### SDK — sandboxed agents (Docker, Daytona, E2B)
 

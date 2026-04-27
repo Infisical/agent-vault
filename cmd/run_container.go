@@ -17,21 +17,21 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/Infisical/agent-vault/internal/sandbox"
+	"github.com/Infisical/agent-vault/internal/isolation"
 )
 
-// containerOnlyFlags are no-ops in process mode. processOnlyFlags are
+// containerOnlyFlags are no-ops in host mode. hostOnlyFlags are
 // no-ops in container mode (where MITM is always on, enforced by the
 // iptables lockdown). Either direction is a foot-gun if accepted
 // silently — reject in both.
 var (
 	containerOnlyFlags = []string{"image", "mount", "keep", "no-firewall", "home-volume-shared", "share-agent-dir"}
-	processOnlyFlags   = []string{"no-mitm"}
+	hostOnlyFlags      = []string{"no-mitm"}
 )
 
 // validateContainerFlagCombos enforces mutual-exclusion between container-mode
 // flags that would otherwise both try to own /home/claude/.claude. Split from
-// validateSandboxFlagConflicts because the "which mode wants which flag"
+// validateIsolationFlagConflicts because the "which mode wants which flag"
 // axis and the "these two flags can't coexist" axis are independent.
 func validateContainerFlagCombos(cmd *cobra.Command) error {
 	homeShared, _ := cmd.Flags().GetBool("home-volume-shared")
@@ -42,12 +42,12 @@ func validateContainerFlagCombos(cmd *cobra.Command) error {
 	return nil
 }
 
-func validateSandboxFlagConflicts(cmd *cobra.Command, mode SandboxMode) error {
+func validateIsolationFlagConflicts(cmd *cobra.Command, mode IsolationMode) error {
 	var disallowed []string
 	var otherMode string
-	if mode == SandboxContainer {
-		disallowed = processOnlyFlags
-		otherMode = "process"
+	if mode == IsolationContainer {
+		disallowed = hostOnlyFlags
+		otherMode = "host"
 	} else {
 		disallowed = containerOnlyFlags
 		otherMode = "container"
@@ -57,7 +57,7 @@ func validateSandboxFlagConflicts(cmd *cobra.Command, mode SandboxMode) error {
 		if f == nil || !f.Changed {
 			continue
 		}
-		return fmt.Errorf("--%s requires --sandbox=%s", name, otherMode)
+		return fmt.Errorf("--%s requires --isolation=%s", name, otherMode)
 	}
 	return nil
 }
@@ -66,10 +66,10 @@ func validateSandboxFlagConflicts(cmd *cobra.Command, mode SandboxMode) error {
 // egress locked to the agent-vault proxy via iptables.
 func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault string) error {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
-		return fmt.Errorf("--sandbox=container: only linux and darwin are supported in v1 (got %s)", runtime.GOOS)
+		return fmt.Errorf("--isolation=container: only linux and darwin are supported in v1 (got %s)", runtime.GOOS)
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
-		return errors.New("--sandbox=container: `docker` not found in PATH")
+		return errors.New("--isolation=container: `docker` not found in PATH")
 	}
 
 	// Validate flag combos + set up host-side state for --share-agent-dir
@@ -109,7 +109,7 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 		}
 		_ = f.Close()
 		// macOS stores auth in Keychain, not on disk — bridge it into
-		// the file Linux Claude reads inside the sandbox.
+		// the file Linux Claude reads inside the container.
 		populateClaudeCredentialsFromKeychain(hostAgentDir)
 		// Docker Desktop on macOS translates UIDs through its hypervisor,
 		// so HOST_UID remapping is Linux-only.
@@ -126,18 +126,18 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 
 	// Housekeeping: trim resources leaked by crashed runs before we
 	// create new ones. All best-effort.
-	sandbox.PruneHostCAFiles()
-	_ = sandbox.PruneStaleNetworks(ctx, sandbox.DefaultPruneGrace)
-	_ = sandbox.PruneStaleVolumes(ctx)
+	isolation.PruneHostCAFiles()
+	_ = isolation.PruneStaleNetworks(ctx, isolation.DefaultPruneGrace)
+	_ = isolation.PruneStaleVolumes(ctx)
 
 	// Pull the MITM CA from the server. Container mode always routes
-	// through MITM — --no-mitm is a process-mode-only escape hatch.
+	// through MITM — --no-mitm is a host-mode-only escape hatch.
 	pem, mitmPort, mitmEnabled, mitmTLS, err := fetchMITMCA(addr)
 	if err != nil {
 		return fmt.Errorf("fetch MITM CA: %w", err)
 	}
 	if !mitmEnabled {
-		return errors.New("--sandbox=container requires the MITM proxy; server has it disabled")
+		return errors.New("--isolation=container requires the MITM proxy; server has it disabled")
 	}
 	if mitmPort == 0 {
 		mitmPort = DefaultMITMPort
@@ -152,17 +152,17 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 		}
 	}
 
-	sessionID, err := sandbox.NewSessionID()
+	sessionID, err := isolation.NewSessionID()
 	if err != nil {
 		return err
 	}
 
-	hostCAPath, err := sandbox.WriteHostCAFile(pem, sessionID)
+	hostCAPath, err := isolation.WriteHostCAFile(pem, sessionID)
 	if err != nil {
 		return fmt.Errorf("write CA: %w", err)
 	}
 
-	network, err := sandbox.CreatePerInvocationNetwork(ctx, sessionID)
+	network, err := isolation.CreatePerInvocationNetwork(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("create docker network: %w", err)
 	}
@@ -171,7 +171,7 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 		// cleanup exec itself.
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = sandbox.RemoveNetwork(cleanup, network.Name)
+		_ = isolation.RemoveNetwork(cleanup, network.Name)
 	}()
 
 	if !homeShared && !shareAgentDir {
@@ -182,23 +182,23 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 			// is opt-in persistent; host-bind mode never creates one.
 			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_ = sandbox.RemoveVolume(cleanup, sandbox.ClaudeHomeVolumeName(sessionID))
+			_ = isolation.RemoveVolume(cleanup, isolation.ClaudeHomeVolumeName(sessionID))
 		}()
 	}
 
-	bindIP := sandbox.HostBindIP(network)
+	bindIP := isolation.HostBindIP(network)
 	if bindIP == nil {
 		return errors.New("could not determine host bind IP for forwarder")
 	}
 
-	fwd, err := sandbox.StartForwarder(ctx, bindIP, upstreamHTTPPort, mitmPort)
+	fwd, err := isolation.StartForwarder(ctx, bindIP, upstreamHTTPPort, mitmPort)
 	if err != nil {
 		return fmt.Errorf("start forwarder: %w", err)
 	}
 	defer func() { _ = fwd.Close() }()
 
 	image, _ := cmd.Flags().GetString("image")
-	imageRef, err := sandbox.EnsureImage(ctx, image, os.Stderr)
+	imageRef, err := isolation.EnsureImage(ctx, image, os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -208,13 +208,13 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 		return fmt.Errorf("getwd: %w", err)
 	}
 
-	env := sandbox.BuildContainerEnv(scopedToken, vault, fwd.HTTPPort, fwd.MITMPort, mitmTLS)
+	env := isolation.BuildContainerEnv(scopedToken, vault, fwd.HTTPPort, fwd.MITMPort, mitmTLS)
 
 	mounts, _ := cmd.Flags().GetStringArray("mount")
 	keep, _ := cmd.Flags().GetBool("keep")
 	noFirewall, _ := cmd.Flags().GetBool("no-firewall")
 
-	dockerArgs, err := sandbox.BuildRunArgs(sandbox.Config{
+	dockerArgs, err := isolation.BuildRunArgs(isolation.Config{
 		ImageRef:         imageRef,
 		SessionID:        sessionID,
 		WorkDir:          workDir,
@@ -245,7 +245,7 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 	}
 	fmt.Fprintf(os.Stderr, "%s routing container HTTPS through MITM on %s:%d (container view: host.docker.internal:%d)\n",
 		successText("agent-vault:"), bindIP, fwd.MITMPort, fwd.MITMPort)
-	fmt.Fprintf(os.Stderr, "%s starting %s in sandbox (%s)...\n\n",
+	fmt.Fprintf(os.Stderr, "%s starting %s with isolation=container (%s)...\n\n",
 		successText("agent-vault:"), boldText(args[0]), network.Name)
 
 	// Fork docker (instead of syscall.Exec) so the forwarder stays

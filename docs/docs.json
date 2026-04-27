@@ -41,7 +41,7 @@
             "pages": [
               "guides/connect-coding-agent",
               "guides/connect-custom-agent",
-              "guides/container-sandbox"
+              "guides/container-isolation"
             ]
           },
           {

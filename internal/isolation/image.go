@@ -1,4 +1,4 @@
-package sandbox
+package isolation
 
 import (
 	"context"
@@ -12,16 +12,16 @@ import (
 	"path/filepath"
 )
 
-// embedded sandbox assets: Dockerfile + init/entrypoint scripts. The
+// embedded isolation assets: Dockerfile + init/entrypoint scripts. The
 // sha256 of their concatenated bytes (sorted by name for stability)
 // becomes the image tag, so a binary that ships different assets
 // automatically produces a different tag on first use.
 //
 //go:embed assets/Dockerfile assets/init-firewall.sh assets/entrypoint.sh
-var sandboxAssets embed.FS
+var isolationAssets embed.FS
 
 const (
-	sandboxImageRepo = "agent-vault/sandbox"
+	isolationImageRepo = "agent-vault/isolation"
 	// assetsHashLen is 12 hex chars — plenty of collision resistance
 	// for this purpose and short enough to read in docker image ls.
 	assetsHashLen = 12
@@ -40,7 +40,7 @@ var assetFiles = []string{
 // cache each docker-build the same content. Last writer wins, same
 // bytes — one extra minute of wasted CPU. Acceptable for v1.
 
-// EnsureImage guarantees the sandbox image exists locally and returns
+// EnsureImage guarantees the isolation image exists locally and returns
 // the fully qualified tag. If override is non-empty, the user's own
 // image is used as-is and no build is performed.
 //
@@ -54,7 +54,7 @@ func EnsureImage(ctx context.Context, override string, stderr io.Writer) (string
 	if err != nil {
 		return "", err
 	}
-	tag := sandboxImageRepo + ":" + hash
+	tag := isolationImageRepo + ":" + hash
 	if imageExists(ctx, tag) {
 		return tag, nil
 	}
@@ -63,10 +63,10 @@ func EnsureImage(ctx context.Context, override string, stderr io.Writer) (string
 	if err != nil {
 		return "", err
 	}
-	fmt.Fprintln(stderr, "agent-vault: building sandbox image (one-time setup)...")
+	fmt.Fprintln(stderr, "agent-vault: building isolation image (one-time setup)...")
 	build := exec.CommandContext(ctx, "docker", "build",
 		"-t", tag,
-		"-t", sandboxImageRepo+":latest",
+		"-t", isolationImageRepo+":latest",
 		dir,
 	)
 	build.Stdout = stderr
@@ -84,7 +84,7 @@ func imageExists(ctx context.Context, tag string) bool {
 func assetsHash() (string, error) {
 	h := sha256.New()
 	for _, name := range assetFiles {
-		data, err := sandboxAssets.ReadFile(name)
+		data, err := isolationAssets.ReadFile(name)
 		if err != nil {
 			return "", fmt.Errorf("read embedded asset %s: %w", name, err)
 		}
@@ -96,10 +96,10 @@ func assetsHash() (string, error) {
 }
 
 // unpackAssets writes the embedded files to
-// ~/.agent-vault/sandbox/<hash>/ (idempotent) and returns the path.
+// ~/.agent-vault/isolation/<hash>/ (idempotent) and returns the path.
 // Scripts are emitted 0o755 so docker build's COPY preserves mode.
 func unpackAssets(hash string) (string, error) {
-	dir, err := hostSandboxDir()
+	dir, err := hostIsolationDir()
 	if err != nil {
 		return "", err
 	}
@@ -108,7 +108,7 @@ func unpackAssets(hash string) (string, error) {
 		return "", fmt.Errorf("mkdir %s: %w", outDir, err)
 	}
 	for _, name := range assetFiles {
-		data, err := sandboxAssets.ReadFile(name)
+		data, err := isolationAssets.ReadFile(name)
 		if err != nil {
 			return "", err
 		}

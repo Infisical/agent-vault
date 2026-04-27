@@ -1,4 +1,4 @@
-package sandbox
+package isolation
 
 import (
 	"os"
@@ -12,7 +12,7 @@ import (
 func baseConfig(t *testing.T) Config {
 	t.Helper()
 	return Config{
-		ImageRef:    "agent-vault/sandbox:deadbeef1234",
+		ImageRef:    "agent-vault/isolation:deadbeef1234",
 		SessionID:   "abcd1234ef567890",
 		WorkDir:     t.TempDir(),
 		HostCAPath:  filepath.Join(t.TempDir(), "ca.pem"),
@@ -288,7 +288,7 @@ func TestBuildRunArgs_UserMountAccepted(t *testing.T) {
 }
 
 // TestBuildRunArgs_RejectsCWDInsideAgentVaultDir pins the fix for the
-// case where `vault run --sandbox=container` is invoked with the CWD
+// case where `vault run --isolation=container` is invoked with the CWD
 // inside ~/.agent-vault — the vault's encrypted CA key and database
 // must not be bind-mounted into the container.
 func TestBuildRunArgs_RejectsCWDInsideAgentVaultDir(t *testing.T) {

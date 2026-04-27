@@ -1,6 +1,6 @@
-// Package sandbox builds the non-cooperative container sandbox that
-// `vault run --sandbox=container` launches the child agent inside.
-package sandbox
+// Package isolation builds the non-cooperative container that
+// `vault run --isolation=container` launches the child agent inside.
+package isolation
 
 import (
 	"fmt"

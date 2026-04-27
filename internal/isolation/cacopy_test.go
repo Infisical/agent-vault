@@ -1,4 +1,4 @@
-package sandbox
+package isolation
 
 import (
 	"os"
@@ -17,7 +17,7 @@ func TestWriteHostCAFile_WritesAt0o644(t *testing.T) {
 		t.Fatalf("WriteHostCAFile: %v", err)
 	}
 
-	wantDir := filepath.Join(home, ".agent-vault", sandboxDirName)
+	wantDir := filepath.Join(home, ".agent-vault", isolationDirName)
 	wantFile := filepath.Join(wantDir, caPrefix+"deadbeef12345678"+caSuffix)
 	if path != wantFile {
 		t.Errorf("path = %q, want %q", path, wantFile)
@@ -77,7 +77,7 @@ func TestPruneHostCAFiles_RemovesStaleOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	dir := filepath.Join(home, ".agent-vault", sandboxDirName)
+	dir := filepath.Join(home, ".agent-vault", isolationDirName)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestPruneHostCAFiles_RemovesStaleOnly(t *testing.T) {
 }
 
 func TestPruneHostCAFiles_NoDirectoryIsNoError(t *testing.T) {
-	t.Setenv("HOME", t.TempDir()) // fresh home, no sandbox dir created
+	t.Setenv("HOME", t.TempDir()) // fresh home, no isolation dir created
 	// Must not panic or error even when the dir doesn't exist.
 	PruneHostCAFiles()
 }

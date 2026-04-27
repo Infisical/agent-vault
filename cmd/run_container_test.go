@@ -8,7 +8,7 @@ import (
 )
 
 
-func TestSandboxFlagsRegistered(t *testing.T) {
+func TestIsolationFlagsRegistered(t *testing.T) {
 	vCmd := findSubcommand(rootCmd, "vault")
 	if vCmd == nil {
 		t.Fatal("vault command not found")
@@ -18,25 +18,25 @@ func TestSandboxFlagsRegistered(t *testing.T) {
 		t.Fatal("vault run subcommand not found")
 	}
 
-	for _, name := range []string{"sandbox", "image", "mount", "keep", "no-firewall", "home-volume-shared", "share-agent-dir"} {
+	for _, name := range []string{"isolation", "image", "mount", "keep", "no-firewall", "home-volume-shared", "share-agent-dir"} {
 		if rCmd.Flags().Lookup(name) == nil {
 			t.Errorf("expected vault run flag --%s to be registered", name)
 		}
 	}
 
-	// --sandbox must be pflag.Value-typed so invalid values fail at parse time.
-	f := rCmd.Flags().Lookup("sandbox")
+	// --isolation must be pflag.Value-typed so invalid values fail at parse time.
+	f := rCmd.Flags().Lookup("isolation")
 	if f == nil {
-		t.Fatal("--sandbox not registered")
+		t.Fatal("--isolation not registered")
 	}
 	if err := f.Value.Set("not-a-mode"); err == nil {
-		t.Error("expected --sandbox to reject invalid values at flag-parse time")
+		t.Error("expected --isolation to reject invalid values at flag-parse time")
 	}
 }
 
-func TestSandboxMode_Set(t *testing.T) {
-	var m SandboxMode
-	for _, v := range []string{"process", "container"} {
+func TestIsolationMode_Set(t *testing.T) {
+	var m IsolationMode
+	for _, v := range []string{"host", "container"} {
 		if err := (&m).Set(v); err != nil {
 			t.Errorf("Set(%q): unexpected err %v", v, err)
 		}
@@ -44,7 +44,7 @@ func TestSandboxMode_Set(t *testing.T) {
 			t.Errorf("after Set(%q), m = %q", v, m)
 		}
 	}
-	for _, bad := range []string{"", "Process", "CONTAINER", "vm", "docker"} {
+	for _, bad := range []string{"", "Host", "CONTAINER", "vm", "docker", "process"} {
 		err := (&m).Set(bad)
 		if err == nil {
 			t.Errorf("Set(%q): expected error, got nil", bad)
@@ -56,23 +56,23 @@ func TestSandboxMode_Set(t *testing.T) {
 	}
 }
 
-func TestValidateSandboxFlagConflicts(t *testing.T) {
+func TestValidateIsolationFlagConflicts(t *testing.T) {
 	tests := []struct {
 		name    string
-		mode    SandboxMode
+		mode    IsolationMode
 		setArgs []string
 		wantErr string // substring; empty means expect nil
 	}{
-		{"process mode, no container flags set", SandboxProcess, nil, ""},
-		{"container mode, all flags allowed", SandboxContainer, []string{"--image=foo", "--keep", "--no-firewall", "--home-volume-shared", "--mount=/a:/b"}, ""},
-		{"process mode rejects --image", SandboxProcess, []string{"--image=foo"}, "--image requires --sandbox=container"},
-		{"process mode rejects --mount", SandboxProcess, []string{"--mount=/a:/b"}, "--mount requires --sandbox=container"},
-		{"process mode rejects --keep", SandboxProcess, []string{"--keep"}, "--keep requires --sandbox=container"},
-		{"process mode rejects --no-firewall", SandboxProcess, []string{"--no-firewall"}, "--no-firewall requires --sandbox=container"},
-		{"process mode rejects --home-volume-shared", SandboxProcess, []string{"--home-volume-shared"}, "--home-volume-shared requires --sandbox=container"},
-		{"process mode rejects --share-agent-dir", SandboxProcess, []string{"--share-agent-dir"}, "--share-agent-dir requires --sandbox=container"},
-		{"container mode accepts --share-agent-dir alone", SandboxContainer, []string{"--share-agent-dir"}, ""},
-		{"container mode rejects --no-mitm", SandboxContainer, []string{"--no-mitm"}, "--no-mitm requires --sandbox=process"},
+		{"host mode, no container flags set", IsolationHost, nil, ""},
+		{"container mode, all flags allowed", IsolationContainer, []string{"--image=foo", "--keep", "--no-firewall", "--home-volume-shared", "--mount=/a:/b"}, ""},
+		{"host mode rejects --image", IsolationHost, []string{"--image=foo"}, "--image requires --isolation=container"},
+		{"host mode rejects --mount", IsolationHost, []string{"--mount=/a:/b"}, "--mount requires --isolation=container"},
+		{"host mode rejects --keep", IsolationHost, []string{"--keep"}, "--keep requires --isolation=container"},
+		{"host mode rejects --no-firewall", IsolationHost, []string{"--no-firewall"}, "--no-firewall requires --isolation=container"},
+		{"host mode rejects --home-volume-shared", IsolationHost, []string{"--home-volume-shared"}, "--home-volume-shared requires --isolation=container"},
+		{"host mode rejects --share-agent-dir", IsolationHost, []string{"--share-agent-dir"}, "--share-agent-dir requires --isolation=container"},
+		{"container mode accepts --share-agent-dir alone", IsolationContainer, []string{"--share-agent-dir"}, ""},
+		{"container mode rejects --no-mitm", IsolationContainer, []string{"--no-mitm"}, "--no-mitm requires --isolation=host"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -80,7 +80,7 @@ func TestValidateSandboxFlagConflicts(t *testing.T) {
 			if err := cmd.ParseFlags(tc.setArgs); err != nil {
 				t.Fatalf("ParseFlags(%v): %v", tc.setArgs, err)
 			}
-			err := validateSandboxFlagConflicts(cmd, tc.mode)
+			err := validateIsolationFlagConflicts(cmd, tc.mode)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Errorf("expected nil err, got %v", err)
@@ -131,9 +131,9 @@ func TestValidateContainerFlagCombos(t *testing.T) {
 // newRunCommandForTest isolates flag `Changed` state per subtest; runCmd
 // itself would leak pflag state across ParseFlags calls.
 func newRunCommandForTest() *cobra.Command {
-	var sbx SandboxMode
+	var iso IsolationMode
 	c := &cobra.Command{Use: "run-test"}
-	c.Flags().Var(&sbx, "sandbox", "")
+	c.Flags().Var(&iso, "isolation", "")
 	c.Flags().String("image", "", "")
 	c.Flags().StringArray("mount", nil, "")
 	c.Flags().Bool("keep", false, "")

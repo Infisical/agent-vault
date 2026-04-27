@@ -21,7 +21,7 @@ description: "All environment variables used to configure Agent Vault"
 | `AGENT_VAULT_LOGS_MAX_AGE_HOURS` | `168` | Retention for the per-vault request log (surfaced in **Vault → Logs**). Rows older than this many hours are trimmed by a background job every 15 minutes. Only secret-free metadata is stored (method, host, path, status, latency, matched service, credential key names) — never bodies or query strings. |
 | `AGENT_VAULT_LOGS_MAX_ROWS_PER_VAULT` | `10000` | Per-vault row cap for the request log. Whichever limit (age or rows) hits first wins, so heavy-traffic vaults retain a shorter window than the time-based TTL alone would suggest. Set to `0` to disable the row cap. |
 | `AGENT_VAULT_LOGS_RETENTION_LOCK` | `false` | When `true`, any owner-UI overrides for log retention are ignored and env values (or defaults) are pinned. Use when you want retention limits controlled only by the operator. |
-| `AGENT_VAULT_SANDBOX` | `process` | Default sandbox mode for `agent-vault vault run`. `process` forks the child with `HTTPS_PROXY` envvars (cooperative). `container` launches it inside a Docker container with iptables-locked egress (non-cooperative; see [Container sandbox](/guides/container-sandbox)). The `--sandbox` flag overrides this. |
+| `AGENT_VAULT_ISOLATION` | `host` | Default isolation mode for `agent-vault vault run`. `host` forks the child on the host with `HTTPS_PROXY` envvars (cooperative). `container` launches it inside a Docker container with iptables-locked egress (non-cooperative; see [Container isolation](/guides/container-isolation)). The `--isolation` flag overrides this. |
 
 Master password resolution order:
 
