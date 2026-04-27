@@ -1,4 +1,4 @@
-package sandbox
+package isolation
 
 import (
 	"bytes"
@@ -23,12 +23,12 @@ func TestAssetsHash_Format(t *testing.T) {
 // would bust every user's local image cache without them realizing.
 // If an embedded asset changes, this test must be updated alongside
 // the change — forcing the PR author to acknowledge that users will
-// rebuild the image on their next `vault run --sandbox=container`.
+// rebuild the image on their next `vault run --isolation=container`.
 //
 // Treat a diff on this constant as intentional. Update when changing
 // Dockerfile / init-firewall.sh / entrypoint.sh.
 func TestAssetsHash_Stable(t *testing.T) {
-	const want = "17980b6cccb1"
+	const want = "35e87377cffa"
 	got, err := assetsHash()
 	if err != nil {
 		t.Fatalf("assetsHash: %v", err)

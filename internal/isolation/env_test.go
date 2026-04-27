@@ -1,4 +1,4 @@
-package sandbox
+package isolation
 
 import (
 	"net/url"

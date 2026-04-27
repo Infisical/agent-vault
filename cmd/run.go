@@ -14,7 +14,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/Infisical/agent-vault/internal/sandbox"
+	"github.com/Infisical/agent-vault/internal/isolation"
 	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/Infisical/agent-vault/internal/store"
 	"github.com/charmbracelet/huh"
@@ -61,20 +61,20 @@ Example:
 		RunE:                  runCmdRunE,
 	}
 
-	var sbx SandboxMode
-	c.Flags().Var(&sbx, "sandbox", "Sandbox mode: process (default) or container")
+	var iso IsolationMode
+	c.Flags().Var(&iso, "isolation", "Isolation mode: host (default) or container")
 
 	c.Flags().String("address", "", "Agent Vault server address (defaults to session address)")
 	c.Flags().String("role", "", "Vault role for the agent session (proxy, member, admin; default: proxy)")
 	c.Flags().Int("ttl", 0, "Session TTL in seconds (300–604800; default: server default 24h)")
 	c.Flags().Bool("no-mitm", false, "Skip HTTPS_PROXY/CA env injection for the child (explicit /proxy only)")
 
-	c.Flags().String("image", "", "Container image override (requires --sandbox=container)")
-	c.Flags().StringArray("mount", nil, "Extra bind mount src:dst[:ro] (repeatable; requires --sandbox=container)")
-	c.Flags().Bool("keep", false, "Don't pass --rm to docker (requires --sandbox=container)")
-	c.Flags().Bool("no-firewall", false, "Skip iptables egress rules inside the container (requires --sandbox=container; debug only)")
-	c.Flags().Bool("home-volume-shared", false, "Share /home/claude/.claude across invocations (requires --sandbox=container); default is a per-invocation volume, losing auth state but avoiding concurrency corruption")
-	c.Flags().Bool("share-agent-dir", false, "Bind-mount the host's agent state dir (~/.claude) into the container so the sandbox reuses your host login (requires --sandbox=container; mutually exclusive with --home-volume-shared)")
+	c.Flags().String("image", "", "Container image override (requires --isolation=container)")
+	c.Flags().StringArray("mount", nil, "Extra bind mount src:dst[:ro] (repeatable; requires --isolation=container)")
+	c.Flags().Bool("keep", false, "Don't pass --rm to docker (requires --isolation=container)")
+	c.Flags().Bool("no-firewall", false, "Skip iptables egress rules inside the container (requires --isolation=container; debug only)")
+	c.Flags().Bool("home-volume-shared", false, "Share /home/claude/.claude across invocations (requires --isolation=container); default is a per-invocation volume, losing auth state but avoiding concurrency corruption")
+	c.Flags().Bool("share-agent-dir", false, "Bind-mount the host's agent state dir (~/.claude) into the container so it reuses your host login (requires --isolation=container; mutually exclusive with --home-volume-shared)")
 
 	return c
 }
@@ -83,21 +83,21 @@ var runCmd = newRunCmd("agent-vault vault run")
 var topRunCmd = newRunCmd("agent-vault run")
 
 func runCmdRunE(cmd *cobra.Command, args []string) error {
-	// 0. Resolve sandbox mode and validate flag compatibility before any
+	// 0. Resolve isolation mode and validate flag compatibility before any
 	//    network I/O — the user sees conflicts immediately, not after
 	//    a slow session-mint round-trip.
-	mode := *cmd.Flags().Lookup("sandbox").Value.(*SandboxMode)
+	mode := *cmd.Flags().Lookup("isolation").Value.(*IsolationMode)
 	if mode == "" {
-		if v := os.Getenv("AGENT_VAULT_SANDBOX"); v != "" {
+		if v := os.Getenv("AGENT_VAULT_ISOLATION"); v != "" {
 			if err := mode.Set(v); err != nil {
-				return fmt.Errorf("AGENT_VAULT_SANDBOX: %w", err)
+				return fmt.Errorf("AGENT_VAULT_ISOLATION: %w", err)
 			}
 		}
 	}
 	if mode == "" {
-		mode = SandboxProcess
+		mode = IsolationHost
 	}
-	if err := validateSandboxFlagConflicts(cmd, mode); err != nil {
+	if err := validateIsolationFlagConflicts(cmd, mode); err != nil {
 		return err
 	}
 
@@ -121,7 +121,7 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if mode == SandboxContainer {
+	if mode == IsolationContainer {
 		return runContainer(cmd, args, scopedToken, addr, vault)
 	}
 
@@ -349,8 +349,8 @@ func fetchUserVaults(addr, token string) ([]string, error) {
 // corporate HTTPS_PROXY from the parent shell would otherwise silently
 // win and the MITM route would be bypassed entirely.
 var mitmInjectedKeys = func() map[string]struct{} {
-	m := make(map[string]struct{}, len(sandbox.ProxyEnvKeys))
-	for _, k := range sandbox.ProxyEnvKeys {
+	m := make(map[string]struct{}, len(isolation.ProxyEnvKeys))
+	for _, k := range isolation.ProxyEnvKeys {
 		m[k] = struct{}{}
 	}
 	return m
@@ -423,7 +423,7 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 	}
 
 	env = stripEnvKeys(env, mitmInjectedKeys)
-	env = append(env, sandbox.BuildProxyEnv(sandbox.ProxyEnvParams{
+	env = append(env, isolation.BuildProxyEnv(isolation.ProxyEnvParams{
 		Host:    mitmHost,
 		Port:    port,
 		Token:   token,

@@ -272,13 +272,13 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--role` | `proxy` | Vault role for the session: `proxy`, `member`, or `admin` |
     | `--ttl` | `0` | Session TTL in seconds (300–604800). Default: server default (24h). |
     | `--no-mitm` | `false` | Skip HTTPS_PROXY/CA env injection; rely solely on the explicit `/proxy/{host}/{path}` endpoint. |
-    | `--sandbox` | `process` | Sandbox mode for the child: `process` (default, cooperative) or `container` (non-cooperative Docker sandbox; see [Container sandbox](/guides/container-sandbox)). Also read from `AGENT_VAULT_SANDBOX`. |
-    | `--image` | | Override the bundled container image (`--sandbox=container` only). |
-    | `--mount` | | Extra bind mount `src:dst[:ro]`; repeatable (`--sandbox=container` only). Host paths are EvalSymlinks-resolved; reserved paths rejected. |
-    | `--keep` | `false` | Omit `--rm` from `docker run` (`--sandbox=container` only; useful for debugging). |
-    | `--no-firewall` | `false` | Skip the iptables egress lockdown (`--sandbox=container` only; debug, prints a warning). |
-    | `--home-volume-shared` | `false` | Share `/home/claude/.claude` across invocations via a persistent docker volume (`--sandbox=container` only). Default is a per-invocation volume — auth doesn't persist but concurrent runs can't corrupt each other. |
-    | `--share-agent-dir` | `false` | Bind-mount the host's agent state dir (`~/.claude`) at `/home/claude/.claude` so the sandbox reuses your host login (`--sandbox=container` only). On Linux the container's `claude` user is remapped to your host uid/gid so writes land owned by you. Mutually exclusive with `--home-volume-shared`. |
+    | `--isolation` | `host` | Isolation mode for the child: `host` (default, cooperative — runs on the host with HTTPS_PROXY) or `container` (non-cooperative Docker container; see [Container isolation](/guides/container-isolation)). Also read from `AGENT_VAULT_ISOLATION`. |
+    | `--image` | | Override the bundled container image (`--isolation=container` only). |
+    | `--mount` | | Extra bind mount `src:dst[:ro]`; repeatable (`--isolation=container` only). Host paths are EvalSymlinks-resolved; reserved paths rejected. |
+    | `--keep` | `false` | Omit `--rm` from `docker run` (`--isolation=container` only; useful for debugging). |
+    | `--no-firewall` | `false` | Skip the iptables egress lockdown (`--isolation=container` only; debug, prints a warning). |
+    | `--home-volume-shared` | `false` | Share `/home/claude/.claude` across invocations via a persistent docker volume (`--isolation=container` only). Default is a per-invocation volume — auth doesn't persist but concurrent runs can't corrupt each other. |
+    | `--share-agent-dir` | `false` | Bind-mount the host's agent state dir (`~/.claude`) at `/home/claude/.claude` so the container reuses your host login (`--isolation=container` only). On Linux the container's `claude` user is remapped to your host uid/gid so writes land owned by you. Mutually exclusive with `--home-volume-shared`. |
   </Accordion>
 
   <Accordion title="agent-vault vault token">

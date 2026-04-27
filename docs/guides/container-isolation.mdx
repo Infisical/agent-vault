@@ -1,47 +1,47 @@
 ---
-title: "Container sandbox"
+title: "Container isolation"
 description: "Run `vault run` agents inside a Docker container with iptables-locked egress so the child cannot reach the network outside the Agent Vault proxy, no matter what it tries."
 ---
 
-`agent-vault vault run` has two sandbox modes:
+`agent-vault vault run` has two isolation modes:
 
-- **`--sandbox=process`** (default) — forks the agent with `HTTPS_PROXY` and CA-trust env vars pointing at Agent Vault. Cooperative: a misbehaving or malicious agent can unset the env, spawn a subprocess that doesn't inherit them, use raw sockets, or exfiltrate over DNS.
-- **`--sandbox=container`** — launches the agent inside a Docker container whose egress is locked down with iptables. Non-cooperative: the only TCP destination the container can reach is the Agent Vault proxy. Everything else is dropped at the kernel.
+- **`--isolation=host`** (default) — forks the agent on the host with `HTTPS_PROXY` and CA-trust env vars pointing at Agent Vault. Cooperative: a misbehaving or malicious agent can unset the env, spawn a subprocess that doesn't inherit them, use raw sockets, or exfiltrate over DNS.
+- **`--isolation=container`** — launches the agent inside a Docker container whose egress is locked down with iptables. Non-cooperative: the only TCP destination the container can reach is the Agent Vault proxy. Everything else is dropped at the kernel.
 
 <Note>
-  Container mode is opt-in while it stabilizes. Process mode remains the default.
+  Container mode is opt-in while it stabilizes. Host mode remains the default.
 </Note>
 
 ## Quick start
 
 ```bash
-agent-vault vault run --sandbox=container -- claude
+agent-vault vault run --isolation=container -- claude
 ```
 
-First run takes ~60s while the sandbox image builds. Subsequent runs reuse the cached image.
+First run takes ~60s while the isolation image builds. Subsequent runs reuse the cached image.
 
-## What's inside the sandbox
+## What's inside the container
 
-- **Image**: `agent-vault/sandbox:<hash>`, built on first use from an embedded Dockerfile. Debian-slim + Node 22 + `@anthropic-ai/claude-code` + `iptables` / `gosu` / `curl` / `git` / `python3`.
+- **Image**: `agent-vault/isolation:<hash>`, built on first use from an embedded Dockerfile. Debian-slim + Node 22 + `@anthropic-ai/claude-code` + `iptables` / `gosu` / `curl` / `git` / `python3`.
 - **Network**: a dedicated per-invocation Docker bridge network (`agent-vault-<session>`). Not the default bridge — other containers you're running cannot reach the forwarder.
 - **User**: `claude` (UID != 0), dropped via `gosu` after `init-firewall.sh` runs as root. `--security-opt=no-new-privileges` + `--cap-drop=ALL` with only `NET_ADMIN` / `NET_RAW` (for iptables), `SETUID` / `SETGID` (so gosu can change UID), and `KILL` (so tini at PID 1 can forward TTY signals across the UID boundary) added. Docker doesn't grant container caps as *ambient* caps to non-root processes, so `claude` post-gosu has an empty effective cap set regardless.
 - **Egress policy**: `OUTPUT DROP` by default on both IPv4 (`iptables`) and IPv6 (`ip6tables`). `ACCEPT` only for loopback, ESTABLISHED/RELATED replies, and the two Agent Vault ports at `host.docker.internal` over IPv4 (the MITM path is v4-only by construction — we resolve via `getent ahostsv4`). **No DNS rule**: `host.docker.internal` is resolved via `/etc/hosts` (`docker run --add-host=host.docker.internal:host-gateway`), closing the DNS-exfiltration channel.
 - **Mounts**:
   - `$PWD → /workspace` (read-write, your project)
-  - `~/.agent-vault/sandbox/ca-<session>.pem → /etc/agent-vault/ca.pem` (read-only, MITM CA)
+  - `~/.agent-vault/isolation/ca-<session>.pem → /etc/agent-vault/ca.pem` (read-only, MITM CA)
   - `agent-vault-claude-home-<session> → /home/claude/.claude` (per-invocation by default; removed after the container exits. See `--home-volume-shared` for a persistent docker volume, or `--share-agent-dir` to bind-mount your host `~/.claude` instead.)
 
 ## Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--sandbox` | `process` | `process` (default) or `container`. Also read from `AGENT_VAULT_SANDBOX`. |
+| `--isolation` | `host` | `host` (default) or `container`. Also read from `AGENT_VAULT_ISOLATION`. |
 | `--image` | | Override the bundled image. Use for your own base (different agent, pinned versions). |
 | `--mount` | | Extra bind mount `src:dst[:ro]`; repeatable. Host paths are symlink-resolved before validation; binds into `~/.agent-vault/` or `/var/run/docker.sock` are rejected. |
 | `--keep` | `false` | Omit `--rm` so the container is available for `docker inspect` / `docker logs` after exit. |
 | `--no-firewall` | `false` | **Debug only.** Skip `init-firewall.sh`; container has unrestricted egress. Prints a loud warning. |
 | `--home-volume-shared` | `false` | Share `/home/claude/.claude` across invocations via a persistent docker volume. Default is per-invocation (auth doesn't persist, but concurrent runs can't corrupt each other). |
-| `--share-agent-dir` | `false` | Bind-mount the host's agent state dir (`~/.claude`) into the container so the sandbox reuses your host login (auth, project history, MCP config). Mutually exclusive with `--home-volume-shared`. |
+| `--share-agent-dir` | `false` | Bind-mount the host's agent state dir (`~/.claude`) into the container so it reuses your host login (auth, project history, MCP config). Mutually exclusive with `--home-volume-shared`. |
 
 ## Bundled image vs `--image`
 
@@ -52,10 +52,10 @@ The default image pins `@anthropic-ai/claude-code` at build time. If you want a 
 # supports `gosu`, has `iptables` in PATH, and ends with:
 #   ENTRYPOINT ["/usr/local/sbin/entrypoint.sh"]
 # where entrypoint.sh calls init-firewall.sh then execs gosu <user> "$@"
-# — the bundled assets in internal/sandbox/assets/ are the reference.)
-docker build -t my-org/my-agent-sandbox:v1 .
+# — the bundled assets in internal/isolation/assets/ are the reference.)
+docker build -t my-org/my-agent-isolation:v1 .
 
-agent-vault vault run --sandbox=container --image=my-org/my-agent-sandbox:v1 -- claude
+agent-vault vault run --isolation=container --image=my-org/my-agent-isolation:v1 -- claude
 ```
 
 ## Agent state directory: three modes
@@ -66,19 +66,19 @@ agent-vault vault run --sandbox=container --image=my-org/my-agent-sandbox:v1 -- 
 
 2. **Shared docker volume (`--home-volume-shared`).** Persistent named docker volume across invocations. Auth persists.
    ```bash
-   agent-vault vault run --sandbox=container --home-volume-shared -- claude
+   agent-vault vault run --isolation=container --home-volume-shared -- claude
    ```
    Don't run two `--home-volume-shared` sessions concurrently — there's no locking, and the volume's contents will race.
 
-3. **Bind-mount the host's `~/.claude` (`--share-agent-dir`).** Reuses your existing host login — starting the sandbox feels identical to running `claude` on the host (no onboarding, your project history is there). Mutually exclusive with `--home-volume-shared`.
+3. **Bind-mount the host's `~/.claude` (`--share-agent-dir`).** Reuses your existing host login — starting the container feels identical to running `claude` on the host (no onboarding, your project history is there). Mutually exclusive with `--home-volume-shared`.
    ```bash
-   agent-vault vault run --sandbox=container --share-agent-dir -- claude
+   agent-vault vault run --isolation=container --share-agent-dir -- claude
    ```
-   Concurrency matches the status quo of running `claude` directly on the host — session files are UUID-keyed, so two concurrent sandboxes behave the same as two host-level Claude sessions. On Linux, agent-vault passes `HOST_UID`/`HOST_GID` so the container's `claude` user matches your host uid — writes to the bind mount land owned by you, not the baked-in container uid.
+   Concurrency matches the status quo of running `claude` directly on the host — session files are UUID-keyed, so two concurrent containers behave the same as two host-level Claude sessions. On Linux, agent-vault passes `HOST_UID`/`HOST_GID` so the container's `claude` user matches your host uid — writes to the bind mount land owned by you, not the baked-in container uid.
 
-   **macOS auth bridge.** Claude stores its OAuth credential in the macOS Keychain, not on disk, so the bind mount alone doesn't carry the login across. When `--share-agent-dir` is set on a Mac host, agent-vault calls `security find-generic-password -s "Claude Code-credentials" -w` once to extract the credential and writes it to `~/.claude/.credentials.json` (mode 0600) — the path Linux Claude reads. Only runs if the file is absent; the container (or you) can refresh it thereafter. First use may trigger a Keychain confirmation prompt. Trade-off: the credential now exists as a filesystem-readable file on your Mac, slightly weaker than Keychain-only storage. If you'd rather avoid that, skip `--share-agent-dir` (or `rm ~/.claude/.credentials.json` and `/login` inside the sandbox — Claude will write a fresh file itself).
+   **macOS auth bridge.** Claude stores its OAuth credential in the macOS Keychain, not on disk, so the bind mount alone doesn't carry the login across. When `--share-agent-dir` is set on a Mac host, agent-vault calls `security find-generic-password -s "Claude Code-credentials" -w` once to extract the credential and writes it to `~/.claude/.credentials.json` (mode 0600) — the path Linux Claude reads. Only runs if the file is absent; the container (or you) can refresh it thereafter. First use may trigger a Keychain confirmation prompt. Trade-off: the credential now exists as a filesystem-readable file on your Mac, slightly weaker than Keychain-only storage. If you'd rather avoid that, skip `--share-agent-dir` (or `rm ~/.claude/.credentials.json` and `/login` inside the container — Claude will write a fresh file itself).
 
-Security note: the sandbox protects *vault-brokered* credentials (Stripe, GitHub, etc.) by forcing egress through Agent Vault. Your Claude login in `~/.claude` is the agent's own identity — sharing it with the sandboxed agent is strictly a UX choice, not a credential exposure, since the agent already needs that identity to function. The genuinely sensitive `~/.agent-vault/` directory stays off-limits in all three modes.
+Security note: container isolation protects *vault-brokered* credentials (Stripe, GitHub, etc.) by forcing egress through Agent Vault. Your Claude login in `~/.claude` is the agent's own identity — sharing it with the agent inside the container is strictly a UX choice, not a credential exposure, since the agent already needs that identity to function. The genuinely sensitive `~/.agent-vault/` directory stays off-limits in all three modes.
 
 ## Threat model
 
@@ -99,7 +99,7 @@ Security note: the sandbox protects *vault-brokered* credentials (Stripe, GitHub
 
 - **Linux**: supported. Requires Docker 20.10+ for `--add-host=host.docker.internal:host-gateway`.
 - **macOS (Docker Desktop)**: supported.
-- **Windows**: not supported in v1. `vault run --sandbox=container` errors on Windows.
+- **Windows**: not supported in v1. `vault run --isolation=container` errors on Windows.
 
 ## Troubleshooting
 
@@ -111,9 +111,9 @@ Security note: the sandbox protects *vault-brokered* credentials (Stripe, GitHub
 
 **`iptables -S OUTPUT` in the container shows `DROP` but the agent still makes external calls** — that's impossible unless you passed `--no-firewall`. Check for the loud warning banner on startup.
 
-**Containers leak** after crashes — `agent-vault vault run --sandbox=container` runs `PruneStaleNetworks` at startup, removing any `agent-vault-*` networks older than 60 seconds with zero attached containers. The 60-second grace window prevents racing invocations from deleting each other's freshly-created networks.
+**Containers leak** after crashes — `agent-vault vault run --isolation=container` runs `PruneStaleNetworks` at startup, removing any `agent-vault-*` networks older than 60 seconds with zero attached containers. The 60-second grace window prevents racing invocations from deleting each other's freshly-created networks.
 
 ## Related
 
-- [Connect a coding agent](/guides/connect-coding-agent) — the standard `--sandbox=process` workflow.
+- [Connect a coding agent](/guides/connect-coding-agent) — the standard `--isolation=host` workflow.
 - [CLI reference](/reference/cli#agent-vault-vault-run) — full flag table.

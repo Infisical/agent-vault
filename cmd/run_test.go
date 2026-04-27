@@ -17,7 +17,7 @@ import (
 // on `vault run` and registered locally on the top-level `run`.
 var expectedRunFlags = []string{
 	"address", "role", "ttl", "no-mitm", "vault",
-	"sandbox", "image", "mount", "keep", "no-firewall",
+	"isolation", "image", "mount", "keep", "no-firewall",
 	"home-volume-shared", "share-agent-dir",
 }
 

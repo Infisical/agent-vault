@@ -37,7 +37,7 @@ updates:
       semver-patch-days: 5
 
   - package-ecosystem: docker
-    directory: /internal/sandbox/assets
+    directory: /internal/isolation/assets
     schedule:
       interval: weekly
     commit-message:

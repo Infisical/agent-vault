@@ -1,4 +1,4 @@
-package sandbox
+package isolation
 
 import (
 	"fmt"
@@ -10,12 +10,12 @@ import (
 )
 
 const (
-	// sandboxDirName lives under ~/.agent-vault so ungraceful exits can
+	// isolationDirName lives under ~/.agent-vault so ungraceful exits can
 	// be cleaned up by PruneHostCAFiles on the next run.
-	sandboxDirName = "sandbox"
-	caPrefix       = "ca-"
-	caSuffix       = ".pem"
-	caStaleTTL     = 24 * time.Hour
+	isolationDirName = "isolation"
+	caPrefix         = "ca-"
+	caSuffix         = ".pem"
+	caStaleTTL       = 24 * time.Hour
 )
 
 // sessionIDRE matches the output of NewSessionID — hex-only, so a
@@ -23,7 +23,7 @@ const (
 var sessionIDRE = regexp.MustCompile(`^[0-9a-f]+$`)
 
 // WriteHostCAFile writes the MITM CA cert to
-// ~/.agent-vault/sandbox/ca-<sessionID>.pem with mode 0o644 (the
+// ~/.agent-vault/isolation/ca-<sessionID>.pem with mode 0o644 (the
 // container's unprivileged claude user must read it via the bind
 // mount). The enclosing directory stays 0o700 so only the host user
 // and root can read the file on the host side.
@@ -33,12 +33,12 @@ func WriteHostCAFile(pem []byte, sessionID string) (string, error) {
 	if !sessionIDRE.MatchString(sessionID) {
 		return "", fmt.Errorf("WriteHostCAFile: sessionID must be hex, got %q", sessionID)
 	}
-	dir, err := hostSandboxDir()
+	dir, err := hostIsolationDir()
 	if err != nil {
 		return "", err
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("create sandbox dir: %w", err)
+		return "", fmt.Errorf("create isolation dir: %w", err)
 	}
 	path := filepath.Join(dir, caPrefix+sessionID+caSuffix)
 	if err := os.WriteFile(path, pem, 0o600); err != nil {
@@ -53,12 +53,12 @@ func WriteHostCAFile(pem []byte, sessionID string) (string, error) {
 	return path, nil
 }
 
-// PruneHostCAFiles removes ca-*.pem files in ~/.agent-vault/sandbox/
+// PruneHostCAFiles removes ca-*.pem files in ~/.agent-vault/isolation/
 // older than caStaleTTL. Best-effort — errors are ignored because this
 // is background cleanup, not correctness-critical. Called at the top of
 // each container-mode vault run.
 func PruneHostCAFiles() {
-	dir, err := hostSandboxDir()
+	dir, err := hostIsolationDir()
 	if err != nil {
 		return
 	}
@@ -86,10 +86,10 @@ func PruneHostCAFiles() {
 	}
 }
 
-func hostSandboxDir() (string, error) {
+func hostIsolationDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home dir: %w", err)
 	}
-	return filepath.Join(home, ".agent-vault", sandboxDirName), nil
+	return filepath.Join(home, ".agent-vault", isolationDirName), nil
 }

@@ -1,4 +1,4 @@
-package sandbox
+package isolation
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 // without touching networks from other tools. The same label key is
 // applied to per-invocation claude-home volumes for symmetric pruning.
 const (
-	NetworkLabelKey    = "agent-vault-sandbox"
+	NetworkLabelKey    = "agent-vault-isolation"
 	NetworkLabelValue  = "1"
 	NetworkNamePrefix  = "agent-vault-"
 	VolumeNamePrefix   = "agent-vault-claude-home-"

@@ -1,4 +1,4 @@
-package sandbox
+package isolation
 
 import (
 	"errors"
@@ -12,7 +12,7 @@ import (
 // resolved `docker run` argv. All values are already decided (mode,
 // session ID, network, TTY) — this type does no I/O.
 type Config struct {
-	ImageRef         string // "agent-vault/sandbox:<hash>" or user --image
+	ImageRef         string // "agent-vault/isolation:<hash>" or user --image
 	SessionID        string // 16 hex chars; names the network and per-invocation volume
 	WorkDir          string // host path bound at /workspace
 	HostCAPath       string // host path bound read-only at ContainerCAPath
@@ -36,7 +36,7 @@ type parsedMount struct {
 
 // reservedContainerDsts are bind-mount destinations agent-vault owns.
 // A user --mount landing on one of these would silently replace our
-// own mount and undo the sandbox guarantees. The entrypoint + firewall
+// own mount and undo the isolation guarantees. The entrypoint + firewall
 // scripts are the image's trust path — overwriting either pre-entrypoint
 // would be a direct break-out.
 var reservedContainerDsts = []string{
@@ -76,7 +76,7 @@ func BuildRunArgs(cfg Config) ([]string, error) {
 
 	// The CWD is bind-mounted read-write at /workspace. Subject it to
 	// the same host-src validation as user --mount flags so running
-	// `vault run --sandbox=container` from inside ~/.agent-vault (which
+	// `vault run --isolation=container` from inside ~/.agent-vault (which
 	// holds the encrypted CA key + vault database) does not expose
 	// that dir to the container.
 	resolvedWorkDir, err := filepath.EvalSymlinks(cfg.WorkDir)
@@ -234,7 +234,7 @@ func parseAndValidateMount(raw, homeDir string) (parsedMount, error) {
 
 func validateHostSrc(resolved, homeDir string) error {
 	if isDockerSocket(resolved) {
-		return errors.New("--mount: refusing to bind the docker socket (would undo every sandbox guarantee)")
+		return errors.New("--mount: refusing to bind the docker socket (would undo every isolation guarantee)")
 	}
 	if homeDir != "" {
 		// Canonicalize homeDir so the prefix comparison is apples-to-apples
