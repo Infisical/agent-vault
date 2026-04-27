@@ -190,7 +190,18 @@ Key fields (JSON mode):
 
 ## Request Logs
 
-Agent Vault keeps a per-vault audit log of proxied requests (method, host, path, status, latency -- never bodies or query strings). The CLI does not wrap this yet; fetch via the HTTP API: `GET {AGENT_VAULT_ADDR}/v1/vaults/{vault}/logs` with `Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}`. Requires vault `member` or `admin` role. See `skill_http.md` for query params.
+Agent Vault keeps a per-vault audit log of proxied requests (method, host, path, status, latency, matched service, credential key names -- never bodies, header values, query strings, or credential values). Requires vault `member` or `admin` role.
+
+Use the CLI for safe inspection:
+
+```bash
+agent-vault logs --vault default
+agent-vault logs --status 4xx --service api.anthropic.com
+agent-vault inspect explain --vault default
+agent-vault inspect request --id 123 --vault default
+```
+
+Use `--json` when another tool needs to parse the output.
 
 ## Building Code That Needs Credentials
 
