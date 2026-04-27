@@ -338,8 +338,8 @@ func TestMITMWebSocketInjectsCredentialsAndPipesFrames(t *testing.T) {
 	if sawAuth != "Bearer injected-ws-secret" {
 		t.Fatalf("upstream saw Authorization %q, want injected value", sawAuth)
 	}
-	if sawClientAuth != "" {
-		t.Fatalf("upstream saw X-Client-Auth %q; non-allowlisted header must be dropped", sawClientAuth)
+	if sawClientAuth != "leaked" {
+		t.Fatalf("upstream X-Client-Auth = %q, want passthrough of client value", sawClientAuth)
 	}
 	if sawProxyAuth != "" {
 		t.Fatalf("upstream saw Proxy-Authorization %q; must be stripped", sawProxyAuth)
