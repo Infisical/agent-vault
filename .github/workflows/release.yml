@@ -7,9 +7,10 @@ on:
 
 # Minimal permissions — only grant what's needed.
 permissions:
-  contents: write    # create GitHub releases & upload assets
-  id-token: write    # OIDC token for keyless cosign signing
-  packages: write    # push Docker images
+  contents: write       # create GitHub releases & upload assets
+  id-token: write       # OIDC token for keyless cosign signing
+  packages: write       # push Docker images
+  attestations: write   # generate build provenance attestations
 
 jobs:
   release:
@@ -59,3 +60,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.GO_RELEASER_GITHUB_TOKEN }}
+
+      - name: Generate build provenance attestations
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/checksums.txt
