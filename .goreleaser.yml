@@ -52,6 +52,15 @@ signs:
       - "--bundle=${signature}"
       - "${artifact}"
 
+docker_signs:
+  - cmd: cosign
+    artifacts: all
+    output: true
+    args:
+      - "sign"
+      - "--yes"
+      - "${artifact}@${digest}"
+
 changelog:
   sort: asc
   filters:
@@ -132,4 +141,9 @@ release:
       --certificate-identity-regexp "github.com/Infisical/agent-vault" \
       --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
       checksums.txt
+
+    # Verify Docker image signature (requires cosign)
+    cosign verify infisical/agent-vault:{{ .Version }} \
+      --certificate-identity-regexp "github.com/Infisical/agent-vault" \
+      --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
     ```
