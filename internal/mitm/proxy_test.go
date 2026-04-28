@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -205,14 +206,69 @@ func TestMITMInjectsCredentials(t *testing.T) {
 	}
 }
 
+func TestMITMForwardsBoundedBodiesWithContentLength(t *testing.T) {
+	var sawContentLength int64
+	var sawTransferEncoding []string
+	var sawBody string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawContentLength = r.ContentLength
+		sawTransferEncoding = r.TransferEncoding
+		data, _ := io.ReadAll(r.Body)
+		sawBody = string(data)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{
+			Headers: map[string]string{"Authorization": "Bearer injected-secret"},
+		}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+
+	req, err := http.NewRequest("POST", upstream.URL+"/chat", strings.NewReader(`{"hello":"world"}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.ContentLength = -1
+
+	resp, err := newTrustingClient(proxyURL, url.User("av_sess_ok"), clientRoots).Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if sawBody != `{"hello":"world"}` {
+		t.Fatalf("upstream body = %q", sawBody)
+	}
+	if sawContentLength != int64(len(sawBody)) {
+		t.Fatalf("upstream ContentLength = %d, want %d", sawContentLength, len(sawBody))
+	}
+	if len(sawTransferEncoding) != 0 {
+		t.Fatalf("upstream TransferEncoding = %v, want none", sawTransferEncoding)
+	}
+}
+
 func TestMITMWebSocketInjectsCredentialsAndPipesFrames(t *testing.T) {
 	var sawAuth, sawClientAuth, sawProxyAuth, sawUpgrade string
+	var sawKeyValues []string
 	serverDone := make(chan error, 1)
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawAuth = r.Header.Get("Authorization")
 		sawClientAuth = r.Header.Get("X-Client-Auth")
 		sawProxyAuth = r.Header.Get("Proxy-Authorization")
 		sawUpgrade = r.Header.Get("Upgrade")
+		sawKeyValues = r.Header.Values("Sec-Websocket-Key")
 
 		hj, ok := w.(http.Hijacker)
 		if !ok {
@@ -346,6 +402,187 @@ func TestMITMWebSocketInjectsCredentialsAndPipesFrames(t *testing.T) {
 	}
 	if !strings.EqualFold(sawUpgrade, "websocket") {
 		t.Fatalf("upstream Upgrade = %q, want websocket", sawUpgrade)
+	}
+	if len(sawKeyValues) != 1 {
+		t.Fatalf("upstream Sec-WebSocket-Key values = %v, want exactly one", sawKeyValues)
+	}
+}
+
+func TestMITMWebSocketXAITTSIntegration(t *testing.T) {
+	if os.Getenv("AGENT_VAULT_XAI_INTEGRATION") != "1" {
+		t.Skip("set AGENT_VAULT_XAI_INTEGRATION=1 to run")
+	}
+	xaiKey := os.Getenv("XAI_API_KEY")
+	if xaiKey == "" {
+		t.Skip("XAI_API_KEY is required")
+	}
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		"api.x.ai": {result: &brokercore.InjectResult{
+			Headers: map[string]string{"Authorization": "Bearer " + xaiKey},
+		}},
+	}}
+	proxyURL, clientRoots, _ := setupProxy(t, sr, cp)
+
+	conn := openMITMTunnel(t, proxyURL, clientRoots, "api.x.ai:443", "av_sess_ok")
+	defer func() { _ = conn.Close() }()
+
+	tlsConn := tls.Client(conn, &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    clientRoots,
+		ServerName: "api.x.ai",
+	})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("client tls handshake: %v", err)
+	}
+	defer func() { _ = tlsConn.Close() }()
+	_ = tlsConn.SetDeadline(time.Now().Add(30 * time.Second))
+
+	key := "dGhlIHNhbXBsZSBub25jZQ=="
+	_, _ = fmt.Fprintf(tlsConn,
+		"GET /v1/tts?language=en&voice=ara&codec=pcm&sample_rate=24000 HTTP/1.1\r\n"+
+			"Host: api.x.ai\r\n"+
+			"Upgrade: websocket\r\n"+
+			"Connection: Upgrade\r\n"+
+			"Sec-WebSocket-Key: %s\r\n"+
+			"Sec-WebSocket-Version: 13\r\n"+
+			"Authorization: Bearer dummy-agent-visible-key\r\n\r\n",
+		key,
+	)
+
+	reader := bufio.NewReader(tlsConn)
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read websocket response: %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", resp.StatusCode)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if err := writeWebSocketTextFrame(tlsConn, `{"type":"text.delta","delta":"Agent Vault websocket test."}`, true); err != nil {
+		t.Fatalf("write text.delta: %v", err)
+	}
+	if err := writeWebSocketTextFrame(tlsConn, `{"type":"text.done"}`, true); err != nil {
+		t.Fatalf("write text.done: %v", err)
+	}
+
+	for deadline := time.After(25 * time.Second); ; {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for xAI audio output")
+		default:
+		}
+		text, err := readWebSocketTextFrame(reader)
+		if err != nil {
+			t.Fatalf("read websocket frame: %v", err)
+		}
+		var event struct {
+			Type  string `json:"type"`
+			Delta string `json:"delta"`
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(text), &event); err != nil {
+			t.Fatalf("xAI frame is not JSON: %v", err)
+		}
+		if event.Type == "error" {
+			t.Fatalf("xAI error: %s", event.Error.Message)
+		}
+		if event.Type == "audio.delta" && event.Delta != "" {
+			return
+		}
+	}
+}
+
+func TestMITMWebSocketOpenAIRealtimeIntegration(t *testing.T) {
+	if os.Getenv("AGENT_VAULT_OPENAI_INTEGRATION") != "1" {
+		t.Skip("set AGENT_VAULT_OPENAI_INTEGRATION=1 to run")
+	}
+	openAIKey := os.Getenv("OPENAI_API_KEY")
+	if openAIKey == "" {
+		t.Skip("OPENAI_API_KEY is required")
+	}
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		"api.openai.com": {result: &brokercore.InjectResult{
+			Headers: map[string]string{"Authorization": "Bearer " + openAIKey},
+		}},
+	}}
+	proxyURL, clientRoots, _ := setupProxy(t, sr, cp)
+
+	conn := openMITMTunnel(t, proxyURL, clientRoots, "api.openai.com:443", "av_sess_ok")
+	defer func() { _ = conn.Close() }()
+
+	tlsConn := tls.Client(conn, &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    clientRoots,
+		ServerName: "api.openai.com",
+	})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("client tls handshake: %v", err)
+	}
+	defer func() { _ = tlsConn.Close() }()
+	_ = tlsConn.SetDeadline(time.Now().Add(30 * time.Second))
+
+	key := "dGhlIHNhbXBsZSBub25jZQ=="
+	_, _ = fmt.Fprintf(tlsConn,
+		"GET /v1/realtime?intent=transcription HTTP/1.1\r\n"+
+			"Host: api.openai.com\r\n"+
+			"Upgrade: websocket\r\n"+
+			"Connection: Upgrade\r\n"+
+			"Sec-WebSocket-Key: %s\r\n"+
+			"Sec-WebSocket-Version: 13\r\n"+
+			"Authorization: Bearer dummy-agent-visible-key\r\n"+
+			"OpenAI-Beta: realtime=v1\r\n\r\n",
+		key,
+	)
+
+	reader := bufio.NewReader(tlsConn)
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read websocket response: %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		t.Fatalf("status = %d, want 101: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if err := writeWebSocketTextFrame(tlsConn, `{"type":"session.update","session":{"type":"transcription","audio":{"input":{"format":{"type":"audio/pcm","rate":24000},"transcription":{"model":"gpt-4o-transcribe"},"turn_detection":{"type":"server_vad"}}}}}`, true); err != nil {
+		t.Fatalf("write session.update: %v", err)
+	}
+
+	for deadline := time.After(25 * time.Second); ; {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for OpenAI session update")
+		default:
+		}
+		text, err := readWebSocketTextFrame(reader)
+		if err != nil {
+			t.Fatalf("read websocket frame: %v", err)
+		}
+		var event struct {
+			Type  string `json:"type"`
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(text), &event); err != nil {
+			t.Fatalf("OpenAI frame is not JSON: %v", err)
+		}
+		if event.Type == "error" {
+			t.Fatalf("OpenAI error: %s", event.Error.Message)
+		}
+		if event.Type == "session.updated" {
+			return
+		}
 	}
 }
 

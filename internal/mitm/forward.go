@@ -70,13 +70,21 @@ func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope
 			RawQuery: r.URL.RawQuery,
 		}
 
-		outReq, err := http.NewRequestWithContext(r.Context(), r.Method, outURL.String(), r.Body)
+		body, contentLength, err := brokercore.MaterializeRequestBody(r.Body)
+		if err != nil {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			emit(http.StatusRequestEntityTooLarge, "request_too_large")
+			return
+		}
+
+		outReq, err := http.NewRequestWithContext(r.Context(), r.Method, outURL.String(), body)
 		if err != nil {
 			http.Error(w, "bad gateway", http.StatusBadGateway)
 			emit(http.StatusBadGateway, "internal")
 			return
 		}
 		outReq.Host = host
+		outReq.ContentLength = contentLength
 
 		inject, err := p.creds.Inject(r.Context(), scope.VaultID, host)
 		if inject != nil {
@@ -106,7 +114,11 @@ func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope
 		// Authorization is the client's own upstream header. For WebSocket
 		// requests, copy the handshake headers first so injected custom auth
 		// on overlapping headers still wins.
-		brokercore.ApplyInjection(r.Header, outReq.Header, inject)
+		if wsUpgrade {
+			brokercore.ApplyInjection(r.Header, outReq.Header, inject, websocketHandshakeHeaderNames()...)
+		} else {
+			brokercore.ApplyInjection(r.Header, outReq.Header, inject)
+		}
 
 		// Apply any declared substitutions to the outbound URL and
 		// headers. Surfaces not listed in the substitution's `in:` are
@@ -166,7 +178,16 @@ func isWebSocketUpgrade(r *http.Request) bool {
 }
 
 func copyWebSocketHandshakeHeaders(src, dst http.Header) {
-	for _, name := range []string{
+	for _, name := range websocketHandshakeHeaderNames() {
+		dst.Del(name)
+		for _, value := range src.Values(name) {
+			dst.Add(name, value)
+		}
+	}
+}
+
+func websocketHandshakeHeaderNames() []string {
+	return []string{
 		"Connection",
 		"Origin",
 		"Sec-Websocket-Extensions",
@@ -174,10 +195,5 @@ func copyWebSocketHandshakeHeaders(src, dst http.Header) {
 		"Sec-Websocket-Protocol",
 		"Sec-Websocket-Version",
 		"Upgrade",
-	} {
-		dst.Del(name)
-		for _, value := range src.Values(name) {
-			dst.Add(name, value)
-		}
 	}
 }
