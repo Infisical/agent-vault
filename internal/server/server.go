@@ -743,6 +743,9 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	// SPA catch-all: serve index.html for all frontend routes
 	mux.HandleFunc("GET /login", s.handleSPA)
 	mux.HandleFunc("GET /register", s.handleSPA)
+	mux.HandleFunc("GET /forgot-password", s.handleSPA)
+	mux.HandleFunc("GET /users", s.handleSPA)
+	mux.HandleFunc("GET /agents", s.handleSPA)
 	mux.HandleFunc("GET /vaults/{$}", s.handleSPA)
 	mux.HandleFunc("GET /vaults/{name...}", s.handleSPA)
 	mux.HandleFunc("GET /invite/{token...}", s.handleSPA)

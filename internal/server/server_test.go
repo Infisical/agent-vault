@@ -5676,3 +5676,50 @@ func TestServiceRemoveUnauthenticated(t *testing.T) {
 		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestSPACatchAllRoutes locks the SPA fallback contract: every top-level
+// frontend route must serve index.html so a hard refresh doesn't 404.
+func TestSPACatchAllRoutes(t *testing.T) {
+	srv := newTestServer()
+
+	// /invite/abc is not tested here. Two routes could match it: the
+	// API handler at GET /invite/{token} and the SPA fallback at
+	// GET /invite/{token...}. Go's ServeMux prefers the single-segment
+	// pattern, so the request hits handleInviteRedeem (which 404s
+	// because the mock store has no invite) instead of handleSPA — a
+	// 404 here would not mean the SPA route is broken.
+	paths := []string{
+		"/",
+		"/login",
+		"/register",
+		"/forgot-password",
+		"/users",
+		"/agents",
+		"/change-password",
+		"/oauth/callback",
+		"/account/settings",
+		"/manage/settings",
+		"/vaults/",
+		"/vaults/default",
+		"/approve/1",
+	}
+	for _, p := range paths {
+		t.Run(p, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, p, nil)
+			rec := httptest.NewRecorder()
+			srv.httpServer.Handler.ServeHTTP(rec, req)
+			if rec.Code == http.StatusNotFound {
+				t.Fatalf("expected non-404 for SPA route, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	t.Run("unknown path stays 404", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/definitely-not-a-route", nil)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for unregistered path, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
