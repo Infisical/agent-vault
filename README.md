@@ -73,6 +73,16 @@ agent-vault server -d
 
 The server starts the HTTP API on port `14321` and a TLS-encrypted transparent HTTPS proxy on port `14322`. A web UI is available at `http://localhost:14321`.
 
+### Verifying downloaded release binaries
+
+Release archives published from this workflow ship with a build provenance attestation tied to the GitHub Actions run that produced them. Verify with the `gh` CLI (no extra tools, no key management):
+
+```bash
+gh attestation verify agent-vault_*.tar.gz --repo Infisical/agent-vault
+```
+
+`checksums.txt` is also covered by the same attestation, and its cosign signature continues to verify with `cosign verify-blob` for users who prefer that path.
+
 ## Quickstart
 
 ### CLI — local agents (Claude Code, Cursor, Codex, OpenClaw, Hermes, OpenCode)
