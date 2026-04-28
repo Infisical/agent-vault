@@ -503,8 +503,10 @@ func (s *Server) requireVaultMember(w http.ResponseWriter, r *http.Request, vaul
 }
 
 // requireProposalReview checks proposal approve/reject access.
-// Scoped sessions require admin role (proxy-role actors cannot self-approve).
-// Instance-level sessions require any vault access (member or admin — by design).
+// Scoped sessions require admin role (proxy-scoped sessions cannot self-approve).
+// Instance-level sessions require member+ — proxy-role actors are forbidden so
+// that a proxy cannot approve a proposal it raised and trick the broker into
+// injecting credentials toward an attacker-controlled host.
 func (s *Server) requireProposalReview(w http.ResponseWriter, r *http.Request, vaultID string) (*Actor, error) {
 	sess := sessionFromContext(r.Context())
 	if sess == nil {
@@ -525,8 +527,8 @@ func (s *Server) requireProposalReview(w http.ResponseWriter, r *http.Request, v
 		return nil, nil
 	}
 
-	// Instance-level session: any vault member can review proposals.
-	return s.requireVaultAccess(w, r, vaultID)
+	// Instance-level session: require member+ (proxy-role actors cannot self-approve).
+	return s.requireVaultMember(w, r, vaultID)
 }
 
 

@@ -3941,6 +3941,90 @@ func TestMemberCanApproveProposalInAnyMemberVault(t *testing.T) {
 	}
 }
 
+// setupProxyRoleSession creates a proxy-role user with a login session and optional vault grants.
+func setupProxyRoleSession(t *testing.T, ms *mockStore, grantVaultIDs ...string) string {
+	t.Helper()
+	ms.users["proxybot@test.com"] = &store.User{
+		ID: "proxy-user-id", Email: "proxybot@test.com", Role: "member", IsActive: true,
+	}
+	proxySess := &store.Session{
+		ID:        "proxy-session",
+		UserID:    "proxy-user-id",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+		CreatedAt: time.Now(),
+	}
+	ms.sessions[proxySess.ID] = proxySess
+
+	for _, nsID := range grantVaultIDs {
+		ms.GrantVaultRole(context.Background(), "proxy-user-id", "user", nsID, "proxy")
+	}
+	return proxySess.ID
+}
+
+func TestInstanceLevelProxyCannotApproveProposal(t *testing.T) {
+	ms := newMockStore()
+	proxyToken := setupProxyRoleSession(t, ms, "root-ns-id")
+
+	encKey := make([]byte, 32)
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{VaultID: "root-ns-id", ServicesJSON: `[]`}
+	ms.proposals = map[string][]store.Proposal{
+		"root-ns-id": {{
+			ID: 1, VaultID: "root-ns-id", Status: "pending",
+			ServicesJSON: `[]`, CredentialsJSON: `[]`,
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}},
+	}
+
+	body := `{"vault":"default","credentials":{}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/proposals/1/approve", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+proxyToken)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// The status check is load-bearing: it proves the apply step never ran,
+	// so the proxy could not have triggered credential injection downstream.
+	if got := ms.proposals["root-ns-id"][0].Status; got != "pending" {
+		t.Fatalf("proposal must remain pending after rejected approve; got %s", got)
+	}
+}
+
+func TestInstanceLevelProxyCannotRejectProposal(t *testing.T) {
+	ms := newMockStore()
+	proxyToken := setupProxyRoleSession(t, ms, "root-ns-id")
+
+	encKey := make([]byte, 32)
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{VaultID: "root-ns-id", ServicesJSON: `[]`}
+	ms.proposals = map[string][]store.Proposal{
+		"root-ns-id": {{
+			ID: 1, VaultID: "root-ns-id", Status: "pending",
+			ServicesJSON: `[]`, CredentialsJSON: `[]`,
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}},
+	}
+
+	body := `{"vault":"default","reason":"nope"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/proposals/1/reject", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+proxyToken)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := ms.proposals["root-ns-id"][0].Status; got != "pending" {
+		t.Fatalf("proposal must remain pending after rejected reject; got %s", got)
+	}
+}
+
 func TestLastOwnerCannotBeDemoted(t *testing.T) {
 	ms, ownerToken := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))
