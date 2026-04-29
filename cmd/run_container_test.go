@@ -169,6 +169,6 @@ func newRunCommandForTest() *cobra.Command {
 	c.Flags().Bool("home-volume-shared", false, "")
 	c.Flags().Bool("share-agent-dir", false, "")
 	c.Flags().Bool("no-mitm", false, "")
-	c.Flags().StringSlice("no-proxy", nil, "")
+	c.Flags().StringSlice(noProxyFlag, nil, "")
 	return c
 }
