@@ -363,12 +363,9 @@ func TestResolveExtraNoProxy_FlagAndEnvCombine(t *testing.T) {
 	}
 }
 
-// TestResolveExtraNoProxy_PassesThroughWhitespace locks the contract
-// that resolveExtraNoProxy is intentionally a pass-through and the
-// downstream buildNoProxy is the single source of truth for cleaning.
-// Lifting trim/empty-drop into this function would create two places
-// to keep in sync — exactly the kind of duplication the simplified
-// resolver exists to avoid.
+// TestResolveExtraNoProxy_PassesThroughWhitespace locks the
+// pass-through contract: cleaning is buildNoProxy's job, not this
+// function's.
 func TestResolveExtraNoProxy_PassesThroughWhitespace(t *testing.T) {
 	t.Setenv("AGENT_VAULT_NO_PROXY", " ai , , bar ")
 	c := runCmdForFlagTest()

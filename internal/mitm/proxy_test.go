@@ -512,21 +512,13 @@ func TestMITMRejectsNonConnectRequests(t *testing.T) {
 	}
 }
 
-// TestMITMForwardProxyHTTPGivesActionableHint verifies that a plain
-// http:// forward-proxy request — the shape sent when a client pulls
-// http://<host>/... through HTTPS_PROXY — receives a 405 whose body
-// names the offending host and tells the operator how to bypass the
-// broker for it via NO_PROXY / --no-proxy. This is the exact
-// foot-gun a Tailscale Aperture user trips: hermes' python client
-// routes http://ai/v1/... through HTTPS_PROXY, hits this handler, and
-// without the hint the only signal is "method POST not supported."
+// TestMITMForwardProxyHTTPGivesActionableHint: a forward-proxy
+// http:// request must surface the host + bypass levers in the 405
+// body. Standard HTTP libraries won't emit the absolute-URL request
+// line, so the test writes the wire format directly.
 func TestMITMForwardProxyHTTPGivesActionableHint(t *testing.T) {
 	proxyURL, clientRoots, _ := setupProxy(t, errResolver(brokercore.ErrInvalidSession), &fakeCredProvider{})
 
-	// Build a forward-proxy request manually: absolute-URL request line,
-	// http scheme, arbitrary destination. Standard HTTP libraries don't
-	// expose this form directly, so we open the socket ourselves and
-	// write the wire format hermes' httpx layer would produce.
 	conn, err := tls.Dial("tcp", proxyURL.Host, &tls.Config{RootCAs: clientRoots})
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -546,10 +538,6 @@ func TestMITMForwardProxyHTTPGivesActionableHint(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	bodyStr := string(body)
-	// Body must name the offending host, the scheme, both fix levers
-	// (--no-proxy flag and AGENT_VAULT_NO_PROXY env var), and call out
-	// the alternative (switching the destination to https://). Each is
-	// load-bearing for an operator who has never seen this error before.
 	for _, want := range []string{"ai", "http://", "NO_PROXY", "--no-proxy", "AGENT_VAULT_NO_PROXY", "https://"} {
 		if !strings.Contains(bodyStr, want) {
 			t.Errorf("405 body missing %q. Body:\n%s", want, bodyStr)

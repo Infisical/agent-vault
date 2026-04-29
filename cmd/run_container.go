@@ -23,17 +23,11 @@ import (
 // containerOnlyFlags are no-ops in host mode. hostOnlyFlags are
 // no-ops in container mode (where MITM is always on, enforced by the
 // iptables lockdown). Either direction is a foot-gun if accepted
-// silently — reject in both.
-//
-// --no-proxy is host-only because container mode's iptables egress lock
-// blocks anything except the broker — so even if the bypass list told
-// the in-container client to skip the proxy for a given host, the
-// firewall would still drop the direct connection. Letting the flag
-// through silently would produce a connection error with no obvious
-// link back to the cause.
+// silently — reject in both. --no-proxy is host-only because the
+// container's iptables lock would drop any bypassed traffic anyway.
 var (
 	containerOnlyFlags = []string{"image", "mount", "keep", "no-firewall", "home-volume-shared", "share-agent-dir"}
-	hostOnlyFlags      = []string{"no-mitm", "no-proxy"}
+	hostOnlyFlags      = []string{"no-mitm", noProxyFlag}
 )
 
 // validateContainerFlagCombos enforces mutual-exclusion between container-mode
@@ -66,13 +60,9 @@ func validateIsolationFlagConflicts(cmd *cobra.Command, mode IsolationMode) erro
 		}
 		return fmt.Errorf("--%s requires --isolation=%s", name, otherMode)
 	}
-	// AGENT_VAULT_NO_PROXY is the env-var twin of --no-proxy; same rule
-	// applies. Catching it here (rather than silently ignoring it in
-	// container mode) makes the constraint discoverable instead of
-	// surfacing as an opaque connection error after the iptables lock
-	// drops the bypassed traffic.
-	if mode == IsolationContainer && os.Getenv("AGENT_VAULT_NO_PROXY") != "" {
-		return errors.New("AGENT_VAULT_NO_PROXY is not supported with --isolation=container: the iptables egress lock allows traffic only to the broker, so any NO_PROXY bypass would still be dropped by the firewall")
+	// Env-var twin of --no-proxy; same rule.
+	if mode == IsolationContainer && os.Getenv(noProxyEnv) != "" {
+		return fmt.Errorf("%s is not supported with --isolation=container: the iptables egress lock would drop any NO_PROXY bypass", noProxyEnv)
 	}
 	return nil
 }

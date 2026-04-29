@@ -26,14 +26,7 @@ type ProxyEnvParams struct {
 	CAPath  string // path the child reads the CA PEM from
 	MITMTLS bool   // true → HTTPS_PROXY uses https://, false → http://
 
-	// ExtraNoProxy is appended to the NO_PROXY default
-	// ("localhost,127.0.0.1") so callers can carve specific hosts out
-	// of the broker's path — e.g. a Tailscale Aperture node reachable
-	// over plain http:// that should bypass the MITM listener entirely.
-	// Entries are trimmed of whitespace; empties and duplicates are
-	// dropped. The defaults are always preserved; this list never
-	// replaces them.
-	ExtraNoProxy []string
+	ExtraNoProxy []string // appended to NO_PROXY defaults; see buildNoProxy
 }
 
 // buildNoProxy merges the default bypass list (loopback) with the

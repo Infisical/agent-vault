@@ -130,12 +130,9 @@ func TestValidateContainerFlagCombos(t *testing.T) {
 	}
 }
 
-// TestValidateIsolationFlagConflicts_NoProxyEnvVarBlocked covers the
-// env-var twin of --no-proxy. Without this guard, AGENT_VAULT_NO_PROXY
-// would silently slip past the flag walk in container mode, the in-
-// container client would dial the bypassed host directly, and the
-// iptables egress lock would drop the connection — leaving the
-// operator to chase an opaque connection error.
+// AGENT_VAULT_NO_PROXY must be rejected in container mode: the flag
+// walk doesn't see env vars, so without an explicit check it would
+// slip through and surface as an opaque firewall-drop downstream.
 func TestValidateIsolationFlagConflicts_NoProxyEnvVarBlocked(t *testing.T) {
 	t.Setenv("AGENT_VAULT_NO_PROXY", "ai")
 	cmd := newRunCommandForTest()
@@ -148,9 +145,6 @@ func TestValidateIsolationFlagConflicts_NoProxyEnvVarBlocked(t *testing.T) {
 	}
 }
 
-// TestValidateIsolationFlagConflicts_NoProxyEnvVarAllowedInHost guards
-// the inverse: in host mode, AGENT_VAULT_NO_PROXY is the intended
-// extension mechanism and must not trigger the rejection.
 func TestValidateIsolationFlagConflicts_NoProxyEnvVarAllowedInHost(t *testing.T) {
 	t.Setenv("AGENT_VAULT_NO_PROXY", "ai")
 	cmd := newRunCommandForTest()
