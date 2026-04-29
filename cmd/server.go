@@ -96,7 +96,7 @@ var serverCmd = &cobra.Command{
 		// Pre-flight before unlocking the vault: don't make the user type a
 		// master password just to learn the port is taken.
 		if pid, err := pidfile.Read(); err == nil {
-			if pidfile.IsRunning(pid) {
+			if pid != os.Getpid() && pidfile.IsRunning(pid) {
 				return fmt.Errorf("server is already running (PID %d). Use 'agent-vault server stop' to stop it first", pid)
 			}
 			_ = pidfile.Remove()

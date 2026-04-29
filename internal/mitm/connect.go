@@ -133,8 +133,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		WriteTimeout:      5 * time.Minute, // upstream streaming can be legit
 		IdleTimeout:       2 * time.Minute,
 		ConnState: func(c net.Conn, state http.ConnState) {
-			if state == http.StateClosed || state == http.StateHijacked {
-				_ = listener.Close()
+			if state == http.StateHijacked {
+				listener.StopAccepting()
+			}
+			if state == http.StateClosed {
+				_ = listener.CloseConn()
 			}
 		},
 	}
@@ -202,12 +205,21 @@ func (l *oneShotListener) Accept() (net.Conn, error) {
 }
 
 func (l *oneShotListener) Close() error {
+	l.StopAccepting()
+	return nil
+}
+
+func (l *oneShotListener) CloseConn() error {
+	l.StopAccepting()
+	return l.conn.Close()
+}
+
+func (l *oneShotListener) StopAccepting() {
 	select {
 	case <-l.closed:
 	default:
 		close(l.closed)
 	}
-	return l.conn.Close()
 }
 
 func (l *oneShotListener) Addr() net.Addr { return l.conn.LocalAddr() }

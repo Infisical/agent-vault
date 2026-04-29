@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -256,8 +257,15 @@ func TestServerCmd_RefusesWhenPIDFileLive(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	// Seed the PID file with our own PID — guaranteed to be a live process.
-	owner := os.Getpid()
+	ownerProcess := exec.Command("sleep", "30")
+	if err := ownerProcess.Start(); err != nil {
+		t.Fatalf("start pid owner: %v", err)
+	}
+	defer func() {
+		_ = ownerProcess.Process.Kill()
+		_, _ = ownerProcess.Process.Wait()
+	}()
+	owner := ownerProcess.Process.Pid
 	if err := pidfile.Write(owner); err != nil {
 		t.Fatalf("seed pidfile: %v", err)
 	}
@@ -798,12 +806,12 @@ func TestResolveLogLevel(t *testing.T) {
 	t.Setenv("AGENT_VAULT_LOG_LEVEL", "")
 
 	cases := []struct {
-		name        string
-		flag        string
-		changed     bool
-		env         string
-		wantLevel   string // "info" | "debug"
-		wantErr     bool
+		name      string
+		flag      string
+		changed   bool
+		env       string
+		wantLevel string // "info" | "debug"
+		wantErr   bool
 	}{
 		{name: "default", flag: "info", changed: false, wantLevel: "info"},
 		{name: "flag_debug", flag: "debug", changed: true, wantLevel: "debug"},

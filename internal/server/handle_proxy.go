@@ -218,13 +218,20 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 8. Build outbound request.
-	outReq, err := http.NewRequestWithContext(ctx, r.Method, targetURL, r.Body)
+	body, contentLength, err := brokercore.MaterializeRequestBody(r.Body)
+	if err != nil {
+		proxyError(w, http.StatusRequestEntityTooLarge, "request_too_large", "Request body too large")
+		emit(http.StatusRequestEntityTooLarge, "request_too_large")
+		return
+	}
+	outReq, err := http.NewRequestWithContext(ctx, r.Method, targetURL, body)
 	if err != nil {
 		proxyError(w, http.StatusInternalServerError, "internal", "Failed to create outbound request")
 		emit(http.StatusInternalServerError, "internal")
 		return
 	}
 	outReq.Host = targetHost
+	outReq.ContentLength = contentLength
 
 	// Authorization carries the Agent Vault session token on this ingress;
 	// strip it on passthrough so the session credential never reaches the

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -15,12 +16,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/ca"
+	"github.com/Infisical/agent-vault/internal/ratelimit"
 )
 
 // fakeSessionResolver delegates to a per-test closure. Tests supply
@@ -203,6 +206,691 @@ func TestMITMInjectsCredentials(t *testing.T) {
 	}
 }
 
+func TestMITMForwardsBoundedBodiesWithContentLength(t *testing.T) {
+	var sawContentLength int64
+	var sawTransferEncoding []string
+	var sawBody string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawContentLength = r.ContentLength
+		sawTransferEncoding = r.TransferEncoding
+		data, _ := io.ReadAll(r.Body)
+		sawBody = string(data)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{
+			Headers: map[string]string{"Authorization": "Bearer injected-secret"},
+		}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+
+	req, err := http.NewRequest("POST", upstream.URL+"/chat", strings.NewReader(`{"hello":"world"}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.ContentLength = -1
+
+	resp, err := newTrustingClient(proxyURL, url.User("av_sess_ok"), clientRoots).Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if sawBody != `{"hello":"world"}` {
+		t.Fatalf("upstream body = %q", sawBody)
+	}
+	if sawContentLength != int64(len(sawBody)) {
+		t.Fatalf("upstream ContentLength = %d, want %d", sawContentLength, len(sawBody))
+	}
+	if len(sawTransferEncoding) != 0 {
+		t.Fatalf("upstream TransferEncoding = %v, want none", sawTransferEncoding)
+	}
+}
+
+func TestMITMWebSocketInjectsCredentialsAndPipesFrames(t *testing.T) {
+	var sawAuth, sawClientAuth, sawProxyAuth, sawUpgrade string
+	var sawKeyValues []string
+	serverDone := make(chan error, 1)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuth = r.Header.Get("Authorization")
+		sawClientAuth = r.Header.Get("X-Client-Auth")
+		sawProxyAuth = r.Header.Get("Proxy-Authorization")
+		sawUpgrade = r.Header.Get("Upgrade")
+		sawKeyValues = r.Header.Values("Sec-Websocket-Key")
+
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			serverDone <- fmt.Errorf("upstream response writer cannot hijack")
+			return
+		}
+		conn, rw, err := hj.Hijack()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+		key := r.Header.Get("Sec-Websocket-Key")
+		_, _ = fmt.Fprintf(conn,
+			"HTTP/1.1 101 Switching Protocols\r\n"+
+				"Upgrade: websocket\r\n"+
+				"Connection: Upgrade\r\n"+
+				"Sec-WebSocket-Accept: %s\r\n\r\n",
+			websocketAccept(key),
+		)
+
+		text, err := readWebSocketTextFrame(rw.Reader)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if text != "ping" {
+			serverDone <- fmt.Errorf("upstream frame = %q, want ping", text)
+			return
+		}
+		if err := writeWebSocketTextFrame(conn, "pong", false); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- nil
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	upstreamTarget := strings.TrimPrefix(upstream.URL, "https://")
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{
+			Headers: map[string]string{"Authorization": "Bearer injected-ws-secret"},
+		}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    upstreamRoots,
+	}
+
+	conn := openMITMTunnel(t, proxyURL, clientRoots, upstreamTarget, "av_sess_ok")
+	defer func() { _ = conn.Close() }()
+
+	tlsConn := tls.Client(conn, &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    clientRoots,
+		ServerName: upstreamHost,
+	})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("client tls handshake: %v", err)
+	}
+	defer func() { _ = tlsConn.Close() }()
+	_ = tlsConn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	key := "dGhlIHNhbXBsZSBub25jZQ=="
+	_, _ = fmt.Fprintf(tlsConn,
+		"GET /socket?mode=test HTTP/1.1\r\n"+
+			"Host: %s\r\n"+
+			"Upgrade: websocket\r\n"+
+			"Connection: Upgrade\r\n"+
+			"Sec-WebSocket-Key: %s\r\n"+
+			"Sec-WebSocket-Version: 13\r\n"+
+			"Authorization: Bearer client-should-not-win\r\n"+
+			"X-Client-Auth: leaked\r\n\r\n",
+		upstreamTarget,
+		key,
+	)
+
+	reader := bufio.NewReader(tlsConn)
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read websocket response: %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", resp.StatusCode)
+	}
+	if got := strings.Join(resp.Header.Values("Connection"), ","); strings.Contains(strings.ToLower(got), "close") {
+		t.Fatalf("client Connection header = %q, must not include close", got)
+	}
+	if got := resp.Header.Get("Upgrade"); !strings.EqualFold(got, "websocket") {
+		t.Fatalf("client Upgrade header = %q, want websocket", got)
+	}
+
+	if err := writeWebSocketTextFrame(tlsConn, "ping", true); err != nil {
+		t.Fatalf("write websocket frame: %v", err)
+	}
+	text, err := readWebSocketTextFrame(reader)
+	if err != nil {
+		t.Fatalf("read websocket frame: %v", err)
+	}
+	if text != "pong" {
+		t.Fatalf("websocket frame = %q, want pong", text)
+	}
+
+	select {
+	case err := <-serverDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream websocket handler timed out")
+	}
+	if sawAuth != "Bearer injected-ws-secret" {
+		t.Fatalf("upstream saw Authorization %q, want injected value", sawAuth)
+	}
+	if sawClientAuth != "leaked" {
+		t.Fatalf("upstream X-Client-Auth = %q, want passthrough of client value", sawClientAuth)
+	}
+	if sawProxyAuth != "" {
+		t.Fatalf("upstream saw Proxy-Authorization %q; must be stripped", sawProxyAuth)
+	}
+	if !strings.EqualFold(sawUpgrade, "websocket") {
+		t.Fatalf("upstream Upgrade = %q, want websocket", sawUpgrade)
+	}
+	if len(sawKeyValues) != 1 {
+		t.Fatalf("upstream Sec-WebSocket-Key values = %v, want exactly one", sawKeyValues)
+	}
+}
+
+func TestMITMWebSocketXAITTSIntegration(t *testing.T) {
+	if os.Getenv("AGENT_VAULT_XAI_INTEGRATION") != "1" {
+		t.Skip("set AGENT_VAULT_XAI_INTEGRATION=1 to run")
+	}
+	xaiKey := os.Getenv("XAI_API_KEY")
+	if xaiKey == "" {
+		t.Skip("XAI_API_KEY is required")
+	}
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		"api.x.ai": {result: &brokercore.InjectResult{
+			Headers: map[string]string{"Authorization": "Bearer " + xaiKey},
+		}},
+	}}
+	proxyURL, clientRoots, _ := setupProxy(t, sr, cp)
+
+	conn := openMITMTunnel(t, proxyURL, clientRoots, "api.x.ai:443", "av_sess_ok")
+	defer func() { _ = conn.Close() }()
+
+	tlsConn := tls.Client(conn, &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    clientRoots,
+		ServerName: "api.x.ai",
+	})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("client tls handshake: %v", err)
+	}
+	defer func() { _ = tlsConn.Close() }()
+	_ = tlsConn.SetDeadline(time.Now().Add(30 * time.Second))
+
+	key := "dGhlIHNhbXBsZSBub25jZQ=="
+	_, _ = fmt.Fprintf(tlsConn,
+		"GET /v1/tts?language=en&voice=ara&codec=pcm&sample_rate=24000 HTTP/1.1\r\n"+
+			"Host: api.x.ai\r\n"+
+			"Upgrade: websocket\r\n"+
+			"Connection: Upgrade\r\n"+
+			"Sec-WebSocket-Key: %s\r\n"+
+			"Sec-WebSocket-Version: 13\r\n"+
+			"Authorization: Bearer dummy-agent-visible-key\r\n\r\n",
+		key,
+	)
+
+	reader := bufio.NewReader(tlsConn)
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read websocket response: %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", resp.StatusCode)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if err := writeWebSocketTextFrame(tlsConn, `{"type":"text.delta","delta":"Agent Vault websocket test."}`, true); err != nil {
+		t.Fatalf("write text.delta: %v", err)
+	}
+	if err := writeWebSocketTextFrame(tlsConn, `{"type":"text.done"}`, true); err != nil {
+		t.Fatalf("write text.done: %v", err)
+	}
+
+	for deadline := time.After(25 * time.Second); ; {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for xAI audio output")
+		default:
+		}
+		text, err := readWebSocketTextFrame(reader)
+		if err != nil {
+			t.Fatalf("read websocket frame: %v", err)
+		}
+		var event struct {
+			Type  string `json:"type"`
+			Delta string `json:"delta"`
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(text), &event); err != nil {
+			t.Fatalf("xAI frame is not JSON: %v", err)
+		}
+		if event.Type == "error" {
+			t.Fatalf("xAI error: %s", event.Error.Message)
+		}
+		if event.Type == "audio.delta" && event.Delta != "" {
+			return
+		}
+	}
+}
+
+func TestMITMWebSocketOpenAIRealtimeIntegration(t *testing.T) {
+	if os.Getenv("AGENT_VAULT_OPENAI_INTEGRATION") != "1" {
+		t.Skip("set AGENT_VAULT_OPENAI_INTEGRATION=1 to run")
+	}
+	openAIKey := os.Getenv("OPENAI_API_KEY")
+	if openAIKey == "" {
+		t.Skip("OPENAI_API_KEY is required")
+	}
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		"api.openai.com": {result: &brokercore.InjectResult{
+			Headers: map[string]string{"Authorization": "Bearer " + openAIKey},
+		}},
+	}}
+	proxyURL, clientRoots, _ := setupProxy(t, sr, cp)
+
+	conn := openMITMTunnel(t, proxyURL, clientRoots, "api.openai.com:443", "av_sess_ok")
+	defer func() { _ = conn.Close() }()
+
+	tlsConn := tls.Client(conn, &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    clientRoots,
+		ServerName: "api.openai.com",
+	})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("client tls handshake: %v", err)
+	}
+	defer func() { _ = tlsConn.Close() }()
+	_ = tlsConn.SetDeadline(time.Now().Add(30 * time.Second))
+
+	key := "dGhlIHNhbXBsZSBub25jZQ=="
+	_, _ = fmt.Fprintf(tlsConn,
+		"GET /v1/realtime?intent=transcription HTTP/1.1\r\n"+
+			"Host: api.openai.com\r\n"+
+			"Upgrade: websocket\r\n"+
+			"Connection: Upgrade\r\n"+
+			"Sec-WebSocket-Key: %s\r\n"+
+			"Sec-WebSocket-Version: 13\r\n"+
+			"Authorization: Bearer dummy-agent-visible-key\r\n"+
+			"OpenAI-Beta: realtime=v1\r\n\r\n",
+		key,
+	)
+
+	reader := bufio.NewReader(tlsConn)
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read websocket response: %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		t.Fatalf("status = %d, want 101: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if err := writeWebSocketTextFrame(tlsConn, `{"type":"session.update","session":{"type":"transcription","audio":{"input":{"format":{"type":"audio/pcm","rate":24000},"transcription":{"model":"gpt-4o-transcribe"},"turn_detection":{"type":"server_vad"}}}}}`, true); err != nil {
+		t.Fatalf("write session.update: %v", err)
+	}
+
+	for deadline := time.After(25 * time.Second); ; {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for OpenAI session update")
+		default:
+		}
+		text, err := readWebSocketTextFrame(reader)
+		if err != nil {
+			t.Fatalf("read websocket frame: %v", err)
+		}
+		var event struct {
+			Type  string `json:"type"`
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(text), &event); err != nil {
+			t.Fatalf("OpenAI frame is not JSON: %v", err)
+		}
+		if event.Type == "error" {
+			t.Fatalf("OpenAI error: %s", event.Error.Message)
+		}
+		if event.Type == "session.updated" {
+			return
+		}
+	}
+}
+
+func TestMITMWebSocketSanitizesSwitchingResponseAndInjectedHeadersWin(t *testing.T) {
+	var sawProtocol string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawProtocol = r.Header.Get("Sec-Websocket-Protocol")
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Errorf("upstream response writer cannot hijack")
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		key := r.Header.Get("Sec-Websocket-Key")
+		_, _ = fmt.Fprintf(conn,
+			"HTTP/1.1 101 Switching Protocols\r\n"+
+				"Upgrade: websocket\r\n"+
+				"Connection: Upgrade\r\n"+
+				"Sec-WebSocket-Accept: %s\r\n"+
+				"Sec-WebSocket-Protocol: %s\r\n"+
+				"Set-Cookie: planted=1\r\n\r\n",
+			websocketAccept(key),
+			sawProtocol,
+		)
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	upstreamTarget := strings.TrimPrefix(upstream.URL, "https://")
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{AgentID: "agent1", VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{
+			Headers: map[string]string{"Sec-WebSocket-Protocol": "injected-proto"},
+		}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    upstreamRoots,
+	}
+
+	conn := openMITMTunnel(t, proxyURL, clientRoots, upstreamTarget, "av_sess_ok")
+	defer func() { _ = conn.Close() }()
+
+	tlsConn := tls.Client(conn, &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    clientRoots,
+		ServerName: upstreamHost,
+	})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("client tls handshake: %v", err)
+	}
+	defer func() { _ = tlsConn.Close() }()
+	_ = tlsConn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	key := "dGhlIHNhbXBsZSBub25jZQ=="
+	_, _ = fmt.Fprintf(tlsConn,
+		"GET /socket HTTP/1.1\r\n"+
+			"Host: %s\r\n"+
+			"Upgrade: websocket\r\n"+
+			"Connection: Upgrade\r\n"+
+			"Sec-WebSocket-Key: %s\r\n"+
+			"Sec-WebSocket-Version: 13\r\n"+
+			"Sec-WebSocket-Protocol: client-proto\r\n\r\n",
+		upstreamTarget,
+		key,
+	)
+
+	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read websocket response: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", resp.StatusCode)
+	}
+	if sawProtocol != "injected-proto" {
+		t.Fatalf("upstream Sec-WebSocket-Protocol = %q, want injected-proto", sawProtocol)
+	}
+	if got := resp.Header.Get("Sec-Websocket-Protocol"); got != "injected-proto" {
+		t.Fatalf("client Sec-WebSocket-Protocol = %q, want injected-proto", got)
+	}
+	if got := resp.Header.Get("Set-Cookie"); got != "" {
+		t.Fatalf("client saw Set-Cookie %q; switching response must be sanitized", got)
+	}
+}
+
+func TestMITMWebSocketHoldsProxyConcurrencyUntilTunnelCloses(t *testing.T) {
+	releaseUpstream := make(chan struct{})
+	upstreamReady := make(chan struct{}, 1)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Errorf("upstream response writer cannot hijack")
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		key := r.Header.Get("Sec-Websocket-Key")
+		_, _ = fmt.Fprintf(conn,
+			"HTTP/1.1 101 Switching Protocols\r\n"+
+				"Upgrade: websocket\r\n"+
+				"Connection: Upgrade\r\n"+
+				"Sec-WebSocket-Accept: %s\r\n\r\n",
+			websocketAccept(key),
+		)
+		select {
+		case upstreamReady <- struct{}{}:
+		default:
+		}
+		<-releaseUpstream
+	}))
+	defer func() {
+		close(releaseUpstream)
+		upstream.Close()
+	}()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	upstreamTarget := strings.TrimPrefix(upstream.URL, "https://")
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{AgentID: "agent1", VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{
+			Headers: map[string]string{"Authorization": "Bearer injected-secret"},
+		}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+	cfg := ratelimit.DefaultsFor(ratelimit.ProfileDefault)
+	cfg.Tiers[ratelimit.TierProxy].Concurrency = 1
+	cfg.Tiers[ratelimit.TierProxy].Rate = 100
+	cfg.Tiers[ratelimit.TierProxy].Burst = 100
+	p.rateLimit = ratelimit.New(cfg)
+
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    upstreamRoots,
+	}
+
+	firstConn := openMITMTunnel(t, proxyURL, clientRoots, upstreamTarget, "av_sess_ok")
+	defer func() { _ = firstConn.Close() }()
+	firstTLS := tls.Client(firstConn, &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    clientRoots,
+		ServerName: upstreamHost,
+	})
+	if err := firstTLS.Handshake(); err != nil {
+		t.Fatalf("first client tls handshake: %v", err)
+	}
+	defer func() { _ = firstTLS.Close() }()
+	_ = firstTLS.SetDeadline(time.Now().Add(5 * time.Second))
+
+	key := "dGhlIHNhbXBsZSBub25jZQ=="
+	_, _ = fmt.Fprintf(firstTLS,
+		"GET /socket HTTP/1.1\r\n"+
+			"Host: %s\r\n"+
+			"Upgrade: websocket\r\n"+
+			"Connection: Upgrade\r\n"+
+			"Sec-WebSocket-Key: %s\r\n"+
+			"Sec-WebSocket-Version: 13\r\n\r\n",
+		upstreamTarget,
+		key,
+	)
+	firstResp, err := http.ReadResponse(bufio.NewReader(firstTLS), &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read first websocket response: %v", err)
+	}
+	defer func() { _ = firstResp.Body.Close() }()
+	if firstResp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("first status = %d, want 101", firstResp.StatusCode)
+	}
+	select {
+	case <-upstreamReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream did not hold first websocket open")
+	}
+
+	secondConn := openMITMTunnel(t, proxyURL, clientRoots, upstreamTarget, "av_sess_ok")
+	defer func() { _ = secondConn.Close() }()
+	secondTLS := tls.Client(secondConn, &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    clientRoots,
+		ServerName: upstreamHost,
+	})
+	if err := secondTLS.Handshake(); err != nil {
+		t.Fatalf("second client tls handshake: %v", err)
+	}
+	defer func() { _ = secondTLS.Close() }()
+	_ = secondTLS.SetDeadline(time.Now().Add(5 * time.Second))
+
+	_, _ = fmt.Fprintf(secondTLS,
+		"GET /socket HTTP/1.1\r\n"+
+			"Host: %s\r\n"+
+			"Upgrade: websocket\r\n"+
+			"Connection: Upgrade\r\n"+
+			"Sec-WebSocket-Key: %s\r\n"+
+			"Sec-WebSocket-Version: 13\r\n\r\n",
+		upstreamTarget,
+		key,
+	)
+	secondResp, err := http.ReadResponse(bufio.NewReader(secondTLS), &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read second websocket response: %v", err)
+	}
+	defer func() { _ = secondResp.Body.Close() }()
+	if secondResp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, want 429 while first tunnel is open", secondResp.StatusCode)
+	}
+}
+
+func TestMITMWebSocketUpstreamHandshakeTimeout(t *testing.T) {
+	releaseUpstream := make(chan struct{})
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Errorf("upstream response writer cannot hijack")
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		<-releaseUpstream
+	}))
+	defer func() {
+		close(releaseUpstream)
+		upstream.Close()
+	}()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	upstreamTarget := strings.TrimPrefix(upstream.URL, "https://")
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{AgentID: "agent1", VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{
+			Headers: map[string]string{"Authorization": "Bearer injected-secret"},
+		}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    upstreamRoots,
+	}
+	p.upstream.ResponseHeaderTimeout = 50 * time.Millisecond
+
+	conn := openMITMTunnel(t, proxyURL, clientRoots, upstreamTarget, "av_sess_ok")
+	defer func() { _ = conn.Close() }()
+
+	tlsConn := tls.Client(conn, &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    clientRoots,
+		ServerName: upstreamHost,
+	})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("client tls handshake: %v", err)
+	}
+	defer func() { _ = tlsConn.Close() }()
+	_ = tlsConn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	key := "dGhlIHNhbXBsZSBub25jZQ=="
+	_, _ = fmt.Fprintf(tlsConn,
+		"GET /socket HTTP/1.1\r\n"+
+			"Host: %s\r\n"+
+			"Upgrade: websocket\r\n"+
+			"Connection: Upgrade\r\n"+
+			"Sec-WebSocket-Key: %s\r\n"+
+			"Sec-WebSocket-Version: 13\r\n\r\n",
+		upstreamTarget,
+		key,
+	)
+
+	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read timeout response: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 when upstream never returns switching response", resp.StatusCode)
+	}
+}
+
 func TestMITMPassthroughForwardsClientAuthorization(t *testing.T) {
 	// On the MITM ingress, Proxy-Authorization is the broker-scoped credential
 	// and Authorization is the client's own upstream header — it must flow
@@ -343,6 +1031,106 @@ func TestMITMBearerForwardsArbitraryClientHeaders(t *testing.T) {
 	if sawTrace != "trace-123" {
 		t.Fatalf("upstream X-Trace-Id = %q, want passthrough", sawTrace)
 	}
+}
+
+func openMITMTunnel(t *testing.T, proxyURL *url.URL, roots *x509.CertPool, target, token string) net.Conn {
+	t.Helper()
+	conn, err := tls.Dial("tcp", proxyURL.Host, &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    roots,
+	})
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+
+	auth := base64.StdEncoding.EncodeToString([]byte(token + ":"))
+	_, _ = fmt.Fprintf(conn,
+		"CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic %s\r\n\r\n",
+		target,
+		target,
+		auth,
+	)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		_ = conn.Close()
+		t.Fatalf("read connect response: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		_ = conn.Close()
+		t.Fatalf("connect status = %d, want 200", resp.StatusCode)
+	}
+	return conn
+}
+
+func websocketAccept(key string) string {
+	sum := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func writeWebSocketTextFrame(w io.Writer, text string, masked bool) error {
+	payload := []byte(text)
+	header := []byte{0x81, byte(len(payload))}
+	if masked {
+		header[1] |= 0x80
+	}
+	if _, err := w.Write(header); err != nil {
+		return err
+	}
+
+	mask := []byte{1, 2, 3, 4}
+	if masked {
+		if _, err := w.Write(mask); err != nil {
+			return err
+		}
+	}
+	for i := range payload {
+		if masked {
+			payload[i] ^= mask[i%len(mask)]
+		}
+	}
+	_, err := w.Write(payload)
+	return err
+}
+
+func readWebSocketTextFrame(r io.Reader) (string, error) {
+	header := make([]byte, 2)
+	if _, err := io.ReadFull(r, header); err != nil {
+		return "", err
+	}
+	if header[0]&0x0f != 1 {
+		return "", fmt.Errorf("opcode = %d, want text", header[0]&0x0f)
+	}
+
+	masked := header[1]&0x80 != 0
+	length := int(header[1] & 0x7f)
+	if length == 126 {
+		extended := make([]byte, 2)
+		if _, err := io.ReadFull(r, extended); err != nil {
+			return "", err
+		}
+		length = int(extended[0])<<8 | int(extended[1])
+	} else if length == 127 {
+		return "", fmt.Errorf("large websocket frames are not supported by test helper")
+	}
+
+	mask := []byte{0, 0, 0, 0}
+	if masked {
+		if _, err := io.ReadFull(r, mask); err != nil {
+			return "", err
+		}
+	}
+
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return "", err
+	}
+	for i := range payload {
+		if masked {
+			payload[i] ^= mask[i%len(mask)]
+		}
+	}
+	return string(payload), nil
 }
 
 // rawConnect dials the proxy over TLS, sends a CONNECT request with the
@@ -688,4 +1476,3 @@ func TestIsValidHost(t *testing.T) {
 		}
 	}
 }
-
