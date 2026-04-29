@@ -60,6 +60,69 @@ description: "Complete reference for all Agent Vault CLI commands."
   </Accordion>
 </AccordionGroup>
 
+## Request logs and inspection
+
+<AccordionGroup>
+  <Accordion title="agent-vault logs">
+    ```bash
+    agent-vault logs [flags]
+    ```
+
+    List the per-vault request log from the CLI. Request logs are safe metadata only: method, host, path, matched service, credential key names, status, latency, actor, ingress, and timestamp. Bodies, header values, query strings, and credential values are never returned.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--vault` | active vault | Vault name |
+    | `--ingress` | | Filter by ingress: `explicit` or `mitm` |
+    | `--status` | | Filter by status bucket: `2xx`, `3xx`, `4xx`, `5xx`, or `err` |
+    | `--service` | | Filter by matched service host |
+    | `--limit` | `50` | Number of logs to fetch, capped by the server at 200 |
+    | `--tail` | `false` | Poll for new logs |
+    | `--interval` | `2s` | Poll interval for `--tail` |
+    | `--json` | `false` | Print JSON |
+
+    **Examples:**
+
+    ```bash
+    agent-vault logs
+    agent-vault logs --status 4xx --service api.anthropic.com
+    agent-vault logs --tail
+    ```
+  </Accordion>
+
+  <Accordion title="agent-vault inspect request">
+    ```bash
+    agent-vault inspect request --id <id> [flags]
+    ```
+
+    Show one request log and a best-effort diagnosis derived from secret-free metadata.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--id` | | Request log id |
+    | `--vault` | active vault | Vault name |
+    | `--json` | `false` | Print JSON |
+  </Accordion>
+
+  <Accordion title="agent-vault inspect explain">
+    ```bash
+    agent-vault inspect explain [flags]
+    agent-vault inspect logs [flags]
+    ```
+
+    Explain likely failure classes in recent request logs. `inspect logs` is an alias for `inspect explain`. The inspector is intentionally conservative: it never asks for bodies, header values, query strings, or credential values.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--vault` | active vault | Vault name |
+    | `--ingress` | | Filter by ingress: `explicit` or `mitm` |
+    | `--status` | | Filter by status bucket: `2xx`, `3xx`, `4xx`, `5xx`, or `err` |
+    | `--service` | | Filter by matched service host |
+    | `--limit` | `50` | Number of recent logs to inspect, capped by the server at 200 |
+    | `--json` | `false` | Print JSON |
+  </Accordion>
+</AccordionGroup>
+
 ## CA
 
 <AccordionGroup>
