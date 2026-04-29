@@ -168,5 +168,34 @@ func (p *Proxy) dispatch(w http.ResponseWriter, r *http.Request) {
 		p.handleConnect(w, r)
 		return
 	}
+	// Forward-proxy requests arrive here with an absolute URL in the
+	// request line (e.g. "POST http://ai/v1/messages HTTP/1.1"). The
+	// MITM listener only speaks the CONNECT half of the proxy protocol
+	// — we have no path for forwarding a plain HTTP request on the
+	// client's behalf. Surface the cause and every available lever
+	// instead of bare "method not supported", because the lever is
+	// non-obvious from the wire-level error alone.
+	if r.URL != nil && r.URL.IsAbs() {
+		host := r.URL.Hostname()
+		scheme := r.URL.Scheme
+		msg := fmt.Sprintf(
+			"Agent Vault broker received a forward-proxy %s request for %s://%s, but only handles HTTPS CONNECT tunnels.\n"+
+				"\n"+
+				"Cause: an HTTP client in your process picked up the broker's HTTPS_PROXY for a %s:// destination. The broker has no path to forward such a request — it can only tunnel TLS via CONNECT.\n"+
+				"\n"+
+				"Fix options (pick whichever fits):\n"+
+				"  1. If %q should bypass the broker entirely (e.g. a sidecar reachable over %s:// from this machine, like a Tailscale-mediated AI gateway), add it to NO_PROXY:\n"+
+				"       agent-vault vault run --no-proxy %s -- <agent>\n"+
+				"     or via env var:\n"+
+				"       AGENT_VAULT_NO_PROXY=%s agent-vault vault run -- <agent>\n"+
+				"  2. If the destination should go through the broker, change your client to call it over https:// — the broker will then receive a CONNECT and proceed normally.\n",
+			r.Method, scheme, host,
+			scheme,
+			host, scheme,
+			host, host,
+		)
+		http.Error(w, msg, http.StatusMethodNotAllowed)
+		return
+	}
 	http.Error(w, fmt.Sprintf("method %s not supported on transparent proxy", r.Method), http.StatusMethodNotAllowed)
 }

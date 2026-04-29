@@ -73,6 +73,8 @@ func TestValidateIsolationFlagConflicts(t *testing.T) {
 		{"host mode rejects --share-agent-dir", IsolationHost, []string{"--share-agent-dir"}, "--share-agent-dir requires --isolation=container"},
 		{"container mode accepts --share-agent-dir alone", IsolationContainer, []string{"--share-agent-dir"}, ""},
 		{"container mode rejects --no-mitm", IsolationContainer, []string{"--no-mitm"}, "--no-mitm requires --isolation=host"},
+		{"container mode rejects --no-proxy", IsolationContainer, []string{"--no-proxy=ai"}, "--no-proxy requires --isolation=host"},
+		{"host mode accepts --no-proxy", IsolationHost, []string{"--no-proxy=ai"}, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -128,6 +130,38 @@ func TestValidateContainerFlagCombos(t *testing.T) {
 	}
 }
 
+// TestValidateIsolationFlagConflicts_NoProxyEnvVarBlocked covers the
+// env-var twin of --no-proxy. Without this guard, AGENT_VAULT_NO_PROXY
+// would silently slip past the flag walk in container mode, the in-
+// container client would dial the bypassed host directly, and the
+// iptables egress lock would drop the connection — leaving the
+// operator to chase an opaque connection error.
+func TestValidateIsolationFlagConflicts_NoProxyEnvVarBlocked(t *testing.T) {
+	t.Setenv("AGENT_VAULT_NO_PROXY", "ai")
+	cmd := newRunCommandForTest()
+	if err := cmd.ParseFlags(nil); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	err := validateIsolationFlagConflicts(cmd, IsolationContainer)
+	if err == nil || !strings.Contains(err.Error(), "AGENT_VAULT_NO_PROXY") {
+		t.Errorf("err = %v, want substring AGENT_VAULT_NO_PROXY", err)
+	}
+}
+
+// TestValidateIsolationFlagConflicts_NoProxyEnvVarAllowedInHost guards
+// the inverse: in host mode, AGENT_VAULT_NO_PROXY is the intended
+// extension mechanism and must not trigger the rejection.
+func TestValidateIsolationFlagConflicts_NoProxyEnvVarAllowedInHost(t *testing.T) {
+	t.Setenv("AGENT_VAULT_NO_PROXY", "ai")
+	cmd := newRunCommandForTest()
+	if err := cmd.ParseFlags(nil); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if err := validateIsolationFlagConflicts(cmd, IsolationHost); err != nil {
+		t.Errorf("expected nil err in host mode, got %v", err)
+	}
+}
+
 // newRunCommandForTest isolates flag `Changed` state per subtest; runCmd
 // itself would leak pflag state across ParseFlags calls.
 func newRunCommandForTest() *cobra.Command {
@@ -141,5 +175,6 @@ func newRunCommandForTest() *cobra.Command {
 	c.Flags().Bool("home-volume-shared", false, "")
 	c.Flags().Bool("share-agent-dir", false, "")
 	c.Flags().Bool("no-mitm", false, "")
+	c.Flags().StringSlice("no-proxy", nil, "")
 	return c
 }

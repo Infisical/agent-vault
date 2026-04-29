@@ -22,6 +22,7 @@ description: "All environment variables used to configure Agent Vault"
 | `AGENT_VAULT_LOGS_MAX_ROWS_PER_VAULT` | `10000` | Per-vault row cap for the request log. Whichever limit (age or rows) hits first wins, so heavy-traffic vaults retain a shorter window than the time-based TTL alone would suggest. Set to `0` to disable the row cap. |
 | `AGENT_VAULT_LOGS_RETENTION_LOCK` | `false` | When `true`, any owner-UI overrides for log retention are ignored and env values (or defaults) are pinned. Use when you want retention limits controlled only by the operator. |
 | `AGENT_VAULT_ISOLATION` | `host` | Default isolation mode for `agent-vault vault run`. `host` forks the child on the host with `HTTPS_PROXY` envvars (cooperative). `container` launches it inside a Docker container with iptables-locked egress (non-cooperative; see [Container isolation](/guides/container-isolation)). The `--isolation` flag overrides this. |
+| `AGENT_VAULT_NO_PROXY` | (unset) | Comma-separated hosts to add to the child's `NO_PROXY` (e.g. `ai,*.ts.net`) so they bypass the broker. Used by `agent-vault vault run` alongside its built-in `localhost,127.0.0.1` defaults — defaults are always preserved. Use this for tailnet sidecars (e.g. Tailscale Aperture) reachable over plain http:// that would otherwise hit the broker as forward-proxy POSTs and 405. The `--no-proxy` flag adds to whatever this env var contributes. |
 
 Master password resolution order:
 

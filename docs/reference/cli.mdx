@@ -272,6 +272,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--role` | `proxy` | Vault role for the session: `proxy`, `member`, or `admin` |
     | `--ttl` | `0` | Session TTL in seconds (300–604800). Default: server default (24h). |
     | `--no-mitm` | `false` | Skip HTTPS_PROXY/CA env injection; rely solely on the explicit `/proxy/{host}/{path}` endpoint. |
+    | `--no-proxy` | `[]` | Hosts to add to `NO_PROXY` so they bypass the broker entirely. Repeatable; values are also comma-split. Also read from `AGENT_VAULT_NO_PROXY`. The defaults (`localhost,127.0.0.1`) are always preserved. Use this for tailnet sidecars (e.g. Aperture's `ai`) reachable over plain http:// — those would otherwise hit the broker as forward-proxy POSTs and 405. |
     | `--isolation` | `host` | Isolation mode for the child: `host` (default, cooperative — runs on the host with HTTPS_PROXY) or `container` (non-cooperative Docker container; see [Container isolation](/guides/container-isolation)). Also read from `AGENT_VAULT_ISOLATION`. |
     | `--image` | | Override the bundled container image (`--isolation=container` only). |
     | `--mount` | | Extra bind mount `src:dst[:ro]`; repeatable (`--isolation=container` only). Host paths are EvalSymlinks-resolved; reserved paths rejected. |
