@@ -23,10 +23,11 @@ import (
 // containerOnlyFlags are no-ops in host mode. hostOnlyFlags are
 // no-ops in container mode (where MITM is always on, enforced by the
 // iptables lockdown). Either direction is a foot-gun if accepted
-// silently — reject in both.
+// silently — reject in both. --no-proxy is host-only because the
+// container's iptables lock would drop any bypassed traffic anyway.
 var (
 	containerOnlyFlags = []string{"image", "mount", "keep", "no-firewall", "home-volume-shared", "share-agent-dir"}
-	hostOnlyFlags      = []string{"no-mitm"}
+	hostOnlyFlags      = []string{"no-mitm", noProxyFlag}
 )
 
 // validateContainerFlagCombos enforces mutual-exclusion between container-mode
@@ -58,6 +59,10 @@ func validateIsolationFlagConflicts(cmd *cobra.Command, mode IsolationMode) erro
 			continue
 		}
 		return fmt.Errorf("--%s requires --isolation=%s", name, otherMode)
+	}
+	// Env-var twin of --no-proxy; same rule.
+	if mode == IsolationContainer && os.Getenv(noProxyEnv) != "" {
+		return fmt.Errorf("%s is not supported with --isolation=container: the iptables egress lock would drop any NO_PROXY bypass", noProxyEnv)
 	}
 	return nil
 }
@@ -208,7 +213,7 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 		return fmt.Errorf("getwd: %w", err)
 	}
 
-	env := isolation.BuildContainerEnv(scopedToken, vault, fwd.HTTPPort, fwd.MITMPort, mitmTLS)
+	env := isolation.BuildContainerEnv(scopedToken, vault, fwd.HTTPPort, fwd.MITMPort, mitmTLS, resolveExtraNoProxy(cmd))
 
 	mounts, _ := cmd.Flags().GetStringArray("mount")
 	keep, _ := cmd.Flags().GetBool("keep")

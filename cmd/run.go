@@ -27,6 +27,11 @@ var skillCLI string
 //go:embed skill_http.md
 var skillHTTP string
 
+const (
+	noProxyFlag = "no-proxy"
+	noProxyEnv  = "AGENT_VAULT_NO_PROXY"
+)
+
 // newRunCmd is called twice — for `vault run` and top-level `run` — so each
 // command gets its own pflag state. examplePrefix parameterizes the Example
 // section of Long.
@@ -52,10 +57,16 @@ HTTPS (CONNECT) and would 405 any plain http:// request. The root CA PEM
 is written to ~/.agent-vault/mitm-ca.pem. Pass --no-mitm to disable
 injection and rely solely on the explicit /proxy/{host}/{path} endpoint.
 
+NO_PROXY defaults to "localhost,127.0.0.1". Use --no-proxy (repeatable, also
+comma-separated) or AGENT_VAULT_NO_PROXY=host1,host2 to extend it — e.g. for a
+Tailscale Aperture node on plain http:// that should bypass the broker entirely.
+The defaults are always preserved.
+
 Example:
   ` + examplePrefix + ` -- claude
   ` + examplePrefix + ` --vault myproject -- claude
-  ` + examplePrefix + ` --no-mitm -- claude`,
+  ` + examplePrefix + ` --no-mitm -- claude
+  ` + examplePrefix + ` --no-proxy ai -- hermes`,
 		Args:                  cobra.MinimumNArgs(1),
 		DisableFlagsInUseLine: true,
 		RunE:                  runCmdRunE,
@@ -68,6 +79,7 @@ Example:
 	c.Flags().String("role", "", "Vault role for the agent session (proxy, member, admin; default: proxy)")
 	c.Flags().Int("ttl", 0, "Session TTL in seconds (300–604800; default: server default 24h)")
 	c.Flags().Bool("no-mitm", false, "Skip HTTPS_PROXY/CA env injection for the child (explicit /proxy only)")
+	c.Flags().StringSlice(noProxyFlag, nil, "Hosts to add to NO_PROXY so they bypass the broker (repeatable, also comma-separated). Also read from "+noProxyEnv+". Defaults (localhost,127.0.0.1) are always preserved.")
 
 	c.Flags().String("image", "", "Container image override (requires --isolation=container)")
 	c.Flags().StringArray("mount", nil, "Extra bind mount src:dst[:ro] (repeatable; requires --isolation=container)")
@@ -142,7 +154,7 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	// 6. Route the child's HTTPS traffic through the transparent MITM
 	//    proxy. Explicit /proxy stays available as a fallback.
 	if noMITM, _ := cmd.Flags().GetBool("no-mitm"); !noMITM {
-		newEnv, mitmPort, ok, err := augmentEnvWithMITM(env, addr, scopedToken, vault, "")
+		newEnv, mitmPort, ok, err := augmentEnvWithMITM(env, addr, scopedToken, vault, "", resolveExtraNoProxy(cmd))
 		switch {
 		case err != nil:
 			fmt.Fprintf(os.Stderr, "agent-vault: MITM setup failed (%v); continuing with explicit proxy only\n", err)
@@ -375,6 +387,16 @@ func stripEnvKeys(env []string, keys map[string]struct{}) []string {
 	return out
 }
 
+// resolveExtraNoProxy is a raw collector; sanitization lives in
+// buildNoProxy so there's one source of truth.
+func resolveExtraNoProxy(cmd *cobra.Command) []string {
+	hosts, _ := cmd.Flags().GetStringSlice(noProxyFlag)
+	if env := os.Getenv(noProxyEnv); env != "" {
+		hosts = append(hosts, strings.Split(env, ",")...)
+	}
+	return hosts
+}
+
 // augmentEnvWithMITM extends env so the child transparently routes HTTPS
 // through the broker. Returns (env, 0, false, nil) when the server has
 // MITM disabled. The second return value is the port the server reported;
@@ -384,7 +406,7 @@ func stripEnvKeys(env []string, keys map[string]struct{}) []string {
 // Only HTTPS_PROXY is injected — not HTTP_PROXY. The MITM proxy handles
 // HTTP CONNECT only and returns 405 for every other method, so setting
 // HTTP_PROXY would route plain http:// requests into a dead end.
-func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]string, int, bool, error) {
+func augmentEnvWithMITM(env []string, addr, token, vault, caPath string, extraNoProxy []string) ([]string, int, bool, error) {
 	pem, port, enabled, mitmTLS, err := fetchMITMCA(addr)
 	if err != nil {
 		return env, 0, false, err
@@ -424,12 +446,13 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 
 	env = stripEnvKeys(env, mitmInjectedKeys)
 	env = append(env, isolation.BuildProxyEnv(isolation.ProxyEnvParams{
-		Host:    mitmHost,
-		Port:    port,
-		Token:   token,
-		Vault:   vault,
-		CAPath:  caPath,
-		MITMTLS: mitmTLS,
+		Host:         mitmHost,
+		Port:         port,
+		Token:        token,
+		Vault:        vault,
+		CAPath:       caPath,
+		MITMTLS:      mitmTLS,
+		ExtraNoProxy: extraNoProxy,
 	})...)
 	return env, port, true, nil
 }

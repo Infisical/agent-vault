@@ -512,6 +512,39 @@ func TestMITMRejectsNonConnectRequests(t *testing.T) {
 	}
 }
 
+// TestMITMForwardProxyHTTPGivesActionableHint: a forward-proxy
+// http:// request must surface the host + bypass levers in the 405
+// body. Standard HTTP libraries won't emit the absolute-URL request
+// line, so the test writes the wire format directly.
+func TestMITMForwardProxyHTTPGivesActionableHint(t *testing.T) {
+	proxyURL, clientRoots, _ := setupProxy(t, errResolver(brokercore.ErrInvalidSession), &fakeCredProvider{})
+
+	conn, err := tls.Dial("tcp", proxyURL.Host, &tls.Config{RootCAs: clientRoots})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("POST http://ai/v1/messages HTTP/1.1\r\nHost: ai\r\nContent-Length: 0\r\n\r\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+	for _, want := range []string{"ai", "http://", "NO_PROXY", "--no-proxy", "AGENT_VAULT_NO_PROXY", "https://"} {
+		if !strings.Contains(bodyStr, want) {
+			t.Errorf("405 body missing %q. Body:\n%s", want, bodyStr)
+		}
+	}
+}
+
 func TestMITMSubstitutionRewritesPath(t *testing.T) {
 	var sawPath, sawQuery, sawAuth string
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

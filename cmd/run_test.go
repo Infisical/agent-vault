@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // expectedRunFlags is the single source of truth for flags both `vault run`
@@ -16,7 +18,7 @@ import (
 // the other is a bug. `vault` is inherited from vaultCmd's persistent flags
 // on `vault run` and registered locally on the top-level `run`.
 var expectedRunFlags = []string{
-	"address", "role", "ttl", "no-mitm", "vault",
+	"address", "role", "ttl", "no-mitm", "no-proxy", "vault",
 	"isolation", "image", "mount", "keep", "no-firewall",
 	"home-volume-shared", "share-agent-dir",
 }
@@ -71,7 +73,7 @@ func TestAugmentEnvWithMITM_Disabled(t *testing.T) {
 	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
 	baseEnv := []string{"FOO=bar"}
 
-	env, port, ok, err := augmentEnvWithMITM(baseEnv, srv.URL, "av_sess_abc", "default", caPath)
+	env, port, ok, err := augmentEnvWithMITM(baseEnv, srv.URL, "av_sess_abc", "default", caPath, nil)
 	if err != nil {
 		t.Fatalf("expected nil err on 404, got %v", err)
 	}
@@ -113,7 +115,7 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 	defer srv.Close()
 
 	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
-	env, port, ok, err := augmentEnvWithMITM(nil, srv.URL, "av_sess_abc", "default", caPath)
+	env, port, ok, err := augmentEnvWithMITM(nil, srv.URL, "av_sess_abc", "default", caPath, nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -201,7 +203,7 @@ func TestAugmentEnvWithMITM_PortFallback(t *testing.T) {
 	defer srv.Close()
 
 	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
-	_, port, ok, err := augmentEnvWithMITM(nil, srv.URL, "tok", "v", caPath)
+	_, port, ok, err := augmentEnvWithMITM(nil, srv.URL, "tok", "v", caPath, nil)
 	if err != nil || !ok {
 		t.Fatalf("augmentEnvWithMITM: ok=%v err=%v", ok, err)
 	}
@@ -234,7 +236,7 @@ func TestAugmentEnvWithMITM_DedupesParentEnv(t *testing.T) {
 		"DENO_CERT=/etc/ssl/corp-ca.pem",
 		"UNRELATED=keep-me",
 	}
-	env, _, ok, err := augmentEnvWithMITM(parentEnv, srv.URL, "tok", "v", caPath)
+	env, _, ok, err := augmentEnvWithMITM(parentEnv, srv.URL, "tok", "v", caPath, nil)
 	if err != nil || !ok {
 		t.Fatalf("augmentEnvWithMITM: ok=%v err=%v", ok, err)
 	}
@@ -280,7 +282,7 @@ func TestAugmentEnvWithMITM_OldServerNoTLS(t *testing.T) {
 	defer srv.Close()
 
 	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
-	env, _, ok, err := augmentEnvWithMITM(nil, srv.URL, "tok", "v", caPath)
+	env, _, ok, err := augmentEnvWithMITM(nil, srv.URL, "tok", "v", caPath, nil)
 	if err != nil || !ok {
 		t.Fatalf("augmentEnvWithMITM: ok=%v err=%v", ok, err)
 	}
@@ -303,4 +305,105 @@ func envMap(env []string) map[string]string {
 		}
 	}
 	return m
+}
+
+// runCmdForFlagTest returns a fresh `run` command with no-op RunE so we
+// can drive flag parsing in isolation without firing any of the actual
+// session-mint / exec logic.
+func runCmdForFlagTest() *cobra.Command {
+	c := newRunCmd("agent-vault vault run")
+	c.RunE = func(_ *cobra.Command, _ []string) error { return nil }
+	return c
+}
+
+// TestResolveExtraNoProxy_FlagSplits covers pflag's StringSlice
+// comma-handling: a single comma-separated --no-proxy value gets split,
+// repeated --no-proxy entries combine. resolveExtraNoProxy itself does
+// no trimming or empty-dropping — that's downstream in buildNoProxy —
+// so values arrive here exactly as pflag emitted them.
+func TestResolveExtraNoProxy_FlagSplits(t *testing.T) {
+	t.Setenv("AGENT_VAULT_NO_PROXY", "")
+	c := runCmdForFlagTest()
+	if err := c.ParseFlags([]string{"--no-proxy", "ai,*.ts.net", "--no-proxy", "foo.example.com"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	got := resolveExtraNoProxy(c)
+	want := []string{"ai", "*.ts.net", "foo.example.com"}
+	if !sliceEq(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestResolveExtraNoProxy_EnvVarOnly: with no flag, the env var alone
+// drives the result. The env-var path comma-splits the single string
+// (pflag doesn't see env vars). Trim/empty-drop is downstream.
+func TestResolveExtraNoProxy_EnvVarOnly(t *testing.T) {
+	t.Setenv("AGENT_VAULT_NO_PROXY", "ai,bar.example.com")
+	c := runCmdForFlagTest()
+	got := resolveExtraNoProxy(c)
+	want := []string{"ai", "bar.example.com"}
+	if !sliceEq(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestResolveExtraNoProxy_FlagAndEnvCombine: flag values come first
+// (in flag order), env-var values follow. Duplicates are fine — they
+// collapse downstream in buildNoProxy.
+func TestResolveExtraNoProxy_FlagAndEnvCombine(t *testing.T) {
+	t.Setenv("AGENT_VAULT_NO_PROXY", "env-host,ai")
+	c := runCmdForFlagTest()
+	if err := c.ParseFlags([]string{"--no-proxy", "ai,flag-host"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	got := resolveExtraNoProxy(c)
+	want := []string{"ai", "flag-host", "env-host", "ai"}
+	if !sliceEq(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestResolveExtraNoProxy_PassesThroughWhitespace locks the
+// pass-through contract: cleaning is buildNoProxy's job, not this
+// function's.
+func TestResolveExtraNoProxy_PassesThroughWhitespace(t *testing.T) {
+	t.Setenv("AGENT_VAULT_NO_PROXY", " ai , , bar ")
+	c := runCmdForFlagTest()
+	got := resolveExtraNoProxy(c)
+	want := []string{" ai ", " ", " bar "}
+	if !sliceEq(got, want) {
+		t.Errorf("got %v, want %v (resolver should be raw; cleaning happens in buildNoProxy)", got, want)
+	}
+}
+
+// TestAugmentEnvWithMITM_ExtraNoProxyAppears: end-to-end from the
+// public-facing seam (caller provides extras) all the way to the env
+// vars emitted onto the child. Locks the contract that the chain
+// (resolveExtraNoProxy → augmentEnvWithMITM → BuildProxyEnv) doesn't
+// silently drop extras at any link.
+func TestAugmentEnvWithMITM_ExtraNoProxyAppears(t *testing.T) {
+	const fakePEM = "-----BEGIN CERTIFICATE-----\nMIIFAKE\n-----END CERTIFICATE-----\n"
+	srv := fakeMITMServer(t, fakePEM, 14322, true)
+	defer srv.Close()
+
+	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
+	env, _, ok, err := augmentEnvWithMITM(nil, srv.URL, "tok", "v", caPath, []string{"ai", "*.ts.net"})
+	if err != nil || !ok {
+		t.Fatalf("augmentEnvWithMITM: ok=%v err=%v", ok, err)
+	}
+	if got := envMap(env)["NO_PROXY"]; got != "localhost,127.0.0.1,ai,*.ts.net" {
+		t.Errorf("NO_PROXY = %q, want localhost,127.0.0.1,ai,*.ts.net", got)
+	}
+}
+
+func sliceEq(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

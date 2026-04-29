@@ -168,5 +168,13 @@ func (p *Proxy) dispatch(w http.ResponseWriter, r *http.Request) {
 		p.handleConnect(w, r)
 		return
 	}
+	// Absolute-URL request line = forward-proxy attempt; we only tunnel CONNECT.
+	if r.URL != nil && r.URL.IsAbs() {
+		http.Error(w, fmt.Sprintf(
+			"forward-proxy %s for %s://%s not supported; broker only tunnels HTTPS CONNECT. To bypass: --no-proxy %s (or AGENT_VAULT_NO_PROXY=%s), or use https:// instead",
+			r.Method, r.URL.Scheme, r.URL.Hostname(), r.URL.Hostname(), r.URL.Hostname(),
+		), http.StatusMethodNotAllowed)
+		return
+	}
 	http.Error(w, fmt.Sprintf("method %s not supported on transparent proxy", r.Method), http.StatusMethodNotAllowed)
 }

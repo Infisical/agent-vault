@@ -5,6 +5,7 @@ package isolation
 import (
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 const (
@@ -24,6 +25,29 @@ type ProxyEnvParams struct {
 	Vault   string
 	CAPath  string // path the child reads the CA PEM from
 	MITMTLS bool   // true → HTTPS_PROXY uses https://, false → http://
+
+	ExtraNoProxy []string // appended to NO_PROXY defaults; see buildNoProxy
+}
+
+// buildNoProxy merges the default bypass list (loopback) with the
+// caller's extras, trimming whitespace and dropping empties + dupes
+// while preserving order. The defaults always come first so the
+// localhost protections cannot be reordered or overridden.
+func buildNoProxy(extras []string) string {
+	hosts := []string{"localhost", "127.0.0.1"}
+	seen := map[string]struct{}{"localhost": {}, "127.0.0.1": {}}
+	for _, h := range extras {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		if _, dup := seen[h]; dup {
+			continue
+		}
+		seen[h] = struct{}{}
+		hosts = append(hosts, h)
+	}
+	return strings.Join(hosts, ",")
 }
 
 // BuildProxyEnv returns the nine env vars that point an HTTPS client at
@@ -45,7 +69,7 @@ func BuildProxyEnv(p ProxyEnvParams) []string {
 	}).String()
 	return []string{
 		"HTTPS_PROXY=" + proxyURL,
-		"NO_PROXY=localhost,127.0.0.1",
+		"NO_PROXY=" + buildNoProxy(p.ExtraNoProxy),
 		"NODE_USE_ENV_PROXY=1",
 		"SSL_CERT_FILE=" + p.CAPath,
 		"NODE_EXTRA_CA_CERTS=" + p.CAPath,
@@ -74,14 +98,18 @@ var ProxyEnvKeys = []string{
 // BuildContainerEnv returns the KEY=VALUE entries to pass to `docker
 // run` via -e flags. Produces a fresh list rather than augmenting
 // os.Environ() — the container should not inherit the host's env.
-func BuildContainerEnv(token, vault string, httpPort, mitmPort int, mitmTLS bool) []string {
+//
+// extraNoProxy is appended to NO_PROXY's default loopback entries; see
+// ProxyEnvParams.ExtraNoProxy for semantics.
+func BuildContainerEnv(token, vault string, httpPort, mitmPort int, mitmTLS bool, extraNoProxy []string) []string {
 	env := BuildProxyEnv(ProxyEnvParams{
-		Host:    ContainerProxyHost,
-		Port:    mitmPort,
-		Token:   token,
-		Vault:   vault,
-		CAPath:  ContainerCAPath,
-		MITMTLS: mitmTLS,
+		Host:         ContainerProxyHost,
+		Port:         mitmPort,
+		Token:        token,
+		Vault:        vault,
+		CAPath:       ContainerCAPath,
+		MITMTLS:      mitmTLS,
+		ExtraNoProxy: extraNoProxy,
 	})
 	return append(env,
 		"AGENT_VAULT_SESSION_TOKEN="+token,
