@@ -44,15 +44,15 @@ type Proxy struct {
 	baseURL     string // externally-reachable control-plane URL for help links
 	logger      *slog.Logger
 	rateLimit   *ratelimit.Registry // shared with the HTTP server; nil = no-op
-	logSink     requestlog.Sink     // never nil (Nop default); shared with HTTP ingress
+	logSink     requestlog.Sink     // never nil (Nop default); shared with the HTTP server
 }
 
 // Options carries the dependencies a Proxy needs. BaseURL is the
 // externally-reachable control-plane URL used in help-link error
 // responses. Logger must be non-nil; tests can pass
 // slog.New(slog.DiscardHandler). RateLimit is shared with the HTTP
-// server so proxy limits apply uniformly across both ingresses; nil
-// disables rate limiting on the MITM path.
+// server so proxy limits and control-plane limits live in one registry;
+// nil disables rate limiting on the MITM path.
 type Options struct {
 	CA          ca.Provider
 	Sessions    brokercore.SessionResolver

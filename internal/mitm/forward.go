@@ -50,7 +50,6 @@ func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope
 			}
 		}
 
-		// Shares one budget with /proxy so switching ingress can't bypass.
 		enf := p.rateLimit.EnforceProxy(r.Context(), scope.ActorID(), scope.VaultID)
 		if !enf.Allowed {
 			ratelimit.WriteDenial(w, enf.Decision, enf.Message)

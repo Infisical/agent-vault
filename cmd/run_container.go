@@ -20,14 +20,9 @@ import (
 	"github.com/Infisical/agent-vault/internal/isolation"
 )
 
-// containerOnlyFlags are no-ops in host mode. hostOnlyFlags are
-// no-ops in container mode (where MITM is always on, enforced by the
-// iptables lockdown). Either direction is a foot-gun if accepted
-// silently — reject in both.
-var (
-	containerOnlyFlags = []string{"image", "mount", "keep", "no-firewall", "home-volume-shared", "share-agent-dir"}
-	hostOnlyFlags      = []string{"no-mitm"}
-)
+// containerOnlyFlags are no-ops in host mode. Reject silently rather
+// than letting the user think a flag is taking effect when it isn't.
+var containerOnlyFlags = []string{"image", "mount", "keep", "no-firewall", "home-volume-shared", "share-agent-dir"}
 
 // validateContainerFlagCombos enforces mutual-exclusion between container-mode
 // flags that would otherwise both try to own /home/claude/.claude. Split from
@@ -43,21 +38,15 @@ func validateContainerFlagCombos(cmd *cobra.Command) error {
 }
 
 func validateIsolationFlagConflicts(cmd *cobra.Command, mode IsolationMode) error {
-	var disallowed []string
-	var otherMode string
 	if mode == IsolationContainer {
-		disallowed = hostOnlyFlags
-		otherMode = "host"
-	} else {
-		disallowed = containerOnlyFlags
-		otherMode = "container"
+		return nil
 	}
-	for _, name := range disallowed {
+	for _, name := range containerOnlyFlags {
 		f := cmd.Flags().Lookup(name)
 		if f == nil || !f.Changed {
 			continue
 		}
-		return fmt.Errorf("--%s requires --isolation=%s", name, otherMode)
+		return fmt.Errorf("--%s requires --isolation=container", name)
 	}
 	return nil
 }
@@ -131,7 +120,7 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 	_ = isolation.PruneStaleVolumes(ctx)
 
 	// Pull the MITM CA from the server. Container mode always routes
-	// through MITM — --no-mitm is a host-mode-only escape hatch.
+	// through MITM (the only ingress).
 	pem, mitmPort, mitmEnabled, mitmTLS, err := fetchMITMCA(addr)
 	if err != nil {
 		return fmt.Errorf("fetch MITM CA: %w", err)

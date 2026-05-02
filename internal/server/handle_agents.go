@@ -361,12 +361,11 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 	baseURL := s.baseURL
 
 	jsonOK(w, map[string]interface{}{
-		"av_addr":          baseURL,
+		"av_addr":        baseURL,
 		"av_agent_token": sess.ID,
-		"agent_name":       agentName,
-		"proxy_url":        baseURL + "/proxy",
-		"vaults":           vaultInfos,
-		"instructions":     persistentInstructionsAdmin,
+		"agent_name":     agentName,
+		"vaults":         vaultInfos,
+		"instructions":   persistentInstructionsAdmin,
 	})
 }
 
@@ -410,12 +409,11 @@ func (s *Server) handleRotationRedeem(w http.ResponseWriter, r *http.Request, in
 	baseURL := s.baseURL
 
 	jsonOK(w, map[string]interface{}{
-		"av_addr":          baseURL,
+		"av_addr":        baseURL,
 		"av_agent_token": sess.ID,
-		"agent_name":       agent.Name,
-		"proxy_url":        baseURL + "/proxy",
-		"vaults":           vaultInfos,
-		"instructions":     persistentInstructionsAdmin,
+		"agent_name":     agent.Name,
+		"vaults":         vaultInfos,
+		"instructions":   persistentInstructionsAdmin,
 	})
 }
 

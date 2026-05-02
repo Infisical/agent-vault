@@ -135,7 +135,7 @@ Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
 X-Vault: my-vault
 ```
 
-This applies to all vault-scoped requests: `/discover`, `/v1/proposals`, `/v1/credentials`, and the explicit `/proxy/` endpoint.
+This applies to all vault-scoped requests: `/discover`, `/v1/proposals`, and `/v1/credentials`.
 
 <Note>
 Agents created via `agent-vault vault run` receive vault-scoped sessions and do not need the `X-Vault` header — the vault is embedded in the session.

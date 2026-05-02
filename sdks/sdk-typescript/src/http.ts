@@ -207,8 +207,8 @@ export class HttpClient {
 
   /**
    * Perform an HTTP request and return the raw Response without parsing or
-   * throwing on non-2xx. Used by ProxyResource where the response body format
-   * is determined by the upstream service, not Agent Vault.
+   * throwing on non-2xx. Used by callers (e.g. CA cert fetch) where the
+   * response body format is not the standard Agent Vault JSON envelope.
    */
   async raw(
     method: string,

@@ -175,9 +175,8 @@ type ProxyEnforcement struct {
 }
 
 // EnforceProxy runs the two TierProxy checks (token bucket first,
-// concurrency semaphore second) for one proxy request. Shared between
-// /proxy/* and the MITM forward handler so limits apply uniformly
-// regardless of ingress.
+// concurrency semaphore second) for one proxy request on the MITM
+// forward handler.
 func (r *Registry) EnforceProxy(ctx context.Context, actorID, vaultID string) ProxyEnforcement {
 	if r == nil || r.cfg.Load().Off || actorID == "" || vaultID == "" {
 		return ProxyEnforcement{Allowed: true, Release: func() {}}

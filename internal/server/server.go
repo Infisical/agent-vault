@@ -114,8 +114,7 @@ func (s *Server) CredentialProvider() brokercore.CredentialProvider {
 }
 
 // Logger returns the server's structured logger. Callers (e.g. the MITM
-// proxy constructed outside the server) use this to share a single logger
-// across ingress paths.
+// proxy constructed outside the server) use this to share a single logger.
 func (s *Server) Logger() *slog.Logger { return s.logger }
 
 // BaseURL returns the externally-reachable base URL of the server
@@ -562,11 +561,6 @@ func limitBody(next http.HandlerFunc) http.HandlerFunc {
 func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string, oauthProviders map[string]oauth.Provider, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
 
-	// Initialize proxy client once (reads AGENT_VAULT_ALLOW_PRIVATE_RANGES after env is configured).
-	if proxyClient == nil {
-		proxyClient = newProxyClient()
-	}
-
 	rlCfg, _ := ratelimit.LoadFromEnv()
 	rl := ratelimit.New(rlCfg)
 
@@ -622,8 +616,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/proposals", s.requireInitialized(s.requireAuth(actorAuthed(s.handleProposalList))))
 	mux.HandleFunc("POST /v1/admin/proposals/{id}/approve", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAdminProposalApprove)))))
 	mux.HandleFunc("POST /v1/admin/proposals/{id}/reject", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAdminProposalReject)))))
-	// /proxy/ enforces its rate limit inside the handler (needs the resolved vault).
-	mux.HandleFunc("/proxy/", s.requireInitialized(s.requireAuth(s.handleProxy)))
 
 	// Agent invite redemption (no auth — token is the credential)
 	mux.HandleFunc("GET /invite/{token}", s.requireInitialized(ipInviteToken(s.handleInviteRedeem)))
@@ -1094,6 +1086,16 @@ const (
 	scopedSessionMaxTTL     = 7 * 24 * time.Hour
 	scopedSessionDefaultTTL = 24 * time.Hour // when ttl_seconds is unset
 )
+
+// isSecureRequest reports whether the request arrived over TLS, deriving
+// the verdict from the trusted server-side baseURL when r.TLS is nil so
+// X-Forwarded-Proto cannot spoof it.
+func isSecureRequest(r *http.Request, baseURL string) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.HasPrefix(baseURL, "https://")
+}
 
 // sessionCookie builds an av_session cookie with all hardening flags set.
 // Secure is set based on TLS state or the server's configured baseURL.

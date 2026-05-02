@@ -55,7 +55,7 @@ func DefaultsFor(profile Profile) Config {
 	c.Tiers[TierAuth] = TierConfig{
 		Algorithm: AlgSliding, Window: 5 * time.Minute, Max: scaleMax(10, mul), MaxKeys: 10000,
 	}
-	// /proxy/* + MITM: token bucket smooths traffic; Concurrency caps
+	// MITM proxy: token bucket smooths traffic; Concurrency caps
 	// in-flight slow upstream calls per (actor, vault).
 	c.Tiers[TierProxy] = TierConfig{
 		Algorithm: AlgTokenBucket, Rate: scaleRate(2.0, mul), Burst: scaleMax(30, mul),

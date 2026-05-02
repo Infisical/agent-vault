@@ -36,9 +36,8 @@ AGENT_VAULT_SESSION_TOKEN + AGENT_VAULT_ADDR environment variables).`,
 		}
 
 		var resp struct {
-			Vault                string `json:"vault"`
-			ProxyURL             string `json:"proxy_url"`
-			Services             []struct {
+			Vault    string `json:"vault"`
+			Services []struct {
 				Host        string `json:"host"`
 				Description string `json:"description"`
 			} `json:"services"`
@@ -50,7 +49,6 @@ AGENT_VAULT_SESSION_TOKEN + AGENT_VAULT_ADDR environment variables).`,
 
 		w := cmd.OutOrStdout()
 		fmt.Fprintf(w, "%s %s\n", fieldLabel("Vault:"), resp.Vault)
-		fmt.Fprintf(w, "%s %s\n", fieldLabel("Proxy:"), resp.ProxyURL)
 
 		if len(resp.Services) > 0 {
 			fmt.Fprintln(w)

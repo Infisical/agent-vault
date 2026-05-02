@@ -31,18 +31,15 @@ Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
 X-Vault: {vault_name}
 ```
 
-Response includes `vault`, `proxy_url`, `services` (host + description), and `available_credentials` (key names only — values are never exposed). Before creating a proposal, check `available_credentials` to avoid requesting credentials that already exist in the vault.
+Response includes `vault`, `services` (host + description), and `available_credentials` (key names only — values are never exposed). Before creating a proposal, check `available_credentials` to avoid requesting credentials that already exist in the vault.
 
 ## Route requests through the proxy
 
-For hosts returned by `/discover`:
+For hosts returned by `/discover`, just call the real upstream URL — `agent-vault vault run` configures `HTTPS_PROXY` and the Agent Vault root CA on the child process so standard HTTP clients transparently route through the broker. Agent Vault strips broker-scoped headers, attaches the real credential, and forwards to the upstream over HTTPS.
 
 ```
-{AGENT_VAULT_ADDR}/proxy/{target_host}/{path}[?query]
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+GET https://api.stripe.com/v1/charges
 ```
-
-Agent Vault strips your auth header, attaches real credentials, and forwards over HTTPS.
 
 ## Manage services directly (admin only)
 

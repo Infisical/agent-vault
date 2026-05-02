@@ -156,7 +156,7 @@ Content-Type: application/json
 }
 ```
 
-Once approved, the agent makes requests like `GET https://api.twilio.com/2010-04-01/Accounts/__account_sid__/Messages.json` (via `/proxy/api.twilio.com/...` or `HTTPS_PROXY`). The broker rewrites the path to `/Accounts/AC.../Messages.json` and injects the basic auth header.
+Once approved, the agent makes requests like `GET https://api.twilio.com/2010-04-01/Accounts/__account_sid__/Messages.json` (via `HTTPS_PROXY`). The broker rewrites the path to `/Accounts/AC.../Messages.json` and injects the basic auth header.
 
 Placeholder safety: must be ≥4 characters, contain at least one alphanumeric character, contain a `__` boundary or non-`[A-Za-z0-9_]` character (so bare words like `account_sid` are rejected — they would match legitimate URL words), and use only RFC 3986 unreserved characters `[A-Za-z0-9_-.~]`. The recommended convention is `__name__`.
 
@@ -203,7 +203,7 @@ GET {AGENT_VAULT_ADDR}/v1/vaults/{vault}/logs
 Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
 ```
 
-Query params: `ingress` (`explicit`|`mitm`), `status_bucket` (`2xx`|`3xx`|`4xx`|`5xx`|`err`), `service`, `limit` (default 50, max 200), `before=<id>` (page back), `after=<id>` (tail forward for new rows). Response: `{ "logs": [...], "next_cursor": <id|null>, "latest_id": <id> }`.
+Query params: `status_bucket` (`2xx`|`3xx`|`4xx`|`5xx`|`err`), `service`, `limit` (default 50, max 200), `before=<id>` (page back), `after=<id>` (tail forward for new rows). Response: `{ "logs": [...], "next_cursor": <id|null>, "latest_id": <id> }`.
 
 ## Building Code That Needs Credentials
 
@@ -252,7 +252,7 @@ Content-Type: application/json
 - 401: Invalid or expired token -- check `AGENT_VAULT_SESSION_TOKEN`
 - 403 `forbidden`: Host not allowed -- create a proposal
 - 403 `service_disabled`: Host is configured but currently disabled by an operator. Don't create a new proposal; surface the error to the user so they can re-enable it
-- 429: Rate limited. The response carries a `Retry-After` header (seconds) and a JSON body `{"error":"too_many_requests", ...}`. Respect `Retry-After` — wait that many seconds before retrying. Do **not** tight-loop or switch to a different Agent Vault ingress to bypass the limit; the MITM and explicit `/proxy/` paths share one budget. If the limit trips repeatedly on normal work, ask the instance owner to raise the limit in **Manage Instance → Settings → Rate Limiting**.
+- 429: Rate limited. The response carries a `Retry-After` header (seconds) and a JSON body `{"error":"too_many_requests", ...}`. Respect `Retry-After` — wait that many seconds before retrying. Do **not** tight-loop. If the limit trips repeatedly on normal work, ask the instance owner to raise the limit in **Manage Instance → Settings → Rate Limiting**.
 - 502: Missing credential or upstream unreachable, tell user a credential may need to be added
 
 ## Rules

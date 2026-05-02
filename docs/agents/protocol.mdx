@@ -61,7 +61,6 @@ The `X-Vault` header is required for instance-level agent tokens. Vault-scoped s
 ```json Response
 {
   "vault": "my-vault",
-  "proxy_url": "http://127.0.0.1:14321/proxy",
   "services": [
     { "host": "api.stripe.com", "description": "Stripe API" },
     { "host": "*.github.com", "description": "GitHub API" }
@@ -72,7 +71,6 @@ The `X-Vault` header is required for instance-level agent tokens. Vault-scoped s
 
 - **`services`** lists the hosts the agent can reach through Agent Vault (defined by the vault's [services](/learn/services)). Requests to any other host go direct.
 - **`available_credentials`** lists [credential](/learn/credentials) key names in the vault (values are never exposed). Agents use these to avoid creating duplicate slots in [proposals](/learn/proposals).
-- **`proxy_url`** is the fallback endpoint for clients that can't honor `HTTPS_PROXY`. See [Explicit proxy endpoint](#explicit-proxy-endpoint-fallback).
 
 ## Route requests through HTTPS_PROXY
 
@@ -96,34 +94,6 @@ The agent writes this line unchanged. No URL rewriting. No `Authorization` heade
 <Tip>
 HTTP_PROXY is intentionally not set. The MITM listener only handles HTTPS (CONNECT) and would 405 on plain `http://` requests.
 </Tip>
-
-### Explicit proxy endpoint (fallback)
-
-For clients that can't honor `HTTPS_PROXY` — HTTP/2-terminating edges, constrained runtimes, sandboxes without CA-mounting — Agent Vault exposes an explicit endpoint:
-
-```
-{AGENT_VAULT_ADDR}/proxy/{target_host}/{path}[?query]
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-```
-
-Rewrite the upstream URL to this shape and Agent Vault applies the same credential-injection logic — strips the agent's `Authorization` header, attaches credentials from the vault's [services](/learn/services), forwards over HTTPS.
-
-<CodeGroup>
-
-```bash GET
-GET http://127.0.0.1:14321/proxy/api.stripe.com/v1/charges?limit=10
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-```
-
-```bash POST
-POST http://127.0.0.1:14321/proxy/api.stripe.com/v1/charges
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-Content-Type: application/x-www-form-urlencoded
-
-amount=2000&currency=usd
-```
-
-</CodeGroup>
 
 ## Propose changes
 
@@ -184,7 +154,7 @@ See [Proposals](/learn/proposals) for the full proposal lifecycle, including sto
 | 401 | Invalid or expired token | Re-check `AGENT_VAULT_SESSION_TOKEN`. Contact operator for a new token or [rotation](/agents/overview#rotating-an-agent-token). |
 | 403 `forbidden` | Host not allowed | Create a proposal to request access. The response includes a `proposal_hint`. |
 | 403 `service_disabled` | Host is configured but disabled | Surface to the user — don't create a duplicate proposal. |
-| 429 | Rate limited | Respect the `Retry-After` header. The MITM and `/proxy` paths share one budget. |
+| 429 | Rate limited | Respect the `Retry-After` header. |
 | 502 | Missing credential or upstream unreachable | Tell the user a credential may need to be added. |
 
 ## Security constraints

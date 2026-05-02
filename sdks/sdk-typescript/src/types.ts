@@ -42,7 +42,6 @@ export interface ScopedSession {
   token: string;
   expires_at: string;
   av_addr?: string;
-  proxy_url?: string;
 }
 
 /** @internal Wire format for POST /v1/vaults response. */

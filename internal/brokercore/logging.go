@@ -8,6 +8,10 @@ import (
 // Ingress labels identify which entrypoint handled a proxied request.
 // Persisted into request logs and filterable by the Logs UI, so a typo
 // at any call site would silently desync filters from the real data.
+//
+// IngressExplicit is retained for backward compatibility with rows
+// persisted before the explicit /proxy endpoint was removed; new events
+// emit IngressMITM only.
 const (
 	IngressExplicit = "explicit"
 	IngressMITM     = "mitm"
@@ -21,11 +25,11 @@ const (
 )
 
 // ProxyEvent is the shape of a single structured per-request log line
-// emitted by both the explicit /proxy/ handler and the transparent MITM
-// forward handler. It is intentionally shallow and contains only
-// non-secret metadata — no header values, no bodies, no query strings.
+// emitted by the MITM forward handler. It is intentionally shallow and
+// contains only non-secret metadata — no header values, no bodies, no
+// query strings.
 type ProxyEvent struct {
-	Ingress        string   // one of IngressExplicit, IngressMITM
+	Ingress        string   // always IngressMITM for new events (IngressExplicit lingers only on legacy DB rows)
 	Method         string   // HTTP method from the agent request
 	Host           string   // target host (with port if present)
 	Path           string   // r.URL.Path only — no query, no fragment
@@ -37,8 +41,7 @@ type ProxyEvent struct {
 }
 
 // Emit fills in the terminal fields (Status, Err, TotalMs measured from
-// start) and writes the event at Debug level. Shared by both ingress
-// paths so the log-line shape stays consistent.
+// start) and writes the event at Debug level.
 func (e *ProxyEvent) Emit(logger *slog.Logger, start time.Time, status int, errCode string) {
 	e.Status = status
 	e.Err = errCode

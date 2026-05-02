@@ -37,9 +37,8 @@ If you're using Claude Code, Cursor, or another supported agent, see the [Quicks
     - `av_addr` — the Agent Vault server URL
     - `av_agent_token` — bearer token for all requests
     - `vaults` — list of accessible vaults
-    - `proxy_url` — the [explicit proxy endpoint](#explicit-proxy-endpoint-fallback) fallback
 
-    Invited agents don't get `HTTPS_PROXY` auto-configured. You can either set it yourself (see [Set HTTPS_PROXY manually](#set-https-proxy-manually)) or use the explicit endpoint.
+    Invited agents don't get `HTTPS_PROXY` auto-configured — set it yourself (see [Set HTTPS_PROXY manually](#set-https-proxy-manually)).
 
     Instance-level agent tokens require the `X-Vault` header on every vault-scoped request.
   </Tab>
@@ -140,44 +139,6 @@ export DENO_CERT=/etc/ssl/certs/agent-vault-ca.pem
 
 For containerized agents, the [TypeScript SDK](https://github.com/Infisical/agent-vault/tree/main/sdks/sdk-typescript) provides `buildProxyEnv()`, which returns the complete environment block from a session's `containerConfig`.
 
-### Explicit proxy endpoint (fallback)
-
-For clients that can't honor `HTTPS_PROXY` — HTTP/2-only runtimes, sandboxes without CA-mounting, or minimal environments — Agent Vault exposes an explicit endpoint. Rewrite the upstream URL to:
-
-```
-{AGENT_VAULT_ADDR}/proxy/{target_host}/{path}[?query]
-```
-
-<CodeGroup>
-
-```bash curl
-curl "${AGENT_VAULT_ADDR}/proxy/api.stripe.com/v1/charges?limit=10" \
-  -H "Authorization: Bearer ${AGENT_VAULT_SESSION_TOKEN}"
-```
-
-```python Python
-import os, requests
-
-resp = requests.get(
-    f"{os.environ['AGENT_VAULT_ADDR']}/proxy/api.stripe.com/v1/charges",
-    params={"limit": 10},
-    headers={"Authorization": f"Bearer {os.environ['AGENT_VAULT_SESSION_TOKEN']}"},
-)
-print(resp.json())
-```
-
-```typescript TypeScript
-const resp = await fetch(
-  `${process.env.AGENT_VAULT_ADDR}/proxy/api.stripe.com/v1/charges?limit=10`,
-  { headers: { Authorization: `Bearer ${process.env.AGENT_VAULT_SESSION_TOKEN}` } },
-);
-console.log(await resp.json());
-```
-
-</CodeGroup>
-
-Instance-level agent tokens must also include `X-Vault: {vault_name}`.
-
 ## Discover available services
 
 Your agent can call `/discover` to check which hosts have credentials configured before making requests.
@@ -190,7 +151,6 @@ curl ${AGENT_VAULT_ADDR}/discover \
 ```json Response
 {
   "vault": "default",
-  "proxy_url": "http://127.0.0.1:14321/proxy",
   "services": [
     { "host": "api.stripe.com", "description": "Stripe API" },
     { "host": "api.github.com", "description": "GitHub API" }
@@ -201,7 +161,6 @@ curl ${AGENT_VAULT_ADDR}/discover \
 
 - **`services`** lists the hosts configured in the vault. Requests to unlisted hosts go direct.
 - **`available_credentials`** lists credential key names in the vault (values are never exposed).
-- **`proxy_url`** is the explicit endpoint fallback.
 
 <Tip>
 Discovery is optional. If your agent already knows which hosts are configured, it can skip straight to making requests. If it hits a host that isn't configured, Agent Vault returns a 403 with a `proposal_hint`.

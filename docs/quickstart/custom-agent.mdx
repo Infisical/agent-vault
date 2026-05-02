@@ -60,7 +60,6 @@ Your agent never sees or handles credentials. Agent Vault strips whatever the cl
 
 - **Agent invites** — for cloud-hosted agents or CI pipelines that can't be wrapped with `vault run`. See [Connect a custom agent](/guides/connect-custom-agent#get-connection-credentials).
 - **Manual HTTPS_PROXY setup** — for containerized agents and sandboxes that need to configure the proxy themselves. See [Set HTTPS_PROXY manually](/guides/connect-custom-agent#set-https-proxy-manually).
-- **Explicit `/proxy` endpoint** — for clients that can't honor `HTTPS_PROXY` (HTTP/2-only runtimes, no CA-mounting). See [Explicit proxy endpoint](/guides/connect-custom-agent#explicit-proxy-endpoint-fallback).
 
 ## Discover available services
 
@@ -74,7 +73,6 @@ curl ${AGENT_VAULT_ADDR}/discover \
 ```json Response
 {
   "vault": "default",
-  "proxy_url": "http://127.0.0.1:14321/proxy",
   "services": [
     { "host": "api.stripe.com", "description": "Stripe API" }
   ],

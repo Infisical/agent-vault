@@ -17,10 +17,9 @@ type scopedSessionRequest struct {
 }
 
 type scopedSessionResponse struct {
-	Token    string `json:"token"`
+	Token     string `json:"token"`
 	ExpiresAt string `json:"expires_at"`
-	AVAddr   string `json:"av_addr,omitempty"`
-	ProxyURL string `json:"proxy_url,omitempty"`
+	AVAddr    string `json:"av_addr,omitempty"`
 }
 
 func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
@@ -93,7 +92,6 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 		Token:     sess.ID,
 		ExpiresAt: formatExpiresAt(sess.ExpiresAt),
 		AVAddr:    s.baseURL,
-		ProxyURL:  s.baseURL + "/proxy",
 	})
 }
 

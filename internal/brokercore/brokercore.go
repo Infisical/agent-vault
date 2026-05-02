@@ -1,10 +1,6 @@
-// Package brokercore is the runtime glue shared by both Agent Vault ingress
-// paths: the explicit /proxy HTTP endpoint and the transparent MITM proxy.
-//
-// It extracts the credential-resolution pipeline from the server handler
-// behind a CredentialProvider interface and the session+vault resolution
-// behind a SessionResolver interface. Both ingresses call the same code;
-// audit hooks will plug in here next.
+// Package brokercore is the runtime glue powering Agent Vault's transparent
+// MITM proxy ingress: credential resolution behind a CredentialProvider
+// interface and session+vault resolution behind a SessionResolver interface.
 //
 // brokercore depends on broker, store, and crypto. broker stays a pure
 // config library with no runtime coupling.
@@ -20,8 +16,8 @@ import (
 	"github.com/Infisical/agent-vault/internal/broker"
 )
 
-// MaxResponseBytes caps response bodies streamed back to agents. Shared by
-// both ingresses so resource limits are unified.
+// MaxResponseBytes caps response bodies streamed back to agents on the
+// MITM proxy ingress.
 const MaxResponseBytes = 100 << 20
 
 // ProxyErrorHeader is the response header Agent Vault sets on broker-layer
@@ -67,9 +63,10 @@ func IsValidHost(h string) bool {
 }
 
 // brokerScopedRequestHeaders are headers that authenticate the client to
-// Agent Vault itself (explicit /proxy ingress uses X-Vault;
-// HTTPS_PROXY-compatible ingress uses Proxy-Authorization). They must
-// never traverse the broker → target hop.
+// Agent Vault itself (Proxy-Authorization on the HTTPS_PROXY ingress;
+// X-Vault on the control-plane endpoints used by instance-level agent
+// tokens, e.g. /discover and /v1/proposals). They must never traverse
+// the broker → target hop.
 var brokerScopedRequestHeaders = map[string]bool{
 	"X-Vault":             true,
 	"Proxy-Authorization": true,
@@ -83,14 +80,13 @@ func IsBrokerScopedRequestHeader(name string) bool {
 }
 
 // ApplyInjection writes outbound headers for a resolved InjectResult.
-// Client headers pass through except hop-by-hop, broker-scoped (X-Vault,
-// Proxy-Authorization), the keys of inject.Headers, and any names in
-// extraStrip (the ingress's session-token header). Pre-stripping
+// Client headers pass through except hop-by-hop, broker-scoped
+// (Proxy-Authorization, X-Vault), the keys of inject.Headers, and any names in
+// extraStrip (additional caller-specified headers). Pre-stripping
 // inject.Headers keys is what preserves the "injected always wins"
 // security invariant; it is not a perf shortcut. Per RFC 7230 §6.1,
 // any header named in the client's Connection field is also hop-by-hop
-// for that connection and is stripped. Both ingresses share this so
-// their header handling stays in lockstep.
+// for that connection and is stripped.
 func ApplyInjection(src, dst http.Header, inject *InjectResult, extraStrip ...string) {
 	strip := make(map[string]bool, len(extraStrip)+len(inject.Headers))
 	for _, s := range extraStrip {
@@ -129,12 +125,11 @@ func helpLinks(baseURL string) string {
 	)
 }
 
-// ForbiddenHintBody returns the JSON-shaped body for a 403 response when
-// the target host is not matched by any broker service in the vault. Both
-// ingresses emit identical bytes so agents can uniformly parse the hint.
-// baseURL is the externally-reachable control-plane URL used to build
-// actionable help links so agents without the skill file pre-loaded can
-// self-discover available services and usage instructions.
+// ForbiddenHintBody returns the JSON-shaped body for a 403 response on the
+// MITM ingress when the target host is not matched by any broker service in
+// the vault. baseURL is the externally-reachable control-plane URL used to
+// build actionable help links so agents without the skill file pre-loaded
+// can self-discover available services and usage instructions.
 func ForbiddenHintBody(targetHost, vaultName, baseURL string) map[string]interface{} {
 	body := map[string]interface{}{
 		"error":   "forbidden",
@@ -183,9 +178,8 @@ func writeProxyErrorWithHelp(w http.ResponseWriter, status int, code, message, b
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-// WriteForbiddenHint writes a 403 with the shared proposal_hint body so
-// both ingress paths emit identical bytes for the "host not brokerable"
-// case.
+// WriteForbiddenHint writes a 403 with the shared proposal_hint body for
+// the "host not brokerable" case on the MITM ingress.
 func WriteForbiddenHint(w http.ResponseWriter, targetHost, vaultName, baseURL string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set(ProxyErrorHeader, "true")
@@ -194,10 +188,9 @@ func WriteForbiddenHint(w http.ResponseWriter, targetHost, vaultName, baseURL st
 }
 
 // WriteInjectError maps a CredentialProvider.Inject error to the standard
-// HTTP response for both ingress paths. baseURL is the externally-reachable
+// HTTP response on the MITM ingress. baseURL is the externally-reachable
 // control-plane URL for help links. Callers that want to log before
-// responding (e.g. the /proxy path logs credential-resolution failures)
-// should do so before calling this helper.
+// responding should do so before calling this helper.
 func WriteInjectError(w http.ResponseWriter, err error, targetHost, vaultName, baseURL string) {
 	switch {
 	case errors.Is(err, ErrServiceNotFound):

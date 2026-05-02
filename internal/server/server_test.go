@@ -3,14 +3,10 @@ package server
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -2453,29 +2449,27 @@ func TestScopedSessionEnforcesVaultOnDelete(t *testing.T) {
 	}
 }
 
-// --- Proxy Endpoint ---
+// --- Discovery endpoint tests ---
 
-// setupProxyTest creates a mock store with a scoped session, broker config, and
-// encrypted credential. It returns the store, scoped token, and encryption key.
-func setupProxyTest(t *testing.T, servicesJSON string) (*mockStore, string, []byte) {
+// setupVaultWithCredential seeds a mock store with a scoped session, broker
+// config, and an encrypted STRIPE_KEY credential. Returns (store, scoped
+// token, encryption key).
+func setupVaultWithCredential(t *testing.T, servicesJSON string) (*mockStore, string, []byte) {
 	t.Helper()
 	ms := newMockStore()
 	encKey := make([]byte, 32)
 
-	// Create a scoped session for root vault.
 	sess, err := ms.CreateScopedSession(context.Background(), "root-ns-id", "proxy", tp(time.Now().Add(time.Hour)))
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
 
-	// Set broker config.
 	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
-		ID:          "bc-1",
-		VaultID: "root-ns-id",
-		ServicesJSON:   servicesJSON,
+		ID:           "bc-1",
+		VaultID:      "root-ns-id",
+		ServicesJSON: servicesJSON,
 	}
 
-	// Store an encrypted credential "STRIPE_KEY" = "sk_live_xxx".
 	ct, nonce, err := crypto.Encrypt([]byte("sk_live_xxx"), encKey)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
@@ -2488,587 +2482,10 @@ func setupProxyTest(t *testing.T, servicesJSON string) (*mockStore, string, []by
 	return ms, sess.ID, encKey
 }
 
-func TestProxySuccess(t *testing.T) {
-	// Start a fake upstream server.
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer sk_live_xxx" {
-			t.Errorf("expected injected auth header, got %q", got)
-		}
-		if r.URL.Path != "/v1/charges" {
-			t.Errorf("expected path /v1/charges, got %s", r.URL.Path)
-		}
-		if r.URL.RawQuery != "limit=10" {
-			t.Errorf("expected query limit=10, got %s", r.URL.RawQuery)
-		}
-		w.Header().Set("X-Upstream", "true")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"ok":true}`))
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodPost, "/proxy/"+upstreamHost+"/v1/charges?limit=10",
-		strings.NewReader("amount=2000"))
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if rec.Header().Get("X-Upstream") != "true" {
-		t.Fatal("expected X-Upstream header from upstream")
-	}
-	body, _ := io.ReadAll(rec.Body)
-	if string(body) != `{"ok":true}` {
-		t.Fatalf("unexpected body: %s", body)
-	}
-}
-
-func TestProxyNoMatchingRule(t *testing.T) {
-	services := `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
-	ms, token, encKey := setupProxyTest(t, services)
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/evil.com/exfiltrate", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var resp map[string]interface{}
-	json.NewDecoder(rec.Body).Decode(&resp)
-	if resp["error"] != "forbidden" {
-		t.Fatalf("expected error 'forbidden', got %q", resp["error"])
-	}
-	// Verify proposal_hint is present.
-	hint, ok := resp["proposal_hint"].(map[string]interface{})
-	if !ok {
-		t.Fatal("expected proposal_hint in 403 response")
-	}
-	if hint["host"] != "evil.com" {
-		t.Fatalf("expected proposal_hint host 'evil.com', got %q", hint["host"])
-	}
-	if hint["endpoint"] != "POST /v1/proposals" {
-		t.Fatalf("expected proposal_hint endpoint, got %q", hint["endpoint"])
-	}
-	// Verify help field with actionable URLs is present.
-	help, ok := resp["help"].(string)
-	if !ok || help == "" {
-		t.Fatal("expected help field with actionable URLs in 403 response")
-	}
-}
-
-func TestProxyPassthroughForwardsClientHeaders(t *testing.T) {
-	// Upstream asserts: client-supplied Cookie and X-Trace-Id flow through,
-	// but broker-scoped X-Vault and the session-token Authorization are
-	// stripped (the session token must never reach the target).
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "" {
-			t.Errorf("Authorization on explicit /proxy ingress should be stripped (it is the session token), got %q", got)
-		}
-		if got := r.Header.Get("Cookie"); got != "session=abc" {
-			t.Errorf("Cookie: got %q, want %q", got, "session=abc")
-		}
-		if got := r.Header.Get("X-Trace-Id"); got != "trace-123" {
-			t.Errorf("X-Trace-Id: got %q, want %q", got, "trace-123")
-		}
-		if got := r.Header.Get("X-Vault"); got != "" {
-			t.Errorf("X-Vault should have been stripped, got %q", got)
-		}
-		w.Header().Set("X-Upstream", "true")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`passthrough-ok`))
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"}}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/data", nil)
-	req.Header.Set("Authorization", "Bearer "+token) // session auth — must not leak
-	req.Header.Set("Cookie", "session=abc")
-	req.Header.Set("X-Trace-Id", "trace-123")
-	req.Header.Set("X-Vault", "should-be-stripped")
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if rec.Header().Get("X-Upstream") != "true" {
-		t.Fatal("expected X-Upstream header from upstream")
-	}
-	body, _ := io.ReadAll(rec.Body)
-	if string(body) != "passthrough-ok" {
-		t.Fatalf("unexpected body: %s", body)
-	}
-}
-
-func TestProxyPassthroughDoesNotReadCredentials(t *testing.T) {
-	// Passthrough must not perform any credential lookup, even if the service
-	// name collides with a stored credential key. Use a credential provider
-	// that explodes on any read to catch it.
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"}}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-
-	// Sabotage: mark the only credential as unreachable. If the handler ever
-	// tried to read it, decryption or lookup would fail and the request
-	// would return 502.
-	delete(ms.credentials, "root-ns-id:STRIPE_KEY")
-
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/data", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 (no credential lookup for passthrough), got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestProxyBearerForwardsArbitraryClientHeaders(t *testing.T) {
-	// /proxy ingress: client's Authorization carries the AV session
-	// token and must be replaced by the injected credential, not leaked.
-	// Vendor headers must still reach the upstream.
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer sk_live_xxx" {
-			t.Errorf("Authorization: got %q, want injected stored credential", got)
-		}
-		if got := r.Header.Get("Anthropic-Version"); got != "2023-06-01" {
-			t.Errorf("Anthropic-Version: got %q, want passthrough", got)
-		}
-		if got := r.Header.Get("X-Trace-Id"); got != "trace-123" {
-			t.Errorf("X-Trace-Id: got %q, want passthrough", got)
-		}
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`bearer-ok`))
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/v1/messages", nil)
-	req.Header.Set("Authorization", "Bearer "+token) // session auth — must not leak
-	req.Header.Set("Anthropic-Version", "2023-06-01")
-	req.Header.Set("X-Trace-Id", "trace-123")
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	body, _ := io.ReadAll(rec.Body)
-	if string(body) != "bearer-ok" {
-		t.Fatalf("unexpected body: %s", body)
-	}
-}
-
-func TestProxyMissingCredential(t *testing.T) {
-	services := `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"nonexistent_key"}}]`
-	ms, token, encKey := setupProxyTest(t, services)
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/api.stripe.com/v1/charges", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("expected 502, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var resp map[string]string
-	json.NewDecoder(rec.Body).Decode(&resp)
-	if resp["error"] != "credential_not_found" {
-		t.Fatalf("expected error 'credential_not_found', got %q", resp["error"])
-	}
-}
-
-func TestProxyUnauthenticated(t *testing.T) {
-	ms := newMockStore()
-	srv := newTestServer(withStore(ms))
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/api.stripe.com/v1/charges", nil)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestProxyGlobalSessionForbidden(t *testing.T) {
-	ms := newMockStore()
-	sess, _ := ms.CreateSession(context.Background(), "", time.Now().Add(time.Hour))
-	srv := newTestServer(withStore(ms))
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/api.stripe.com/v1/charges", nil)
-	req.Header.Set("Authorization", "Bearer "+sess.ID)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestProxyStripsAuthHeader(t *testing.T) {
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		if strings.Contains(auth, "scoped-session") {
-			t.Errorf("agent token leaked to upstream: %q", auth)
-		}
-		if auth != "Bearer sk_live_xxx" {
-			t.Errorf("expected injected auth, got %q", auth)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/test", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestProxyPreservesMethod(t *testing.T) {
-	var receivedMethod string
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedMethod = r.Method
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodDelete, "/proxy/"+upstreamHost+"/resource/42", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if receivedMethod != http.MethodDelete {
-		t.Fatalf("expected DELETE, got %s", receivedMethod)
-	}
-}
-
-func TestProxyHeaderMerge(t *testing.T) {
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("X-Custom"); got != "injected-value" {
-			t.Errorf("expected injected header to win, got %q", got)
-		}
-		if got := r.Header.Get("Accept"); got != "application/json" {
-			t.Errorf("expected agent header preserved, got %q", got)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"custom","headers":{"Authorization":"Bearer {{ STRIPE_KEY }}","X-Custom":"injected-value"}}}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/test", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Custom", "agent-value")
-	req.Header.Set("Accept", "application/json")
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-// --- Substitution proxy tests ---
-
-func TestProxySubstitutionRewritesPathAndInjectsAuth(t *testing.T) {
-	var (
-		sawAuth string
-		sawPath string
-	)
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sawAuth = r.Header.Get("Authorization")
-		sawPath = r.URL.Path
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"basic","username":"TWILIO_ACCOUNT_SID","password":"TWILIO_AUTH_TOKEN"},"substitutions":[{"key":"TWILIO_ACCOUNT_SID","placeholder":"__account_sid__","in":["path"]}]}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-
-	for k, v := range map[string]string{"TWILIO_ACCOUNT_SID": "AC12345", "TWILIO_AUTH_TOKEN": "tok-shh"} {
-		ct, nonce, err := crypto.Encrypt([]byte(v), encKey)
-		if err != nil {
-			t.Fatalf("encrypt %s: %v", k, err)
-		}
-		ms.credentials["root-ns-id:"+k] = &store.Credential{ID: "c-" + k, VaultID: "root-ns-id", Key: k, Ciphertext: ct, Nonce: nonce}
-	}
-
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/2010-04-01/Accounts/__account_sid__/Messages.json", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("AC12345:tok-shh"))
-	if sawAuth != want {
-		t.Fatalf("upstream Authorization: got %q want %q", sawAuth, want)
-	}
-	if sawPath != "/2010-04-01/Accounts/AC12345/Messages.json" {
-		t.Fatalf("upstream path: got %q", sawPath)
-	}
-}
-
-func TestProxySubstitutionScopingSkipsUndeclaredSurfaces(t *testing.T) {
-	var (
-		sawPath  string
-		sawQuery string
-		sawEcho  string
-	)
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sawPath = r.URL.Path
-		sawQuery = r.URL.RawQuery
-		sawEcho = r.Header.Get("X-Echo")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	// Substitution declared only for "path".
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"},"substitutions":[{"key":"ACCOUNT_SID","placeholder":"__account_sid__","in":["path"]}]}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	ct, nonce, _ := crypto.Encrypt([]byte("AC-REAL"), encKey)
-	ms.credentials["root-ns-id:ACCOUNT_SID"] = &store.Credential{ID: "c-sid", VaultID: "root-ns-id", Key: "ACCOUNT_SID", Ciphertext: ct, Nonce: nonce}
-
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	// Agent embeds the placeholder in path (declared), query (NOT declared),
-	// and a header (NOT declared). Only the path should be rewritten.
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/items/__account_sid__?id=__account_sid__", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Echo", "__account_sid__")
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if sawPath != "/items/AC-REAL" {
-		t.Fatalf("path should be rewritten, got %q", sawPath)
-	}
-	if sawQuery != "id=__account_sid__" {
-		t.Fatalf("query is not in `in:`, must reach upstream untouched, got %q", sawQuery)
-	}
-	if sawEcho != "__account_sid__" {
-		t.Fatalf("header is not in `in:`, must reach upstream untouched, got %q", sawEcho)
-	}
-}
-
-func TestProxySubstitutionMissingCredentialReturns502(t *testing.T) {
-	upstreamHit := false
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstreamHit = true
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"},"substitutions":[{"key":"MISSING_KEY","placeholder":"__sid__","in":["path"]}]}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/items/__sid__", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("expected 502 for missing substitution credential, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if upstreamHit {
-		t.Fatal("upstream must not be contacted when substitution credential is missing")
-	}
-}
-
-func TestProxySubstitutionRewritesQuery(t *testing.T) {
-	var sawQuery string
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sawQuery = r.URL.RawQuery
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"},"substitutions":[{"key":"LEGACY_API_KEY","placeholder":"__api_key__","in":["query"]}]}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	ct, nonce, _ := crypto.Encrypt([]byte("real-key&with=specials"), encKey)
-	ms.credentials["root-ns-id:LEGACY_API_KEY"] = &store.Credential{ID: "c-key", VaultID: "root-ns-id", Key: "LEGACY_API_KEY", Ciphertext: ct, Nonce: nonce}
-
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/data?api_key=__api_key__&format=json", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	parsed, err := url.ParseQuery(sawQuery)
-	if err != nil {
-		t.Fatalf("parse query %q: %v", sawQuery, err)
-	}
-	if parsed.Get("api_key") != "real-key&with=specials" {
-		t.Fatalf("expected query api_key to round-trip the encoded secret, got %q", parsed.Get("api_key"))
-	}
-	if parsed.Get("format") != "json" {
-		t.Fatalf("expected non-substituted query param preserved, got %q", parsed.Get("format"))
-	}
-}
-
-func TestProxySubstitutionRewritesHeader(t *testing.T) {
-	var sawTenant string
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sawTenant = r.Header.Get("X-Tenant")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"},"substitutions":[{"key":"TENANT_ID","placeholder":"__tenant__","in":["header"]}]}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	ct, nonce, _ := crypto.Encrypt([]byte("acme-co"), encKey)
-	ms.credentials["root-ns-id:TENANT_ID"] = &store.Credential{ID: "c-tenant", VaultID: "root-ns-id", Key: "TENANT_ID", Ciphertext: ct, Nonce: nonce}
-
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/items", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Tenant", "tenant=__tenant__")
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if sawTenant != "tenant=acme-co" {
-		t.Fatalf("expected header rewritten to 'tenant=acme-co', got %q", sawTenant)
-	}
-}
-
-// --- Discovery endpoint tests ---
-
 func TestDiscoverSuccess(t *testing.T) {
 	desc := "GitHub API"
 	servicesJSON := `[{"host":"*.github.com","description":"GitHub API","auth":{"type":"bearer","token":"GITHUB_TOKEN"}},{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
-	ms, token, _ := setupProxyTest(t, servicesJSON)
+	ms, token, _ := setupVaultWithCredential(t, servicesJSON)
 	srv := newTestServer(withStore(ms))
 
 	req := httptest.NewRequest(http.MethodGet, "/discover", nil)
@@ -3089,9 +2506,6 @@ func TestDiscoverSuccess(t *testing.T) {
 	if resp.Vault != "default" {
 		t.Fatalf("expected vault 'default', got %q", resp.Vault)
 	}
-	if !strings.HasSuffix(resp.ProxyURL, "/proxy") {
-		t.Fatalf("expected proxy_url to end with /proxy, got %q", resp.ProxyURL)
-	}
 	if len(resp.Services) != 2 {
 		t.Fatalf("expected 2 services, got %d", len(resp.Services))
 	}
@@ -3108,7 +2522,7 @@ func TestDiscoverSuccess(t *testing.T) {
 	if resp.Services[1].Description != nil {
 		t.Fatalf("expected nil description, got %q", *resp.Services[1].Description)
 	}
-	// setupProxyTest seeds "STRIPE_KEY" — verify it appears in available_credentials.
+	// setupVaultWithCredential seeds "STRIPE_KEY" — verify it appears in available_credentials.
 	if len(resp.AvailableCredentials) != 1 || resp.AvailableCredentials[0] != "STRIPE_KEY" {
 		t.Fatalf("expected available_credentials [STRIPE_KEY], got %v", resp.AvailableCredentials)
 	}
@@ -3143,7 +2557,7 @@ func TestDiscoverGlobalSessionForbidden(t *testing.T) {
 }
 
 func TestDiscoverEmptyRules(t *testing.T) {
-	ms, token, _ := setupProxyTest(t, "[]")
+	ms, token, _ := setupVaultWithCredential(t, "[]")
 	srv := newTestServer(withStore(ms))
 
 	req := httptest.NewRequest(http.MethodGet, "/discover", nil)
@@ -3163,7 +2577,7 @@ func TestDiscoverEmptyRules(t *testing.T) {
 	if len(resp.Services) != 0 {
 		t.Fatalf("expected 0 services, got %d", len(resp.Services))
 	}
-	// setupProxyTest seeds "STRIPE_KEY" — still available even with empty services.
+	// setupVaultWithCredential seeds "STRIPE_KEY" — still available even with empty services.
 	if len(resp.AvailableCredentials) != 1 || resp.AvailableCredentials[0] != "STRIPE_KEY" {
 		t.Fatalf("expected available_credentials [STRIPE_KEY], got %v", resp.AvailableCredentials)
 	}
@@ -5277,9 +4691,6 @@ func TestScopedSessionWithTTL(t *testing.T) {
 	}
 	if resp.AVAddr != "http://127.0.0.1:14321" {
 		t.Fatalf("expected av_addr http://127.0.0.1:14321, got %q", resp.AVAddr)
-	}
-	if resp.ProxyURL != "http://127.0.0.1:14321/proxy" {
-		t.Fatalf("expected proxy_url with /proxy, got %q", resp.ProxyURL)
 	}
 	if resp.ExpiresAt == "" {
 		t.Fatal("expected non-empty expires_at")

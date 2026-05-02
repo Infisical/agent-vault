@@ -1,19 +1,13 @@
-You have access to Agent Vault, an HTTP proxy that attaches credentials to your outbound requests. You never see or handle credentials directly.
+You have access to Agent Vault, a transparent HTTPS proxy that attaches credentials to your outbound requests. You never see or handle credentials directly.
 
 ## Quick Start
 
-1. Store env vars from the redemption response: AGENT_VAULT_ADDR (server URL), AGENT_VAULT_SESSION_TOKEN (bearer token), AGENT_VAULT_VAULT (vault name)
-2. Call GET {AGENT_VAULT_ADDR}/discover with Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-3. For hosts in the response, route through the proxy. For all others, call directly.
+1. Store env vars from the redemption response: AGENT_VAULT_ADDR (server URL), AGENT_VAULT_SESSION_TOKEN (bearer token), AGENT_VAULT_VAULT (vault name).
+2. Configure your HTTP client to route HTTPS through Agent Vault: fetch the root CA from {AGENT_VAULT_ADDR}/v1/mitm/ca.pem (the response carries the MITM port in the X-MITM-Port header, default 14322) and set HTTPS_PROXY=https://{AGENT_VAULT_SESSION_TOKEN}:{AGENT_VAULT_VAULT}@{host}:{port} where {host} is the host portion of {AGENT_VAULT_ADDR}.
+3. Call GET {AGENT_VAULT_ADDR}/discover with Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN} to learn which hosts have credentials configured.
+4. For any host listed in /discover, just call the real upstream URL — Agent Vault intercepts the CONNECT, injects credentials, and forwards over HTTPS. For all others, call directly (the proxy passes them through unmodified).
 
-## Proxy
-
-  {AGENT_VAULT_ADDR}/proxy/{target_host}/{path}[?query]
-  Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-
-Agent Vault strips your auth header, attaches real credentials, and forwards over HTTPS.
-
-Example: GET {AGENT_VAULT_ADDR}/proxy/api.stripe.com/v1/charges?limit=10
+Example: GET https://api.stripe.com/v1/charges?limit=10
 
 ## Proposals — Requesting Access to New Services
 

@@ -106,7 +106,7 @@ Agent Vault resolves hostnames to IP addresses, validates every resolved IP agai
 
 ## Transport security
 
-All proxied requests are forwarded over **HTTPS**, regardless of how the agent connects to Agent Vault locally. The agent's session token never reaches the target service: on the explicit `/proxy` ingress it travels in `Authorization` and is stripped; on the transparent `HTTPS_PROXY` ingress it travels in `Proxy-Authorization` (which is hop-by-hop and never forwarded). Real credentials are injected server-side based on the vault's [services](/learn/services).
+All proxied requests are forwarded over **HTTPS**. The agent's session token never reaches the target service: it travels in `Proxy-Authorization` (which is hop-by-hop and never forwarded). Real credentials are injected server-side based on the vault's [services](/learn/services).
 
 Other client request headers — vendor headers like `anthropic-version`, conditional request headers, tracing IDs — flow through to the upstream unchanged. The broker only takes over the headers it is responsible for injecting (the auth slot for the configured auth type) plus hop-by-hop and broker-scoped headers; see [Header forwarding](/learn/services#header-forwarding) for the precise rules.
 
@@ -120,8 +120,8 @@ This means:
 The MITM listener that backs `HTTPS_PROXY` is itself TLS-wrapped with a cert signed by the software-backed root CA. This means the CONNECT handshake carrying the agent's session token is encrypted end-to-end between the client and the broker — session tokens are never exposed in plaintext on the wire, even on an untrusted local network.
 
 - **Root CA private key** is encrypted at rest with the DEK (same key that wraps credentials). See [Encryption at rest](#encryption-at-rest).
-- **DNS rebinding protection** and **[netguard](#network-security)** apply to both the transparent proxy and the explicit `/proxy` endpoint — every outbound connection is resolved and validated against the IP blocklist before Agent Vault dials the upstream.
-- **Rate limiting** shares one `(actor, vault)` budget across both ingress paths; switching from one to the other does not bypass the limit.
+- **DNS rebinding protection** and **[netguard](#network-security)** — every outbound connection is resolved and validated against the IP blocklist before Agent Vault dials the upstream.
+- **Rate limiting** is enforced per `(actor, vault)` budget.
 
 ## Access control
 
