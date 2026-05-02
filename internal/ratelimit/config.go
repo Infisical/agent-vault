@@ -51,7 +51,7 @@ func DefaultsFor(profile Profile) Config {
 	}
 	mul := profileMultiplier(profile)
 	// Unauthenticated surface: login/register/forgot/reset/verify,
-	// OAuth, invite/approval-token redemption.
+	// invite/approval-token redemption.
 	c.Tiers[TierAuth] = TierConfig{
 		Algorithm: AlgSliding, Window: 5 * time.Minute, Max: scaleMax(10, mul), MaxKeys: 10000,
 	}

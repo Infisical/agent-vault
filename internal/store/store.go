@@ -98,8 +98,8 @@ func (s *Session) IsExpired(now time.Time) bool {
 }
 
 // CreateUserSessionParams carries all the fields persisted on a fresh
-// user-login session. Captured as a struct so login, OAuth callback, and
-// password-change call sites stay aligned without positional drift.
+// user-login session. Captured as a struct so login and password-change
+// call sites stay aligned without positional drift.
 type CreateUserSessionParams struct {
 	UserID        string
 	ExpiresAt     time.Time
@@ -273,32 +273,6 @@ type PasswordReset struct {
 	ExpiresAt time.Time
 }
 
-// OAuthAccount links a user to an external OAuth provider identity.
-type OAuthAccount struct {
-	ID             string
-	UserID         string
-	Provider       string // "google", "github", etc.
-	ProviderUserID string // unique ID from provider (e.g. "sub" claim)
-	Email          string // email from provider (for display)
-	Name           string
-	AvatarURL      string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-}
-
-// OAuthState holds CSRF state and PKCE verifier for an in-progress OAuth flow.
-type OAuthState struct {
-	ID           string
-	StateHash    string // SHA-256 of the state parameter
-	CodeVerifier string // PKCE code_verifier
-	Nonce        string // OIDC nonce for ID token binding
-	RedirectURL  string // where to redirect after auth
-	Mode         string // "login" or "connect"
-	UserID       string // set when mode is "connect" (authenticated linking)
-	CreatedAt    time.Time
-	ExpiresAt    time.Time
-}
-
 // Store is the persistence interface for Agent Vault.
 // All methods are safe for concurrent use.
 type Store interface {
@@ -424,24 +398,6 @@ type Store interface {
 	MarkPasswordResetUsed(ctx context.Context, id int) error
 	CountPendingPasswordResets(ctx context.Context, email string) (int, error)
 	ExpirePendingPasswordResets(ctx context.Context, before time.Time) (int, error)
-
-	// OAuth accounts
-	CreateOAuthAccount(ctx context.Context, userID, provider, providerUserID, email, name, avatarURL string) (*OAuthAccount, error)
-	GetOAuthAccount(ctx context.Context, provider, providerUserID string) (*OAuthAccount, error)
-	GetOAuthAccountByUser(ctx context.Context, userID, provider string) (*OAuthAccount, error)
-	ListUserOAuthAccounts(ctx context.Context, userID string) ([]OAuthAccount, error)
-	DeleteOAuthAccount(ctx context.Context, userID, provider string) error
-
-	// OAuth state (CSRF + PKCE)
-	CreateOAuthState(ctx context.Context, stateHash, codeVerifier, nonce, redirectURL, mode, userID string, expiresAt time.Time) (*OAuthState, error)
-	GetOAuthStateByHash(ctx context.Context, stateHash string) (*OAuthState, error)
-	DeleteOAuthState(ctx context.Context, id string) error
-	ExpireOAuthStates(ctx context.Context, before time.Time) (int, error)
-
-	// User creation without password (for OAuth registration)
-	CreateOAuthUser(ctx context.Context, email, role string) (*User, error)
-	// CreateOAuthUserAndAccount atomically creates a passwordless user and links an OAuth identity.
-	CreateOAuthUserAndAccount(ctx context.Context, email, role, provider, providerUserID, oauthEmail, name, avatarURL string) (*User, *OAuthAccount, error)
 
 	// Agents
 	CreateAgent(ctx context.Context, name, createdBy, role string) (*Agent, error)

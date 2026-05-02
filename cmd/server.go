@@ -21,7 +21,6 @@ import (
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/mitm"
 	"github.com/Infisical/agent-vault/internal/notify"
-	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/pidfile"
 	"github.com/Infisical/agent-vault/internal/requestlog"
 	"github.com/Infisical/agent-vault/internal/server"
@@ -152,8 +151,7 @@ var serverCmd = &cobra.Command{
 		smtpCfg := notify.LoadSMTPConfig()
 		_ = os.Unsetenv("AGENT_VAULT_SMTP_PASSWORD")
 		notifier := notify.New(smtpCfg)
-		oauthProviders := loadOAuthProviders(baseURL)
-		srv := server.New(addr, db, masterKey.Key(), notifier, initialized, baseURL, oauthProviders, logger)
+		srv := server.New(addr, db, masterKey.Key(), notifier, initialized, baseURL, logger)
 		srv.SetSkills(skillCLI, skillHTTP)
 		shutdownLogs := attachLogSink(srv, db, logger)
 		defer shutdownLogs()
@@ -469,8 +467,7 @@ func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger) erro
 	smtpCfg := notify.LoadSMTPConfig()
 	_ = os.Unsetenv("AGENT_VAULT_SMTP_PASSWORD")
 	notifier := notify.New(smtpCfg)
-	oauthProviders := loadOAuthProviders(baseURL)
-	srv := server.New(addr, db, key, notifier, initialized, baseURL, oauthProviders, logger)
+	srv := server.New(addr, db, key, notifier, initialized, baseURL, logger)
 	srv.SetSkills(skillCLI, skillHTTP)
 	shutdownLogs := attachLogSink(srv, db, logger)
 	defer shutdownLogs()
@@ -609,26 +606,6 @@ var stopCmd = &cobra.Command{
 		fmt.Fprintf(cmd.OutOrStdout(), "%s Server stopped.\n", successText("✓"))
 		return nil
 	},
-}
-
-// loadOAuthProviders reads OAuth configuration from environment variables
-// and returns a map of enabled providers.
-func loadOAuthProviders(baseURL string) map[string]oauth.Provider {
-	providers := make(map[string]oauth.Provider)
-
-	google := oauth.NewGoogleProvider(oauth.GoogleConfig{
-		ClientID:     os.Getenv("AGENT_VAULT_OAUTH_GOOGLE_CLIENT_ID"),
-		ClientSecret: os.Getenv("AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET"),
-		RedirectURL:  strings.TrimRight(baseURL, "/") + "/v1/auth/oauth/google/callback",
-	})
-	if google.Enabled() {
-		providers["google"] = google
-	}
-
-	// Clear sensitive env var after reading (matches master password pattern).
-	_ = os.Unsetenv("AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET")
-
-	return providers
 }
 
 func init() {

@@ -22,7 +22,6 @@ import (
 	"github.com/Infisical/agent-vault/internal/mitm"
 	"github.com/Infisical/agent-vault/internal/netguard"
 	"github.com/Infisical/agent-vault/internal/notify"
-	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/pidfile"
 	"github.com/Infisical/agent-vault/internal/ratelimit"
 	"github.com/Infisical/agent-vault/internal/requestlog"
@@ -61,7 +60,6 @@ type Server struct {
 	notifier       *notify.Notifier
 	initialized    bool   // true when at least one owner account exists
 	baseURL        string // externally-reachable base URL (e.g. "https://sb.example.com")
-	oauthProviders map[string]oauth.Provider
 	skillCLI       []byte       // embedded CLI skill content (served at GET /v1/skills/cli)
 	skillHTTP      []byte       // embedded HTTP skill content (served at GET /v1/skills/http)
 	mitm           *mitm.Proxy          // transparent MITM proxy; nil only when --mitm-port 0
@@ -226,23 +224,6 @@ type Store interface {
 	MarkPasswordResetUsed(ctx context.Context, id int) error
 	CountPendingPasswordResets(ctx context.Context, email string) (int, error)
 	ExpirePendingPasswordResets(ctx context.Context, before time.Time) (int, error)
-
-	// OAuth accounts
-	CreateOAuthAccount(ctx context.Context, userID, provider, providerUserID, email, name, avatarURL string) (*store.OAuthAccount, error)
-	GetOAuthAccount(ctx context.Context, provider, providerUserID string) (*store.OAuthAccount, error)
-	GetOAuthAccountByUser(ctx context.Context, userID, provider string) (*store.OAuthAccount, error)
-	ListUserOAuthAccounts(ctx context.Context, userID string) ([]store.OAuthAccount, error)
-	DeleteOAuthAccount(ctx context.Context, userID, provider string) error
-
-	// OAuth state
-	CreateOAuthState(ctx context.Context, stateHash, codeVerifier, nonce, redirectURL, mode, userID string, expiresAt time.Time) (*store.OAuthState, error)
-	GetOAuthStateByHash(ctx context.Context, stateHash string) (*store.OAuthState, error)
-	DeleteOAuthState(ctx context.Context, id string) error
-	ExpireOAuthStates(ctx context.Context, before time.Time) (int, error)
-
-	// OAuth user creation
-	CreateOAuthUser(ctx context.Context, email, role string) (*store.User, error)
-	CreateOAuthUserAndAccount(ctx context.Context, email, role, provider, providerUserID, oauthEmail, name, avatarURL string) (*store.User, *store.OAuthAccount, error)
 
 	// Instance settings
 	GetSetting(ctx context.Context, key string) (string, error)
@@ -558,7 +539,7 @@ func limitBody(next http.HandlerFunc) http.HandlerFunc {
 // The initialized parameter indicates whether at least one owner account exists.
 // When false, all endpoints except /health and POST /v1/init return 503.
 // logger must be non-nil; tests can pass slog.New(slog.DiscardHandler).
-func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string, oauthProviders map[string]oauth.Provider, logger *slog.Logger) *Server {
+func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
 
 	rlCfg, _ := ratelimit.LoadFromEnv()
@@ -578,7 +559,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 		notifier:       notifier,
 		initialized:    initialized,
 		baseURL:        strings.TrimRight(baseURL, "/"),
-		oauthProviders: oauthProviders,
 		logger:         logger,
 		rateLimit:      rl,
 		logSink:        requestlog.Nop{},
@@ -626,10 +606,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	}))
 	ipApprovalToken := s.tier(ratelimit.TierAuth, ratelimit.IPTokenKey(clientIP, func(r *http.Request) string {
 		return r.URL.Query().Get("token")
-	}))
-	// OAuth callback: keyed on the hashed state query param.
-	ipOAuthCallback := s.tier(ratelimit.TierAuth, ratelimit.IPTokenKey(clientIP, func(r *http.Request) string {
-		return r.URL.Query().Get("state")
 	}))
 
 	// Agent invites (instance-level, requires auth)
@@ -720,13 +696,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 
 	mux.HandleFunc("POST /v1/auth/logout", s.requireInitialized(ipAuth(s.handleLogout)))
 
-	// OAuth
-	mux.HandleFunc("GET /v1/auth/oauth/providers", ipAuth(s.handleOAuthProviders))
-	mux.HandleFunc("GET /v1/auth/oauth/{provider}/login", s.requireInitialized(ipAuth(s.optionalAuth(s.handleOAuthLogin))))
-	mux.HandleFunc("GET /v1/auth/oauth/{provider}/callback", s.requireInitialized(ipOAuthCallback(s.handleOAuthCallback)))
-	mux.HandleFunc("POST /v1/auth/oauth/{provider}/connect", s.requireInitialized(s.requireAuth(actorAuthed(s.handleOAuthConnect))))
-	mux.HandleFunc("DELETE /v1/auth/oauth/{provider}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleOAuthDisconnect))))
-
 	// React app static assets (Vite outputs to /assets/ with base "/")
 	webFS, _ := fs.Sub(webDistFS, "webdist")
 	mux.Handle("GET /assets/", http.FileServer(http.FS(webFS)))
@@ -741,7 +710,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /approve/{id...}", s.handleSPA)
 	mux.HandleFunc("GET /manage/{path...}", s.handleSPA)
 	mux.HandleFunc("GET /change-password", s.handleSPA)
-	mux.HandleFunc("GET /oauth/callback", s.handleSPA)
 	mux.HandleFunc("GET /account/{path...}", s.handleSPA)
 	mux.HandleFunc("GET /{$}", s.handleSPA)
 
@@ -1000,32 +968,6 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		ctx := context.WithValue(r.Context(), sessionContextKey, sess)
 		next(w, r.WithContext(ctx))
-	}
-}
-
-// optionalAuth is like requireAuth but does not reject unauthenticated
-// requests. If a valid session token is present it is placed in context;
-// otherwise the handler runs without a session.
-func (s *Server) optionalAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var token string
-		header := r.Header.Get("Authorization")
-		if strings.HasPrefix(header, "Bearer ") {
-			token = strings.TrimPrefix(header, "Bearer ")
-		} else if c, err := r.Cookie("av_session"); err == nil && c.Value != "" {
-			token = c.Value
-		}
-
-		if token != "" {
-			if sess, err := s.store.GetSession(r.Context(), token); err == nil && sess != nil && !sess.IsExpired(time.Now()) {
-				s.maybeTouchSession(r.Context(), sess, token, clientIP(r), r.UserAgent())
-				ctx := context.WithValue(r.Context(), sessionContextKey, sess)
-				next(w, r.WithContext(ctx))
-				return
-			}
-		}
-
-		next(w, r)
 	}
 }
 

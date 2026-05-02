@@ -374,8 +374,7 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only allow reset for active accounts with a password.
-	if !user.IsActive || user.PasswordHash == nil {
+	if !user.IsActive {
 		uniformResponse(false)
 		return
 	}
@@ -461,7 +460,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !user.IsActive || user.PasswordHash == nil {
+	if !user.IsActive {
 		jsonError(w, http.StatusBadRequest, "Invalid or expired reset code")
 		return
 	}
@@ -537,24 +536,12 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 
 	// User actor.
 	user := actor.User
-	var oauthProviders []string
-	oauthAccounts, err := s.store.ListUserOAuthAccounts(r.Context(), user.ID)
-	if err == nil {
-		for _, oa := range oauthAccounts {
-			oauthProviders = append(oauthProviders, oa.Provider)
-		}
-	}
-	if oauthProviders == nil {
-		oauthProviders = []string{}
-	}
 
 	jsonOK(w, map[string]interface{}{
-		"type":            "user",
-		"email":           user.Email,
-		"role":            user.Role,
-		"is_owner":        user.Role == "owner",
-		"has_password":    user.PasswordHash != nil,
-		"oauth_providers": oauthProviders,
+		"type":     "user",
+		"email":    user.Email,
+		"role":     user.Role,
+		"is_owner": user.Role == "owner",
 	})
 }
 
@@ -612,8 +599,8 @@ func init() {
 
 // newUserSessionParams builds a CreateUserSessionParams populated with the
 // caller's IP and User-Agent. Centralized so every login path (password,
-// OAuth, verification, password reset) records the same shape and applies
-// the same TTLs. DeviceLabel is left empty here because only the password
+// verification, password reset) records the same shape and applies the
+// same TTLs. DeviceLabel is left empty here because only the password
 // login path receives one in the request body — other paths set it
 // post-construction if needed.
 func newUserSessionParams(r *http.Request, userID string) store.CreateUserSessionParams {
@@ -655,13 +642,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// Run KDF against dummy hash to equalize response time (prevent user enumeration).
 		auth.VerifyUserPassword([]byte(req.Password), dummyPasswordHash, dummyPasswordSalt, dummyKDFParams)
 		jsonError(w, http.StatusUnauthorized, "Invalid email or password")
-		return
-	}
-
-	// OAuth-only user trying to use password login — run dummy KDF to prevent timing attacks.
-	if user.PasswordHash == nil {
-		auth.VerifyUserPassword([]byte(req.Password), dummyPasswordHash, dummyPasswordSalt, dummyKDFParams)
-		jsonError(w, http.StatusUnauthorized, "This account uses social login. Use the 'Continue with Google' button on the login page.")
 		return
 	}
 
@@ -722,17 +702,13 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// OAuth-only users (no password) can set a password without providing current_password.
-	// Users with an existing password must verify it first.
-	if user.PasswordHash != nil {
-		if req.CurrentPassword == "" {
-			jsonError(w, http.StatusBadRequest, "Current_password is required")
-			return
-		}
-		if !auth.VerifyUserPassword([]byte(req.CurrentPassword), user.PasswordHash, user.PasswordSalt, userKDFParams(user)) {
-			jsonError(w, http.StatusUnauthorized, "Current password is incorrect")
-			return
-		}
+	if req.CurrentPassword == "" {
+		jsonError(w, http.StatusBadRequest, "Current_password is required")
+		return
+	}
+	if !auth.VerifyUserPassword([]byte(req.CurrentPassword), user.PasswordHash, user.PasswordSalt, userKDFParams(user)) {
+		jsonError(w, http.StatusUnauthorized, "Current password is incorrect")
+		return
 	}
 
 	hash, salt, newKDFParams, err := auth.HashUserPassword([]byte(req.NewPassword))

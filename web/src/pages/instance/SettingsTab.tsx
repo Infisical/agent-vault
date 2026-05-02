@@ -31,7 +31,7 @@ const TIER_LABELS: Record<string, string> = {
 };
 
 const TIER_TOOLTIPS: Record<string, string> = {
-  AUTH: "Every unauthenticated endpoint: login, register, forgot/reset password, email verification, OAuth login/callback, invite redemption, approval-token lookups. Keyed on client IP (and additionally on email for login; rejected when either bucket is exhausted).",
+  AUTH: "Every unauthenticated endpoint: login, register, forgot/reset password, email verification, invite redemption, approval-token lookups. Keyed on client IP (and additionally on email for login; rejected when either bucket is exhausted).",
   PROXY: "MITM forward path, keyed on (agent, vault). Token bucket smooths sustained traffic; a per-scope concurrency semaphore bounds in-flight upstream calls.",
   AUTHED: "Everything behind requireAuth — CRUD, reads, admin, proposals, /discover. One bucket per actor. Defaults accommodate the heaviest legitimate agent workload; tighten only if abuse is observed.",
   GLOBAL: "Server-wide backstop: Rate + Burst drive a requests-per-second ceiling; Concurrency caps total in-flight requests. Outermost safety net — sheds load before per-tier limits engage.",
@@ -328,7 +328,7 @@ export default function InstanceSettingsTab() {
               </h3>
               <p className="text-sm text-text-muted">
                 When enabled, new users can only join through vault invites.
-                Self-registration and OAuth signup are disabled.
+                Self-registration is disabled.
               </p>
             </div>
             <button
@@ -357,8 +357,8 @@ export default function InstanceSettingsTab() {
           </h3>
           <p className="text-sm text-text-muted mb-4">
             Restrict signups to specific email domains. When set, only users
-            with email addresses from these domains can register (via email/password
-            or Google OAuth). Leave empty to allow all domains.
+            with email addresses from these domains can register. Leave empty
+            to allow all domains.
           </p>
 
           <form onSubmit={addDomain} className="flex gap-2 mb-4 max-w-md">

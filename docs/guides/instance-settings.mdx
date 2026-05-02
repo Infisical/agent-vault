@@ -18,7 +18,7 @@ Currently, instance settings control how new users can register and join:
 
 ## Invite-only registration
 
-When invite-only mode is enabled, self-registration is completely disabled. New users can only join through [vault invites](/learn/vaults#invite-users-to-a-vault) sent by a vault [admin](/learn/permissions#vault-roles). This applies to both email/password registration and OAuth signup.
+When invite-only mode is enabled, self-registration is completely disabled. New users can only join through [vault invites](/learn/vaults#invite-users-to-a-vault) sent by a vault [admin](/learn/permissions#vault-roles).
 
 <Tabs>
   <Tab title="Web UI">
@@ -41,12 +41,11 @@ When invite-only is active:
 - The **Register** page directs users to request an invite from an administrator.
 - The **Login** page hides the "Register" link.
 - `POST /v1/auth/register` returns `403 Forbidden`.
-- OAuth signup for new users is blocked (existing OAuth users can still log in).
 - [Vault invites](/learn/vaults#invite-users-to-a-vault) still work — this is the intended onboarding path.
 
 ## Allowed email domains
 
-You can restrict registration to specific email domains. When set, only users with matching email addresses can register (via email/password, OAuth, or vault invite). Leave the list empty to allow all domains.
+You can restrict registration to specific email domains. When set, only users with matching email addresses can register (via email/password or vault invite). Leave the list empty to allow all domains.
 
 <Tabs>
   <Tab title="Web UI">

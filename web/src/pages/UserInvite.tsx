@@ -5,7 +5,6 @@ import Button from "../components/Button";
 import { ErrorBanner } from "../components/shared";
 import { DomainNotice } from "../components/DomainNotice";
 import { apiFetch } from "../lib/api";
-import { OAuthSection } from "../components/GoogleButton";
 
 interface InviteVault {
   vault_name: string;
@@ -352,8 +351,6 @@ function NewUserForm({
       <InviteDetails role={role} vaults={vaults} />
 
       <DomainNotice className="mb-4" />
-
-      <OAuthSection redirect={`/invite/${token}`} />
 
       <form onSubmit={handleSubmit} autoComplete="off">
         <div className="mb-6">

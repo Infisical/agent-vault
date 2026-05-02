@@ -28,8 +28,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 40 {
-		t.Fatalf("expected migration version 40, got %d", version)
+	if version != 42 {
+		t.Fatalf("expected migration version 42, got %d", version)
 	}
 }
 

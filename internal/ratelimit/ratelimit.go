@@ -16,8 +16,8 @@ type Tier int
 
 const (
 	// TierAuth covers every unauthenticated endpoint: login, register,
-	// forgot/reset password, email verification, OAuth login/callback,
-	// invite redemption, approval-token lookups. Sliding window. The
+	// forgot/reset password, email verification, invite redemption,
+	// approval-token lookups. Sliding window. The
 	// caller picks the keyer — IPKey for IP-flood defense, IPTokenKey
 	// for token-enumeration, and the login handler uses both an IP
 	// and email key against this tier (reject if either is exhausted).

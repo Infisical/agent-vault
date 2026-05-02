@@ -60,21 +60,6 @@ Configure SMTP to enable Agent Vault to send emails for verification codes, vaul
   To verify SMTP is working, run `agent-vault email test`. It sends a test email to the owner's address. See the [Configure Email SMTP](/guides/smtp) guide for step-by-step setup instructions for popular providers like SendGrid, AWS SES, Resend, and more.
 </Tip>
 
-## OAuth configuration
-
-When both variables for a provider are set, the corresponding "Continue with ..." button appears on login and registration pages. If either is unset, the provider is disabled.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_ID` | (unset) | Google OAuth 2.0 Client ID. Obtain from [Google Cloud Console](https://console.cloud.google.com/apis/credentials). |
-| `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET` | (unset) | Google OAuth 2.0 Client Secret. |
-
-The callback URL configured in Google Cloud Console must be `{AGENT_VAULT_ADDR}/v1/auth/oauth/google/callback`.
-
-<Tip>
-  See the [Configure Google SSO](/guides/oauth) guide for step-by-step setup instructions.
-</Tip>
-
 ## Agent runtime variables
 
 These variables are set automatically by `agent-vault vault run` on the agent's environment. You do not need to set them manually.

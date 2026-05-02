@@ -18,7 +18,7 @@ make docker       # Multi-stage Docker image; data persisted at /data/.agent-vau
 - [main.go](main.go) — entrypoint, calls `cmd.Execute()`
 - [cmd/](cmd/) — Cobra CLI commands, flat package, one file per command group. Commands self-register via `init()`.
 - [web/](web/) — React + TypeScript + Vite frontend; builds into `internal/server/webdist/` which is embedded in the binary via `go:embed`.
-- [internal/](internal/) — business logic: `broker`, `brokercore`, `proposal`, `server`, `mitm`, `ca`, `oauth`, `notify`, `auth`, `session`, `store`, `crypto`, `netguard`, `pidfile`, `catalog`. Each subpackage is self-describing; read the package docstring when you need detail.
+- [internal/](internal/) — business logic: `broker`, `brokercore`, `proposal`, `server`, `mitm`, `ca`, `notify`, `auth`, `session`, `store`, `crypto`, `netguard`, `pidfile`, `catalog`. Each subpackage is self-describing; read the package docstring when you need detail.
 
 ## Core concepts (mental model)
 
@@ -27,7 +27,7 @@ make docker       # Multi-stage Docker image; data persisted at /data/.agent-vau
 - **Two independent permission axes**:
   - Instance role: `owner` vs `member` (applies to both users and agents).
   - Vault role: `proxy` < `member` < `admin`. Proxy can use the proxy and raise proposals; member can manage credentials/services; admin can invite humans.
-- **KEK/DEK key wrapping**: A random DEK (Data Encryption Key) encrypts credentials and the CA key at rest (AES-256-GCM). If a master password is set, Argon2id derives a KEK (Key Encryption Key) that wraps the DEK; changing the password re-wraps the DEK without re-encrypting credentials. If no password is set (passwordless mode), the DEK is stored in plaintext — suitable for PaaS deploys where volume security is the trust boundary. Login uses email+password or Google OAuth. The first user to register becomes the instance owner and is auto-granted vault admin on `default`.
+- **KEK/DEK key wrapping**: A random DEK (Data Encryption Key) encrypts credentials and the CA key at rest (AES-256-GCM). If a master password is set, Argon2id derives a KEK (Key Encryption Key) that wraps the DEK; changing the password re-wraps the DEK without re-encrypting credentials. If no password is set (passwordless mode), the DEK is stored in plaintext — suitable for PaaS deploys where volume security is the trust boundary. Login uses email+password. The first user to register becomes the instance owner and is auto-granted vault admin on `default`.
 - **Agent skills are the agent-facing contract.** [cmd/skill_cli.md](cmd/skill_cli.md) and [cmd/skill_http.md](cmd/skill_http.md) are embedded into the binary, installed by `vault run`, and served publicly at `/v1/skills/{cli,http}`. They are the authoritative reference for what agents can do.
 - **Two isolation modes for `vault run`** (selected via `--isolation` or `AGENT_VAULT_ISOLATION`): `host` (default, cooperative — fork+exec on the host with `HTTPS_PROXY` envvars) and `container` (non-cooperative — Docker container with iptables egress locked to the Agent Vault proxy). Container mode lives in [internal/isolation/](internal/isolation/) with an embedded Dockerfile + init-firewall.sh + entrypoint.sh, built on first use and cached by content hash.
 
