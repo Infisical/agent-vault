@@ -3933,19 +3933,11 @@ func TestVaultSettingsUnmatchedHostPolicy(t *testing.T) {
 		// Persist deny so we can verify the non-admin GET sees the truth
 		// rather than the previous silent passthrough fallback.
 		_ = ms.SetVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostPolicy, "deny")
-		ms.users["member@test.com"] = &store.User{
-			ID: "member-user-id", Email: "member@test.com",
-			Role: "member", IsActive: true,
-		}
-		ms.GrantVaultRole(context.Background(), "member-user-id", "user", "root-ns-id", "member")
-		memberSess, err := ms.CreateSession(context.Background(), "member-user-id", time.Now().Add(time.Hour))
-		if err != nil {
-			t.Fatalf("CreateSession: %v", err)
-		}
+		memberToken := setupMemberSession(t, ms, "root-ns-id")
 
 		// GET should succeed and return the actual stored policy.
 		req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/settings", nil)
-		req.Header.Set("Authorization", "Bearer "+memberSess.ID)
+		req.Header.Set("Authorization", "Bearer "+memberToken)
 		rec := httptest.NewRecorder()
 		srv.httpServer.Handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -3960,7 +3952,7 @@ func TestVaultSettingsUnmatchedHostPolicy(t *testing.T) {
 		// PATCH must still be admin/owner-only.
 		patchBody := strings.NewReader(`{"unmatched_host_policy": "passthrough"}`)
 		req = httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/settings", patchBody)
-		req.Header.Set("Authorization", "Bearer "+memberSess.ID)
+		req.Header.Set("Authorization", "Bearer "+memberToken)
 		req.Header.Set("Content-Type", "application/json")
 		rec = httptest.NewRecorder()
 		srv.httpServer.Handler.ServeHTTP(rec, req)
