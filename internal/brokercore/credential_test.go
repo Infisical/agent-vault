@@ -14,10 +14,11 @@ import (
 
 // fakeCredStore satisfies CredentialStore for tests.
 type fakeCredStore struct {
-	brokerCfg map[string]*store.BrokerConfig // vaultID → config
-	creds     map[string]*store.Credential   // key = vaultID+"|"+key
-	missKey   string                         // if set, GetCredential for this key returns nil/err
-	policy    UnmatchedHostPolicy            // unmatched-host policy returned by UnmatchedHostPolicy
+	brokerCfg     map[string]*store.BrokerConfig // vaultID → config
+	creds         map[string]*store.Credential   // key = vaultID+"|"+key
+	missKey       string                         // if set, GetCredential for this key returns nil/err
+	policy        UnmatchedHostPolicy            // unmatched-host policy returned by UnmatchedHostPolicy
+	brokerCfgErr  error                          // if non-nil, GetBrokerConfig returns this error
 
 	getCredentialCalls int // call count — used by passthrough tests to assert no lookup
 }
@@ -31,6 +32,9 @@ func newFakeCredStore() *fakeCredStore {
 }
 
 func (f *fakeCredStore) GetBrokerConfig(_ context.Context, vaultID string) (*store.BrokerConfig, error) {
+	if f.brokerCfgErr != nil {
+		return nil, f.brokerCfgErr
+	}
 	c, ok := f.brokerCfg[vaultID]
 	if !ok {
 		return nil, nil
@@ -276,6 +280,20 @@ func TestInject_UnmatchedHost_HostMissDeny(t *testing.T) {
 	_, err := p.Inject(context.Background(), "v1", "other.example.com")
 	if !errors.Is(err, ErrServiceNotFound) {
 		t.Fatalf("expected ErrServiceNotFound under deny policy, got %v", err)
+	}
+}
+
+// Regression: a non-ErrNoRows GetBrokerConfig error must fail closed
+// (ErrServiceNotFound), not fall through to passthrough. Otherwise a
+// transient store failure silently strips credential injection from a
+// vault that has services configured.
+func TestInject_GetBrokerConfigError_FailsClosed(t *testing.T) {
+	f := newFakeCredStore()
+	f.brokerCfgErr = errors.New("transient sqlite I/O error")
+	p := NewStoreCredentialProvider(f, make32(0xAB))
+	_, err := p.Inject(context.Background(), "v1", "api.example.com")
+	if !errors.Is(err, ErrServiceNotFound) {
+		t.Fatalf("expected ErrServiceNotFound on store error, got %v", err)
 	}
 }
 

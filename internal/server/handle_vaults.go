@@ -508,12 +508,20 @@ func (s *Server) handleVaultRename(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleVaultSettingsGet is a read-only view, gated at vault-member scope
+// so non-admin users can see the actual policy (the toggle is disabled
+// for them via canManage on the frontend). PATCH stays at admin/owner.
 func (s *Server) handleVaultSettingsGet(w http.ResponseWriter, r *http.Request) {
-	ns := s.resolveVaultForAdminOrOwner(w, r, r.PathValue("name"))
-	if ns == nil {
+	ctx := r.Context()
+	ns, err := s.store.GetVault(ctx, r.PathValue("name"))
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, "Vault not found")
 		return
 	}
-	policy, err := readUnmatchedHostPolicy(r.Context(), s.store, ns.ID)
+	if _, err := s.requireVaultAccess(w, r, ns.ID); err != nil {
+		return
+	}
+	policy, err := readUnmatchedHostPolicy(ctx, s.store, ns.ID)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to read vault settings")
 		return
@@ -536,13 +544,19 @@ func (s *Server) handleVaultSettingsPatch(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// On the write path, echo the validated input. The follow-up read
+	// only fires for no-op PATCHes (no field set) — otherwise a transient
+	// read failure after a committed write would desync the UI from the
+	// DB on a security-relevant control.
 	if body.UnmatchedHostPolicy != nil {
 		val := strings.TrimSpace(*body.UnmatchedHostPolicy)
+		var effective brokercore.UnmatchedHostPolicy
 		if val == "" {
 			if err := s.store.DeleteVaultSetting(ctx, ns.ID, settingUnmatchedHostPolicy); err != nil {
 				jsonError(w, http.StatusInternalServerError, "Failed to update vault settings")
 				return
 			}
+			effective = brokercore.PolicyPassthrough
 		} else {
 			policy := brokercore.UnmatchedHostPolicy(val)
 			if !brokercore.IsValidUnmatchedHostPolicy(policy) {
@@ -553,7 +567,10 @@ func (s *Server) handleVaultSettingsPatch(w http.ResponseWriter, r *http.Request
 				jsonError(w, http.StatusInternalServerError, "Failed to update vault settings")
 				return
 			}
+			effective = policy
 		}
+		jsonOK(w, map[string]interface{}{"unmatched_host_policy": string(effective)})
+		return
 	}
 
 	policy, err := readUnmatchedHostPolicy(ctx, s.store, ns.ID)

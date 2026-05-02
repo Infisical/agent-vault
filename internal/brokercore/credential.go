@@ -2,7 +2,9 @@ package brokercore
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 
@@ -86,9 +88,13 @@ func NewStoreCredentialProvider(s CredentialStore, encKey []byte) *StoreCredenti
 // targetHost may include a port; the port is stripped before matching so
 // services configured as bare hostnames match `api.github.com:443`.
 func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHost string) (*InjectResult, error) {
-	// A missing config is equivalent to an empty services list — fall
-	// through to the unmatched-host policy rather than denying outright.
-	cfg, _ := p.Store.GetBrokerConfig(ctx, vaultID)
+	// A missing row is equivalent to an empty services list — fall
+	// through to the unmatched-host policy. Any other error fails closed
+	// so a transient store failure can't silently strip enforcement.
+	cfg, err := p.Store.GetBrokerConfig(ctx, vaultID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrServiceNotFound
+	}
 
 	var services []broker.Service
 	if cfg != nil && cfg.ServicesJSON != "" {

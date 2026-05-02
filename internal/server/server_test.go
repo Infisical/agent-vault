@@ -3887,6 +3887,14 @@ func TestVaultSettingsUnmatchedHostPolicy(t *testing.T) {
 			t.Fatalf("expected stored policy=deny, got %q",
 				ms.vaultSettings["root-ns-id"][settingUnmatchedHostPolicy])
 		}
+		// Response must echo the validated value, not depend on a second
+		// store read — otherwise a transient read failure post-write
+		// would desync the UI from the persisted policy.
+		var resp map[string]string
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		if resp["unmatched_host_policy"] != "deny" {
+			t.Fatalf("expected response to echo deny, got %q", resp["unmatched_host_policy"])
+		}
 	})
 
 	t.Run("invalid value rejected", func(t *testing.T) {
@@ -3918,6 +3926,46 @@ func TestVaultSettingsUnmatchedHostPolicy(t *testing.T) {
 		}
 		if v := ms.vaultSettings["root-ns-id"][settingUnmatchedHostPolicy]; v != "" {
 			t.Fatalf("expected setting cleared, got %q", v)
+		}
+	})
+
+	t.Run("non-admin member: GET reflects real policy, PATCH is forbidden", func(t *testing.T) {
+		// Persist deny so we can verify the non-admin GET sees the truth
+		// rather than the previous silent passthrough fallback.
+		_ = ms.SetVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostPolicy, "deny")
+		ms.users["member@test.com"] = &store.User{
+			ID: "member-user-id", Email: "member@test.com",
+			Role: "member", IsActive: true,
+		}
+		ms.GrantVaultRole(context.Background(), "member-user-id", "user", "root-ns-id", "member")
+		memberSess, err := ms.CreateSession(context.Background(), "member-user-id", time.Now().Add(time.Hour))
+		if err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+
+		// GET should succeed and return the actual stored policy.
+		req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/settings", nil)
+		req.Header.Set("Authorization", "Bearer "+memberSess.ID)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected GET 200 for member, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var resp map[string]string
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		if resp["unmatched_host_policy"] != "deny" {
+			t.Fatalf("member GET should see real deny policy, got %q", resp["unmatched_host_policy"])
+		}
+
+		// PATCH must still be admin/owner-only.
+		patchBody := strings.NewReader(`{"unmatched_host_policy": "passthrough"}`)
+		req = httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/settings", patchBody)
+		req.Header.Set("Authorization", "Bearer "+memberSess.ID)
+		req.Header.Set("Content-Type", "application/json")
+		rec = httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected PATCH 403 for member, got %d: %s", rec.Code, rec.Body.String())
 		}
 	})
 }
