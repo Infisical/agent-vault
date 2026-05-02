@@ -89,6 +89,35 @@ func TestAugmentEnvWithMITM_Disabled(t *testing.T) {
 	}
 }
 
+func TestRequireMITMEnv_DisabledIsFatal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
+	_, _, err := requireMITMEnv(nil, srv.URL, "tok", "v", caPath)
+	if err == nil {
+		t.Fatal("expected fatal error when server has MITM disabled")
+	}
+	// Operator-facing message must point at the server-side fix.
+	if !strings.Contains(err.Error(), "--mitm-port 0") {
+		t.Errorf("error should reference --mitm-port 0; got: %v", err)
+	}
+}
+
+func TestRequireMITMEnv_TransportFailureIsFatal(t *testing.T) {
+	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
+	// Bogus address that will fail to dial.
+	_, _, err := requireMITMEnv(nil, "http://127.0.0.1:1", "tok", "v", caPath)
+	if err == nil {
+		t.Fatal("expected fatal error on transport failure")
+	}
+	if !strings.Contains(err.Error(), "MITM setup failed") {
+		t.Errorf("error should be wrapped with 'MITM setup failed'; got: %v", err)
+	}
+}
+
 // fakeMITMServer returns an httptest server that mimics the real
 // /v1/mitm/ca.pem endpoint. advertisedPort, when non-zero, is written
 // into the X-MITM-Port response header. advertiseTLS controls whether

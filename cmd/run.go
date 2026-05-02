@@ -138,14 +138,10 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 
 	// 6. Route the child's HTTPS traffic through the transparent MITM
 	//    proxy. The MITM ingress is the only credential-injection path,
-	//    so a failure here means the child cannot reach external
-	//    services through Agent Vault.
-	newEnv, mitmPort, ok, err := augmentEnvWithMITM(env, addr, scopedToken, vault, "")
-	switch {
-	case err != nil:
-		return fmt.Errorf("MITM setup failed: %w", err)
-	case !ok:
-		return fmt.Errorf("MITM proxy is disabled on the Agent Vault server; cannot route HTTPS traffic")
+	//    so a failure here is fatal.
+	newEnv, mitmPort, err := requireMITMEnv(env, addr, scopedToken, vault, "")
+	if err != nil {
+		return err
 	}
 	env = newEnv
 	fmt.Fprintf(os.Stderr, "%s routing HTTPS through MITM proxy (127.0.0.1:%d)\n", successText("agent-vault:"), mitmPort)
@@ -369,6 +365,20 @@ func stripEnvKeys(env []string, keys map[string]struct{}) []string {
 		out = append(out, kv)
 	}
 	return out
+}
+
+// requireMITMEnv calls augmentEnvWithMITM and converts both transport
+// failures and a server-side --mitm-port 0 into actionable errors.
+// MITM is the only ingress, so neither case is recoverable for vault run.
+func requireMITMEnv(env []string, addr, token, vault, caPath string) ([]string, int, error) {
+	newEnv, port, ok, err := augmentEnvWithMITM(env, addr, token, vault, caPath)
+	if err != nil {
+		return env, 0, fmt.Errorf("MITM setup failed: %w", err)
+	}
+	if !ok {
+		return env, 0, errors.New("MITM proxy is disabled on the Agent Vault server; restart the server without --mitm-port 0 to enable it")
+	}
+	return newEnv, port, nil
 }
 
 // augmentEnvWithMITM extends env so the child transparently routes HTTPS
