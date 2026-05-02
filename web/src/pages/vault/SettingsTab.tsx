@@ -144,7 +144,7 @@ export default function SettingsTab() {
         </p>
       </div>
 
-      {/* Rename section */}
+      {/* Vault config (rename + unmatched-host policy) */}
       <section className="mb-8">
         <div className="border border-border rounded-xl bg-surface p-5">
           <form onSubmit={handleRename} className="flex items-end gap-3">
@@ -177,34 +177,22 @@ export default function SettingsTab() {
               {renameSuccess}
             </div>
           )}
-        </div>
-      </section>
 
-      {/* Unmatched-host policy */}
-      <section className="mb-8">
-        <div className="border border-border rounded-xl bg-surface p-5">
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex-1">
-              <h3 className="text-sm font-semibold text-text mb-1">
+          <div className="mt-5 pt-5 border-t border-border flex items-center justify-between gap-3">
+            <div className="flex-1 min-w-0">
+              <h3 className="text-sm font-medium text-text mb-0.5">
                 Strict deny mode
               </h3>
               <p className="text-sm text-text-muted">
-                When off, requests to hosts without a configured service are
-                forwarded upstream as plain proxy traffic, with no credentials
-                injected. When on, those requests are rejected with HTTP 403
-                so agents must propose a service before the host can be
-                reached. Matched-but-disabled services are always rejected
-                regardless of this setting.
+                Reject unmatched hosts with HTTP 403 instead of forwarding them upstream unauthenticated.
               </p>
             </div>
-            <div className="pt-1">
-              <Toggle
-                checked={policy === "deny"}
-                onChange={handlePolicyToggle}
-                disabled={!canManage || policy === null || policySaving}
-                ariaLabel="Strict deny mode"
-              />
-            </div>
+            <Toggle
+              checked={policy === "deny"}
+              onChange={handlePolicyToggle}
+              disabled={!canManage || policy === null || policySaving}
+              ariaLabel="Strict deny mode"
+            />
           </div>
           {policyError && (
             <ErrorBanner message={policyError} className="mt-3" />
