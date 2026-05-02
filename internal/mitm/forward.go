@@ -89,6 +89,7 @@ func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope
 		if inject != nil {
 			event.MatchedService = inject.MatchedHost
 			event.CredentialKeys = inject.CredentialKeys
+			event.Passthrough = inject.Passthrough
 		}
 		if err != nil {
 			errCode := "no_match"

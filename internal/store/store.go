@@ -419,6 +419,11 @@ type Store interface {
 	SetSetting(ctx context.Context, key, value string) error
 	GetAllSettings(ctx context.Context) (map[string]string, error)
 
+	// Vault settings (per-vault key/value)
+	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
+	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
+	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
+
 	// Request logs
 	InsertRequestLogs(ctx context.Context, rows []RequestLog) error
 	ListRequestLogs(ctx context.Context, opts ListRequestLogsOpts) ([]RequestLog, error)

@@ -31,6 +31,8 @@ You have access to Agent Vault, a transparent HTTPS proxy that injects credentia
 
 **Not every HTTP request needs Agent Vault credentials.** Unauthenticated requests or requests to hosts not configured in Agent Vault still pass through the proxy unmodified -- no special handling required.
 
+By default each vault forwards unmatched hosts as plain proxy traffic (no credential injection). An operator may flip a vault into **strict deny mode** (`unmatched_host_policy=deny`), in which case requests to hosts that aren't in discover return `403 forbidden` with a `proposal_hint`. If you see that error, propose the service rather than retrying.
+
 ## Environment Variables
 
 | Variable | Description |
@@ -88,7 +90,7 @@ Proposals are the primary way to exchange credentials with a human operator. Use
 - **Want to store a credential back** -- include the value in a credential slot and the human confirms it at approval.
 - **Need proxy access to a new host** -- propose a service with an `auth` config so Agent Vault can authenticate on your behalf.
 
-When you get a `403` for a host not in discover, the response includes a `proposal_hint` with the denied host.
+When you get a `403` for a host not in discover (only happens under strict deny mode), the response includes a `proposal_hint` with the denied host.
 
 ## Choosing the Right Auth Method
 
@@ -254,7 +256,7 @@ Prints the raw value to stdout (pipe-friendly). Useful for configuration tasks w
 ## Error Handling
 
 - 401: Invalid or expired token -- check `AGENT_VAULT_SESSION_TOKEN`
-- 403 `forbidden`: Host not allowed -- create a proposal
+- 403 `forbidden`: Host not allowed (only fires under `unmatched_host_policy=deny`) -- create a proposal
 - 403 `service_disabled`: Host is configured but currently disabled by an operator. Don't create a new proposal; surface the error to the user so they can re-enable it (UI toggle, or `agent-vault vault service enable <host>`)
 - 429: Rate limited. The response carries a `Retry-After` header (seconds) and a JSON body `{"error":"too_many_requests", ...}`. Respect `Retry-After` — wait that many seconds before retrying. Don't tight-loop. If this trips on normal work, ask the instance owner to raise the limit in **Manage Instance → Settings → Rate Limiting**.
 - 502: Missing credential or upstream unreachable, tell user a credential may need to be added

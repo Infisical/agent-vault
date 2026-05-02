@@ -108,7 +108,19 @@ func (s *Server) SessionResolver() brokercore.SessionResolver {
 // CredentialProvider returns a brokercore.CredentialProvider backed by
 // this server's store and encryption key.
 func (s *Server) CredentialProvider() brokercore.CredentialProvider {
-	return brokercore.NewStoreCredentialProvider(s.store, s.encKey)
+	return brokercore.NewStoreCredentialProvider(credentialStoreAdapter{s.store}, s.encKey)
+}
+
+// credentialStoreAdapter satisfies brokercore.CredentialStore by adding
+// the typed UnmatchedHostPolicy lookup on top of the generic store.
+// The setting key lives at the server layer; the store stays a generic
+// key/value sink.
+type credentialStoreAdapter struct {
+	Store
+}
+
+func (a credentialStoreAdapter) UnmatchedHostPolicy(ctx context.Context, vaultID string) (brokercore.UnmatchedHostPolicy, error) {
+	return readUnmatchedHostPolicy(ctx, a.Store, vaultID)
 }
 
 // Logger returns the server's structured logger. Callers (e.g. the MITM
@@ -229,6 +241,11 @@ type Store interface {
 	GetSetting(ctx context.Context, key string) (string, error)
 	SetSetting(ctx context.Context, key, value string) error
 	GetAllSettings(ctx context.Context) (map[string]string, error)
+
+	// Vault settings (per-vault key/value)
+	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
+	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
+	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
 
 	// Agents
 	CreateAgent(ctx context.Context, name, createdBy, role string) (*store.Agent, error)
@@ -648,6 +665,8 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("DELETE /v1/vaults/{name}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultDelete))))
 	mux.HandleFunc("POST /v1/vaults/{name}/rename", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultRename)))))
 	mux.HandleFunc("POST /v1/vaults/{name}/join", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultJoin)))))
+	mux.HandleFunc("GET /v1/vaults/{name}/settings", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultSettingsGet))))
+	mux.HandleFunc("PATCH /v1/vaults/{name}/settings", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultSettingsPatch)))))
 
 	// Vault admin (owner-only)
 	mux.HandleFunc("GET /v1/admin/vaults", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAdminVaultList))))
@@ -1071,3 +1090,7 @@ const settingAllowedDomains = "allowed_email_domains"
 const settingInviteOnly = "invite_only"
 
 const settingRateLimitConfig = "ratelimit_config"
+
+// settingUnmatchedHostPolicy is the per-vault key in vault_settings that
+// controls whether requests to unmatched hosts passthrough or are denied.
+const settingUnmatchedHostPolicy = "unmatched_host_policy"

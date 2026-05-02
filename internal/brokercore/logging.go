@@ -38,6 +38,7 @@ type ProxyEvent struct {
 	Status         int      // upstream status; 0 if never dispatched
 	TotalMs        int64    // handler entry → emit, in milliseconds
 	Err            string   // short error code, or "" on success
+	Passthrough    bool     // see InjectResult.Passthrough
 }
 
 // Emit fills in the terminal fields (Status, Err, TotalMs measured from
@@ -66,6 +67,7 @@ func LogProxyEvent(logger *slog.Logger, e ProxyEvent) {
 		slog.Int("status", e.Status),
 		slog.Int64("total_ms", e.TotalMs),
 		slog.String("err", e.Err),
+		slog.Bool("passthrough", e.Passthrough),
 	)
 }
 

@@ -2,7 +2,9 @@ package brokercore
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 
@@ -10,6 +12,20 @@ import (
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/store"
 )
+
+// UnmatchedHostPolicy controls what happens when a request's target host
+// does not match any configured broker service. PolicyPassthrough is the
+// system-wide default; PolicyDeny is the opt-in strict mode.
+type UnmatchedHostPolicy string
+
+const (
+	PolicyPassthrough UnmatchedHostPolicy = "passthrough"
+	PolicyDeny        UnmatchedHostPolicy = "deny"
+)
+
+func IsValidUnmatchedHostPolicy(p UnmatchedHostPolicy) bool {
+	return p == PolicyPassthrough || p == PolicyDeny
+}
 
 // InjectResult is the outcome of matching a target host and resolving
 // credentials to ready-to-attach HTTP headers.
@@ -21,7 +37,8 @@ type InjectResult struct {
 	Headers map[string]string
 
 	// MatchedHost is the broker service host pattern that matched the
-	// target (e.g. "api.github.com"). Safe to log.
+	// target (e.g. "api.github.com"). Safe to log. Empty when the request
+	// is forwarded under the unmatched-host passthrough policy.
 	MatchedHost string
 
 	// CredentialKeys are the credential key names referenced by the
@@ -34,6 +51,10 @@ type InjectResult struct {
 	// apply via ApplySubstitutions before forwarding. Each entry carries
 	// a SECRET Value — never log; placeholder names are safe.
 	Substitutions []ResolvedSubstitution
+
+	// Passthrough is set when no service matched but the vault's
+	// unmatched-host policy permitted forwarding. Audited.
+	Passthrough bool
 }
 
 // CredentialProvider resolves a broker service for targetHost inside vaultID
@@ -46,6 +67,7 @@ type CredentialProvider interface {
 type CredentialStore interface {
 	GetBrokerConfig(ctx context.Context, vaultID string) (*store.BrokerConfig, error)
 	GetCredential(ctx context.Context, vaultID, key string) (*store.Credential, error)
+	UnmatchedHostPolicy(ctx context.Context, vaultID string) (UnmatchedHostPolicy, error)
 }
 
 // StoreCredentialProvider injects credentials using a CredentialStore and a
@@ -66,14 +88,19 @@ func NewStoreCredentialProvider(s CredentialStore, encKey []byte) *StoreCredenti
 // targetHost may include a port; the port is stripped before matching so
 // services configured as bare hostnames match `api.github.com:443`.
 func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHost string) (*InjectResult, error) {
+	// A missing row is equivalent to an empty services list — fall
+	// through to the unmatched-host policy. Any other error fails closed
+	// so a transient store failure can't silently strip enforcement.
 	cfg, err := p.Store.GetBrokerConfig(ctx, vaultID)
-	if err != nil || cfg == nil {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrServiceNotFound
 	}
 
 	var services []broker.Service
-	if err := json.Unmarshal([]byte(cfg.ServicesJSON), &services); err != nil {
-		return nil, fmt.Errorf("brokercore: parsing broker services: %w", err)
+	if cfg != nil && cfg.ServicesJSON != "" {
+		if err := json.Unmarshal([]byte(cfg.ServicesJSON), &services); err != nil {
+			return nil, fmt.Errorf("brokercore: parsing broker services: %w", err)
+		}
 	}
 
 	matchHost := targetHost
@@ -82,7 +109,13 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	}
 	matched := broker.MatchHost(matchHost, services)
 	if matched == nil {
-		return nil, ErrServiceNotFound
+		// Fail closed on policy lookup errors so a transient store
+		// failure can't silently strip enforcement.
+		policy, err := p.Store.UnmatchedHostPolicy(ctx, vaultID)
+		if err != nil || policy == PolicyDeny {
+			return nil, ErrServiceNotFound
+		}
+		return &InjectResult{Passthrough: true}, nil
 	}
 	if !matched.IsEnabled() {
 		return nil, ErrServiceDisabled
