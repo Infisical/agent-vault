@@ -3,8 +3,7 @@ export { AgentVault } from "./client.js";
 export { VaultClient } from "./vault.js";
 
 // Errors
-export { AgentVaultError, ApiError, ProxyForbiddenError } from "./errors.js";
-export type { ProposalHint } from "./errors.js";
+export { AgentVaultError, ApiError } from "./errors.js";
 
 // Config types
 export type { AgentVaultConfig, VaultClientConfig, ClientConfig } from "./types.js";
