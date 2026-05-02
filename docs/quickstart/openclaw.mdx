@@ -40,7 +40,7 @@ Here's what happens — with zero pre-configuration:
 6. OpenClaw retries — Agent Vault injects your Stripe credentials at the proxy boundary and the request succeeds
 
 <Note>
-Invited agents like OpenClaw set `HTTPS_PROXY` and the Agent Vault root CA on their HTTP client themselves (the values come back in the invite redemption response). Local agents you wrap with `agent-vault vault run` (Claude Code, Cursor, Codex, Hermes) inherit the same env vars automatically.
+Invited agents like OpenClaw build their own `HTTPS_PROXY` from the token + vault returned by the redemption response and fetch the root CA from `{AGENT_VAULT_ADDR}/v1/mitm/ca.pem` themselves — the embedded `instructions` field walks them through it. Local agents you wrap with `agent-vault vault run` (Claude Code, Cursor, Codex, Hermes) inherit the same env vars automatically.
 </Note>
 
 <Note>

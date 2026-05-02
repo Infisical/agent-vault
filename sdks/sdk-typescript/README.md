@@ -115,7 +115,7 @@ await vault.services.set([
 
 ## Error handling
 
-The SDK throws `ApiError` (and its subclass `ProxyForbiddenError` when the broker returns a `proposal_hint`) for non-2xx responses from Agent Vault control-plane endpoints. Upstream HTTP errors from agent-issued traffic — which travels through `HTTPS_PROXY`, not the SDK — surface in the agent's normal HTTP client.
+The SDK throws `ApiError` for non-2xx responses from Agent Vault control-plane endpoints. Upstream HTTP errors from agent-issued traffic — which travels through `HTTPS_PROXY`, not the SDK — surface in the agent's normal HTTP client.
 
 ## Documentation
 
