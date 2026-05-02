@@ -171,7 +171,7 @@ Discovery is optional. If your agent already knows which hosts are configured, i
 | Status | Meaning | What to do |
 |---|---|---|
 | 401 | Invalid or expired token | Re-authenticate. Contact the operator for a [token rotation](/agents/overview#rotating-an-agent-token). |
-| 403 | Host not allowed | Create a [proposal](/learn/proposals) to request access, or ask the vault admin to add it. |
+| 403 | Host not allowed (only fires when the vault is in strict deny mode) | Create a [proposal](/learn/proposals) to request access, or ask the vault admin to add the service. |
 | 429 | Too many requests | Respect the `Retry-After` header. |
 | 502 | Missing credential or upstream error | A credential may need to be added to the vault. |
 

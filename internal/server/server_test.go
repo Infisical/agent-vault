@@ -38,6 +38,7 @@ type mockStore struct {
 	agents             map[string]*store.Agent               // keyed by name
 	agentVaultGrants   []store.VaultGrant                    // agent vault grants
 	settings           map[string]string                     // instance settings
+	vaultSettings      map[string]map[string]string          // per-vault: vaultID -> key -> value
 	sessionCounter     int
 }
 
@@ -52,6 +53,7 @@ func newMockStore() *mockStore {
 		userInvites:   make(map[string]*store.UserInvite),
 		agents:        make(map[string]*store.Agent),
 		settings:      make(map[string]string),
+		vaultSettings: make(map[string]map[string]string),
 	}
 	// Seed root vault
 	ms.vaults["default"] = &store.Vault{ID: "root-ns-id", Name: "default"}
@@ -1167,6 +1169,30 @@ func (m *mockStore) GetAllSettings(_ context.Context) (map[string]string, error)
 		result[k] = v
 	}
 	return result, nil
+}
+
+func (m *mockStore) GetVaultSetting(_ context.Context, vaultID, key string) (string, error) {
+	if vs, ok := m.vaultSettings[vaultID]; ok {
+		if v, ok := vs[key]; ok {
+			return v, nil
+		}
+	}
+	return "", sql.ErrNoRows
+}
+
+func (m *mockStore) SetVaultSetting(_ context.Context, vaultID, key, value string) error {
+	if m.vaultSettings[vaultID] == nil {
+		m.vaultSettings[vaultID] = make(map[string]string)
+	}
+	m.vaultSettings[vaultID][key] = value
+	return nil
+}
+
+func (m *mockStore) DeleteVaultSetting(_ context.Context, vaultID, key string) error {
+	if vs, ok := m.vaultSettings[vaultID]; ok {
+		delete(vs, key)
+	}
+	return nil
 }
 
 // testKDFParams returns fast KDF params suitable for tests.
@@ -3822,6 +3848,76 @@ func TestVaultRename(t *testing.T) {
 
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestVaultSettingsUnmatchedHostPolicy(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	t.Run("default is passthrough", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/settings", nil)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var resp map[string]string
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		if resp["unmatched_host_policy"] != "passthrough" {
+			t.Fatalf("expected passthrough default, got %q", resp["unmatched_host_policy"])
+		}
+	})
+
+	t.Run("set to deny", func(t *testing.T) {
+		body := strings.NewReader(`{"unmatched_host_policy": "deny"}`)
+		req := httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/settings", body)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if ms.vaultSettings["root-ns-id"][settingUnmatchedHostPolicy] != "deny" {
+			t.Fatalf("expected stored policy=deny, got %q",
+				ms.vaultSettings["root-ns-id"][settingUnmatchedHostPolicy])
+		}
+	})
+
+	t.Run("invalid value rejected", func(t *testing.T) {
+		body := strings.NewReader(`{"unmatched_host_policy": "log-and-allow"}`)
+		req := httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/settings", body)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("empty string reverts to default", func(t *testing.T) {
+		// First set to deny so we have something to revert.
+		_ = ms.SetVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostPolicy, "deny")
+
+		body := strings.NewReader(`{"unmatched_host_policy": ""}`)
+		req := httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/settings", body)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if v := ms.vaultSettings["root-ns-id"][settingUnmatchedHostPolicy]; v != "" {
+			t.Fatalf("expected setting cleared, got %q", v)
 		}
 	})
 }

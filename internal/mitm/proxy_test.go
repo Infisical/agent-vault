@@ -1256,6 +1256,50 @@ func TestMITMUnknownHostInTunnel(t *testing.T) {
 	}
 }
 
+// TestMITMUnknownHostPassthrough verifies that when the credential provider
+// returns a Passthrough result (no service matched but the vault's policy
+// permits forwarding) the proxy forwards the request upstream untouched —
+// no Authorization header is injected and the request reaches the origin.
+func TestMITMUnknownHostPassthrough(t *testing.T) {
+	var gotAuthHeader string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthHeader = r.Header.Get("Authorization")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{Passthrough: true}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    upstreamRoots,
+	}
+
+	client := newTrustingClient(proxyURL, url.User("av_sess_ok"), clientRoots)
+	resp, err := client.Get(upstream.URL + "/ping")
+	if err != nil {
+		t.Fatalf("client.Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	if gotAuthHeader != "" {
+		t.Fatalf("passthrough should not inject Authorization, got %q", gotAuthHeader)
+	}
+}
+
 func TestMITMUpstreamCertUntrusted(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "should-not-reach")

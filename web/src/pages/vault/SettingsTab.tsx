@@ -1,11 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useVaultParams, ErrorBanner } from "./shared";
 import Button from "../../components/Button";
 import Input from "../../components/Input";
 import FormField from "../../components/FormField";
 import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
+import Toggle from "../../components/Toggle";
 import { apiFetch } from "../../lib/api";
+
+type UnmatchedHostPolicy = "passthrough" | "deny";
 
 export default function SettingsTab() {
   const { vaultName, vaultRole, isOwner } = useVaultParams();
@@ -21,6 +24,66 @@ export default function SettingsTab() {
 
   // Delete state
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+
+  // null until the initial fetch lands; disables the toggle on first paint.
+  const [policy, setPolicy] = useState<UnmatchedHostPolicy | null>(null);
+  const [policySaving, setPolicySaving] = useState(false);
+  const [policyError, setPolicyError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await apiFetch(
+          `/v1/vaults/${encodeURIComponent(vaultName)}/settings`
+        );
+        if (cancelled) return;
+        if (!resp.ok) {
+          setPolicy("passthrough");
+          return;
+        }
+        const data = (await resp.json()) as {
+          unmatched_host_policy?: UnmatchedHostPolicy;
+        };
+        if (cancelled) return;
+        setPolicy(
+          data.unmatched_host_policy === "deny" ? "deny" : "passthrough"
+        );
+      } catch {
+        if (!cancelled) setPolicy("passthrough");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [vaultName]);
+
+  async function handlePolicyToggle(strictDeny: boolean) {
+    const next: UnmatchedHostPolicy = strictDeny ? "deny" : "passthrough";
+    const previous = policy;
+    setPolicy(next);
+    setPolicySaving(true);
+    setPolicyError("");
+    try {
+      const resp = await apiFetch(
+        `/v1/vaults/${encodeURIComponent(vaultName)}/settings`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ unmatched_host_policy: next }),
+        }
+      );
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        setPolicy(previous);
+        setPolicyError(data.error || "Failed to update policy");
+      }
+    } catch {
+      setPolicy(previous);
+      setPolicyError("Network error");
+    } finally {
+      setPolicySaving(false);
+    }
+  }
 
   async function handleRename(e: React.FormEvent) {
     e.preventDefault();
@@ -113,6 +176,38 @@ export default function SettingsTab() {
             <div className="mt-3 bg-success-bg border border-success/20 rounded-lg p-4 text-sm text-success">
               {renameSuccess}
             </div>
+          )}
+        </div>
+      </section>
+
+      {/* Unmatched-host policy */}
+      <section className="mb-8">
+        <div className="border border-border rounded-xl bg-surface p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold text-text mb-1">
+                Strict deny mode
+              </h3>
+              <p className="text-sm text-text-muted">
+                When off, requests to hosts without a configured service are
+                forwarded upstream as plain proxy traffic, with no credentials
+                injected. When on, those requests are rejected with HTTP 403
+                so agents must propose a service before the host can be
+                reached. Matched-but-disabled services are always rejected
+                regardless of this setting.
+              </p>
+            </div>
+            <div className="pt-1">
+              <Toggle
+                checked={policy === "deny"}
+                onChange={handlePolicyToggle}
+                disabled={!canManage || policy === null || policySaving}
+                ariaLabel="Strict deny mode"
+              />
+            </div>
+          </div>
+          {policyError && (
+            <ErrorBanner message={policyError} className="mt-3" />
           )}
         </div>
       </section>

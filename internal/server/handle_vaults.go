@@ -1,15 +1,63 @@
 package server
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/auth"
+	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/store"
 )
+
+// resolveVaultForAdminOrOwner loads the vault and verifies the caller is
+// either a vault admin or the instance owner — the auth scope shared by
+// vault rename, delete, and settings handlers. On failure it writes the
+// error response and returns nil; callers should `return` immediately.
+func (s *Server) resolveVaultForAdminOrOwner(w http.ResponseWriter, r *http.Request, name string) *store.Vault {
+	ctx := r.Context()
+	ns, err := s.store.GetVault(ctx, name)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
+		return nil
+	}
+	actor, err := s.requireActor(w, r)
+	if err != nil {
+		return nil
+	}
+	role, _ := s.store.GetVaultRole(ctx, actor.ID, ns.ID)
+	if role != "admin" && !actor.IsOwner() {
+		jsonError(w, http.StatusForbidden, "Vault admin or instance owner required")
+		return nil
+	}
+	return ns
+}
+
+// readUnmatchedHostPolicy returns the per-vault unmatched_host_policy,
+// defaulting to PolicyPassthrough when the row is absent or holds an
+// unrecognised value. A non-nil error means the underlying store read
+// failed for a reason other than "not present".
+func readUnmatchedHostPolicy(ctx context.Context, st interface {
+	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
+}, vaultID string) (brokercore.UnmatchedHostPolicy, error) {
+	raw, err := st.GetVaultSetting(ctx, vaultID, settingUnmatchedHostPolicy)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return brokercore.PolicyPassthrough, nil
+		}
+		return brokercore.PolicyPassthrough, err
+	}
+	policy := brokercore.UnmatchedHostPolicy(raw)
+	if !brokercore.IsValidUnmatchedHostPolicy(policy) {
+		return brokercore.PolicyPassthrough, nil
+	}
+	return policy, nil
+}
 
 // handleVaultContext returns the current user's membership context for a vault.
 func (s *Server) handleVaultContext(w http.ResponseWriter, r *http.Request) {
@@ -404,34 +452,13 @@ func (s *Server) handleVaultDelete(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "Cannot delete the default vault")
 		return
 	}
-
-	ctx := r.Context()
-	ns, err := s.store.GetVault(ctx, name)
-	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
+	if s.resolveVaultForAdminOrOwner(w, r, name) == nil {
 		return
 	}
-
-	// Vault admin OR instance owner can delete.
-	actor, err := s.requireActor(w, r)
-	if err != nil {
-		return
-	}
-
-	isVaultAdmin := false
-	if role, _ := s.store.GetVaultRole(ctx, actor.ID, ns.ID); role == "admin" {
-		isVaultAdmin = true
-	}
-	if !isVaultAdmin && !actor.IsOwner() {
-		jsonError(w, http.StatusForbidden, "Vault admin or instance owner required")
-		return
-	}
-
-	if err := s.store.DeleteVault(ctx, name); err != nil {
+	if err := s.store.DeleteVault(r.Context(), name); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to delete vault")
 		return
 	}
-
 	jsonOK(w, map[string]interface{}{"name": name, "deleted": true})
 }
 
@@ -441,28 +468,10 @@ func (s *Server) handleVaultRename(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "Cannot rename the default vault")
 		return
 	}
-
+	if s.resolveVaultForAdminOrOwner(w, r, name) == nil {
+		return
+	}
 	ctx := r.Context()
-	ns, err := s.store.GetVault(ctx, name)
-	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
-		return
-	}
-
-	// Vault admin OR instance owner can rename.
-	actor, err := s.requireActor(w, r)
-	if err != nil {
-		return
-	}
-
-	isVaultAdmin := false
-	if role, _ := s.store.GetVaultRole(ctx, actor.ID, ns.ID); role == "admin" {
-		isVaultAdmin = true
-	}
-	if !isVaultAdmin && !actor.IsOwner() {
-		jsonError(w, http.StatusForbidden, "Vault admin or instance owner required")
-		return
-	}
 
 	var body struct {
 		Name string `json:"name"`
@@ -497,6 +506,62 @@ func (s *Server) handleVaultRename(w http.ResponseWriter, r *http.Request) {
 		"old_name": name,
 		"new_name": body.Name,
 	})
+}
+
+func (s *Server) handleVaultSettingsGet(w http.ResponseWriter, r *http.Request) {
+	ns := s.resolveVaultForAdminOrOwner(w, r, r.PathValue("name"))
+	if ns == nil {
+		return
+	}
+	policy, err := readUnmatchedHostPolicy(r.Context(), s.store, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to read vault settings")
+		return
+	}
+	jsonOK(w, map[string]interface{}{"unmatched_host_policy": string(policy)})
+}
+
+func (s *Server) handleVaultSettingsPatch(w http.ResponseWriter, r *http.Request) {
+	ns := s.resolveVaultForAdminOrOwner(w, r, r.PathValue("name"))
+	if ns == nil {
+		return
+	}
+	ctx := r.Context()
+
+	var body struct {
+		UnmatchedHostPolicy *string `json:"unmatched_host_policy"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if body.UnmatchedHostPolicy != nil {
+		val := strings.TrimSpace(*body.UnmatchedHostPolicy)
+		if val == "" {
+			if err := s.store.DeleteVaultSetting(ctx, ns.ID, settingUnmatchedHostPolicy); err != nil {
+				jsonError(w, http.StatusInternalServerError, "Failed to update vault settings")
+				return
+			}
+		} else {
+			policy := brokercore.UnmatchedHostPolicy(val)
+			if !brokercore.IsValidUnmatchedHostPolicy(policy) {
+				jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid unmatched_host_policy %q (expected \"passthrough\" or \"deny\")", val))
+				return
+			}
+			if err := s.store.SetVaultSetting(ctx, ns.ID, settingUnmatchedHostPolicy, string(policy)); err != nil {
+				jsonError(w, http.StatusInternalServerError, "Failed to update vault settings")
+				return
+			}
+		}
+	}
+
+	policy, err := readUnmatchedHostPolicy(ctx, s.store, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to read vault settings")
+		return
+	}
+	jsonOK(w, map[string]interface{}{"unmatched_host_policy": string(policy)})
 }
 
 func (s *Server) handleVaultJoin(w http.ResponseWriter, r *http.Request) {

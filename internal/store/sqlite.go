@@ -155,6 +155,34 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
+// --- Vault Settings ---
+
+func (s *SQLiteStore) GetVaultSetting(ctx context.Context, vaultID, key string) (string, error) {
+	var value string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT value FROM vault_settings WHERE vault_id = ? AND key = ?`,
+		vaultID, key).Scan(&value)
+	if err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+func (s *SQLiteStore) SetVaultSetting(ctx context.Context, vaultID, key, value string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO vault_settings (vault_id, key, value, updated_at) VALUES (?, ?, ?, datetime('now'))
+		 ON CONFLICT(vault_id, key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
+		vaultID, key, value)
+	return err
+}
+
+func (s *SQLiteStore) DeleteVaultSetting(ctx context.Context, vaultID, key string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM vault_settings WHERE vault_id = ? AND key = ?`,
+		vaultID, key)
+	return err
+}
+
 // --- Vaults ---
 
 func (s *SQLiteStore) CreateVault(ctx context.Context, name string) (*Vault, error) {
