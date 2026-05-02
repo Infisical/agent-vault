@@ -178,21 +178,23 @@ export default function SettingsTab() {
             </div>
           )}
 
-          <div className="mt-5 pt-5 border-t border-border flex items-center justify-between gap-3">
-            <div className="flex-1 min-w-0">
-              <h3 className="text-sm font-medium text-text mb-0.5">
-                Strict deny mode
-              </h3>
-              <p className="text-sm text-text-muted">
-                Reject unmatched hosts with HTTP 403 instead of forwarding them upstream unauthenticated.
-              </p>
+          <div className="mt-5 pt-5 border-t border-border">
+            <div className="max-w-md flex items-center justify-between gap-3">
+              <div className="flex-1 min-w-0">
+                <h3 className="text-sm font-medium text-text mb-0.5">
+                  Strict deny mode
+                </h3>
+                <p className="text-sm text-text-muted">
+                  Reject unmatched hosts with HTTP 403 instead of forwarding them upstream unauthenticated.
+                </p>
+              </div>
+              <Toggle
+                checked={policy === "deny"}
+                onChange={handlePolicyToggle}
+                disabled={!canManage || policy === null || policySaving}
+                ariaLabel="Strict deny mode"
+              />
             </div>
-            <Toggle
-              checked={policy === "deny"}
-              onChange={handlePolicyToggle}
-              disabled={!canManage || policy === null || policySaving}
-              ariaLabel="Strict deny mode"
-            />
           </div>
           {policyError && (
             <ErrorBanner message={policyError} className="mt-3" />
