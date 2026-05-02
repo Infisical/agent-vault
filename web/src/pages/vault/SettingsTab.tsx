@@ -147,58 +147,58 @@ export default function SettingsTab() {
       {/* Vault config (rename + unmatched-host policy) */}
       <section className="mb-8">
         <div className="border border-border rounded-xl bg-surface p-5">
-          <form onSubmit={handleRename} className="flex items-end gap-3">
-            <div className="flex-1 max-w-xs">
-              <FormField label="Vault Name">
-                <Input
-                  value={newName}
-                  onChange={(e) => {
-                    setNewName(e.target.value);
-                    setRenameError("");
-                    setRenameSuccess("");
-                  }}
-                  disabled={!canManage || isDefault}
-                  placeholder="vault-name"
-                />
-              </FormField>
-            </div>
-            <Button
-              type="submit"
-              disabled={!canManage || isDefault || !newName || newName === vaultName}
-              loading={renaming}
-            >
-              Rename
-            </Button>
-          </form>
-
-          {renameError && <ErrorBanner message={renameError} className="mt-3" />}
-          {renameSuccess && (
-            <div className="mt-3 bg-success-bg border border-success/20 rounded-lg p-4 text-sm text-success">
-              {renameSuccess}
-            </div>
-          )}
-
-          <div className="mt-5 pt-5 border-t border-border">
-            <div className="max-w-md flex items-center justify-between gap-3">
+          <div className="max-w-md">
+            <form onSubmit={handleRename} className="flex items-end gap-3">
               <div className="flex-1 min-w-0">
-                <h3 className="text-sm font-medium text-text mb-0.5">
-                  Strict deny mode
-                </h3>
-                <p className="text-sm text-text-muted">
+                <FormField label="Vault Name">
+                  <Input
+                    value={newName}
+                    onChange={(e) => {
+                      setNewName(e.target.value);
+                      setRenameError("");
+                      setRenameSuccess("");
+                    }}
+                    disabled={!canManage || isDefault}
+                    placeholder="vault-name"
+                  />
+                </FormField>
+              </div>
+              <Button
+                type="submit"
+                disabled={!canManage || isDefault || !newName || newName === vaultName}
+                loading={renaming}
+              >
+                Rename
+              </Button>
+            </form>
+
+            {renameError && <ErrorBanner message={renameError} className="mt-3" />}
+            {renameSuccess && (
+              <div className="mt-3 bg-success-bg border border-success/20 rounded-lg p-4 text-sm text-success">
+                {renameSuccess}
+              </div>
+            )}
+
+            <div className="mt-5 pt-5 border-t border-border">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-text-muted mb-2">
+                Strict deny mode
+              </label>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm text-text-muted flex-1 min-w-0">
                   Reject unmatched hosts with HTTP 403 instead of forwarding them upstream unauthenticated.
                 </p>
+                <Toggle
+                  checked={policy === "deny"}
+                  onChange={handlePolicyToggle}
+                  disabled={!canManage || policy === null || policySaving}
+                  ariaLabel="Strict deny mode"
+                />
               </div>
-              <Toggle
-                checked={policy === "deny"}
-                onChange={handlePolicyToggle}
-                disabled={!canManage || policy === null || policySaving}
-                ariaLabel="Strict deny mode"
-              />
             </div>
+            {policyError && (
+              <ErrorBanner message={policyError} className="mt-3" />
+            )}
           </div>
-          {policyError && (
-            <ErrorBanner message={policyError} className="mt-3" />
-          )}
         </div>
       </section>
 
