@@ -613,7 +613,11 @@ func TestMITMForwardIPv6LiteralCanonicalises(t *testing.T) {
 		_, _ = io.WriteString(w, "v6-ok")
 	}), ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = srv.Serve(l) }()
-	defer func() { _ = srv.Close() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
 
 	sr := validTokenResolver("av_sess_ok",
 		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})

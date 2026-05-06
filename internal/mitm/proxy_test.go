@@ -147,17 +147,19 @@ func newTrustingClient(proxyURL *url.URL, userInfo *url.Userinfo, roots *x509.Ce
 }
 
 func TestMITMInjectsCredentials(t *testing.T) {
-	var sawAuth, sawClientHeader, sawProxyAuth string
+	var sawAuth, sawClientHeader, sawProxyAuth, sawHost string
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawAuth = r.Header.Get("Authorization")
 		sawClientHeader = r.Header.Get("X-Client-Header")
 		sawProxyAuth = r.Header.Get("Proxy-Authorization")
+		sawHost = r.Host
 		w.Header().Set("X-Upstream", "hello")
 		_, _ = io.WriteString(w, "upstream-body")
 	}))
 	defer upstream.Close()
 
-	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	upstreamAuthority := strings.TrimPrefix(upstream.URL, "https://") // host:port
+	upstreamHost, _, _ := net.SplitHostPort(upstreamAuthority)
 
 	sr := validTokenResolver("av_sess_ok",
 		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
@@ -210,6 +212,14 @@ func TestMITMInjectsCredentials(t *testing.T) {
 	}
 	if sawProxyAuth != "" {
 		t.Fatalf("upstream saw Proxy-Authorization %q; must be stripped", sawProxyAuth)
+	}
+	// RFC 7230 §5.4: forwarded Host MUST equal the URI authority,
+	// including non-default port. handleConnect → forwardRequest passes
+	// the canonical "host:port" target into outReq.Host. Locks in the
+	// fix from #151 (#150 review item 2) so the CONNECT path stays
+	// RFC-compliant for non-default-port upstreams.
+	if sawHost != upstreamAuthority {
+		t.Errorf("upstream Host = %q, want %q", sawHost, upstreamAuthority)
 	}
 }
 
