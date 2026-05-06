@@ -95,12 +95,16 @@ func TestBuildContainerEnv_FirewallPortsEmitted(t *testing.T) {
 	}
 }
 
-// HTTP_PROXY must not be set — the MITM proxy is HTTPS-only and would
-// 405 any plain http:// request routed through it.
-func TestBuildContainerEnv_NoHTTPProxy(t *testing.T) {
+// HTTP_PROXY mirrors HTTPS_PROXY: both point at the same TLS-wrapped
+// MITM ingress so plain http:// upstreams route through the broker via
+// absolute-form forward-proxy requests.
+func TestBuildContainerEnv_HTTPProxyMatchesHTTPS(t *testing.T) {
 	env := BuildContainerEnv("tok", "v", 14321, 14322, true)
 	vars := envMap(env)
-	if v, ok := vars["HTTP_PROXY"]; ok {
-		t.Errorf("HTTP_PROXY must not be set, got %q", v)
+	if vars["HTTP_PROXY"] == "" {
+		t.Fatal("HTTP_PROXY not set; expected to mirror HTTPS_PROXY")
+	}
+	if vars["HTTP_PROXY"] != vars["HTTPS_PROXY"] {
+		t.Errorf("HTTP_PROXY = %q, want it to equal HTTPS_PROXY = %q", vars["HTTP_PROXY"], vars["HTTPS_PROXY"])
 	}
 }

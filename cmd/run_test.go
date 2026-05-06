@@ -163,6 +163,7 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 
 	want := map[string]string{
 		"HTTPS_PROXY":         "", // checked separately below
+		"HTTP_PROXY":          "", // checked separately below
 		"NO_PROXY":            "localhost,127.0.0.1",
 		"NODE_USE_ENV_PROXY":  "1",
 		"SSL_CERT_FILE":       caPath,
@@ -184,10 +185,11 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 		}
 	}
 
-	// HTTP_PROXY must NOT be set — the MITM proxy is HTTPS-only and would
-	// return 405 for plain http:// requests routed through it.
-	if v, ok := vars["HTTP_PROXY"]; ok {
-		t.Errorf("HTTP_PROXY should not be set (MITM is HTTPS-only), got %q", v)
+	// HTTP_PROXY must equal HTTPS_PROXY — both point at the same TLS-
+	// wrapped MITM ingress so plain http:// upstreams route through the
+	// broker via absolute-form forward-proxy requests.
+	if vars["HTTP_PROXY"] != vars["HTTPS_PROXY"] {
+		t.Errorf("HTTP_PROXY = %q, want it to equal HTTPS_PROXY = %q", vars["HTTP_PROXY"], vars["HTTPS_PROXY"])
 	}
 
 	// Proxy URL must parse cleanly and carry token:vault userinfo.
@@ -254,6 +256,7 @@ func TestAugmentEnvWithMITM_DedupesParentEnv(t *testing.T) {
 	parentEnv := []string{
 		"FOO=bar",
 		"HTTPS_PROXY=http://corp-proxy:3128",
+		"HTTP_PROXY=http://corp-proxy:3128",
 		"NO_PROXY=internal.example.com",
 		"SSL_CERT_FILE=/etc/ssl/corp-ca.pem",
 		"NODE_EXTRA_CA_CERTS=/etc/ssl/corp-ca.pem",
@@ -276,7 +279,7 @@ func TestAugmentEnvWithMITM_DedupesParentEnv(t *testing.T) {
 			counts[kv[:i]]++
 		}
 	}
-	for _, k := range []string{"HTTPS_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "DENO_CERT"} {
+	for _, k := range []string{"HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "DENO_CERT"} {
 		if counts[k] != 1 {
 			t.Errorf("%s appears %d times in env, want exactly 1 (POSIX getenv returns first match)", k, counts[k])
 		}

@@ -4,8 +4,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
@@ -28,6 +30,95 @@ func actorFromScope(scope *brokercore.ProxyScope) (string, string) {
 	return "", ""
 }
 
+// isAbsoluteForwardProxyRequest reports whether r is a well-formed
+// absolute-form forward-proxy request that handleForward can serve.
+//
+// Per RFC 7230 §5.3.2 a forward-proxy request looks like:
+//
+//	POST http://upstream.example/path HTTP/1.1
+//
+// We accept only http://. https:// is rejected because we will not
+// silently TLS-strip — clients must use CONNECT for HTTPS upstreams.
+// Origin-form (POST /path) lacks a scheme/host and is rejected so the
+// proxy ingress can never be used as if it were an origin server.
+// Other schemes (ws, ftp, file, gopher, …) are rejected likewise.
+func isAbsoluteForwardProxyRequest(r *http.Request) bool {
+	if r.URL == nil {
+		return false
+	}
+	if !strings.EqualFold(r.URL.Scheme, "http") {
+		return false
+	}
+	if r.URL.Host == "" {
+		return false
+	}
+	// url.ParseRequestURI rejects fragments in the request line, but be
+	// belt-and-braces — RFC 7230 §5.3.2 forbids them.
+	if r.URL.Fragment != "" {
+		return false
+	}
+	return true
+}
+
+// handleForward serves an absolute-form forward-proxy request for an
+// http:// upstream. Compared to the CONNECT path: no hijack (the
+// response is a normal HTTP/1.1 reply over the existing TLS-wrapped
+// connection), and the scope is resolved per request rather than once
+// per tunnel.
+func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
+	// Per-IP flood gate before ParseProxyAuth + session lookup so a
+	// bad-auth flood can't burn CPU. Loopback is exempt — see
+	// isLoopbackPeer. Shares the TierAuth budget and key shape with
+	// CONNECT: one peer = one budget regardless of ingress shape.
+	if p.rateLimit != nil && !isLoopbackPeer(r) {
+		if d := p.rateLimit.Allow(ratelimit.TierAuth, mitmIPKey(r)); !d.Allow {
+			ratelimit.WriteDenial(w, d, "Too many proxy requests")
+			return
+		}
+	}
+
+	// Canonicalise host and target. r.URL.Host is "host" (no port) or
+	// "host:port" depending on the request line. Default to :80 when
+	// omitted so event.Host and outURL.Host stay consistent with the
+	// CONNECT-path invariant ("host:port present").
+	urlHost := r.URL.Host
+	host, port, err := net.SplitHostPort(urlHost)
+	if err != nil {
+		host = urlHost
+		port = "80"
+	}
+	target := net.JoinHostPort(host, port)
+
+	if !isValidHost(host) {
+		http.Error(w, "invalid host", http.StatusBadRequest)
+		return
+	}
+
+	// Some upstreams reject empty request-targets. Per RFC 7230 §5.3.1
+	// a client SHOULD send "/" when no path is present; normalise so
+	// the outbound URL we build always has one.
+	if r.URL.Path == "" {
+		r.URL.Path = "/"
+	}
+
+	// Per RFC 7230 §5.4 a proxy receiving an absolute-form request MUST
+	// ignore the Host header — r.URL.Host is authoritative. We don't
+	// reject on mismatch; we just don't read r.Host for routing.
+
+	token, hint, err := brokercore.ParseProxyAuth(r)
+	if err != nil {
+		writeProxyAuthChallenge(w, "Proxy-Authorization required")
+		return
+	}
+	scope, err := p.sessions.ResolveForProxy(r.Context(), token, hint)
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
+
+	p.forwardRequest(w, r, target, host, false, scope)
+}
+
 // forwardHandler returns an http.Handler that forwards each request to
 // target (the host:port captured from the original CONNECT line). Using
 // a closed-over target rather than r.Host defeats post-tunnel host
@@ -35,131 +126,148 @@ func actorFromScope(scope *brokercore.ProxyScope) (string, string) {
 // handleConnect; scope is the vault context resolved at CONNECT time.
 func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		event := brokercore.ProxyEvent{
-			Ingress: brokercore.IngressMITM,
-			Method:  r.Method,
-			Host:    target,
-			Path:    r.URL.Path,
-		}
-		actorType, actorID := actorFromScope(scope)
-		emit := func(status int, errCode string) {
-			event.Emit(p.logger, start, status, errCode)
-			if p.logSink != nil {
-				p.logSink.Record(r.Context(), requestlog.FromEvent(event, scope.VaultID, actorType, actorID))
-			}
-		}
-
-		enf := p.rateLimit.EnforceProxy(r.Context(), scope.ActorID(), scope.VaultID)
-		if !enf.Allowed {
-			ratelimit.WriteDenial(w, enf.Decision, enf.Message)
-			emit(http.StatusTooManyRequests, enf.ErrCode)
-			return
-		}
-		defer enf.Release()
-
-		r.Body = http.MaxBytesReader(w, r.Body, brokercore.MaxProxyBodyBytes)
-
-		outURL := &url.URL{
-			Scheme:   "https",
-			Host:     target,
-			Path:     r.URL.Path,
-			RawPath:  r.URL.RawPath,
-			RawQuery: r.URL.RawQuery,
-		}
-
-		body, contentLength, err := brokercore.MaterializeRequestBody(r.Body)
-		if err != nil {
-			status, code := brokercore.RequestBodyErrorCode(err)
-			http.Error(w, http.StatusText(status), status)
-			emit(status, code)
-			return
-		}
-
-		outReq, err := http.NewRequestWithContext(r.Context(), r.Method, outURL.String(), body)
-		if err != nil {
-			http.Error(w, "bad gateway", http.StatusBadGateway)
-			emit(http.StatusBadGateway, "internal")
-			return
-		}
-		outReq.Host = host
-		outReq.ContentLength = contentLength
-
-		inject, err := p.creds.Inject(r.Context(), scope.VaultID, host)
-		if inject != nil {
-			event.MatchedService = inject.MatchedHost
-			event.CredentialKeys = inject.CredentialKeys
-			event.Passthrough = inject.Passthrough
-		}
-		if err != nil {
-			errCode := "no_match"
-			status := http.StatusForbidden
-			if errors.Is(err, brokercore.ErrCredentialMissing) {
-				errCode = "credential_not_found"
-				status = http.StatusBadGateway
-				brokercore.LogCredentialMissing(p.logger, scope.VaultID, event.MatchedService, event.CredentialKeys)
-			}
-			brokercore.WriteInjectError(w, err, host, scope.VaultName, p.baseURL)
-			emit(status, errCode)
-			return
-		}
-
-		wsUpgrade := isWebSocketUpgrade(r)
-
-		// WS handshake needs Connection/Upgrade through, but ApplyInjection
-		// would drop them as hop-by-hop. Copy the full handshake set
-		// manually, then tell ApplyInjection to skip them so the
-		// non-hop-by-hop ones (Origin, Sec-*) aren't duplicated. Injection
-		// still wins on overlapping names (Authorization etc.) because
-		// inject.Headers is Set last by ApplyInjection.
-		if wsUpgrade {
-			copyWebSocketHandshakeHeaders(r.Header, outReq.Header)
-			brokercore.ApplyInjection(r.Header, outReq.Header, inject, websocketHandshakeHeaderNames...)
-		} else {
-			// No extraStrip: Proxy-Authorization is already in the broker
-			// denylist, and Authorization is the client's upstream header.
-			brokercore.ApplyInjection(r.Header, outReq.Header, inject)
-		}
-
-		// Apply any declared substitutions to the outbound URL and
-		// headers. Surfaces not listed in the substitution's `in:` are
-		// not scanned — scope is the security boundary.
-		if err := brokercore.ApplySubstitutions(outReq.URL, outReq.Header, inject.Substitutions); err != nil {
-			http.Error(w, "bad gateway", http.StatusBadGateway)
-			emit(http.StatusBadGateway, "substitution_error")
-			return
-		}
-
-		if wsUpgrade {
-			p.forwardWebSocket(w, r, outReq, emit)
-			return
-		}
-
-		resp, err := p.upstream.RoundTrip(outReq)
-		if err != nil {
-			// Log the actual error for operators while sending generic message to client.
-			p.logger.Debug("upstream request failed",
-				slog.String("vault_id", scope.VaultID),
-				slog.String("vault_name", scope.VaultName),
-				slog.String("target_host", target),
-				slog.String("error", err.Error()),
-			)
-			http.Error(w, "bad gateway", http.StatusBadGateway)
-			emit(http.StatusBadGateway, "upstream_error")
-			return
-		}
-		defer func() { _ = resp.Body.Close() }()
-
-		for k, vv := range resp.Header {
-			if brokercore.ShouldStripResponseHeader(k) {
-				continue
-			}
-			for _, v := range vv {
-				w.Header().Add(k, v)
-			}
-		}
-		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, io.LimitReader(resp.Body, brokercore.MaxResponseBytes))
-		emit(resp.StatusCode, "")
+		p.forwardRequest(w, r, target, host, true, scope)
 	})
+}
+
+// forwardRequest is the shared body for both the CONNECT-tunnelled HTTPS
+// path (forwardHandler) and the plain-HTTP forward-proxy path
+// (handleForward). target is the canonical "host:port"; host is the
+// port-stripped form used for credential lookup. useTLSUpstream selects
+// https vs http for the outbound URL.
+func (p *Proxy) forwardRequest(
+	w http.ResponseWriter,
+	r *http.Request,
+	target, host string,
+	useTLSUpstream bool,
+	scope *brokercore.ProxyScope,
+) {
+	start := time.Now()
+	event := brokercore.ProxyEvent{
+		Ingress: brokercore.IngressMITM,
+		Method:  r.Method,
+		Host:    target,
+		Path:    r.URL.Path,
+	}
+	actorType, actorID := actorFromScope(scope)
+	emit := func(status int, errCode string) {
+		event.Emit(p.logger, start, status, errCode)
+		p.logSink.Record(r.Context(), requestlog.FromEvent(event, scope.VaultID, actorType, actorID))
+	}
+
+	enf := p.rateLimit.EnforceProxy(r.Context(), scope.ActorID(), scope.VaultID)
+	if !enf.Allowed {
+		ratelimit.WriteDenial(w, enf.Decision, enf.Message)
+		emit(http.StatusTooManyRequests, enf.ErrCode)
+		return
+	}
+	defer enf.Release()
+
+	r.Body = http.MaxBytesReader(w, r.Body, brokercore.MaxProxyBodyBytes)
+
+	scheme := "http"
+	if useTLSUpstream {
+		scheme = "https"
+	}
+	outURL := &url.URL{
+		Scheme:   scheme,
+		Host:     target,
+		Path:     r.URL.Path,
+		RawPath:  r.URL.RawPath,
+		RawQuery: r.URL.RawQuery,
+	}
+
+	body, contentLength, err := brokercore.MaterializeRequestBody(r.Body)
+	if err != nil {
+		status, code := brokercore.RequestBodyErrorCode(err)
+		http.Error(w, http.StatusText(status), status)
+		emit(status, code)
+		return
+	}
+
+	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, outURL.String(), body)
+	if err != nil {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+		emit(http.StatusBadGateway, "internal")
+		return
+	}
+	outReq.Host = host
+	outReq.ContentLength = contentLength
+
+	inject, err := p.creds.Inject(r.Context(), scope.VaultID, host)
+	if inject != nil {
+		event.MatchedService = inject.MatchedHost
+		event.CredentialKeys = inject.CredentialKeys
+		event.Passthrough = inject.Passthrough
+	}
+	if err != nil {
+		errCode := "no_match"
+		status := http.StatusForbidden
+		if errors.Is(err, brokercore.ErrCredentialMissing) {
+			errCode = "credential_not_found"
+			status = http.StatusBadGateway
+			brokercore.LogCredentialMissing(p.logger, scope.VaultID, event.MatchedService, event.CredentialKeys)
+		}
+		brokercore.WriteInjectError(w, err, host, scope.VaultName, p.baseURL)
+		emit(status, errCode)
+		return
+	}
+
+	wsUpgrade := isWebSocketUpgrade(r)
+
+	// WS handshake needs Connection/Upgrade through, but ApplyInjection
+	// would drop them as hop-by-hop. Copy the full handshake set
+	// manually, then tell ApplyInjection to skip them so the
+	// non-hop-by-hop ones (Origin, Sec-*) aren't duplicated. Injection
+	// still wins on overlapping names (Authorization etc.) because
+	// inject.Headers is Set last by ApplyInjection.
+	if wsUpgrade {
+		copyWebSocketHandshakeHeaders(r.Header, outReq.Header)
+		brokercore.ApplyInjection(r.Header, outReq.Header, inject, websocketHandshakeHeaderNames...)
+	} else {
+		// No extraStrip: Proxy-Authorization is already in the broker
+		// denylist, and Authorization is the client's upstream header.
+		brokercore.ApplyInjection(r.Header, outReq.Header, inject)
+	}
+
+	// Apply any declared substitutions to the outbound URL and
+	// headers. Surfaces not listed in the substitution's `in:` are
+	// not scanned — scope is the security boundary.
+	if err := brokercore.ApplySubstitutions(outReq.URL, outReq.Header, inject.Substitutions); err != nil {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+		emit(http.StatusBadGateway, "substitution_error")
+		return
+	}
+
+	if wsUpgrade {
+		p.forwardWebSocket(w, r, outReq, emit)
+		return
+	}
+
+	resp, err := p.upstream.RoundTrip(outReq)
+	if err != nil {
+		// Log the actual error for operators while sending generic message to client.
+		p.logger.Debug("upstream request failed",
+			slog.String("vault_id", scope.VaultID),
+			slog.String("vault_name", scope.VaultName),
+			slog.String("target_host", target),
+			slog.String("error", err.Error()),
+		)
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+		emit(http.StatusBadGateway, "upstream_error")
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	for k, vv := range resp.Header {
+		if brokercore.ShouldStripResponseHeader(k) {
+			continue
+		}
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, io.LimitReader(resp.Body, brokercore.MaxResponseBytes))
+	emit(resp.StatusCode, "")
 }

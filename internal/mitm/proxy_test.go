@@ -80,8 +80,11 @@ func (f *fakeCredProvider) Inject(_ context.Context, _, targetHost string) (*bro
 
 // setupProxy starts a mitm.Proxy backed by a freshly-generated SoftCA and
 // the given session + credential stubs. Returns the listening URL, the
-// root-cert pool for client-side trust, and the proxy instance.
-func setupProxy(t *testing.T, sr brokercore.SessionResolver, cp brokercore.CredentialProvider) (proxyURL *url.URL, clientRoots *x509.CertPool, p *Proxy) {
+// root-cert pool for client-side trust, and the proxy instance. Tests
+// that need to customise Options (e.g. inject a LogSink) pass option
+// mutators that run before New() so the field is set before the
+// serving goroutine starts and is therefore race-free.
+func setupProxy(t *testing.T, sr brokercore.SessionResolver, cp brokercore.CredentialProvider, optMutators ...func(*Options)) (proxyURL *url.URL, clientRoots *x509.CertPool, p *Proxy) {
 	t.Helper()
 
 	t.Setenv("AGENT_VAULT_ALLOW_PRIVATE_RANGES", "true")
@@ -100,13 +103,17 @@ func setupProxy(t *testing.T, sr brokercore.SessionResolver, cp brokercore.Crede
 		t.Fatal("failed to load CA root PEM into pool")
 	}
 
-	p = New("127.0.0.1:0", Options{
+	opts := Options{
 		CA:          caProv,
 		Sessions:    sr,
 		Credentials: cp,
 		BaseURL:     "http://127.0.0.1:14321",
 		Logger:      slog.New(slog.DiscardHandler),
-	})
+	}
+	for _, m := range optMutators {
+		m(&opts)
+	}
+	p = New("127.0.0.1:0", opts)
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1330,7 +1337,12 @@ func TestMITMUpstreamCertUntrusted(t *testing.T) {
 	}
 }
 
-func TestMITMRejectsNonConnectRequests(t *testing.T) {
+// Origin-form requests (GET /path) sent directly to the proxy listener
+// — i.e. requests that try to use the proxy as if it were an origin
+// server — must be rejected. The dispatch only routes CONNECT and
+// absolute-form forward-proxy shapes; everything else is malformed for
+// this ingress and returns 400.
+func TestMITMRejectsOriginFormRequests(t *testing.T) {
 	proxyURL, clientRoots, _ := setupProxy(t, errResolver(brokercore.ErrInvalidSession), &fakeCredProvider{})
 
 	client := &http.Client{
@@ -1341,8 +1353,8 @@ func TestMITMRejectsNonConnectRequests(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Fatalf("status = %d, want 405", resp.StatusCode)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
 }
 

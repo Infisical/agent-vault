@@ -131,6 +131,26 @@ func (p *Proxy) dialWebSocketUpstream(
 		return nil, nil, nil, err
 	}
 
+	// Plain-HTTP upstream (ws://): skip TLS, deadlines apply directly to
+	// rawConn. pipeWebSocket/copyWithIdleTimeout downstream use only
+	// net.Conn methods, so a *net.TCPConn substitutes for *tls.Conn.
+	if outReq.URL.Scheme == "http" {
+		headerTimeout := p.responseHeaderTimeout()
+		_ = rawConn.SetDeadline(time.Now().Add(headerTimeout))
+		if err := outReq.Write(rawConn); err != nil {
+			_ = rawConn.Close()
+			return nil, nil, nil, err
+		}
+		reader := bufio.NewReader(rawConn)
+		resp, err := http.ReadResponse(reader, outReq)
+		if err != nil {
+			_ = rawConn.Close()
+			return nil, nil, nil, err
+		}
+		_ = rawConn.SetDeadline(time.Time{})
+		return rawConn, reader, resp, nil
+	}
+
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 	if p.upstream.TLSClientConfig != nil {
 		tlsConfig = p.upstream.TLSClientConfig.Clone()

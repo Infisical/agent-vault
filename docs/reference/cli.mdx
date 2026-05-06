@@ -262,14 +262,14 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     Wrap a process with Agent Vault environment variables. `agent-vault run` is the shorthand; `agent-vault vault run` is the long form. Both are identical in behavior and flags.
 
-    The child process receives `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT`, plus `HTTPS_PROXY` / `NO_PROXY` / `NODE_USE_ENV_PROXY` and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) pointing at `~/.agent-vault/mitm-ca.pem`, so standard HTTPS clients transparently route through the broker. If the server's MITM proxy is unreachable, `vault run` aborts.
+    The child process receives `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT`, plus `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` / `NODE_USE_ENV_PROXY` and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) pointing at `~/.agent-vault/mitm-ca.pem`, so standard HTTP and HTTPS clients transparently route through the broker. `HTTPS_PROXY` and `HTTP_PROXY` both point at the same TLS-wrapped proxy URL — the listener handles CONNECT for `https://` upstreams and absolute-form forward-proxy requests for `http://` upstreams on the same port. If the server's MITM proxy is unreachable, `vault run` aborts.
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--address` | | Server address override |
     | `--role` | `proxy` | Vault role for the session: `proxy`, `member`, or `admin` |
     | `--ttl` | `0` | Session TTL in seconds (300–604800). Default: server default (24h). |
-    | `--isolation` | `host` | Isolation mode for the child: `host` (default, cooperative — runs on the host with HTTPS_PROXY) or `container` (non-cooperative Docker container; see [Container isolation](/guides/container-isolation)). Also read from `AGENT_VAULT_ISOLATION`. |
+    | `--isolation` | `host` | Isolation mode for the child: `host` (default, cooperative — runs on the host with `HTTPS_PROXY`/`HTTP_PROXY`) or `container` (non-cooperative Docker container; see [Container isolation](/guides/container-isolation)). Also read from `AGENT_VAULT_ISOLATION`. |
     | `--image` | | Override the bundled container image (`--isolation=container` only). |
     | `--mount` | | Extra bind mount `src:dst[:ro]`; repeatable (`--isolation=container` only). Host paths are EvalSymlinks-resolved; reserved paths rejected. |
     | `--keep` | `false` | Omit `--rm` from `docker run` (`--isolation=container` only; useful for debugging). |

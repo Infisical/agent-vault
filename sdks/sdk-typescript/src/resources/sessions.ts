@@ -12,14 +12,16 @@ export interface CreateSessionOptions {
 }
 
 /**
- * Container configuration for routing a sandboxed agent's HTTPS traffic
- * through Agent Vault's transparent MITM proxy.
+ * Container configuration for routing a sandboxed agent's HTTP and
+ * HTTPS traffic through Agent Vault's transparent MITM proxy.
  */
 export interface ContainerConfig {
   /** Environment variables to inject into the container. */
   env: {
     /** MITM proxy URL with embedded credentials. */
     HTTPS_PROXY: string;
+    /** Same TLS-wrapped MITM proxy URL — used for plain http:// upstreams via absolute-form forward-proxy requests. */
+    HTTP_PROXY: string;
     /** Hosts to bypass the proxy. */
     NO_PROXY: string;
   };
@@ -64,6 +66,7 @@ export function buildProxyEnv(
   // Proxy and CA trust variables must stay in sync with augmentEnvWithMITM() in cmd/run.go.
   return {
     HTTPS_PROXY: config.env.HTTPS_PROXY,
+    HTTP_PROXY: config.env.HTTP_PROXY,
     NO_PROXY: config.env.NO_PROXY,
     NODE_USE_ENV_PROXY: "1",
     SSL_CERT_FILE: certPath,
@@ -124,6 +127,7 @@ export class SessionsResource {
       containerConfig = {
         env: {
           HTTPS_PROXY: proxyUrl,
+          HTTP_PROXY: proxyUrl,
           NO_PROXY: "localhost,127.0.0.1",
         },
         caCertificate: mitmInfo.caCertificate,

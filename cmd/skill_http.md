@@ -40,7 +40,7 @@ By default each vault forwards unmatched hosts as plain proxy traffic (no creden
 | `AGENT_VAULT_SESSION_TOKEN` | Bearer token for authenticating with Agent Vault's control-plane endpoints (`/discover`, proposals, etc.) |
 | `AGENT_VAULT_VAULT` | Vault name (set for user-scoped sessions via `vault run`) |
 
-`vault run` also pre-configures `HTTPS_PROXY`, `NO_PROXY`, `NODE_USE_ENV_PROXY`, and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) so HTTPS calls from your process route through the broker transparently. You don't manage these yourself.
+`vault run` also pre-configures `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `NODE_USE_ENV_PROXY`, and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) so HTTP and HTTPS calls from your process both route through the broker transparently. You don't manage these yourself.
 
 Under `--isolation=container`, the same env shape is injected inside a Docker container, but the proxy URL host is `host.docker.internal` instead of `127.0.0.1` and egress to any other destination is blocked by iptables. From your perspective nothing changes — standard HTTP clients pick up the envvars as normal.
 
@@ -68,18 +68,19 @@ Returns built-in service templates with suggested credential keys and auth types
 
 ## Making Requests
 
-**Just call the real API URL.** When you were launched via `agent-vault vault run`, your HTTPS traffic already routes through Agent Vault transparently — `HTTPS_PROXY` and the broker's CA cert are pre-configured in your environment. Agent Vault intercepts the call, looks up the host in the vault's services, injects the credential, and forwards over HTTPS.
+**Just call the real API URL.** When you were launched via `agent-vault vault run`, your HTTP and HTTPS traffic already route through Agent Vault transparently — `HTTPS_PROXY`, `HTTP_PROXY`, and the broker's CA cert are pre-configured in your environment. Agent Vault intercepts the call, looks up the host in the vault's services, injects the credential, and forwards to the upstream.
 
 ```
 GET https://api.stripe.com/v1/charges
 GET https://api.github.com/user
+GET http://internal.example/api/v1/items   # plain http:// works the same way
 ```
 
-Your code can leave the upstream auth header blank or set it to a placeholder — Agent Vault attaches the real credential at the proxy boundary, so the value in your env can be anything (or absent). Standard HTTP clients (curl, fetch, requests, axios, the Go stdlib, etc.) honor `HTTPS_PROXY` automatically.
+Your code can leave the upstream auth header blank or set it to a placeholder — Agent Vault attaches the real credential at the proxy boundary, so the value in your env can be anything (or absent). Standard HTTP clients (curl, fetch, requests, axios, the Go stdlib, etc.) honor `HTTPS_PROXY`/`HTTP_PROXY` automatically.
 
 ### WebSocket / Streaming
 
-`wss://` URLs are brokered through the same `HTTPS_PROXY` mechanism as regular HTTPS. Credentials are injected into the WebSocket handshake (`Authorization`, `Sec-WebSocket-Protocol`) the same way as on a normal request — point your client at the real `wss://` URL and Agent Vault attaches the real credential at the proxy boundary.
+`wss://` and `ws://` URLs are brokered through the same proxy mechanism as regular HTTP/HTTPS. Credentials are injected into the WebSocket handshake (`Authorization`, `Sec-WebSocket-Protocol`) the same way as on a normal request — point your client at the real WebSocket URL and Agent Vault attaches the real credential at the proxy boundary.
 
 ```
 wss://api.openai.com/v1/realtime?model=gpt-realtime

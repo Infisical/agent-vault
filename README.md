@@ -77,7 +77,7 @@ The server starts the HTTP API on port `14321` and a TLS-encrypted transparent H
 
 ### CLI — local agents (Claude Code, Cursor, Codex, OpenClaw, Hermes, OpenCode)
 
-Wrap any local agent process with `agent-vault run` (long form: `agent-vault vault run`). Agent Vault creates a scoped session, sets `HTTPS_PROXY` and CA-trust env vars, and launches the agent — all HTTPS traffic is transparently proxied and authenticated:
+Wrap any local agent process with `agent-vault run` (long form: `agent-vault vault run`). Agent Vault creates a scoped session, sets `HTTPS_PROXY`/`HTTP_PROXY` and CA-trust env vars, and launches the agent — all HTTP and HTTPS traffic is transparently proxied and authenticated:
 
 ```bash
 agent-vault run -- claude
@@ -120,9 +120,9 @@ const session = await av
 // certPath is where you'll mount the CA certificate inside the sandbox.
 const certPath = "/etc/ssl/agent-vault-ca.pem";
 
-// env: { HTTPS_PROXY, NO_PROXY, NODE_USE_ENV_PROXY, SSL_CERT_FILE,
-//         NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE,
-//         GIT_SSL_CAINFO, DENO_CERT }
+// env: { HTTPS_PROXY, HTTP_PROXY, NO_PROXY, NODE_USE_ENV_PROXY,
+//         SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE,
+//         CURL_CA_BUNDLE, GIT_SSL_CAINFO, DENO_CERT }
 const env = buildProxyEnv(session.containerConfig!, certPath);
 const caCert = session.containerConfig!.caCertificate;
 

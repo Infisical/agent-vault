@@ -12,10 +12,13 @@ import (
 	"github.com/Infisical/agent-vault/internal/ratelimit"
 )
 
-// mitmConnectIPKey is the rate-limit key for the CONNECT-flood
-// limiter. X-Forwarded-For doesn't exist at this layer (the HTTP
-// request is tunnelled); only the direct peer IP is meaningful.
-func mitmConnectIPKey(r *http.Request) string {
+// mitmIPKey is the rate-limit key for the per-IP flood gate shared by
+// the CONNECT and absolute-form forward-proxy paths. X-Forwarded-For
+// doesn't exist at this layer (the HTTP request is tunnelled or sent
+// over a TLS-wrapped proxy connection); only the direct peer IP is
+// meaningful. CONNECT and forward share one budget — a peer is one peer
+// regardless of which ingress shape they use.
+func mitmIPKey(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil || host == "" {
 		host = r.RemoteAddr
@@ -48,7 +51,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// can't burn CPU. Per-IP on the raw TCP peer, shared with the
 	// TierAuth budget. Loopback is exempt — see isLoopbackPeer.
 	if p.rateLimit != nil && !isLoopbackPeer(r) {
-		if d := p.rateLimit.Allow(ratelimit.TierAuth, mitmConnectIPKey(r)); !d.Allow {
+		if d := p.rateLimit.Allow(ratelimit.TierAuth, mitmIPKey(r)); !d.Allow {
 			ratelimit.WriteDenial(w, d, "Too many CONNECT attempts")
 			return
 		}

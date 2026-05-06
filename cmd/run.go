@@ -42,14 +42,16 @@ Environment variables set on the child:
   AGENT_VAULT_ADDR           — base URL of the Agent Vault HTTP control server
   AGENT_VAULT_VAULT          — vault the session is scoped to
 
-The child also inherits HTTPS_PROXY / NO_PROXY / NODE_USE_ENV_PROXY plus
-the root CA trust variables (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS,
-REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE, GIT_SSL_CAINFO, DENO_CERT) so standard
-HTTPS clients transparently route through the broker. NODE_USE_ENV_PROXY=1
-enables Node.js built-in proxy support (v22.21.0+) so fetch() and
-https.get() honor HTTPS_PROXY natively. HTTP_PROXY is intentionally not
-set — the MITM proxy only handles HTTPS (CONNECT) and would 405 any plain
-http:// request. The root CA PEM is written to ~/.agent-vault/mitm-ca.pem.
+The child also inherits HTTPS_PROXY / HTTP_PROXY / NO_PROXY /
+NODE_USE_ENV_PROXY plus the root CA trust variables (SSL_CERT_FILE,
+NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE, GIT_SSL_CAINFO,
+DENO_CERT) so both HTTPS and plain-HTTP clients transparently route
+through the broker. NODE_USE_ENV_PROXY=1 enables Node.js built-in proxy
+support (v22.21.0+) so fetch() and http.get()/https.get() honor the
+proxy env natively. HTTPS_PROXY and HTTP_PROXY both point at the same
+TLS-wrapped proxy URL — the listener accepts CONNECT for https://
+upstreams and absolute-form forward-proxy requests for http:// on the
+same port. The root CA PEM is written to ~/.agent-vault/mitm-ca.pem.
 
 Example:
   ` + examplePrefix + ` -- claude
@@ -381,15 +383,16 @@ func requireMITMEnv(env []string, addr, token, vault, caPath string) ([]string, 
 	return newEnv, port, nil
 }
 
-// augmentEnvWithMITM extends env so the child transparently routes HTTPS
-// through the broker. Returns (env, 0, false, nil) when the server has
-// MITM disabled. The second return value is the port the server reported;
-// callers log it so operators see the actual listen port (not a constant).
-// caPath is a test seam — pass "" for the default location.
+// augmentEnvWithMITM extends env so the child transparently routes HTTP
+// and HTTPS through the broker. Returns (env, 0, false, nil) when the
+// server has MITM disabled. The second return value is the port the
+// server reported; callers log it so operators see the actual listen
+// port (not a constant). caPath is a test seam — pass "" for the
+// default location.
 //
-// Only HTTPS_PROXY is injected — not HTTP_PROXY. The MITM proxy handles
-// HTTP CONNECT only and returns 405 for every other method, so setting
-// HTTP_PROXY would route plain http:// requests into a dead end.
+// Both HTTPS_PROXY and HTTP_PROXY are injected, pointing at the same
+// TLS-wrapped proxy URL. The listener handles CONNECT for https://
+// upstreams and absolute-form forward-proxy requests for http://.
 func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]string, int, bool, error) {
 	pem, port, enabled, mitmTLS, err := fetchMITMCA(addr)
 	if err != nil {
