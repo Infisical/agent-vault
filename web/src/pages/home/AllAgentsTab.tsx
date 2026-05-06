@@ -676,7 +676,7 @@ function ManualSetupView({
 
   const host = window.location.hostname;
   const tokenDisplay = sessionToken ?? "<TOKEN>";
-  const httpsProxy = `https://${tokenDisplay}@${host}:${mitm.port}`;
+  const proxyURL = `https://${tokenDisplay}@${host}:${mitm.port}`;
   const trustSnippets: Record<TrustTab, string> = {
     macos: `sudo security add-trusted-cert -d -r trustRoot \\\n  -k /Library/Keychains/System.keychain agent-vault-ca.pem`,
     linux: `sudo cp agent-vault-ca.pem /usr/local/share/ca-certificates/agent-vault-ca.crt\nsudo update-ca-certificates`,
@@ -728,7 +728,7 @@ function ManualSetupView({
         <p className="text-sm text-text-muted">
           The session token is embedded in the proxy URL — HTTP clients send it as <code className="text-text-muted">Proxy-Authorization</code> on every CONNECT handshake (for <code className="text-text-muted">https://</code> upstreams) and on each absolute-form forward-proxy request (for <code className="text-text-muted">http://</code> upstreams). Set both env vars to the same TLS-wrapped URL.
         </p>
-        <Snippet value={`export HTTPS_PROXY="${httpsProxy}"\nexport HTTP_PROXY="${httpsProxy}"`} />
+        <Snippet value={`export HTTPS_PROXY="${proxyURL}"\nexport HTTP_PROXY="${proxyURL}"`} />
         {!sessionToken && (
           <div className="flex items-center gap-2">
             <Button onClick={onRedeem} loading={redeeming}>
