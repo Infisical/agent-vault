@@ -95,6 +95,34 @@ func TestBuildContainerEnv_FirewallPortsEmitted(t *testing.T) {
 	}
 }
 
+// IPv6 literals must be bracketed in the proxy URL authority so
+// net.SplitHostPort and downstream HTTP clients accept them. The bare
+// "::1:port" form is rejected as "too many colons".
+func TestBuildProxyEnv_IPv6HostIsBracketed(t *testing.T) {
+	env := BuildProxyEnv(ProxyEnvParams{
+		Host:    "::1",
+		Port:    14322,
+		Token:   "tok",
+		Vault:   "v",
+		CAPath:  "/tmp/ca.pem",
+		MITMTLS: true,
+	})
+	vars := envMap(env)
+	u, err := url.Parse(vars["HTTPS_PROXY"])
+	if err != nil {
+		t.Fatalf("parse HTTPS_PROXY %q: %v", vars["HTTPS_PROXY"], err)
+	}
+	if u.Hostname() != "::1" {
+		t.Errorf("hostname = %q, want ::1", u.Hostname())
+	}
+	if u.Port() != "14322" {
+		t.Errorf("port = %q, want 14322", u.Port())
+	}
+	if !strings.Contains(vars["HTTPS_PROXY"], "[::1]:14322") {
+		t.Errorf("HTTPS_PROXY = %q, want bracketed [::1]:14322 authority", vars["HTTPS_PROXY"])
+	}
+}
+
 // HTTP_PROXY mirrors HTTPS_PROXY: both point at the same TLS-wrapped
 // MITM ingress so plain http:// upstreams route through the broker via
 // absolute-form forward-proxy requests.

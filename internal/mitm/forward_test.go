@@ -601,9 +601,9 @@ func TestMITMForwardKeepalivePersistsAcrossRequests(t *testing.T) {
 // because Go's http.Client rewrites URLs through ProxyURL in ways
 // that would obscure what we want to assert.
 func TestMITMForwardIPv6PreservesHostHeader(t *testing.T) {
-	// Bind an upstream on ::1 so the URL we send is exactly the
-	// IPv6-literal-no-port form. SkipNow if the host has no IPv6
-	// loopback (CI sometimes).
+	// Bind an upstream on an ephemeral ::1 port so we can send an
+	// IPv6-literal-with-port URL through the forward proxy. SkipNow if
+	// the host has no IPv6 loopback (CI sometimes).
 	l, err := net.Listen("tcp", "[::1]:0")
 	if err != nil {
 		t.Skipf("no IPv6 loopback available: %v", err)

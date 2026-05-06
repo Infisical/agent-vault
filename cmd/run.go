@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -146,7 +148,7 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	env = newEnv
-	fmt.Fprintf(os.Stderr, "%s routing HTTP/HTTPS through MITM proxy (%s:%d)\n", successText("agent-vault:"), resolveMITMHost(addr), mitmPort)
+	fmt.Fprintf(os.Stderr, "%s routing HTTP/HTTPS through MITM proxy (%s)\n", successText("agent-vault:"), net.JoinHostPort(resolveMITMHost(addr), strconv.Itoa(mitmPort)))
 
 	// 7. If the target command is a supported agent, offer to install the
 	//    Agent Vault skill (only when not already present).

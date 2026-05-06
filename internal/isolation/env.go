@@ -4,7 +4,9 @@ package isolation
 
 import (
 	"fmt"
+	"net"
 	"net/url"
+	"strconv"
 )
 
 const (
@@ -46,7 +48,7 @@ func BuildProxyEnv(p ProxyEnvParams) []string {
 	proxyURL := (&url.URL{
 		Scheme: scheme,
 		User:   url.UserPassword(p.Token, p.Vault),
-		Host:   fmt.Sprintf("%s:%d", p.Host, p.Port),
+		Host:   net.JoinHostPort(p.Host, strconv.Itoa(p.Port)),
 	}).String()
 	return []string{
 		"HTTPS_PROXY=" + proxyURL,
