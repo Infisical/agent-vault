@@ -146,7 +146,7 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	env = newEnv
-	fmt.Fprintf(os.Stderr, "%s routing HTTP/HTTPS through MITM proxy (127.0.0.1:%d)\n", successText("agent-vault:"), mitmPort)
+	fmt.Fprintf(os.Stderr, "%s routing HTTP/HTTPS through MITM proxy (%s:%d)\n", successText("agent-vault:"), resolveMITMHost(addr), mitmPort)
 
 	// 7. If the target command is a supported agent, offer to install the
 	//    Agent Vault skill (only when not already present).
@@ -369,6 +369,20 @@ func stripEnvKeys(env []string, keys map[string]struct{}) []string {
 	return out
 }
 
+// resolveMITMHost extracts the host the child process should dial for
+// the MITM proxy from the configured server address. Loopback default
+// matches the historical behaviour for users who never set --address.
+// Single source of truth for both the env-var path (BuildProxyEnv) and
+// the operator-facing banner.
+func resolveMITMHost(addr string) string {
+	if u, err := url.Parse(addr); err == nil {
+		if h := u.Hostname(); h != "" {
+			return h
+		}
+	}
+	return "127.0.0.1"
+}
+
 // requireMITMEnv calls augmentEnvWithMITM and converts both transport
 // failures and a server-side --mitm-port 0 into actionable errors.
 // MITM is the only ingress, so neither case is recoverable for vault run.
@@ -424,16 +438,9 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 		return env, 0, false, fmt.Errorf("write CA: %w", err)
 	}
 
-	mitmHost := "127.0.0.1"
-	if u, err := url.Parse(addr); err == nil {
-		if h := u.Hostname(); h != "" {
-			mitmHost = h
-		}
-	}
-
 	env = stripEnvKeys(env, mitmInjectedKeys)
 	env = append(env, isolation.BuildProxyEnv(isolation.ProxyEnvParams{
-		Host:    mitmHost,
+		Host:    resolveMITMHost(addr),
 		Port:    port,
 		Token:   token,
 		Vault:   vault,

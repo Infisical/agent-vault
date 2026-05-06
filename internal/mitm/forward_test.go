@@ -591,14 +591,16 @@ func TestMITMForwardKeepalivePersistsAcrossRequests(t *testing.T) {
 	}
 }
 
-// TestMITMForwardIPv6LiteralCanonicalises guards against the IPv6
-// double-bracket regression: net.SplitHostPort/JoinHostPort on the
-// bracketed-no-port form ("[::1]") produces "[[::1]]:80". Going
-// through r.URL.Hostname() / r.URL.Port() instead yields the
-// canonical "[::1]:80" target. Sending raw via dialProxyTLS because
-// Go's http.Client routinely rewrites URLs through ProxyURL in ways
+// TestMITMForwardIPv6PreservesHostHeader locks in the Host-header
+// port-preservation fix on the IPv6 forward-proxy path: outReq.Host
+// must equal target ("[::1]:port"), not the port-stripped form ("::1")
+// the old code emitted. The request line carries an explicit port so
+// the no-port canonicalisation branch (URL.Hostname/Port instead of
+// net.SplitHostPort) is not driven here — exercising that end-to-end
+// would require binding port 80 on ::1. Sending raw via dialProxyTLS
+// because Go's http.Client rewrites URLs through ProxyURL in ways
 // that would obscure what we want to assert.
-func TestMITMForwardIPv6LiteralCanonicalises(t *testing.T) {
+func TestMITMForwardIPv6PreservesHostHeader(t *testing.T) {
 	// Bind an upstream on ::1 so the URL we send is exactly the
 	// IPv6-literal-no-port form. SkipNow if the host has no IPv6
 	// loopback (CI sometimes).
