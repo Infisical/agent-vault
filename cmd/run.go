@@ -370,10 +370,8 @@ func stripEnvKeys(env []string, keys map[string]struct{}) []string {
 }
 
 // resolveMITMHost extracts the host the child process should dial for
-// the MITM proxy from the configured server address. Loopback default
-// matches the historical behaviour for users who never set --address.
-// Single source of truth for both the env-var path (BuildProxyEnv) and
-// the operator-facing banner.
+// the MITM proxy from the configured server address. Falls back to
+// loopback when addr is unparseable or has no host.
 func resolveMITMHost(addr string) string {
 	if u, err := url.Parse(addr); err == nil {
 		if h := u.Hostname(); h != "" {
