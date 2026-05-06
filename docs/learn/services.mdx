@@ -184,7 +184,7 @@ services:
         in: [path]
 ```
 
-The agent then sends `GET https://api.twilio.com/2010-04-01/Accounts/__account_sid__/Messages.json` (via `HTTPS_PROXY`). Agent Vault:
+The agent then sends `GET https://api.twilio.com/2010-04-01/Accounts/__account_sid__/Messages.json` (routed through the broker via `HTTPS_PROXY`/`HTTP_PROXY`). Agent Vault:
 
 1. Resolves the basic auth credentials and injects `Authorization: Basic <base64(SID:TOKEN)>`.
 2. Scans only the path (the only surface in `in:`), finds `__account_sid__`, replaces it with the URL-encoded SID.

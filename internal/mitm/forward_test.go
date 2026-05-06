@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/netguard"
@@ -102,7 +103,8 @@ func TestMITMForwardPlainHTTPInjectsCredentials(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	upstreamAuthority := strings.TrimPrefix(upstream.URL, "http://") // host:port
+	upstreamHost, _, _ := net.SplitHostPort(upstreamAuthority)
 
 	sr := validTokenResolver("av_sess_ok",
 		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
@@ -151,10 +153,11 @@ func TestMITMForwardPlainHTTPInjectsCredentials(t *testing.T) {
 	if sawProxyAuth != "" {
 		t.Errorf("upstream Proxy-Authorization = %q; must be stripped", sawProxyAuth)
 	}
-	// handleForward sets outReq.Host to the port-stripped form (passed
-	// as `host` into forwardRequest); upstream sees that exact value.
-	if sawHost != upstreamHost {
-		t.Errorf("upstream Host = %q, want %q", sawHost, upstreamHost)
+	// RFC 7230 §5.4: forwarded Host MUST equal the URI authority,
+	// including non-default port. handleForward canonicalises target
+	// as host:port and forwardRequest sets outReq.Host = target.
+	if sawHost != upstreamAuthority {
+		t.Errorf("upstream Host = %q, want %q", sawHost, upstreamAuthority)
 	}
 }
 
@@ -585,5 +588,57 @@ func TestMITMForwardKeepalivePersistsAcrossRequests(t *testing.T) {
 	}
 	if rows := sink.snapshot(); len(rows) != 2 {
 		t.Fatalf("got %d log rows, want 2", len(rows))
+	}
+}
+
+// TestMITMForwardIPv6LiteralCanonicalises guards against the IPv6
+// double-bracket regression: net.SplitHostPort/JoinHostPort on the
+// bracketed-no-port form ("[::1]") produces "[[::1]]:80". Going
+// through r.URL.Hostname() / r.URL.Port() instead yields the
+// canonical "[::1]:80" target. Sending raw via dialProxyTLS because
+// Go's http.Client routinely rewrites URLs through ProxyURL in ways
+// that would obscure what we want to assert.
+func TestMITMForwardIPv6LiteralCanonicalises(t *testing.T) {
+	// Bind an upstream on ::1 so the URL we send is exactly the
+	// IPv6-literal-no-port form. SkipNow if the host has no IPv6
+	// loopback (CI sometimes).
+	l, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		t.Skipf("no IPv6 loopback available: %v", err)
+	}
+	_, port, _ := net.SplitHostPort(l.Addr().String())
+	var sawHost string
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawHost = r.Host
+		_, _ = io.WriteString(w, "v6-ok")
+	}), ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = srv.Serve(l) }()
+	defer func() { _ = srv.Close() }()
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		"::1": {result: &brokercore.InjectResult{Passthrough: true}},
+	}}
+	proxyURL, clientRoots, _ := setupProxy(t, sr, cp)
+
+	conn := dialProxyTLS(t, proxyURL, clientRoots)
+	defer conn.Close()
+
+	auth := base64.StdEncoding.EncodeToString([]byte("av_sess_ok:"))
+	resp := writeRawRequestLine(t, conn,
+		fmt.Sprintf("GET http://[::1]:%s/x HTTP/1.1", port),
+		map[string]string{
+			"Host":                "[::1]:" + port,
+			"Proxy-Authorization": "Basic " + auth,
+		})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	wantHost := "[::1]:" + port
+	if sawHost != wantHost {
+		t.Errorf("upstream Host = %q, want %q (IPv6 brackets must round-trip)", sawHost, wantHost)
 	}
 }

@@ -77,14 +77,18 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Canonicalise host and target. r.URL.Host is "host" (no port) or
-	// "host:port" depending on the request line. Default to :80 when
-	// omitted so event.Host and outURL.Host stay consistent with the
-	// CONNECT-path invariant ("host:port present").
-	urlHost := r.URL.Host
-	host, port, err := net.SplitHostPort(urlHost)
-	if err != nil {
-		host = urlHost
+	// Canonicalise host and target. URL.Hostname() strips brackets from
+	// IPv6 literals; URL.Port() returns "" when omitted. Default port to
+	// 80 (http scheme) so event.Host and outURL.Host stay consistent
+	// with the CONNECT-path invariant ("host:port present"). Going
+	// through Hostname()/Port() rather than net.SplitHostPort is what
+	// makes "http://[::1]/path" round-trip cleanly — SplitHostPort
+	// rejects bracketed hosts without a port and the fallback path
+	// would feed a still-bracketed string back through JoinHostPort,
+	// double-bracketing it.
+	host := r.URL.Hostname()
+	port := r.URL.Port()
+	if port == "" {
 		port = "80"
 	}
 	target := net.JoinHostPort(host, port)
@@ -191,7 +195,14 @@ func (p *Proxy) forwardRequest(
 		emit(http.StatusBadGateway, "internal")
 		return
 	}
-	outReq.Host = host
+	// Wire Host header preserves the port for non-default ports, per
+	// RFC 7230 §5.4 (Host field-value MUST equal the URI authority,
+	// excluding userinfo). Stripping the port broke vhost routing on
+	// internal upstreams that key on host:port (k8s ingress, dev
+	// servers, microservices) — a non-issue for the legacy CONNECT
+	// path because HTTPS:443 is canonical, but the dominant case for
+	// the new plain-HTTP forward path.
+	outReq.Host = target
 	outReq.ContentLength = contentLength
 
 	inject, err := p.creds.Inject(r.Context(), scope.VaultID, host)

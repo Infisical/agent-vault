@@ -138,15 +138,15 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		"AGENT_VAULT_VAULT="+vault,
 	)
 
-	// 6. Route the child's HTTPS traffic through the transparent MITM
-	//    proxy. The MITM ingress is the only credential-injection path,
-	//    so a failure here is fatal.
+	// 6. Route the child's HTTP and HTTPS traffic through the transparent
+	//    MITM proxy. The MITM ingress is the only credential-injection
+	//    path, so a failure here is fatal.
 	newEnv, mitmPort, err := requireMITMEnv(env, addr, scopedToken, vault, "")
 	if err != nil {
 		return err
 	}
 	env = newEnv
-	fmt.Fprintf(os.Stderr, "%s routing HTTPS through MITM proxy (127.0.0.1:%d)\n", successText("agent-vault:"), mitmPort)
+	fmt.Fprintf(os.Stderr, "%s routing HTTP/HTTPS through MITM proxy (127.0.0.1:%d)\n", successText("agent-vault:"), mitmPort)
 
 	// 7. If the target command is a supported agent, offer to install the
 	//    Agent Vault skill (only when not already present).
