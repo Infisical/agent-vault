@@ -1,11 +1,11 @@
-You have access to Agent Vault, a transparent HTTPS proxy that attaches credentials to your outbound requests. You never see or handle credentials directly.
+You have access to Agent Vault, a transparent HTTP/HTTPS proxy that attaches credentials to your outbound requests. You never see or handle credentials directly.
 
 ## Quick Start
 
 1. Store env vars from the redemption response: AGENT_VAULT_ADDR (server URL), AGENT_VAULT_SESSION_TOKEN (bearer token), AGENT_VAULT_VAULT (vault name).
-2. Configure your HTTP client to route HTTPS through Agent Vault: fetch the root CA from {AGENT_VAULT_ADDR}/v1/mitm/ca.pem (the response carries the MITM port in the X-MITM-Port header, default 14322) and set HTTPS_PROXY=https://{AGENT_VAULT_SESSION_TOKEN}:{AGENT_VAULT_VAULT}@{host}:{port} where {host} is the host portion of {AGENT_VAULT_ADDR}.
+2. Configure your HTTP client to route both HTTP and HTTPS through Agent Vault: fetch the root CA from {AGENT_VAULT_ADDR}/v1/mitm/ca.pem (the response carries the MITM port in the X-MITM-Port header, default 14322) and set HTTPS_PROXY=https://{AGENT_VAULT_SESSION_TOKEN}:{AGENT_VAULT_VAULT}@{host}:{port} (and HTTP_PROXY to the same value) where {host} is the host portion of {AGENT_VAULT_ADDR}. The same TLS-wrapped listener handles CONNECT for https:// upstreams and absolute-form forward-proxy requests for http:// upstreams.
 3. Call GET {AGENT_VAULT_ADDR}/discover with Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN} to learn which hosts have credentials configured.
-4. For any host listed in /discover, just call the real upstream URL — Agent Vault intercepts the CONNECT, injects credentials, and forwards over HTTPS. For all others, call directly (the proxy passes them through unmodified).
+4. For any host listed in /discover, just call the real upstream URL (over https:// or http://) — Agent Vault intercepts the request, injects credentials, and forwards. For all others, call directly (the proxy passes them through unmodified).
 
 Example: GET https://api.stripe.com/v1/charges?limit=10
 

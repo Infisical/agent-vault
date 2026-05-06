@@ -1,7 +1,7 @@
 ---
 name: agent-vault-http
 description: >-
-  Agent Vault HTTP: a transparent HTTPS proxy that injects credentials for
+  Agent Vault HTTP: a transparent HTTP/HTTPS proxy that injects credentials for
   external services (Linear, GitHub, Stripe, Slack, Jira, etc.). Use when the
   task involves any third-party API or service that requires credentials, or
   when writing code that needs environment variables for secrets/API keys.
@@ -13,7 +13,7 @@ metadata:
 
 # Agent Vault (HTTP)
 
-You have access to Agent Vault, a transparent HTTPS proxy that injects credentials into your outbound calls. You never see or handle credentials directly -- make API calls to the real host as normal and Agent Vault attaches the real credentials at the proxy boundary.
+You have access to Agent Vault, a transparent HTTP/HTTPS proxy that injects credentials into your outbound calls. You never see or handle credentials directly -- make API calls to the real host as normal (over `https://` or `http://`) and Agent Vault attaches the real credentials at the proxy boundary.
 
 ## CRITICAL: Always Check Agent Vault First
 
@@ -159,7 +159,7 @@ Content-Type: application/json
 }
 ```
 
-Once approved, the agent makes requests like `GET https://api.twilio.com/2010-04-01/Accounts/__account_sid__/Messages.json` (via `HTTPS_PROXY`). The broker rewrites the path to `/Accounts/AC.../Messages.json` and injects the basic auth header.
+Once approved, the agent makes requests like `GET https://api.twilio.com/2010-04-01/Accounts/__account_sid__/Messages.json` (routed through the broker via `HTTPS_PROXY`/`HTTP_PROXY`). The broker rewrites the path to `/Accounts/AC.../Messages.json` and injects the basic auth header.
 
 Placeholder safety: must be ≥4 characters, contain at least one alphanumeric character, contain a `__` boundary or non-`[A-Za-z0-9_]` character (so bare words like `account_sid` are rejected — they would match legitimate URL words), and use only RFC 3986 unreserved characters `[A-Za-z0-9_-.~]`. The recommended convention is `__name__`.
 

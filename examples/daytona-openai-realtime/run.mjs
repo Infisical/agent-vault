@@ -97,6 +97,8 @@ function testDirectEgress() {
   const env = { ...process.env };
   delete env.HTTPS_PROXY;
   delete env.https_proxy;
+  delete env.HTTP_PROXY;
+  delete env.http_proxy;
   const result = spawnSync('curl', ['--max-time', '5', '-fsS', 'https://example.com'], {
     env,
     stdio: 'ignore',
@@ -205,6 +207,7 @@ docker run -d --name agent-example --network av-example \
   -e VAULT_HTTP_PORT=14321 \
   -e VAULT_MITM_PORT=14322 \
   -e HTTPS_PROXY="https://$SESSION_TOKEN:default@host.docker.internal:14322" \
+  -e HTTP_PROXY="https://$SESSION_TOKEN:default@host.docker.internal:14322" \
   -e NO_PROXY="localhost,127.0.0.1,host.docker.internal" \
   -e NODE_EXTRA_CA_CERTS=/etc/agent-vault/ca.pem \
   -e SSL_CERT_FILE=/etc/agent-vault/ca.pem \

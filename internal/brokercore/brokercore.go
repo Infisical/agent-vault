@@ -63,7 +63,8 @@ func IsValidHost(h string) bool {
 }
 
 // brokerScopedRequestHeaders are headers that authenticate the client to
-// Agent Vault itself (Proxy-Authorization on the HTTPS_PROXY ingress;
+// Agent Vault itself (Proxy-Authorization on the MITM proxy ingress —
+// reaching it via either HTTPS_PROXY/CONNECT or HTTP_PROXY/absolute-form;
 // X-Vault on the control-plane endpoints used by instance-level agent
 // tokens, e.g. /discover and /v1/proposals). They must never traverse
 // the broker → target hop.

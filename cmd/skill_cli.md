@@ -14,7 +14,7 @@ metadata:
 
 # Agent Vault (CLI)
 
-You have access to Agent Vault, a transparent HTTPS proxy that injects credentials into your outbound calls. You never see or handle credentials directly -- make API calls to the real host as normal and Agent Vault attaches the real credentials at the proxy boundary.
+You have access to Agent Vault, a transparent HTTP/HTTPS proxy that injects credentials into your outbound calls. You never see or handle credentials directly -- make API calls to the real host as normal (over `https://` or `http://`) and Agent Vault attaches the real credentials at the proxy boundary.
 
 ## CRITICAL: Always Check Agent Vault First
 

@@ -11,8 +11,8 @@ You received an agent token (av_agent_token). Use it for all proxy/discover/prop
 ## Quick Start
 
 1. Call GET {AGENT_VAULT_ADDR}/discover with Authorization: Bearer {av_agent_token} — do this FIRST.
-2. Configure your HTTP client to route HTTPS through Agent Vault: fetch the root CA from {AGENT_VAULT_ADDR}/v1/mitm/ca.pem (X-MITM-Port response header gives the port, default 14322) and set HTTPS_PROXY=https://{av_agent_token}:{vault_name}@{host}:{port} where {host} is the host portion of {AGENT_VAULT_ADDR}.
-3. For hosts in the discover response, just call the real upstream URL — Agent Vault intercepts the CONNECT and injects credentials. For others, requests pass through unmodified.
+2. Configure your HTTP client to route both HTTP and HTTPS through Agent Vault: fetch the root CA from {AGENT_VAULT_ADDR}/v1/mitm/ca.pem (X-MITM-Port response header gives the port, default 14322) and set HTTPS_PROXY=https://{av_agent_token}:{vault_name}@{host}:{port} (and HTTP_PROXY to the same value) where {host} is the host portion of {AGENT_VAULT_ADDR}. The same TLS-wrapped listener handles CONNECT for https:// upstreams and absolute-form forward-proxy requests for http:// upstreams.
+3. For hosts in the discover response, just call the real upstream URL (over https:// or http://) — Agent Vault injects credentials. For others, requests pass through unmodified.
 4. If a needed service isn't listed, raise a proposal.
 
 ## Member Capabilities

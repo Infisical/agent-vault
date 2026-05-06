@@ -71,7 +71,7 @@ sudo mv agent-vault /usr/local/bin/
 agent-vault server -d
 ```
 
-The server starts the HTTP API on port `14321` and a TLS-encrypted transparent HTTPS proxy on port `14322`. A web UI is available at `http://localhost:14321`.
+The server starts the HTTP API on port `14321` and a TLS-encrypted transparent HTTP/HTTPS proxy on port `14322` — the same listener handles `CONNECT` for `https://` upstreams and absolute-form forward-proxy requests for `http://` upstreams. A web UI is available at `http://localhost:14321`.
 
 ## Quickstart
 

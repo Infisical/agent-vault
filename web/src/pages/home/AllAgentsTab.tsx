@@ -726,9 +726,9 @@ function ManualSetupView({
 
       <ManualStep n={3} title="Point the agent at the proxy">
         <p className="text-sm text-text-muted">
-          The session token is embedded in the proxy URL — HTTP clients send it as <code className="text-text-muted">Proxy-Authorization</code> on every CONNECT handshake.
+          The session token is embedded in the proxy URL — HTTP clients send it as <code className="text-text-muted">Proxy-Authorization</code> on every CONNECT handshake (for <code className="text-text-muted">https://</code> upstreams) and on each absolute-form forward-proxy request (for <code className="text-text-muted">http://</code> upstreams). Set both env vars to the same TLS-wrapped URL.
         </p>
-        <Snippet value={`export HTTPS_PROXY="${httpsProxy}"`} />
+        <Snippet value={`export HTTPS_PROXY="${httpsProxy}"\nexport HTTP_PROXY="${httpsProxy}"`} />
         {!sessionToken && (
           <div className="flex items-center gap-2">
             <Button onClick={onRedeem} loading={redeeming}>
