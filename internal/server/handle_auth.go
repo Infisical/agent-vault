@@ -147,13 +147,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try to register as the first user (atomic: count + create + activate + grant).
-	defaultVault, _ := s.store.GetVault(ctx, store.DefaultVault)
-	var defaultVaultID string
-	if defaultVault != nil {
-		defaultVaultID = defaultVault.ID
-	}
-	user, err := s.store.RegisterFirstUser(ctx, req.Email, hash, salt, defaultVaultID, kdfParams.Time, kdfParams.Memory, kdfParams.Threads)
+	// Try to register as the first user (atomic: count + create + activate).
+	// Owners auto-access every vault, so no per-vault grant is needed.
+	user, err := s.store.RegisterFirstUser(ctx, req.Email, hash, salt, kdfParams.Time, kdfParams.Memory, kdfParams.Threads)
 	if err == nil {
 		// First user: owner created successfully.
 		s.initialized = true

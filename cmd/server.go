@@ -244,13 +244,7 @@ func promptOwnerSetup(cmd *cobra.Command, db *store.SQLiteStore, masterPassword 
 		return fmt.Errorf("hashing password: %w", err)
 	}
 
-	// Get the default vault so the owner is granted admin access on it.
-	vault, err := db.GetVault(context.Background(), "default")
-	if err != nil {
-		return fmt.Errorf("looking up default vault: %w", err)
-	}
-
-	if _, err := db.RegisterFirstUser(context.Background(), email, hash, salt, vault.ID, kdfP.Time, kdfP.Memory, kdfP.Threads); err != nil {
+	if _, err := db.RegisterFirstUser(context.Background(), email, hash, salt, kdfP.Time, kdfP.Memory, kdfP.Threads); err != nil {
 		return fmt.Errorf("creating owner account: %w", err)
 	}
 

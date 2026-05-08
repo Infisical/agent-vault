@@ -472,8 +472,15 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 	}
 	scope := s.actorVaultScope(ctx, actor)
 	if scope != nil {
+		// Owner agents auto-access every vault and have no vault_grants
+		// rows, so include them unconditionally — otherwise scoped admins
+		// can't see which owner agents may be hitting their vault.
 		var filtered []store.Agent
 		for _, ag := range agents {
+			if ag.IsOwner() {
+				filtered = append(filtered, ag)
+				continue
+			}
 			for _, v := range ag.Vaults {
 				if scope[v.VaultID] {
 					filtered = append(filtered, ag)
@@ -519,13 +526,15 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Include agents with pending invites (not yet redeemed).
-	// Non-owners only see invites targeting vaults they can access.
+	// Non-owners only see invites targeting vaults they can access, plus
+	// any owner-role invites (those have no per-vault scope and the
+	// resulting agent will auto-access every vault once redeemed).
 	pendingInvites, _ := s.store.ListInvites(ctx, "pending")
 	for _, inv := range pendingInvites {
 		if seen[inv.AgentName] {
 			continue
 		}
-		if scope != nil {
+		if scope != nil && inv.AgentRole != "owner" {
 			hasOverlap := false
 			for _, v := range inv.Vaults {
 				if scope[v.VaultID] {
@@ -771,7 +780,28 @@ func (s *Server) handleVaultAgentList(w http.ResponseWriter, r *http.Request) {
 		seen[ag.Name] = true
 	}
 
-	// Include pending invite pre-assignments for this vault.
+	// Owner agents auto-access every vault and have no vault_grants rows,
+	// so ListAgents (which inner-joins on vault_grants) excludes them.
+	// Union them in here so vault members can see owner agents that may be
+	// hitting their vault through the proxy.
+	if allAgents, err := s.store.ListAllAgents(ctx); err == nil {
+		for _, ag := range allAgents {
+			if !ag.IsOwner() || seen[ag.Name] {
+				continue
+			}
+			items = append(items, item{
+				Name:    ag.Name,
+				AgentID: ag.ID,
+				Role:    ag.Role,
+				Status:  ag.Status,
+			})
+			seen[ag.Name] = true
+		}
+	}
+
+	// Include pending invite pre-assignments for this vault, plus any
+	// pending owner-role invites (they don't carry per-vault scope but the
+	// resulting agent will auto-access this vault once redeemed).
 	pendingInvites, _ := s.store.ListInvitesByVault(ctx, ns.ID, "pending")
 	for _, inv := range pendingInvites {
 		if seen[inv.AgentName] {
@@ -787,6 +817,19 @@ func (s *Server) handleVaultAgentList(w http.ResponseWriter, r *http.Request) {
 				seen[inv.AgentName] = true
 				break
 			}
+		}
+	}
+	if ownerInvites, err := s.store.ListInvites(ctx, "pending"); err == nil {
+		for _, inv := range ownerInvites {
+			if inv.AgentRole != "owner" || seen[inv.AgentName] {
+				continue
+			}
+			items = append(items, item{
+				Name:   inv.AgentName,
+				Role:   inv.AgentRole,
+				Status: "pending",
+			})
+			seen[inv.AgentName] = true
 		}
 	}
 
