@@ -789,32 +789,124 @@ func (s *SQLiteStore) CreateUserSession(ctx context.Context, p CreateUserSession
 	}, nil
 }
 
-func (s *SQLiteStore) CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*Session, error) {
+func (s *SQLiteStore) CreateScopedSession(ctx context.Context, p CreateScopedSessionParams) (*Session, error) {
 	rawToken := newSessionToken()
 	tokenHash := hashSessionToken(rawToken)
+	publicID := newPublicID()
 	now := time.Now().UTC()
 
 	var expiresAtStr sql.NullString
-	if expiresAt != nil {
-		expiresAtStr = sql.NullString{String: expiresAt.UTC().Format(time.DateTime), Valid: true}
+	if p.ExpiresAt != nil {
+		expiresAtStr = sql.NullString{String: p.ExpiresAt.UTC().Format(time.DateTime), Valid: true}
 	}
 
 	_, err := s.db.ExecContext(ctx,
-		"INSERT INTO sessions (id, vault_id, vault_role, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
-		tokenHash, vaultID, vaultRole, expiresAtStr, now.Format(time.DateTime),
+		`INSERT INTO sessions
+		   (id, vault_id, vault_role, expires_at, created_at,
+		    public_id, label, created_by_actor_id, created_by_actor_type)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		tokenHash, p.VaultID, p.VaultRole, expiresAtStr, now.Format(time.DateTime),
+		publicID,
+		nullableString(p.Label),
+		nullableString(p.CreatedByActorID),
+		nullableString(p.CreatedByActorType),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating scoped session: %w", err)
 	}
 
-	return &Session{ID: rawToken, VaultID: vaultID, VaultRole: vaultRole, ExpiresAt: utcTimePtr(expiresAt), CreatedAt: now}, nil
+	return &Session{
+		ID:                 rawToken,
+		VaultID:            p.VaultID,
+		VaultRole:          p.VaultRole,
+		ExpiresAt:          utcTimePtr(p.ExpiresAt),
+		CreatedAt:          now,
+		PublicID:           publicID,
+		Label:              p.Label,
+		CreatedByActorID:   p.CreatedByActorID,
+		CreatedByActorType: p.CreatedByActorType,
+	}, nil
+}
+
+// ListScopedSessionsByVault returns active scoped tokens for the vault,
+// most recent first. Stale rows past their absolute expiry are filtered
+// in SQL; rows with a NULL public_id (legacy scoped rows from before
+// migration 044) are excluded so the UI can revoke every row it shows.
+func (s *SQLiteStore) ListScopedSessionsByVault(ctx context.Context, vaultID string) ([]Session, error) {
+	if vaultID == "" {
+		return nil, fmt.Errorf("ListScopedSessionsByVault: vaultID is required")
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT vault_role, expires_at, created_at, public_id,
+		        label, created_by_actor_id, created_by_actor_type
+		   FROM sessions
+		  WHERE vault_id = ?
+		    AND public_id IS NOT NULL
+		    AND user_id IS NULL
+		    AND agent_id IS NULL
+		    AND (expires_at IS NULL OR expires_at > datetime('now'))
+		  ORDER BY created_at DESC`,
+		vaultID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing scoped sessions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []Session
+	for rows.Next() {
+		var sess Session
+		var vaultRole, expiresAt, publicID sql.NullString
+		var label, createdByActorID, createdByActorType sql.NullString
+		var createdAt string
+		if err := rows.Scan(&vaultRole, &expiresAt, &createdAt, &publicID,
+			&label, &createdByActorID, &createdByActorType); err != nil {
+			return nil, fmt.Errorf("scanning scoped session: %w", err)
+		}
+		sess.VaultID = vaultID
+		sess.VaultRole = vaultRole.String
+		sess.PublicID = publicID.String
+		sess.Label = label.String
+		sess.CreatedByActorID = createdByActorID.String
+		sess.CreatedByActorType = createdByActorType.String
+		if expiresAt.Valid {
+			t, _ := time.Parse(time.DateTime, expiresAt.String)
+			sess.ExpiresAt = &t
+		}
+		sess.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
+		out = append(out, sess)
+	}
+	return out, rows.Err()
+}
+
+// RevokeScopedSession deletes one scoped session by (vaultID, publicID).
+// Returns sql.ErrNoRows when no matching row exists. Vault scoping in the
+// WHERE clause prevents one vault's admin from revoking another vault's
+// token by guessing a public_id.
+func (s *SQLiteStore) RevokeScopedSession(ctx context.Context, vaultID, publicID string) error {
+	if vaultID == "" || publicID == "" {
+		return sql.ErrNoRows
+	}
+	res, err := s.db.ExecContext(ctx,
+		"DELETE FROM sessions WHERE vault_id = ? AND public_id = ? AND user_id IS NULL AND agent_id IS NULL",
+		vaultID, publicID,
+	)
+	if err != nil {
+		return fmt.Errorf("revoking scoped session: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *SQLiteStore) GetSession(ctx context.Context, rawToken string) (*Session, error) {
 	tokenHash := hashSessionToken(rawToken)
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, user_id, vault_id, agent_id, vault_role, expires_at, created_at,
-		        last_used_at, idle_ttl_seconds, device_label, last_ip, last_user_agent, public_id
+		        last_used_at, idle_ttl_seconds, device_label, last_ip, last_user_agent, public_id,
+		        label, created_by_actor_id, created_by_actor_type
 		 FROM sessions WHERE id = ?`, tokenHash,
 	)
 
@@ -822,10 +914,12 @@ func (s *SQLiteStore) GetSession(ctx context.Context, rawToken string) (*Session
 	var storedID string
 	var userID, vaultID, agentID, vaultRole, expiresAt sql.NullString
 	var lastUsedAt, deviceLabel, lastIP, lastUserAgent, publicID sql.NullString
+	var label, createdByActorID, createdByActorType sql.NullString
 	var idleSecs sql.NullInt64
 	var createdAt string
 	if err := row.Scan(&storedID, &userID, &vaultID, &agentID, &vaultRole, &expiresAt, &createdAt,
-		&lastUsedAt, &idleSecs, &deviceLabel, &lastIP, &lastUserAgent, &publicID); err != nil {
+		&lastUsedAt, &idleSecs, &deviceLabel, &lastIP, &lastUserAgent, &publicID,
+		&label, &createdByActorID, &createdByActorType); err != nil {
 		return nil, err
 	}
 	// Return the raw token as ID (not the hash) so callers can reference it.
@@ -850,6 +944,9 @@ func (s *SQLiteStore) GetSession(ctx context.Context, rawToken string) (*Session
 	sess.LastIP = lastIP.String
 	sess.LastUserAgent = lastUserAgent.String
 	sess.PublicID = publicID.String
+	sess.Label = label.String
+	sess.CreatedByActorID = createdByActorID.String
+	sess.CreatedByActorType = createdByActorType.String
 	return &sess, nil
 }
 

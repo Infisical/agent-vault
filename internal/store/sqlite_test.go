@@ -28,8 +28,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 43 {
-		t.Fatalf("expected migration version 43, got %d", version)
+	if version != 44 {
+		t.Fatalf("expected migration version 44, got %d", version)
 	}
 }
 
@@ -338,7 +338,11 @@ func TestScopedSessionCRUD(t *testing.T) {
 
 	expires := time.Now().Add(1 * time.Hour).UTC().Truncate(time.Second)
 
-	sess, err := s.CreateScopedSession(ctx, ns.ID, "proxy", &expires)
+	sess, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:   ns.ID,
+		VaultRole: "proxy",
+		ExpiresAt: &expires,
+	})
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -1834,7 +1838,11 @@ func TestGetSessionBackwardCompat(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	sess, _ := s.CreateScopedSession(ctx, ns.ID, "proxy", tp(time.Now().Add(24*time.Hour)))
+	sess, _ := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:   ns.ID,
+		VaultRole: "proxy",
+		ExpiresAt: tp(time.Now().Add(24 * time.Hour)),
+	})
 
 	fetched, err := s.GetSession(ctx, sess.ID)
 	if err != nil {

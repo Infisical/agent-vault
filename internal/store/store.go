@@ -82,6 +82,14 @@ type Session struct {
 	DeviceLabel   string        // user-visible label, e.g. hostname
 	LastIP        string
 	LastUserAgent string
+
+	// Scoped-session metadata (populated only for vault-scoped tokens; left
+	// empty on user login sessions and agent tokens). Label is a
+	// user-supplied tag shown in the Tokens UI; CreatedByActorID/Type
+	// record the actor that minted the token.
+	Label              string
+	CreatedByActorID   string
+	CreatedByActorType string
 }
 
 // IsExpired reports whether the session is past its absolute expiry or its
@@ -107,6 +115,18 @@ type CreateUserSessionParams struct {
 	DeviceLabel   string
 	LastIP        string
 	LastUserAgent string
+}
+
+// CreateScopedSessionParams carries the fields persisted on a vault-scoped
+// session token. ExpiresAt is optional (nil = never expires); Label and
+// the CreatedBy fields are optional metadata for the Tokens UI.
+type CreateScopedSessionParams struct {
+	VaultID            string
+	VaultRole          string
+	ExpiresAt          *time.Time
+	Label              string
+	CreatedByActorID   string
+	CreatedByActorType string // "user" or "agent"
 }
 
 // User represents a human user account.
@@ -320,9 +340,15 @@ type Store interface {
 
 	// Sessions
 	CreateUserSession(ctx context.Context, p CreateUserSessionParams) (*Session, error)
-	CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*Session, error)
+	CreateScopedSession(ctx context.Context, p CreateScopedSessionParams) (*Session, error)
 	GetSession(ctx context.Context, id string) (*Session, error)
 	DeleteSession(ctx context.Context, id string) error
+	// ListScopedSessionsByVault returns active vault-scoped tokens for the
+	// vault, most recent first. Used by the Tokens tab.
+	ListScopedSessionsByVault(ctx context.Context, vaultID string) ([]Session, error)
+	// RevokeScopedSession deletes one scoped session by (vaultID, publicID).
+	// Vault scoping prevents cross-vault revocation.
+	RevokeScopedSession(ctx context.Context, vaultID, publicID string) error
 	// TouchSession bumps last_used_at for the given raw token and
 	// refreshes last_ip + last_user_agent (empty values leave the
 	// existing column unchanged). Throttled internally so per-request
