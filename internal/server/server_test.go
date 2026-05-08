@@ -4821,6 +4821,53 @@ func TestScopedSessionMintWithLabel(t *testing.T) {
 	}
 }
 
+func TestScopedSessionLabelCJKWithinRuneLimit(t *testing.T) {
+	// 50 CJK characters = 150 bytes UTF-8, well under the 100-byte len()
+	// cap that previously rejected this — but within the 100-rune cap.
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	cjk := strings.Repeat("我", 50)
+	body := fmt.Sprintf(`{"vault":"default","label":%q}`, cjk)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for 50-rune CJK label, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp scopedSessionResponse
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if got := ms.sessions[resp.Token]; got == nil || got.Label != cjk {
+		t.Fatalf("expected label preserved, got %+v", got)
+	}
+}
+
+func TestScopedSessionLabelStripsControlChars(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"vault":"default","label":"line1\nline2\ttab"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp scopedSessionResponse
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	got := ms.sessions[resp.Token]
+	if got == nil || got.Label != "line1line2tab" {
+		t.Fatalf("expected control chars stripped, got %q", func() string {
+			if got == nil {
+				return "<nil>"
+			}
+			return got.Label
+		}())
+	}
+}
+
 func TestScopedSessionLabelTooLong(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))

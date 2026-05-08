@@ -365,6 +365,94 @@ func TestScopedSessionCRUD(t *testing.T) {
 	}
 }
 
+func TestDeleteUserCascadesScopedTokensMintedByUser(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	ns, _ := s.GetVault(ctx, "default")
+	u, err := s.CreateUser(ctx, "minter@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	keeper, err := s.CreateUser(ctx, "keeper@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	if err != nil {
+		t.Fatalf("CreateUser keeper: %v", err)
+	}
+
+	// Token minted by `u`.
+	mintedByU, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:            ns.ID,
+		VaultRole:          "proxy",
+		ExpiresAt:          tp(time.Now().Add(time.Hour)),
+		CreatedByActorID:   u.ID,
+		CreatedByActorType: "user",
+	})
+	if err != nil {
+		t.Fatalf("CreateScopedSession u: %v", err)
+	}
+	// Token minted by `keeper` — must survive `u`'s deletion.
+	mintedByKeeper, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:            ns.ID,
+		VaultRole:          "proxy",
+		ExpiresAt:          tp(time.Now().Add(time.Hour)),
+		CreatedByActorID:   keeper.ID,
+		CreatedByActorType: "user",
+	})
+	if err != nil {
+		t.Fatalf("CreateScopedSession keeper: %v", err)
+	}
+
+	if err := s.DeleteUser(ctx, u.ID); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+
+	if got, _ := s.GetSession(ctx, mintedByU.ID); got != nil {
+		t.Fatal("expected u's minted token to be cascaded away")
+	}
+	if got, err := s.GetSession(ctx, mintedByKeeper.ID); err != nil || got == nil {
+		t.Fatalf("expected keeper's token to survive: got=%v err=%v", got, err)
+	}
+}
+
+func TestRevokeAgentCascadesScopedTokensMintedByAgent(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	ns, _ := s.GetVault(ctx, "default")
+	agent, err := s.CreateAgent(ctx, "minter-agent", "system", "member")
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+
+	// Agent's own auth token (agent_id = agent.ID).
+	agentToken, err := s.CreateAgentToken(ctx, agent.ID, tp(time.Now().Add(time.Hour)))
+	if err != nil {
+		t.Fatalf("CreateAgentToken: %v", err)
+	}
+	// Scoped token the agent minted on behalf of itself for a child process.
+	mintedByAgent, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:            ns.ID,
+		VaultRole:          "proxy",
+		ExpiresAt:          tp(time.Now().Add(time.Hour)),
+		CreatedByActorID:   agent.ID,
+		CreatedByActorType: "agent",
+	})
+	if err != nil {
+		t.Fatalf("CreateScopedSession: %v", err)
+	}
+
+	if err := s.RevokeAgent(ctx, agent.ID); err != nil {
+		t.Fatalf("RevokeAgent: %v", err)
+	}
+
+	if got, _ := s.GetSession(ctx, agentToken.ID); got != nil {
+		t.Fatal("expected agent token to be cascaded away")
+	}
+	if got, _ := s.GetSession(ctx, mintedByAgent.ID); got != nil {
+		t.Fatal("expected scoped token minted by agent to be cascaded away")
+	}
+}
+
 func TestListAndRevokeScopedSessions(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()

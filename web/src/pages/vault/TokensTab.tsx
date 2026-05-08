@@ -228,6 +228,11 @@ function MintTokenButton({
   const [mintedToken, setMintedToken] = useState<string | null>(null);
 
   function close() {
+    // Block all close paths (ESC, backdrop, X, Cancel) while a mint is
+    // in flight. Otherwise the post-await setMintedToken would write into
+    // a hidden modal and the freshly-minted token would only surface on
+    // the next "Mint token" click — looking like an orphan to the user.
+    if (submitting) return;
     setOpen(false);
     setLabel("");
     setTtlPreset(86400);

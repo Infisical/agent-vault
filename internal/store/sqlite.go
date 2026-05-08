@@ -559,6 +559,16 @@ func (s *SQLiteStore) DeleteUser(ctx context.Context, userID string) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM vault_grants WHERE actor_id = ?", userID); err != nil {
 		return fmt.Errorf("cleaning up vault grants: %w", err)
 	}
+	// Revoke scoped tokens this user minted on behalf of others. Without
+	// this, an orphan token keeps proxying upstream APIs until its TTL
+	// expires (up to scopedSessionMaxTTL).
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM sessions
+		 WHERE created_by_actor_id = ? AND created_by_actor_type = 'user'`,
+		userID,
+	); err != nil {
+		return fmt.Errorf("cleaning up scoped tokens minted by user: %w", err)
+	}
 	return tx.Commit()
 }
 
@@ -2561,8 +2571,16 @@ func (s *SQLiteStore) RevokeAgent(ctx context.Context, id string) error {
 		return sql.ErrNoRows
 	}
 
-	// Cascade: delete all tokens minted for this agent.
-	_, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE agent_id = ?", id)
+	// Cascade: delete tokens authenticating AS this agent and scoped
+	// tokens this agent minted on behalf of others. Without the second
+	// branch, a revoked agent's orphan token keeps proxying upstream APIs
+	// until its TTL expires (up to scopedSessionMaxTTL).
+	_, err = tx.ExecContext(ctx,
+		`DELETE FROM sessions
+		 WHERE agent_id = ?
+		    OR (created_by_actor_id = ? AND created_by_actor_type = 'agent')`,
+		id, id,
+	)
 	if err != nil {
 		return fmt.Errorf("deleting agent tokens: %w", err)
 	}

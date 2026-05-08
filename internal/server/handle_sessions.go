@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Infisical/agent-vault/internal/store"
 )
@@ -49,6 +50,25 @@ type scopedSessionActorView struct {
 // keep them short to avoid table layout issues.
 const maxScopedSessionLabel = 100
 
+// sanitizeScopedSessionLabel trims surrounding whitespace and strips
+// ASCII control characters. Mirrors truncateDeviceLabel's policy for
+// user-session device labels, except it does not silently truncate —
+// the caller checks rune count and rejects with 400.
+func sanitizeScopedSessionLabel(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return ""
+	}
+	cleaned := make([]rune, 0, len(label))
+	for _, r := range label {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		cleaned = append(cleaned, r)
+	}
+	return string(cleaned)
+}
+
 func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 	var req scopedSessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Vault == "" {
@@ -77,9 +97,13 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Trim before length-checking so a payload of all-spaces doesn't pass.
-	req.Label = strings.TrimSpace(req.Label)
-	if len(req.Label) > maxScopedSessionLabel {
+	// Trim and strip control chars before length-checking. Control chars
+	// (\n, \t, etc.) would break the Tokens table layout — the same
+	// concern truncateDeviceLabel addresses for user-session device
+	// labels. Length is measured in runes, not bytes, so a CJK or emoji
+	// label that fits the frontend's maxLength={100} also passes here.
+	req.Label = sanitizeScopedSessionLabel(req.Label)
+	if utf8.RuneCountInString(req.Label) > maxScopedSessionLabel {
 		jsonError(w, http.StatusBadRequest, fmt.Sprintf(
 			"label must be at most %d characters", maxScopedSessionLabel,
 		))
