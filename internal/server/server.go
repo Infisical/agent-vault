@@ -143,7 +143,7 @@ type Store interface {
 	UpdateUserPassword(ctx context.Context, userID string, passwordHash, passwordSalt []byte, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) error
 	DeleteUser(ctx context.Context, userID string) error
 	CountUsers(ctx context.Context) (int, error)
-	RegisterFirstUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, defaultVaultID string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*store.User, error)
+	RegisterFirstUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*store.User, error)
 	CreateUserSession(ctx context.Context, p store.CreateUserSessionParams) (*store.Session, error)
 	CreateScopedSession(ctx context.Context, vaultID, userID, agentID string, expiresAt *time.Time) (*store.Session, error)
 	GetSession(ctx context.Context, id string) (*store.Session, error)

@@ -75,7 +75,7 @@ func (m *mockStore) CreateUser(_ context.Context, email string, passwordHash, pa
 	return u, nil
 }
 
-func (m *mockStore) RegisterFirstUser(_ context.Context, email string, passwordHash, passwordSalt []byte, defaultVaultID string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*store.User, error) {
+func (m *mockStore) RegisterFirstUser(_ context.Context, email string, passwordHash, passwordSalt []byte, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*store.User, error) {
 	if len(m.users) > 0 {
 		return nil, store.ErrNotFirstUser
 	}
@@ -86,15 +86,6 @@ func (m *mockStore) RegisterFirstUser(_ context.Context, email string, passwordH
 		Role: "owner", IsActive: true, CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
 	m.users[email] = u
-	if defaultVaultID != "" {
-		if m.grants == nil {
-			m.grants = make(map[string]map[string]string)
-		}
-		if m.grants[u.ID] == nil {
-			m.grants[u.ID] = make(map[string]string)
-		}
-		m.grants[u.ID][defaultVaultID] = "admin"
-	}
 	return u, nil
 }
 
@@ -3784,6 +3775,83 @@ func TestAgentList(t *testing.T) {
 	agents := resp["agents"].([]interface{})
 	if len(agents) != 2 {
 		t.Fatalf("expected 2 agents, got %d", len(agents))
+	}
+}
+
+// Owner agents auto-access every vault and have no vault_grants rows, so
+// scoped admins must still be able to see them in both the cross-vault
+// (/v1/agents) and per-vault (/v1/vaults/{name}/agents) listings.
+func TestAgentListOwnerAgentVisibleToScopedAdmin(t *testing.T) {
+	ms := newMockStore()
+
+	// Scoped admin with explicit grant on the default vault.
+	ms.users["admin@test.com"] = &store.User{
+		ID: "scoped-admin", Email: "admin@test.com", Role: "admin", IsActive: true,
+	}
+	ms.GrantVaultAccess(context.Background(), "scoped-admin", "user", "root-ns-id")
+	sess := &store.Session{
+		ID: "scoped-admin-session", UserID: "scoped-admin",
+		ExpiresAt: tp(time.Now().Add(time.Hour)), CreatedAt: time.Now(),
+	}
+	ms.sessions[sess.ID] = sess
+
+	// Owner agent: no vault_grants rows at all.
+	ms.agents["global-bot"] = &store.Agent{
+		ID: "owner-agent-id", Name: "global-bot", Role: "owner", Status: "active",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	// Scoped admin agent: explicit grant on the default vault.
+	ms.agents["scoped-bot"] = &store.Agent{
+		ID: "scoped-agent-id", Name: "scoped-bot", Role: "admin", Status: "active",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		Vaults: []store.VaultGrant{{ActorID: "scoped-agent-id", ActorType: "agent", VaultID: "root-ns-id"}},
+	}
+	ms.agentVaultGrants = append(ms.agentVaultGrants, store.VaultGrant{
+		ActorID: "scoped-agent-id", ActorType: "agent", VaultID: "root-ns-id",
+	})
+
+	srv := newTestServer(withStore(ms), withEncKey(make([]byte, 32)))
+
+	// Cross-vault listing: scoped admin should see both agents.
+	req := httptest.NewRequest(http.MethodGet, "/v1/agents", nil)
+	req.Header.Set("Authorization", "Bearer "+sess.ID)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	names := map[string]bool{}
+	for _, a := range resp["agents"].([]interface{}) {
+		names[a.(map[string]interface{})["name"].(string)] = true
+	}
+	if !names["global-bot"] {
+		t.Fatalf("/v1/agents: expected owner agent global-bot to be listed for scoped admin, got %v", names)
+	}
+	if !names["scoped-bot"] {
+		t.Fatalf("/v1/agents: expected scoped-bot to be listed, got %v", names)
+	}
+
+	// Per-vault listing: scoped admin should see both agents on the default vault.
+	req = httptest.NewRequest(http.MethodGet, "/v1/vaults/default/agents", nil)
+	req.Header.Set("Authorization", "Bearer "+sess.ID)
+	rec = httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	resp = map[string]interface{}{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	names = map[string]bool{}
+	for _, a := range resp["agents"].([]interface{}) {
+		names[a.(map[string]interface{})["name"].(string)] = true
+	}
+	if !names["global-bot"] {
+		t.Fatalf("/v1/vaults/default/agents: expected owner agent global-bot to be listed, got %v", names)
+	}
+	if !names["scoped-bot"] {
+		t.Fatalf("/v1/vaults/default/agents: expected scoped-bot to be listed, got %v", names)
 	}
 }
 

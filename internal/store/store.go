@@ -314,7 +314,7 @@ type Store interface {
 	DeleteUser(ctx context.Context, userID string) error
 	CountUsers(ctx context.Context) (int, error)
 	CountOwners(ctx context.Context) (int, error)
-	RegisterFirstUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, defaultVaultID string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*User, error)
+	RegisterFirstUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*User, error)
 
 	// Vault scope grants (unified: actor_id + actor_type). Each row is a
 	// pure scope record — effective permissions come from the actor's

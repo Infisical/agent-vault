@@ -422,7 +422,7 @@ func (s *SQLiteStore) CountUsers(ctx context.Context) (int, error) {
 
 // RegisterFirstUser atomically checks that no users exist and creates the
 // first user as an active owner. Returns ErrNotFirstUser if users already exist.
-func (s *SQLiteStore) RegisterFirstUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, defaultVaultID string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*User, error) {
+func (s *SQLiteStore) RegisterFirstUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*User, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
@@ -449,15 +449,8 @@ func (s *SQLiteStore) RegisterFirstUser(ctx context.Context, email string, passw
 		return nil, fmt.Errorf("creating owner: %w", err)
 	}
 
-	if defaultVaultID != "" {
-		_, err = tx.ExecContext(ctx,
-			"INSERT INTO vault_grants (actor_id, actor_type, vault_id, role, created_at) VALUES (?, 'user', ?, 'admin', ?) ON CONFLICT(actor_id, vault_id) DO UPDATE SET role = excluded.role",
-			id, defaultVaultID, nowStr,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("granting vault admin: %w", err)
-		}
-	}
+	// Owners auto-access every vault under the unified instance-role
+	// model, so no vault_grants row is needed for the first user.
 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)

@@ -14,27 +14,18 @@
 
 PRAGMA foreign_keys = OFF;
 
--- 1. Collapse agent instance roles using highest-wins mapping.
---    Done before relaxing the CHECK constraint so the staging values
---    (still 'owner' or 'admin') validate against the existing schema.
-UPDATE agents
-   SET role = 'agent'
- WHERE role = 'admin'
-   AND id NOT IN (
-       SELECT actor_id
-         FROM vault_grants
-        WHERE actor_type = 'agent'
-          AND role IN ('admin', 'member')
-   );
-
--- Owners auto-access every vault now -> drop their grants.
+-- 1. Owners auto-access every vault now -> drop their grants.
 DELETE FROM vault_grants WHERE actor_id IN (
     SELECT id FROM users  WHERE role = 'owner'
     UNION
     SELECT id FROM agents WHERE role = 'owner'
 );
 
--- 2. agents.role: relax CHECK to allow 'agent'.
+-- 2. agents.role: relax CHECK to allow 'agent', and collapse agent
+--    instance roles using highest-wins mapping in the same step. Doing
+--    the downgrade as part of the rebuild avoids violating the old
+--    CHECK(role IN ('owner','admin')) constraint that's still in force
+--    on the live `agents` table at this point.
 CREATE TABLE agents_new (
     id         TEXT PRIMARY KEY,
     name       TEXT NOT NULL UNIQUE,
@@ -46,7 +37,14 @@ CREATE TABLE agents_new (
     role       TEXT NOT NULL DEFAULT 'agent' CHECK(role IN ('owner', 'admin', 'agent'))
 );
 INSERT INTO agents_new (id, name, status, created_by, created_at, updated_at, revoked_at, role)
-SELECT id, name, status, created_by, created_at, updated_at, revoked_at, role
+SELECT id, name, status, created_by, created_at, updated_at, revoked_at,
+       CASE
+           WHEN role = 'admin' AND id NOT IN (
+               SELECT actor_id FROM vault_grants
+                WHERE actor_type = 'agent' AND role IN ('admin', 'member')
+           ) THEN 'agent'
+           ELSE role
+       END
 FROM agents;
 DROP TABLE agents;
 ALTER TABLE agents_new RENAME TO agents;
