@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/store"
@@ -73,7 +74,8 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Cap label length so the Tokens UI table stays legible.
+	// Trim before length-checking so a payload of all-spaces doesn't pass.
+	req.Label = strings.TrimSpace(req.Label)
 	if len(req.Label) > maxScopedSessionLabel {
 		jsonError(w, http.StatusBadRequest, fmt.Sprintf(
 			"label must be at most %d characters", maxScopedSessionLabel,
@@ -147,8 +149,10 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListScopedSessions returns the active vault-scoped tokens for a
-// vault, sorted most recent first. Any caller with vault access can view
-// the list (mirrors how the Users/Agents tabs are visible to all members).
+// vault, sorted most recent first. Requires vault `member` or higher: the
+// list view exposes the email/name of whoever minted each token via
+// created_by.display_name, which is more identifying than what a
+// proxy-only caller should see.
 // The raw token is never returned — rows are referenced by public_id.
 func (s *Server) handleListScopedSessions(w http.ResponseWriter, r *http.Request) {
 	vaultName := r.URL.Query().Get("vault")
@@ -164,7 +168,7 @@ func (s *Server) handleListScopedSessions(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if _, err := s.requireVaultAccess(w, r, ns.ID); err != nil {
+	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
 		return
 	}
 
