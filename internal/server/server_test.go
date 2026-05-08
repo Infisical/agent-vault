@@ -1978,6 +1978,35 @@ func TestScopedSessionSuccess(t *testing.T) {
 // TestScopedSessionRoleAdminRejected covers the new restriction: even an
 // owner with vault-admin can no longer request a non-proxy role through
 // POST /v1/sessions. Tokens are minted with role `proxy` only.
+// TestScopedSessionProxyUserRejected covers the rule that a proxy-role
+// vault user cannot mint scoped tokens — proxy is a "can only proxy
+// requests" tier and explicitly excludes the mint capability, even
+// though the legacy capRequestedRole fall-through previously allowed
+// proxy→proxy minting via the instance-level branch.
+func TestScopedSessionProxyUserRejected(t *testing.T) {
+	ms := newMockStore()
+	ms.users["proxy@test.com"] = &store.User{
+		ID: "proxy-user-id", Email: "proxy@test.com",
+		Role: "member", IsActive: true,
+	}
+	ms.GrantVaultRole(context.Background(), "proxy-user-id", "user", "root-ns-id", "proxy")
+	sess, err := ms.CreateSession(context.Background(), "proxy-user-id", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	srv := newTestServer(withStore(ms))
+
+	body := `{"vault":"default"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+sess.ID)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for proxy-role mint, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestScopedSessionRoleAdminRejected(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))

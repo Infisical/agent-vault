@@ -21,6 +21,13 @@ export default function VaultLayout() {
   const sidebarRef = useRef<HTMLElement>(null);
   const [pendingCount, setPendingCount] = useState(0);
 
+  // The Members section (Users / Agents / Tokens) is only meaningful at
+  // vault `member` or higher: a `proxy`-role caller can only proxy
+  // requests through Agent Vault — they have no read or mutation rights
+  // on the people/agents/tokens lists, and the underlying GET endpoints
+  // require `member`+ anyway.
+  const showMembersNav = vaultContext.vault_role !== "proxy";
+
   useEffect(() => {
     async function fetchPendingCount() {
       try {
@@ -179,21 +186,25 @@ export default function VaultLayout() {
               ))}
             </ul>
 
-            <div className="mt-6 mb-2 px-3">
-              <span className="text-[11px] font-semibold text-text-dim uppercase tracking-wider">
-                Members
-              </span>
-            </div>
-            <ul className="space-y-0.5">
-              {memberNav.map((item) => (
-                <SidebarItem
-                  key={item.id}
-                  item={item}
-                  active={activeTab === item.id}
-                  vaultName={vaultContext.vault_name}
-                />
-              ))}
-            </ul>
+            {showMembersNav && (
+              <>
+                <div className="mt-6 mb-2 px-3">
+                  <span className="text-[11px] font-semibold text-text-dim uppercase tracking-wider">
+                    Members
+                  </span>
+                </div>
+                <ul className="space-y-0.5">
+                  {memberNav.map((item) => (
+                    <SidebarItem
+                      key={item.id}
+                      item={item}
+                      active={activeTab === item.id}
+                      vaultName={vaultContext.vault_name}
+                    />
+                  ))}
+                </ul>
+              </>
+            )}
 
             <div className="mt-auto pt-4">
               <ul className="space-y-0.5">

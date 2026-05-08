@@ -118,8 +118,13 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check that the caller has access to this vault.
-	if _, err := s.requireVaultAccess(w, r, ns.ID); err != nil {
+	// Caller must be at least a vault `member`. A `proxy`-role caller
+	// (user, agent, or scoped session) can ONLY proxy requests through
+	// Agent Vault — they cannot mint new tokens, even at proxy role.
+	// requireVaultMember enforces this for instance-level user/agent
+	// sessions; capRequestedRole below handles the same floor for
+	// scoped-session callers.
+	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
 		return
 	}
 

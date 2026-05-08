@@ -19,10 +19,21 @@ import { apiFetch } from "../../lib/api";
 
 type VaultRole = "proxy" | "member" | "admin";
 
+interface CreatedBy {
+  id: string;
+  type: "user" | "agent";
+  display_name: string;
+}
+
+// Mirrors GET /v1/sessions's row shape (handle_sessions.go scopedSessionView).
+// `created_by` is populated server-side but not currently rendered in the
+// table; kept on the type so the API contract is faithful and a future
+// column or tooltip can read it without a schema change.
 interface VaultToken {
   id: string;
   label?: string;
   vault_role: VaultRole;
+  created_by?: CreatedBy;
   created_at: string;
   expires_at?: string;
 }
