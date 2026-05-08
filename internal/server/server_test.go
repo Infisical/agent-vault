@@ -175,16 +175,49 @@ func (m *mockStore) RevokeUserSession(_ context.Context, userID, publicID string
 	return sql.ErrNoRows
 }
 
-func (m *mockStore) CreateScopedSession(_ context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error) {
+func (m *mockStore) CreateScopedSession(_ context.Context, p store.CreateScopedSessionParams) (*store.Session, error) {
+	publicID := fmt.Sprintf("scoped-public-%d", len(m.sessions))
 	s := &store.Session{
-		ID:        "scoped-session-id",
-		VaultID:   vaultID,
-		VaultRole: vaultRole,
-		ExpiresAt: expiresAt,
-		CreatedAt: time.Now(),
+		ID:                 "scoped-session-id",
+		VaultID:            p.VaultID,
+		VaultRole:          p.VaultRole,
+		ExpiresAt:          p.ExpiresAt,
+		CreatedAt:          time.Now(),
+		PublicID:           publicID,
+		Label:              p.Label,
+		CreatedByActorID:   p.CreatedByActorID,
+		CreatedByActorType: p.CreatedByActorType,
 	}
 	m.sessions[s.ID] = s
 	return s, nil
+}
+
+func (m *mockStore) ListScopedSessionsByVault(_ context.Context, vaultID string) ([]store.Session, error) {
+	now := time.Now()
+	var out []store.Session
+	for _, sess := range m.sessions {
+		if sess.VaultID != vaultID || sess.PublicID == "" || sess.UserID != "" || sess.AgentID != "" {
+			continue
+		}
+		if sess.ExpiresAt != nil && sess.ExpiresAt.Before(now) {
+			continue
+		}
+		out = append(out, *sess)
+	}
+	return out, nil
+}
+
+func (m *mockStore) RevokeScopedSession(_ context.Context, vaultID, publicID string) error {
+	if vaultID == "" || publicID == "" {
+		return sql.ErrNoRows
+	}
+	for id, sess := range m.sessions {
+		if sess.VaultID == vaultID && sess.PublicID == publicID && sess.UserID == "" && sess.AgentID == "" {
+			delete(m.sessions, id)
+			return nil
+		}
+	}
+	return sql.ErrNoRows
 }
 
 func (m *mockStore) GetSession(_ context.Context, id string) (*store.Session, error) {
@@ -1942,7 +1975,37 @@ func TestScopedSessionSuccess(t *testing.T) {
 	}
 }
 
-func TestScopedSessionExplicitRole(t *testing.T) {
+// TestScopedSessionRoleAdminRejected covers the new restriction: even an
+// owner with vault-admin can no longer request a non-proxy role through
+// POST /v1/sessions. Tokens are minted with role `proxy` only.
+// TestScopedSessionProxyUserRejected covers the rule that a proxy-role
+// vault user cannot mint scoped tokens. Proxy is a "can only proxy
+// requests" tier and explicitly excludes mint, even at proxy role.
+func TestScopedSessionProxyUserRejected(t *testing.T) {
+	ms := newMockStore()
+	ms.users["proxy@test.com"] = &store.User{
+		ID: "proxy-user-id", Email: "proxy@test.com",
+		Role: "member", IsActive: true,
+	}
+	ms.GrantVaultRole(context.Background(), "proxy-user-id", "user", "root-ns-id", "proxy")
+	sess, err := ms.CreateSession(context.Background(), "proxy-user-id", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	srv := newTestServer(withStore(ms))
+
+	body := `{"vault":"default"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+sess.ID)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for proxy-role mint, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestScopedSessionRoleAdminRejected(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))
 
@@ -1950,90 +2013,23 @@ func TestScopedSessionExplicitRole(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
-
 	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var resp scopedSessionResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	scopedSess := ms.sessions[resp.Token]
-	if scopedSess == nil {
-		t.Fatal("scoped session not found in store")
-	}
-	if scopedSess.VaultRole != "admin" {
-		t.Fatalf("expected vault_role admin, got %q", scopedSess.VaultRole)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestScopedSessionRoleRejected(t *testing.T) {
-	// Create a member-role user (not admin) to verify role escalation is rejected.
-	ms := newMockStore()
-	ms.users["member@test.com"] = &store.User{
-		ID: "member-user-id", Email: "member@test.com",
-		Role: "member", IsActive: true,
-	}
-	ms.GrantVaultRole(context.Background(), "member-user-id", "user", "root-ns-id", "member")
-	sess, err := ms.CreateSession(context.Background(), "member-user-id", time.Now().Add(time.Hour))
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-
-	srv := newTestServer(withStore(ms))
-
-	// Member requests admin — should be rejected.
-	body := `{"vault":"default","vault_role":"admin"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+sess.ID)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestScopedSessionMemberGetsMember(t *testing.T) {
-	// A vault member requesting member role should succeed.
-	ms := newMockStore()
-	ms.users["member@test.com"] = &store.User{
-		ID: "member-user-id", Email: "member@test.com",
-		Role: "member", IsActive: true,
-	}
-	ms.GrantVaultRole(context.Background(), "member-user-id", "user", "root-ns-id", "member")
-	sess, err := ms.CreateSession(context.Background(), "member-user-id", time.Now().Add(time.Hour))
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-
+func TestScopedSessionRoleMemberRejected(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))
 
 	body := `{"vault":"default","vault_role":"member"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+sess.ID)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
-
 	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var resp scopedSessionResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	scopedSess := ms.sessions[resp.Token]
-	if scopedSess == nil {
-		t.Fatal("scoped session not found in store")
-	}
-	if scopedSess.VaultRole != "member" {
-		t.Fatalf("expected vault_role member, got %q", scopedSess.VaultRole)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -2082,7 +2078,11 @@ func setupMockStoreWithScopedSessionRole(t *testing.T, vaultName, vaultID, role 
 		ms.vaults[vaultName] = &store.Vault{ID: vaultID, Name: vaultName}
 	}
 	// Create a scoped session locked to the given vault
-	sess, err := ms.CreateScopedSession(context.Background(), vaultID, role, tp(time.Now().Add(time.Hour)))
+	sess, err := ms.CreateScopedSession(context.Background(), store.CreateScopedSessionParams{
+		VaultID:   vaultID,
+		VaultRole: role,
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+	})
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -2419,7 +2419,11 @@ func setupVaultWithCredential(t *testing.T, servicesJSON string) (*mockStore, st
 	ms := newMockStore()
 	encKey := make([]byte, 32)
 
-	sess, err := ms.CreateScopedSession(context.Background(), "root-ns-id", "proxy", tp(time.Now().Add(time.Hour)))
+	sess, err := ms.CreateScopedSession(context.Background(), store.CreateScopedSessionParams{
+		VaultID:   "root-ns-id",
+		VaultRole: "proxy",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+	})
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -2545,7 +2549,11 @@ func TestDiscoverEmptyRules(t *testing.T) {
 
 func TestDiscoverNoCredentials(t *testing.T) {
 	ms := newMockStore()
-	sess, err := ms.CreateScopedSession(context.Background(), "root-ns-id", "proxy", tp(time.Now().Add(time.Hour)))
+	sess, err := ms.CreateScopedSession(context.Background(), store.CreateScopedSessionParams{
+		VaultID:   "root-ns-id",
+		VaultRole: "proxy",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+	})
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -4803,6 +4811,188 @@ func TestScopedSessionInvalidRole(t *testing.T) {
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid role, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- Tokens UI: list + revoke + label ---
+
+func TestScopedSessionMintWithLabel(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"vault":"default","label":"ci-bot"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp scopedSessionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	stored := ms.sessions[resp.Token]
+	if stored == nil {
+		t.Fatal("scoped session not stored")
+	}
+	if stored.Label != "ci-bot" {
+		t.Fatalf("expected label ci-bot, got %q", stored.Label)
+	}
+	if stored.CreatedByActorID != "owner-user-id" || stored.CreatedByActorType != "user" {
+		t.Fatalf("expected created_by user/owner-user-id, got %s/%s", stored.CreatedByActorType, stored.CreatedByActorID)
+	}
+	if stored.PublicID == "" {
+		t.Fatal("expected public_id to be populated on scoped session")
+	}
+}
+
+func TestScopedSessionLabelCJKWithinRuneLimit(t *testing.T) {
+	// 50 CJK characters = 150 bytes UTF-8, well under the 100-byte len()
+	// cap that previously rejected this — but within the 100-rune cap.
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	cjk := strings.Repeat("我", 50)
+	body := fmt.Sprintf(`{"vault":"default","label":%q}`, cjk)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for 50-rune CJK label, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp scopedSessionResponse
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if got := ms.sessions[resp.Token]; got == nil || got.Label != cjk {
+		t.Fatalf("expected label preserved, got %+v", got)
+	}
+}
+
+func TestScopedSessionLabelStripsControlChars(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"vault":"default","label":"line1\nline2\ttab"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp scopedSessionResponse
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	got := ms.sessions[resp.Token]
+	if got == nil || got.Label != "line1line2tab" {
+		t.Fatalf("expected control chars stripped, got %q", func() string {
+			if got == nil {
+				return "<nil>"
+			}
+			return got.Label
+		}())
+	}
+}
+
+func TestScopedSessionLabelTooLong(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	tooLong := strings.Repeat("a", maxScopedSessionLabel+1)
+	body := fmt.Sprintf(`{"vault":"default","label":%q}`, tooLong)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized label, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestScopedSessionListAndRevoke(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	mintBody := `{"vault":"default","label":"laptop"}`
+	mintReq := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(mintBody))
+	mintReq.Header.Set("Authorization", "Bearer "+token)
+	mintRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(mintRec, mintReq)
+	if mintRec.Code != http.StatusOK {
+		t.Fatalf("mint: expected 200, got %d: %s", mintRec.Code, mintRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v1/sessions?vault=default", nil)
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	listRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list: expected 200, got %d: %s", listRec.Code, listRec.Body.String())
+	}
+	var listResp struct {
+		Sessions []scopedSessionView `json:"sessions"`
+	}
+	if err := json.NewDecoder(listRec.Body).Decode(&listResp); err != nil {
+		t.Fatalf("list decode: %v", err)
+	}
+	if len(listResp.Sessions) != 1 {
+		t.Fatalf("expected 1 scoped session, got %d", len(listResp.Sessions))
+	}
+	row := listResp.Sessions[0]
+	if row.Label != "laptop" {
+		t.Fatalf("expected label laptop, got %q", row.Label)
+	}
+	if row.ID == "" {
+		t.Fatal("expected non-empty public_id in list view")
+	}
+	if row.CreatedBy == nil || row.CreatedBy.DisplayName != "owner@test.com" {
+		t.Fatalf("expected created_by display_name owner@test.com, got %+v", row.CreatedBy)
+	}
+
+	revokeReq := httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+row.ID+"?vault=default", nil)
+	revokeReq.Header.Set("Authorization", "Bearer "+token)
+	revokeRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(revokeRec, revokeReq)
+	if revokeRec.Code != http.StatusOK {
+		t.Fatalf("revoke: expected 200, got %d: %s", revokeRec.Code, revokeRec.Body.String())
+	}
+
+	listReq2 := httptest.NewRequest(http.MethodGet, "/v1/sessions?vault=default", nil)
+	listReq2.Header.Set("Authorization", "Bearer "+token)
+	listRec2 := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(listRec2, listReq2)
+	var listResp2 struct {
+		Sessions []scopedSessionView `json:"sessions"`
+	}
+	_ = json.NewDecoder(listRec2.Body).Decode(&listResp2)
+	if len(listResp2.Sessions) != 0 {
+		t.Fatalf("expected 0 sessions after revoke, got %d", len(listResp2.Sessions))
+	}
+}
+
+func TestScopedSessionRevokeNotFound(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/sessions/does-not-exist?vault=default", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestScopedSessionListRequiresAuth(t *testing.T) {
+	ms := newMockStore()
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions?vault=default", nil)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -144,13 +144,15 @@ type Store interface {
 	CountUsers(ctx context.Context) (int, error)
 	RegisterFirstUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, defaultVaultID string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*store.User, error)
 	CreateUserSession(ctx context.Context, p store.CreateUserSessionParams) (*store.Session, error)
-	CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error)
+	CreateScopedSession(ctx context.Context, p store.CreateScopedSessionParams) (*store.Session, error)
 	GetSession(ctx context.Context, id string) (*store.Session, error)
 	DeleteSession(ctx context.Context, id string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
 	TouchSession(ctx context.Context, rawToken, ip, userAgent string) error
 	ListUserSessions(ctx context.Context, userID string) ([]store.Session, error)
 	RevokeUserSession(ctx context.Context, userID, publicID string) error
+	ListScopedSessionsByVault(ctx context.Context, vaultID string) ([]store.Session, error)
+	RevokeScopedSession(ctx context.Context, vaultID, publicID string) error
 
 	// Vaults
 	CreateVault(ctx context.Context, name string) (*store.Vault, error)
@@ -305,6 +307,27 @@ func (a *Actor) DisplayLabel() string {
 		return a.Agent.Name
 	}
 	return a.ID
+}
+
+// actorByID hydrates an Actor from a stored (id, type) pair. Used when an
+// actor is referenced by foreign-key columns (e.g. created_by on a scoped
+// session row) rather than by the calling session.
+func (s *Server) actorByID(ctx context.Context, actorID, actorType string) (*Actor, error) {
+	switch actorType {
+	case "user":
+		user, err := s.store.GetUserByID(ctx, actorID)
+		if err != nil || user == nil {
+			return nil, fmt.Errorf("user not found")
+		}
+		return &Actor{ID: user.ID, Type: "user", Role: user.Role, User: user}, nil
+	case "agent":
+		agent, err := s.store.GetAgentByID(ctx, actorID)
+		if err != nil || agent == nil {
+			return nil, fmt.Errorf("agent not found")
+		}
+		return &Actor{ID: agent.ID, Type: "agent", Role: agent.Role, Agent: agent}, nil
+	}
+	return nil, fmt.Errorf("unknown actor type: %s", actorType)
 }
 
 // actorFromSession resolves any session to an Actor.
@@ -604,6 +627,8 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/auth/sessions", s.requireInitialized(s.requireAuth(actorAuthed(s.handleListUserSessions))))
 	mux.HandleFunc("DELETE /v1/auth/sessions/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleRevokeUserSession))))
 	mux.HandleFunc("POST /v1/sessions", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleScopedSession)))))
+	mux.HandleFunc("GET /v1/sessions", s.requireInitialized(s.requireAuth(actorAuthed(s.handleListScopedSessions))))
+	mux.HandleFunc("DELETE /v1/sessions/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleRevokeScopedSession))))
 	mux.HandleFunc("GET /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(s.handleCredentialsList))))
 	mux.HandleFunc("POST /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleCredentialsSet)))))
 	mux.HandleFunc("DELETE /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleCredentialsDelete)))))

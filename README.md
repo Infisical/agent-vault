@@ -98,6 +98,8 @@ agent-vault run --isolation=container --share-agent-dir -- claude
 
 See [Container isolation](https://docs.agent-vault.dev/guides/container-isolation) for the threat model and flags.
 
+To mint, list, and revoke vault-scoped tokens without wrapping a child process, use either `agent-vault vault token` or the **Tokens** tab inside each vault in the web UI.
+
 ### SDK — sandboxed agents (Docker, Daytona, E2B)
 
 For agents running inside containers, use the SDK from your orchestrator to mint a session and pass proxy config into the sandbox:

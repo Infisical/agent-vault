@@ -45,6 +45,16 @@ By default each vault forwards unmatched hosts as plain proxy traffic (no creden
 
 Under `--isolation=container`, the same env shape is injected inside a Docker container, but the proxy URL host is `host.docker.internal` instead of `127.0.0.1` and egress to any other destination is blocked by iptables. From your perspective nothing changes — standard HTTP clients pick up the envvars as normal.
 
+### Scoped session tokens
+
+You almost never need to mint your own token — `agent-vault run` already provides one. But if you must hand a separate token to a child process, run:
+
+```bash
+agent-vault vault token --ttl 3600
+```
+
+Flag: `--ttl` (seconds, 300–604800; default 24h). Tokens are minted with vault role `proxy`. The token is printed to stdout — pipe it into `AGENT_VAULT_SESSION_TOKEN` for the child process. Operators can list/revoke tokens from each vault's **Tokens** tab in the UI.
+
 ## Discover Available Services (Start Here)
 
 **Always run this first** to learn which hosts have credentials configured:

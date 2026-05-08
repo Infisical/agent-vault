@@ -3,7 +3,7 @@ import { Link, Outlet, useLocation, useNavigate, useRouteContext } from "@tansta
 import type { AuthContext, VaultContext } from "../router";
 import Navbar from "./Navbar";
 
-type VaultTab = "proposals" | "logs" | "services" | "credentials" | "users" | "agents" | "settings";
+type VaultTab = "proposals" | "logs" | "services" | "credentials" | "users" | "agents" | "tokens" | "settings";
 
 interface NavItem {
   id: VaultTab;
@@ -20,6 +20,13 @@ export default function VaultLayout() {
   const [isExiting, setIsExiting] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
   const [pendingCount, setPendingCount] = useState(0);
+
+  // The Members section (Users / Agents / Tokens) is only meaningful at
+  // vault `member` or higher: a `proxy`-role caller can only proxy
+  // requests through Agent Vault — they have no read or mutation rights
+  // on the people/agents/tokens lists, and the underlying GET endpoints
+  // require `member`+ anyway.
+  const showMembersNav = vaultContext.vault_role !== "proxy";
 
   useEffect(() => {
     async function fetchPendingCount() {
@@ -43,7 +50,7 @@ export default function VaultLayout() {
   // Derive active tab from current URL path
   const pathSegments = location.pathname.split("/");
   const lastSegment = pathSegments[pathSegments.length - 1] as VaultTab;
-  const activeTab: VaultTab = ["proposals", "logs", "services", "credentials", "users", "agents", "settings"].includes(lastSegment)
+  const activeTab: VaultTab = ["proposals", "logs", "services", "credentials", "users", "agents", "tokens", "settings"].includes(lastSegment)
     ? lastSegment
     : "services";
 
@@ -121,6 +128,18 @@ export default function VaultLayout() {
         </svg>
       ),
     },
+    {
+      id: "tokens",
+      label: "Tokens",
+      icon: (
+        <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="8" cy="15" r="4" />
+          <path d="M10.85 12.15L19 4" />
+          <path d="M18 5l2 2" />
+          <path d="M15 8l3 3" />
+        </svg>
+      ),
+    },
   ];
 
   return (
@@ -167,21 +186,25 @@ export default function VaultLayout() {
               ))}
             </ul>
 
-            <div className="mt-6 mb-2 px-3">
-              <span className="text-[11px] font-semibold text-text-dim uppercase tracking-wider">
-                Members
-              </span>
-            </div>
-            <ul className="space-y-0.5">
-              {memberNav.map((item) => (
-                <SidebarItem
-                  key={item.id}
-                  item={item}
-                  active={activeTab === item.id}
-                  vaultName={vaultContext.vault_name}
-                />
-              ))}
-            </ul>
+            {showMembersNav && (
+              <>
+                <div className="mt-6 mb-2 px-3">
+                  <span className="text-[11px] font-semibold text-text-dim uppercase tracking-wider">
+                    Members
+                  </span>
+                </div>
+                <ul className="space-y-0.5">
+                  {memberNav.map((item) => (
+                    <SidebarItem
+                      key={item.id}
+                      item={item}
+                      active={activeTab === item.id}
+                      vaultName={vaultContext.vault_name}
+                    />
+                  ))}
+                </ul>
+              </>
+            )}
 
             <div className="mt-auto pt-4">
               <ul className="space-y-0.5">
