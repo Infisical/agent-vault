@@ -42,8 +42,7 @@ func (s *Server) handleCredentialsSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Setting credentials requires member+ role.
-	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
+	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
 		return
 	}
 
@@ -98,12 +97,10 @@ func (s *Server) handleCredentialsList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if reveal {
-		// Revealing values requires member+ role (blocks proxy-role agents).
-		if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
+		if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
 			return
 		}
 	} else {
-		// Listing keys only requires any vault access.
 		if _, err := s.requireVaultAccess(w, r, ns.ID); err != nil {
 			return
 		}
@@ -189,8 +186,7 @@ func (s *Server) handleCredentialsDelete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Deleting credentials requires member+ role.
-	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
+	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
 		return
 	}
 

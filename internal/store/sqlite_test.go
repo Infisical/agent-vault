@@ -28,8 +28,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 44 {
-		t.Fatalf("expected migration version 44, got %d", version)
+	if version != 45 {
+		t.Fatalf("expected migration version 45, got %d", version)
 	}
 }
 
@@ -338,7 +338,7 @@ func TestScopedSessionCRUD(t *testing.T) {
 
 	expires := time.Now().Add(1 * time.Hour).UTC().Truncate(time.Second)
 
-	sess, err := s.CreateScopedSession(ctx, ns.ID, "proxy", &expires)
+	sess, err := s.CreateScopedSession(ctx, ns.ID, "", "", &expires)
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -1370,8 +1370,8 @@ func TestInviteWithVaultPreAssignment(t *testing.T) {
 	ctx := context.Background()
 	ns, _ := s.GetVault(ctx, "default")
 
-	inv, err := s.CreateAgentInvite(ctx, "vaultbot", "admin", time.Now().Add(15*time.Minute), 0, "admin", []AgentInviteVault{
-		{VaultID: ns.ID, VaultRole: "proxy"},
+	inv, err := s.CreateAgentInvite(ctx, "vaultbot", "admin", time.Now().Add(15*time.Minute), 0, "agent", []AgentInviteVault{
+		{VaultID: ns.ID},
 	})
 	if err != nil {
 		t.Fatalf("CreateAgentInvite with vaults: %v", err)
@@ -1379,8 +1379,8 @@ func TestInviteWithVaultPreAssignment(t *testing.T) {
 	if len(inv.Vaults) != 1 {
 		t.Fatalf("expected 1 vault pre-assignment, got %d", len(inv.Vaults))
 	}
-	if inv.Vaults[0].VaultRole != "proxy" {
-		t.Fatalf("expected vault role proxy, got %s", inv.Vaults[0].VaultRole)
+	if inv.Vaults[0].VaultID != ns.ID {
+		t.Fatalf("expected vault id %s, got %s", ns.ID, inv.Vaults[0].VaultID)
 	}
 
 	// Fetch and verify vaults are loaded.
@@ -1533,8 +1533,8 @@ func TestVaultGrantsCRUD(t *testing.T) {
 	ns, _ := s.CreateVault(ctx, "dev")
 
 	// Grant
-	if err := s.GrantVaultRole(ctx, u.ID, "user", ns.ID, "member"); err != nil {
-		t.Fatalf("GrantVaultRole: %v", err)
+	if err := s.GrantVaultAccess(ctx, u.ID, "user", ns.ID); err != nil {
+		t.Fatalf("GrantVaultAccess: %v", err)
 	}
 
 	// HasAccess
@@ -1581,9 +1581,9 @@ func TestGrantVaultAccessIdempotent(t *testing.T) {
 	ns, _ := s.CreateVault(ctx, "dev")
 
 	// Granting twice should not error
-	s.GrantVaultRole(ctx, u.ID, "user", ns.ID, "member")
-	if err := s.GrantVaultRole(ctx, u.ID, "user", ns.ID, "member"); err != nil {
-		t.Fatalf("second GrantVaultRole should not error: %v", err)
+	s.GrantVaultAccess(ctx, u.ID, "user", ns.ID)
+	if err := s.GrantVaultAccess(ctx, u.ID, "user", ns.ID); err != nil {
+		t.Fatalf("second GrantVaultAccess should not error: %v", err)
 	}
 }
 
@@ -1624,7 +1624,7 @@ func TestDeleteUserCascadesGrants(t *testing.T) {
 
 	u, _ := s.CreateUser(ctx, "user@test.com", []byte("h"), []byte("s"), "admin", 3, 65536, 4)
 	ns, _ := s.CreateVault(ctx, "dev")
-	s.GrantVaultRole(ctx, u.ID, "user", ns.ID, "member")
+	s.GrantVaultAccess(ctx, u.ID, "user", ns.ID)
 
 	// Delete user — grants should cascade
 	s.DeleteUser(ctx, u.ID)
@@ -1684,9 +1684,9 @@ func TestListAgents(t *testing.T) {
 	a3, _ := s.CreateAgent(ctx, "a3", "c", "admin")
 
 	// Grant vault access.
-	s.GrantVaultRole(ctx, a1.ID, "agent", ns.ID, "proxy")
-	s.GrantVaultRole(ctx, a2.ID, "agent", ns.ID, "proxy")
-	s.GrantVaultRole(ctx, a3.ID, "agent", ns2.ID, "proxy")
+	s.GrantVaultAccess(ctx, a1.ID, "agent", ns.ID)
+	s.GrantVaultAccess(ctx, a2.ID, "agent", ns.ID)
+	s.GrantVaultAccess(ctx, a3.ID, "agent", ns2.ID)
 
 	// All agents (cross-vault)
 	all, err := s.ListAllAgents(ctx)
@@ -1834,7 +1834,7 @@ func TestGetSessionBackwardCompat(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	sess, _ := s.CreateScopedSession(ctx, ns.ID, "proxy", tp(time.Now().Add(24*time.Hour)))
+	sess, _ := s.CreateScopedSession(ctx, ns.ID, "", "", tp(time.Now().Add(24*time.Hour)))
 
 	fetched, err := s.GetSession(ctx, sess.ID)
 	if err != nil {
@@ -1850,8 +1850,8 @@ func TestCreateAgentInviteWithVaults(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	inv, err := s.CreateAgentInvite(ctx, "mybot", "creator1", time.Now().Add(15*time.Minute), 0, "admin", []AgentInviteVault{
-		{VaultID: ns.ID, VaultRole: "proxy"},
+	inv, err := s.CreateAgentInvite(ctx, "mybot", "creator1", time.Now().Add(15*time.Minute), 0, "agent", []AgentInviteVault{
+		{VaultID: ns.ID},
 	})
 	if err != nil {
 		t.Fatalf("CreateAgentInvite: %v", err)

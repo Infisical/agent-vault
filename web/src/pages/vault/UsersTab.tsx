@@ -34,24 +34,6 @@ function RowActions({
 }) {
   if (user.email === currentEmail) return null;
 
-  const newRole = user.role === "admin" ? "member" : "admin";
-
-  async function handleChangeRole() {
-    const resp = await apiFetch(
-      `/v1/vaults/${encodeURIComponent(vaultName)}/users/${encodeURIComponent(user.email)}/role`,
-      {
-        method: "POST",
-        body: JSON.stringify({ role: newRole }),
-      }
-    );
-    if (!resp.ok) {
-      const data = await resp.json().catch(() => ({}));
-      onError(data.error || "Failed to change role");
-      return;
-    }
-    onDone();
-  }
-
   async function handleRemove() {
     const resp = await apiFetch(
       `/v1/vaults/${encodeURIComponent(vaultName)}/users/${encodeURIComponent(user.email)}`,
@@ -65,10 +47,12 @@ function RowActions({
     onDone();
   }
 
+  // Per-vault role is gone. The only remaining mutation is "remove
+  // scope from this vault"; instance role changes happen on the
+  // instance-level Users tab.
   const items: DropdownMenuItem[] = [
-    { label: `Make ${newRole}`, onClick: handleChangeRole },
     {
-      label: "Remove",
+      label: "Remove access",
       onClick: handleRemove,
       variant: "danger" as const,
     },
@@ -78,7 +62,7 @@ function RowActions({
 }
 
 export default function UsersTab() {
-  const { vaultName, vaultRole, email: currentEmail } = useVaultParams();
+  const { vaultName, isAdmin, email: currentEmail } = useVaultParams();
   const [users, setUsers] = useState<VaultUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -101,7 +85,7 @@ export default function UsersTab() {
         <span className="text-sm text-text-muted capitalize">{u.role}</span>
       ),
     },
-    ...(vaultRole === "admin"
+    ...(isAdmin
       ? [
           {
             key: "actions" as const,
@@ -152,10 +136,10 @@ export default function UsersTab() {
             Users
           </h2>
           <p className="text-sm text-text-muted">
-            People with access to this vault.
+            People with access to this vault. Permissions inside the vault come from each user's instance role.
           </p>
         </div>
-        {vaultRole === "admin" && (
+        {isAdmin && (
           <AddUserButton vaultName={vaultName} vaultUsers={users} onAdded={fetchUsers} />
         )}
       </div>
@@ -193,7 +177,6 @@ function AddUserButton({
 }) {
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
-  const [role, setRole] = useState<"member" | "admin">("member");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [instanceUsers, setInstanceUsers] = useState<InstanceUser[]>([]);
@@ -206,14 +189,18 @@ function AddUserButton({
       .catch(() => {});
   }, [open]);
 
+  // Owners auto-access every vault, so they aren't candidates for an
+  // explicit grant. Filter them out alongside users who already have
+  // access.
   const availableUsers = instanceUsers.filter(
-    (u) => !vaultUsers.some((vu) => vu.email === u.email)
+    (u) =>
+      u.role !== "owner" &&
+      !vaultUsers.some((vu) => vu.email === u.email),
   );
 
   function close() {
     setOpen(false);
     setEmail("");
-    setRole("member");
     setError("");
   }
 
@@ -226,7 +213,7 @@ function AddUserButton({
         `/v1/vaults/${encodeURIComponent(vaultName)}/users`,
         {
           method: "POST",
-          body: JSON.stringify({ email, role }),
+          body: JSON.stringify({ email }),
         }
       );
       if (resp.ok) {
@@ -267,7 +254,7 @@ function AddUserButton({
         open={open}
         onClose={close}
         title="Add User to Vault"
-        description="Grant an existing instance user access to this vault."
+        description="Grant an existing instance user access to this vault. Effective permissions inside the vault come from the user's instance role."
         footer={
           <>
             <Button variant="secondary" onClick={close}>Cancel</Button>
@@ -285,7 +272,7 @@ function AddUserButton({
           <FormField label="User">
             {availableUsers.length === 0 ? (
               <p className="text-sm text-text-muted py-2">
-                All instance users already have access to this vault.
+                Every eligible instance user already has access to this vault.
               </p>
             ) : (
               <Select
@@ -295,24 +282,12 @@ function AddUserButton({
               >
                 <option value="" disabled>Select a user...</option>
                 {availableUsers.map((u) => (
-                  <option key={u.email} value={u.email}>{u.email}</option>
+                  <option key={u.email} value={u.email}>
+                    {u.email} ({u.role})
+                  </option>
                 ))}
               </Select>
             )}
-          </FormField>
-          <FormField
-            label="Role"
-            helperText={<>{role === "member"
-              ? "Manage credentials, use proxy, approve proposals, and manage services."
-              : "All member permissions, plus invite users and agents with any role."} <a href="https://docs.agent-vault.dev/learn/permissions#vault-roles" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Learn more</a></>}
-          >
-            <Select
-              value={role}
-              onChange={(e) => setRole(e.target.value as "member" | "admin")}
-            >
-              <option value="member">Member</option>
-              <option value="admin">Admin</option>
-            </Select>
           </FormField>
           {error && <ErrorBanner message={error} />}
         </div>

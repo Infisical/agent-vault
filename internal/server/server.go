@@ -46,10 +46,11 @@ var passwordResetEmailHTML string
 //go:embed test_email.html
 var testEmailHTML string
 
-// agentVaultJSON is the JSON representation of an agent's vault grant (reused across handlers).
+// agentVaultJSON is the JSON representation of an actor's vault scope grant.
+// Effective permissions in the vault come from the actor's instance role
+// (owner / admin / agent), so the grant is just a scope record.
 type agentVaultJSON struct {
 	VaultName string `json:"vault_name"`
-	VaultRole string `json:"vault_role"`
 }
 
 // Server is the Agent Vault HTTP server.
@@ -144,7 +145,7 @@ type Store interface {
 	CountUsers(ctx context.Context) (int, error)
 	RegisterFirstUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, defaultVaultID string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*store.User, error)
 	CreateUserSession(ctx context.Context, p store.CreateUserSessionParams) (*store.Session, error)
-	CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error)
+	CreateScopedSession(ctx context.Context, vaultID, userID, agentID string, expiresAt *time.Time) (*store.Session, error)
 	GetSession(ctx context.Context, id string) (*store.Session, error)
 	DeleteSession(ctx context.Context, id string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
@@ -160,13 +161,14 @@ type Store interface {
 	DeleteVault(ctx context.Context, name string) error
 	RenameVault(ctx context.Context, oldName string, newName string) error
 
-	// Vault grants (unified: actor_id + actor_type)
-	GrantVaultRole(ctx context.Context, actorID, actorType, vaultID, role string) error
+	// Vault scope grants (unified: actor_id + actor_type). Each row is a
+	// pure scope record — effective permissions come from the actor's
+	// instance role (owner / admin / agent). Owners are not stored here;
+	// they auto-access every vault.
+	GrantVaultAccess(ctx context.Context, actorID, actorType, vaultID string) error
 	RevokeVaultAccess(ctx context.Context, actorID, vaultID string) error
 	ListActorGrants(ctx context.Context, actorID string) ([]store.VaultGrant, error)
 	HasVaultAccess(ctx context.Context, actorID, vaultID string) (bool, error)
-	GetVaultRole(ctx context.Context, actorID, vaultID string) (string, error)
-	CountVaultAdmins(ctx context.Context, vaultID string) (int, error)
 	ListVaultMembers(ctx context.Context, vaultID string) ([]store.VaultGrant, error)
 	ListVaultMembersByType(ctx context.Context, vaultID, actorType string) ([]store.VaultGrant, error)
 
@@ -208,9 +210,8 @@ type Store interface {
 	CountPendingInvites(ctx context.Context) (int, error)
 	HasPendingInviteByAgentName(ctx context.Context, name string) (bool, error)
 	GetPendingInviteByAgentName(ctx context.Context, name string) (*store.Invite, error)
-	AddAgentInviteVault(ctx context.Context, inviteID int, vaultID, role string) error
+	AddAgentInviteVault(ctx context.Context, inviteID int, vaultID string) error
 	RemoveAgentInviteVault(ctx context.Context, inviteID int, vaultID string) error
-	UpdateAgentInviteVaultRole(ctx context.Context, inviteID int, vaultID, role string) error
 	ExpirePendingInvites(ctx context.Context, before time.Time) (int, error)
 
 	// User invites (instance-level)
@@ -288,13 +289,24 @@ func sessionFromContext(ctx context.Context) *store.Session {
 type Actor struct {
 	ID    string       // user.ID or agent.ID
 	Type  string       // "user" or "agent"
-	Role  string       // "owner" or "admin" (instance-level)
+	Role  string       // "owner", "admin", or "agent" (instance-level)
 	User  *store.User  // non-nil for user actors
 	Agent *store.Agent // non-nil for agent actors
 }
 
 // IsOwner returns true if the actor has the instance-level owner role.
+// Owners auto-access every vault and can perform any operation.
 func (a *Actor) IsOwner() bool { return a.Role == "owner" }
+
+// IsAdmin returns true if the actor has the instance-level admin role.
+// Admins can manage scoped vaults end-to-end (services, credentials,
+// proposal approval, scoped invites).
+func (a *Actor) IsAdmin() bool { return a.Role == "admin" }
+
+// IsAgent returns true if the actor has the instance-level agent role
+// (programmatic-only). Agents can use the proxy and raise proposals but
+// cannot reveal credentials or approve/reject proposals.
+func (a *Actor) IsAgent() bool { return a.Role == "agent" }
 
 // DisplayLabel returns a human-readable label for the actor (email for users, name for agents).
 func (a *Actor) DisplayLabel() string {
@@ -369,163 +381,90 @@ func (s *Server) guardLastOwner(ctx context.Context, w http.ResponseWriter, acti
 }
 
 
-// requireVaultAccess checks that the session has access to the given vault.
-// For scoped sessions (VaultID set): checks that the session's vault matches.
-// For instance-level sessions: resolves actor and checks the unified vault_grants table.
-// Returns the actor (nil for scoped sessions) or writes an error response.
+// requireVaultAccess checks that the session has access to the given
+// resolveVaultActor performs the vault-access check shared by
+// requireVaultAccess and requireVaultAdmin. requireAdmin=false admits
+// any actor with access (owner, or any actor with a scope grant);
+// requireAdmin=true additionally forbids the instance `agent` role.
+// Always returns a non-nil actor on success.
+func (s *Server) resolveVaultActor(w http.ResponseWriter, r *http.Request, vaultID string, requireAdmin bool) (*Actor, error) {
+	sess := sessionFromContext(r.Context())
+	if sess == nil {
+		jsonError(w, http.StatusForbidden, "Authentication required")
+		return nil, fmt.Errorf("no session")
+	}
+
+	if sess.VaultID != "" && sess.VaultID != vaultID {
+		jsonError(w, http.StatusForbidden, "Session not authorized for this vault")
+		return nil, fmt.Errorf("vault mismatch")
+	}
+
+	actor, err := s.actorFromSession(r.Context(), sess)
+	if err != nil {
+		jsonError(w, http.StatusForbidden, "Invalid session")
+		return nil, err
+	}
+
+	if requireAdmin && actor.IsAgent() {
+		jsonError(w, http.StatusForbidden, "Admin role required")
+		return nil, fmt.Errorf("agent forbidden")
+	}
+
+	if actor.IsOwner() {
+		return actor, nil
+	}
+
+	// Scoped sessions are pre-bound to a specific vault, so vault
+	// access is implicit once the vaultID match passes above.
+	if sess.VaultID == "" {
+		has, err := s.store.HasVaultAccess(r.Context(), actor.ID, vaultID)
+		if err != nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to check vault access")
+			return nil, err
+		}
+		if !has {
+			jsonError(w, http.StatusForbidden, "No access to this vault")
+			return nil, fmt.Errorf("no grant")
+		}
+	}
+	return actor, nil
+}
+
+// actorVaultScope returns the set of vault IDs the actor is explicitly
+// scoped to. For owners (auto-access every vault) it returns nil — call
+// sites should treat a nil map as "all vaults granted." Errors fetching
+// the grants are non-fatal: a stale empty map fails closed at the caller.
+func (s *Server) actorVaultScope(ctx context.Context, actor *Actor) map[string]bool {
+	if actor.IsOwner() {
+		return nil
+	}
+	scope := make(map[string]bool)
+	if grants, err := s.store.ListActorGrants(ctx, actor.ID); err == nil {
+		for _, g := range grants {
+			scope[g.VaultID] = true
+		}
+	}
+	return scope
+}
+
+// scopeContains reports whether actor has scope on vaultID. Owners
+// (nil scope) match everything.
+func scopeContains(scope map[string]bool, vaultID string) bool {
+	return scope == nil || scope[vaultID]
+}
+
+// requireVaultAccess admits any actor with access to the vault: owner
+// (auto-access), or admin/agent with an explicit scope grant. Returns
+// the resolved actor.
 func (s *Server) requireVaultAccess(w http.ResponseWriter, r *http.Request, vaultID string) (*Actor, error) {
-	sess := sessionFromContext(r.Context())
-	if sess == nil {
-		jsonError(w, http.StatusForbidden, "Authentication required")
-		return nil, fmt.Errorf("no session")
-	}
-
-	// Scoped session: vault is baked into the session.
-	if sess.VaultID != "" {
-		if sess.VaultID != vaultID {
-			jsonError(w, http.StatusForbidden, "Session not authorized for this vault")
-			return nil, fmt.Errorf("vault mismatch")
-		}
-		return nil, nil // scoped session, no actor resolved
-	}
-
-	// Instance-level session: resolve actor, check unified vault_grants.
-	actor, err := s.actorFromSession(r.Context(), sess)
-	if err != nil {
-		jsonError(w, http.StatusForbidden, "Invalid session")
-		return nil, err
-	}
-
-	has, err := s.store.HasVaultAccess(r.Context(), actor.ID, vaultID)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to check vault access")
-		return nil, err
-	}
-	if !has {
-		jsonError(w, http.StatusForbidden, "No access to this vault")
-		return nil, fmt.Errorf("no grant")
-	}
-
-	return actor, nil
+	return s.resolveVaultActor(w, r, vaultID, false)
 }
 
-// requireVaultAdmin checks that the actor has admin role in the given vault.
-// For scoped sessions: checks sess.VaultRole. For instance-level sessions: checks vault_grants.
+// requireVaultAdmin admits owners and instance admins with vault scope.
+// Agents are forbidden. Used for credential CRUD/reveal, services CRUD,
+// proposal approve/reject, and vault settings.
 func (s *Server) requireVaultAdmin(w http.ResponseWriter, r *http.Request, vaultID string) (*Actor, error) {
-	sess := sessionFromContext(r.Context())
-	if sess == nil {
-		jsonError(w, http.StatusForbidden, "Authentication required")
-		return nil, fmt.Errorf("no session")
-	}
-
-	// Scoped session: check role from session.
-	if sess.VaultID != "" {
-		if sess.VaultID != vaultID {
-			jsonError(w, http.StatusForbidden, "Session not authorized for this vault")
-			return nil, fmt.Errorf("vault mismatch")
-		}
-		if !roleSatisfies(sess.VaultRole, "admin") {
-			jsonError(w, http.StatusForbidden, "Vault admin role required")
-			return nil, fmt.Errorf("insufficient role: %s", sess.VaultRole)
-		}
-		return nil, nil
-	}
-
-	// Instance-level session: single GetVaultRole call (covers both existence and role check).
-	actor, err := s.actorFromSession(r.Context(), sess)
-	if err != nil {
-		jsonError(w, http.StatusForbidden, "Invalid session")
-		return nil, err
-	}
-	role, err := s.store.GetVaultRole(r.Context(), actor.ID, vaultID)
-	if err != nil {
-		jsonError(w, http.StatusForbidden, "No access to this vault")
-		return nil, fmt.Errorf("no vault grant")
-	}
-	if role != "admin" {
-		jsonError(w, http.StatusForbidden, "Vault admin role required")
-		return nil, fmt.Errorf("not vault admin")
-	}
-	return actor, nil
-}
-
-// roleSatisfies returns true if role is at least as privileged as requiredRole.
-// Hierarchy: proxy(0) < member(1) < admin(2).
-var roleRank = map[string]int{"proxy": 0, "member": 1, "admin": 2}
-
-func roleSatisfies(role, requiredRole string) bool {
-	return roleRank[role] >= roleRank[requiredRole]
-}
-
-// requireVaultMember checks that the session has member+ access to the vault.
-// For scoped sessions: requires sess.VaultRole is "member" or "admin".
-// For instance-level sessions: checks the unified vault_grants table.
-func (s *Server) requireVaultMember(w http.ResponseWriter, r *http.Request, vaultID string) (*Actor, error) {
-	sess := sessionFromContext(r.Context())
-	if sess == nil {
-		jsonError(w, http.StatusForbidden, "Authentication required")
-		return nil, fmt.Errorf("no session")
-	}
-
-	// Scoped session: check vault_role from session.
-	if sess.VaultID != "" {
-		if sess.VaultID != vaultID {
-			jsonError(w, http.StatusForbidden, "Session not authorized for this vault")
-			return nil, fmt.Errorf("vault mismatch")
-		}
-		if !roleSatisfies(sess.VaultRole, "member") {
-			jsonError(w, http.StatusForbidden, "Member role required")
-			return nil, fmt.Errorf("insufficient role: %s", sess.VaultRole)
-		}
-		return nil, nil
-	}
-
-	// Instance-level session: check vault grant and role.
-	actor, err := s.actorFromSession(r.Context(), sess)
-	if err != nil {
-		jsonError(w, http.StatusForbidden, "Invalid session")
-		return nil, err
-	}
-
-	role, err := s.store.GetVaultRole(r.Context(), actor.ID, vaultID)
-	if err != nil {
-		jsonError(w, http.StatusForbidden, "No access to this vault")
-		return nil, fmt.Errorf("no vault grant")
-	}
-	if !roleSatisfies(role, "member") {
-		jsonError(w, http.StatusForbidden, "Member role required")
-		return nil, fmt.Errorf("insufficient role: %s", role)
-	}
-	return actor, nil
-}
-
-// requireProposalReview checks proposal approve/reject access.
-// Scoped sessions require admin role (proxy-scoped sessions cannot self-approve).
-// Instance-level sessions require member+ — proxy-role actors are forbidden so
-// that a proxy cannot approve a proposal it raised and trick the broker into
-// injecting credentials toward an attacker-controlled host.
-func (s *Server) requireProposalReview(w http.ResponseWriter, r *http.Request, vaultID string) (*Actor, error) {
-	sess := sessionFromContext(r.Context())
-	if sess == nil {
-		jsonError(w, http.StatusForbidden, "Authentication required")
-		return nil, fmt.Errorf("no session")
-	}
-
-	// Scoped session: require admin role.
-	if sess.VaultID != "" {
-		if sess.VaultID != vaultID {
-			jsonError(w, http.StatusForbidden, "Session not authorized for this vault")
-			return nil, fmt.Errorf("vault mismatch")
-		}
-		if !roleSatisfies(sess.VaultRole, "admin") {
-			jsonError(w, http.StatusForbidden, "Admin role required")
-			return nil, fmt.Errorf("insufficient role: %s", sess.VaultRole)
-		}
-		return nil, nil
-	}
-
-	// Instance-level session: require member+ (proxy-role actors cannot self-approve).
-	return s.requireVaultMember(w, r, vaultID)
+	return s.resolveVaultActor(w, r, vaultID, true)
 }
 
 
@@ -643,7 +582,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/vaults/{name}/agents", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultAgentList))))
 	mux.HandleFunc("POST /v1/vaults/{name}/agents", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultAgentAdd)))))
 	mux.HandleFunc("DELETE /v1/vaults/{name}/agents/{agentName}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultAgentRemove))))
-	mux.HandleFunc("POST /v1/vaults/{name}/agents/{agentName}/role", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultAgentSetRole)))))
 
 	// Instance settings (owner-only)
 	mux.HandleFunc("GET /v1/admin/settings", s.requireInitialized(s.requireAuth(actorAuthed(s.handleGetSettings))))
@@ -701,7 +639,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/vaults/{name}/users", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultUserList))))
 	mux.HandleFunc("POST /v1/vaults/{name}/users", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultUserAdd)))))
 	mux.HandleFunc("DELETE /v1/vaults/{name}/users/{email}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultUserRemove))))
-	mux.HandleFunc("POST /v1/vaults/{name}/users/{email}/role", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultUserSetRole)))))
 
 	// Proposal approval details (token-based, no auth required)
 	mux.HandleFunc("GET /v1/proposals/approve-details", s.requireInitialized(ipApprovalToken(s.handleProposalApproveDetails)))

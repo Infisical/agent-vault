@@ -28,7 +28,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ns, _, err := s.resolveVaultForSession(w, r, sess)
+	ns, err := s.resolveVaultForSession(w, r, sess)
 	if err != nil {
 		return
 	}

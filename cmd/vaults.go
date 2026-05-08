@@ -142,22 +142,18 @@ var vaultUserCmd = &cobra.Command{
 
 var vaultUserAddCmd = &cobra.Command{
 	Use:   "add <email>",
-	Short: "Add an existing instance user to this vault",
+	Short: "Grant an existing instance user access to this vault",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		email := args[0]
 		vaultName := resolveVault(cmd)
-		role, _ := cmd.Flags().GetString("role")
 
 		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
 
-		body, err := json.Marshal(map[string]string{
-			"email": email,
-			"role":  role,
-		})
+		body, err := json.Marshal(map[string]string{"email": email})
 		if err != nil {
 			return err
 		}
@@ -167,7 +163,7 @@ var vaultUserAddCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "%s Added %s to vault %s (role: %s)\n", successText("✓"), email, vaultName, role)
+		fmt.Fprintf(cmd.OutOrStdout(), "%s Added %s to vault %s\n", successText("✓"), email, vaultName)
 		return nil
 	},
 }
@@ -235,33 +231,6 @@ var vaultUserRemoveCmd = &cobra.Command{
 		}
 
 		fmt.Fprintf(cmd.OutOrStdout(), "%s Removed %s from vault %s\n", successText("✓"), email, vaultName)
-		return nil
-	},
-}
-
-var vaultUserSetRoleCmd = &cobra.Command{
-	Use:   "set-role <email>",
-	Short: "Set a user's vault role",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		email := args[0]
-		vaultName := resolveVault(cmd)
-		role, _ := cmd.Flags().GetString("role")
-		if role == "" {
-			return fmt.Errorf("--role is required (admin or member)")
-		}
-
-		sess, err := ensureSession()
-		if err != nil {
-			return err
-		}
-
-		body, _ := json.Marshal(map[string]string{"role": role})
-		reqURL := fmt.Sprintf("%s/v1/vaults/%s/users/%s/role", sess.Address, vaultName, url.PathEscape(email))
-		if err := doAdminRequest("POST", reqURL, sess.Token, body); err != nil {
-			return err
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s Set role %s for %s in vault %s\n", successText("✓"), role, email, vaultName)
 		return nil
 	},
 }
@@ -348,10 +317,7 @@ func init() {
 	vaultCmd.AddCommand(vaultUseCmd)
 	vaultCmd.AddCommand(vaultCurrentCmd)
 
-	vaultUserAddCmd.Flags().String("role", "member", "role to grant (admin or member)")
-	vaultUserSetRoleCmd.Flags().String("role", "", "role to set (admin or member)")
-
-	vaultUserCmd.AddCommand(vaultUserAddCmd, vaultUserListCmd, vaultUserRemoveCmd, vaultUserSetRoleCmd)
+	vaultUserCmd.AddCommand(vaultUserAddCmd, vaultUserListCmd, vaultUserRemoveCmd)
 	vaultCmd.AddCommand(vaultUserCmd)
 
 	rootCmd.AddCommand(vaultCmd)

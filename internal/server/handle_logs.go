@@ -40,9 +40,7 @@ func (s *Server) handleVaultLogsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Logs live alongside Proposals: member+ can read, proxy-only (agents)
-	// cannot. Owner-scoped instance-wide logs will be a separate handler.
-	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
+	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
 		return
 	}
 

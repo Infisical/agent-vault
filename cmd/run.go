@@ -67,7 +67,6 @@ Example:
 	c.Flags().Var(&iso, "isolation", "Isolation mode: host (default) or container")
 
 	c.Flags().String("address", "", "Agent Vault server address (defaults to session address)")
-	c.Flags().String("role", "", "Vault role for the agent session (proxy, member, admin; default: proxy)")
 	c.Flags().Int("ttl", 0, "Session TTL in seconds (300–604800; default: server default 24h)")
 
 	c.Flags().String("image", "", "Container image override (requires --isolation=container)")
@@ -115,9 +114,8 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 
 	// 2-3. Resolve the vault and mint a vault-scoped session token,
 	//      retrying on session expiry. Shared with `vault token`.
-	role, _ := cmd.Flags().GetString("role")
 	ttl, _ := cmd.Flags().GetInt("ttl")
-	vault, scopedToken, err := mintScopedSession(cmd, sess, addr, role, ttl)
+	vault, scopedToken, err := mintScopedSession(cmd, sess, addr, ttl)
 	if err != nil {
 		return err
 	}
@@ -457,7 +455,7 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 // re-auth would be a UX regression, and the user's earlier choice is
 // still valid because vault membership is rechecked server-side when
 // requestScopedSession fires.
-func mintScopedSession(cmd *cobra.Command, sess *session.ClientSession, addr, role string, ttl int) (vault, scopedToken string, err error) {
+func mintScopedSession(cmd *cobra.Command, sess *session.ClientSession, addr string, ttl int) (vault, scopedToken string, err error) {
 	err = withReauthRetry(sess, addr, func(s *session.ClientSession) error {
 		if vault == "" {
 			v, verr := resolveVaultForRun(cmd, addr, s.Token)
@@ -466,7 +464,7 @@ func mintScopedSession(cmd *cobra.Command, sess *session.ClientSession, addr, ro
 			}
 			vault = v
 		}
-		token, terr := requestScopedSession(addr, s.Token, vault, role, ttl)
+		token, terr := requestScopedSession(addr, s.Token, vault, ttl)
 		if terr != nil {
 			return terr
 		}
@@ -478,11 +476,8 @@ func mintScopedSession(cmd *cobra.Command, sess *session.ClientSession, addr, ro
 
 // requestScopedSession calls the server to create a vault-scoped session
 // and returns the scoped token.
-func requestScopedSession(addr, adminToken, vault, role string, ttlSeconds int) (string, error) {
+func requestScopedSession(addr, adminToken, vault string, ttlSeconds int) (string, error) {
 	body := map[string]any{"vault": vault}
-	if role != "" {
-		body["vault_role"] = role
-	}
 	if ttlSeconds > 0 {
 		body["ttl_seconds"] = ttlSeconds
 	}

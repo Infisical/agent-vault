@@ -6,9 +6,10 @@ import { ErrorBanner } from "../components/shared";
 import { DomainNotice } from "../components/DomainNotice";
 import { apiFetch } from "../lib/api";
 
+// Pre-assigned vault scope on the invite. Effective power inside the
+// vault comes from the invite's instance role.
 interface InviteVault {
   vault_name: string;
-  vault_role: string;
 }
 
 interface UserInviteData {
@@ -139,9 +140,6 @@ function InviteDetails({ role, vaults }: { role?: string; vaults: InviteVault[] 
         {vaults.map((v) => (
           <div key={v.vault_name} className="flex items-center justify-between">
             <span className="text-sm text-text font-medium">{v.vault_name}</span>
-            <span className="inline-block px-2.5 py-0.5 bg-primary/10 text-primary text-xs font-semibold rounded-full capitalize">
-              {v.vault_role}
-            </span>
           </div>
         ))}
       </div>

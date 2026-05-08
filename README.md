@@ -115,7 +115,7 @@ const av = new AgentVault({
 });
 const session = await av
   .vault("default")
-  .sessions.create({ vaultRole: "proxy" });
+  .sessions.create();
 
 // certPath is where you'll mount the CA certificate inside the sandbox.
 const certPath = "/etc/ssl/agent-vault-ca.pem";

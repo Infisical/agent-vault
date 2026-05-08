@@ -438,7 +438,8 @@ func TestProposalSubcommandsRegistered(t *testing.T) {
 }
 
 func TestAgentSubcommandsRegistered(t *testing.T) {
-	// Vault-level agent commands: list, add, remove, set-role
+	// Vault-level agent commands: list, add, remove. Per-vault role is
+	// gone under the unified instance-role model, so set-role is too.
 	vCmd := findSubcommand(rootCmd, "vault")
 	if vCmd == nil {
 		t.Fatal("vault command not found")
@@ -453,7 +454,7 @@ func TestAgentSubcommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"list", "add", "remove", "set-role"}
+	expected := []string{"list", "add", "remove"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected vault agent subcommand %q to be registered, but it was not", name)

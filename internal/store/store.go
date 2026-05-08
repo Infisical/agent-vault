@@ -22,13 +22,14 @@ type Vault struct {
 	UpdatedAt time.Time
 }
 
-// VaultGrant represents an actor's (user or agent) access to a vault with a specific role.
+// VaultGrant represents an actor's (user or agent) access to a vault.
+// Effective permissions in the vault come from the actor's instance role
+// (owner / admin / agent) — the grant itself is a pure scope record.
 type VaultGrant struct {
 	ActorID   string
 	ActorType string // "user" or "agent"
 	VaultID   string
 	VaultName string // populated via JOIN on reads (optional)
-	Role      string // "proxy", "member", or "admin"
 	CreatedAt time.Time
 }
 
@@ -70,7 +71,6 @@ type Session struct {
 	UserID    string     // non-empty for user login sessions, empty for agent tokens
 	VaultID   string     // empty for global/agent tokens, non-empty for user scoped sessions
 	AgentID   string     // non-empty for agent tokens
-	VaultRole string     // set for user scoped sessions; empty for agent tokens (resolved per-request)
 	ExpiresAt *time.Time // nil = never expires
 	CreatedAt time.Time
 
@@ -109,6 +109,14 @@ type CreateUserSessionParams struct {
 	LastUserAgent string
 }
 
+// Instance role values. Users may hold owner or admin; programmatic
+// agents may additionally hold the proxy-only `agent` role.
+const (
+	RoleOwner = "owner"
+	RoleAdmin = "admin"
+	RoleAgent = "agent"
+)
+
 // User represents a human user account.
 type User struct {
 	ID           string
@@ -123,6 +131,9 @@ type User struct {
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
+
+// IsOwner reports whether the user holds the instance owner role.
+func (u *User) IsOwner() bool { return u.Role == RoleOwner }
 
 // BrokerConfig holds the brokering services for a vault.
 type BrokerConfig struct {
@@ -198,7 +209,7 @@ type Invite struct {
 	Token             string
 	AgentName         string             // required: agent name (3-64 chars, lowercase alphanumeric + hyphens)
 	AgentID           string             // set for rotation invites (references existing agent)
-	AgentRole         string             // "owner" or "admin" — instance role for the agent
+	AgentRole         string             // "owner", "admin", or "agent" — instance role for the agent
 	SessionTTLSeconds int                // desired session lifetime when redeemed (0 = no expiry)
 	Status            string             // pending, redeemed, expired, revoked
 	SessionID         string             // populated after redemption
@@ -211,10 +222,10 @@ type Invite struct {
 }
 
 // AgentInviteVault represents a pre-assigned vault grant on an agent invite.
+// Effective power inside the vault comes from the invite's AgentRole.
 type AgentInviteVault struct {
 	VaultID   string
 	VaultName string // populated via JOIN on reads
-	VaultRole string // "proxy", "member", or "admin"
 }
 
 // Agent represents a named, instance-level agent entity.
@@ -222,7 +233,7 @@ type AgentInviteVault struct {
 type Agent struct {
 	ID        string
 	Name      string
-	Role      string // "owner" or "admin" (instance-level role, like users)
+	Role      string // "owner", "admin", or "agent" (instance-level role)
 	Status    string // "active" or "revoked"
 	CreatedBy string // user ID of the creator
 	Vaults    []VaultGrant
@@ -230,6 +241,9 @@ type Agent struct {
 	UpdatedAt time.Time
 	RevokedAt *time.Time
 }
+
+// IsOwner reports whether the agent holds the instance owner role.
+func (a *Agent) IsOwner() bool { return a.Role == RoleOwner }
 
 // UserInvite represents an instance-level invitation for a new user.
 // Invites bring users into the instance, with optional vault pre-assignment.
@@ -247,10 +261,10 @@ type UserInvite struct {
 }
 
 // UserInviteVault represents a pre-assigned vault grant on a user invite.
+// Effective power inside the vault comes from the invite's Role.
 type UserInviteVault struct {
 	VaultID   string
 	VaultName string // populated via JOIN on reads
-	VaultRole string // "admin" or "member"
 }
 
 // EmailVerification holds a verification code for self-signup email confirmation.
@@ -302,13 +316,14 @@ type Store interface {
 	CountOwners(ctx context.Context) (int, error)
 	RegisterFirstUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, defaultVaultID string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*User, error)
 
-	// Vault grants (unified: actor_id + actor_type)
-	GrantVaultRole(ctx context.Context, actorID, actorType, vaultID, role string) error
+	// Vault scope grants (unified: actor_id + actor_type). Each row is a
+	// pure scope record — effective permissions come from the actor's
+	// instance role (owner / admin / agent). Owners are not stored here;
+	// they auto-access every vault.
+	GrantVaultAccess(ctx context.Context, actorID, actorType, vaultID string) error
 	RevokeVaultAccess(ctx context.Context, actorID, vaultID string) error
 	ListActorGrants(ctx context.Context, actorID string) ([]VaultGrant, error)
 	HasVaultAccess(ctx context.Context, actorID, vaultID string) (bool, error)
-	GetVaultRole(ctx context.Context, actorID, vaultID string) (string, error)
-	CountVaultAdmins(ctx context.Context, vaultID string) (int, error)
 	ListVaultMembers(ctx context.Context, vaultID string) ([]VaultGrant, error)
 	ListVaultMembersByType(ctx context.Context, vaultID, actorType string) ([]VaultGrant, error)
 
@@ -320,7 +335,7 @@ type Store interface {
 
 	// Sessions
 	CreateUserSession(ctx context.Context, p CreateUserSessionParams) (*Session, error)
-	CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*Session, error)
+	CreateScopedSession(ctx context.Context, vaultID, userID, agentID string, expiresAt *time.Time) (*Session, error)
 	GetSession(ctx context.Context, id string) (*Session, error)
 	DeleteSession(ctx context.Context, id string) error
 	// TouchSession bumps last_used_at for the given raw token and
@@ -370,9 +385,8 @@ type Store interface {
 	CountPendingInvites(ctx context.Context) (int, error)
 	HasPendingInviteByAgentName(ctx context.Context, name string) (bool, error)
 	GetPendingInviteByAgentName(ctx context.Context, name string) (*Invite, error)
-	AddAgentInviteVault(ctx context.Context, inviteID int, vaultID, role string) error
+	AddAgentInviteVault(ctx context.Context, inviteID int, vaultID string) error
 	RemoveAgentInviteVault(ctx context.Context, inviteID int, vaultID string) error
-	UpdateAgentInviteVaultRole(ctx context.Context, inviteID int, vaultID, role string) error
 	ExpirePendingInvites(ctx context.Context, before time.Time) (int, error)
 
 	// User invites (instance-level)

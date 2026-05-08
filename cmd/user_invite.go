@@ -23,7 +23,6 @@ var topUserListCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		type vaultGrant struct {
 			VaultName string `json:"vault_name"`
-			VaultRole string `json:"vault_role"`
 		}
 		type usersListResult struct {
 			Users []struct {
@@ -43,7 +42,6 @@ var topUserListCmd = &cobra.Command{
 			return nil
 		}
 
-		// Check if the response includes vault data (owner view).
 		hasVaults := false
 		for _, u := range result.Users {
 			if len(u.Vaults) > 0 {
@@ -58,7 +56,7 @@ var topUserListCmd = &cobra.Command{
 			for _, u := range result.Users {
 				var parts []string
 				for _, v := range u.Vaults {
-					parts = append(parts, v.VaultName+"("+v.VaultRole+")")
+					parts = append(parts, v.VaultName)
 				}
 				ns := strings.Join(parts, ", ")
 				if ns == "" {
@@ -93,16 +91,13 @@ var userInviteCmd = &cobra.Command{
 
 		type vaultEntry struct {
 			VaultName string `json:"vault_name"`
-			VaultRole string `json:"vault_role"`
 		}
 
 		var vaults []vaultEntry
 		for _, v := range vaultFlags {
-			name, role, _ := strings.Cut(v, ":")
-			if role == "" {
-				role = "member"
-			}
-			vaults = append(vaults, vaultEntry{VaultName: name, VaultRole: role})
+			// Tolerate legacy "name:role" syntax — strip anything after ":".
+			name, _, _ := strings.Cut(v, ":")
+			vaults = append(vaults, vaultEntry{VaultName: name})
 		}
 
 		role, _ := cmd.Flags().GetString("role")
@@ -179,7 +174,6 @@ var userInviteListCmd = &cobra.Command{
 				ExpiresAt string `json:"expires_at"`
 				Vaults    []struct {
 					VaultName string `json:"vault_name"`
-					VaultRole string `json:"vault_role"`
 				} `json:"vaults"`
 			} `json:"invites"`
 		}
@@ -197,7 +191,7 @@ var userInviteListCmd = &cobra.Command{
 		for _, inv := range resp.Invites {
 			var vaultParts []string
 			for _, v := range inv.Vaults {
-				vaultParts = append(vaultParts, fmt.Sprintf("%s:%s", v.VaultName, v.VaultRole))
+				vaultParts = append(vaultParts, v.VaultName)
 			}
 			vaults := strings.Join(vaultParts, ", ")
 			if vaults == "" {
@@ -241,8 +235,8 @@ var userInviteRevokeCmd = &cobra.Command{
 }
 
 func init() {
-	userInviteCmd.Flags().String("role", "", "instance role for the invited user (owner or admin, default admin)")
-	userInviteCmd.Flags().StringArray("vault", nil, "vault pre-assignment (format: name:role, role defaults to member)")
+	userInviteCmd.Flags().String("role", "", "instance role for the invited user (owner or admin; default admin)")
+	userInviteCmd.Flags().StringArray("vault", nil, "vault to grant access to (repeatable; effective power comes from the user's instance role)")
 	userInviteListCmd.Flags().String("status", "", "filter by status (pending, accepted, expired, revoked)")
 
 	userInviteCmd.AddCommand(userInviteListCmd, userInviteRevokeCmd)

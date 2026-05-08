@@ -17,7 +17,9 @@ interface PublicUser {
   email: string;
   role: string;
   status: "active" | "pending";
-  vaults?: { vault_name: string; vault_role: string }[];
+  // Vault scope is just a list of vault names now; effective power
+  // inside a vault comes from the user's instance role.
+  vaults?: { vault_name: string }[];
   created_at: string;
   invite_token?: string;
 }
@@ -112,7 +114,7 @@ export default function AllUsersTab() {
       if (invResp.ok) {
         const invData = await invResp.json();
         pendingUsers = (invData.invites ?? []).map(
-          (inv: { email: string; role?: string; token: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
+          (inv: { email: string; role?: string; token: string; created_at: string; vaults?: { vault_name: string }[] }) => ({
             email: inv.email,
             role: inv.role || "admin",
             status: "pending" as const,
@@ -197,6 +199,11 @@ export default function AllUsersTab() {
         key: "vaults",
         header: "Vaults",
         render: (u) => {
+          if (u.role === "owner") {
+            return (
+              <span className="text-xs text-text-dim italic">All (owner)</span>
+            );
+          }
           if (!u.vaults || u.vaults.length === 0) return <span className="text-sm text-text-dim">{"\u2014"}</span>;
           return (
             <div className="flex flex-wrap gap-1">
@@ -205,7 +212,7 @@ export default function AllUsersTab() {
                   key={typeof v === "string" ? v : v.vault_name}
                   className="inline-block px-2 py-0.5 bg-primary/10 text-primary text-xs font-medium rounded-full"
                 >
-                  {typeof v === "string" ? v : `${v.vault_name}:${v.vault_role}`}
+                  {typeof v === "string" ? v : v.vault_name}
                 </span>
               ))}
             </div>
@@ -286,9 +293,11 @@ export default function AllUsersTab() {
   );
 }
 
+// Pre-assigned vault scope on a user invite. No per-vault role under
+// the unified instance-role model — effective power comes from the
+// invite's instance role.
 interface VaultAssignment {
   vault_name: string;
-  vault_role: "member" | "admin";
 }
 
 function InviteUserButton({
@@ -309,14 +318,12 @@ function InviteUserButton({
 
   useEffect(() => {
     if (!open) return;
-    // Fetch vaults the user can assign
+    // Owners can pre-assign any vault. Admins are constrained to vaults
+    // already in their own scope (server enforces this regardless).
     apiFetch("/v1/vaults")
       .then((r) => r.json())
       .then((data) => {
-        const vaults = (data.vaults ?? []).filter(
-          (v: VaultOption) => isOwner || v.role === "admin"
-        );
-        setAvailableVaults(vaults);
+        setAvailableVaults(data.vaults ?? []);
       })
       .catch(() => {});
   }, [open, isOwner]);
@@ -334,7 +341,7 @@ function InviteUserButton({
     const assignedNames = new Set(vaultAssignments.map((a) => a.vault_name));
     const next = availableVaults.find((v) => !assignedNames.has(v.name));
     if (next) {
-      setVaultAssignments([...vaultAssignments, { vault_name: next.name, vault_role: "member" }]);
+      setVaultAssignments([...vaultAssignments, { vault_name: next.name }]);
     }
   }
 
@@ -342,9 +349,9 @@ function InviteUserButton({
     setVaultAssignments(vaultAssignments.filter((_, i) => i !== idx));
   }
 
-  function updateVault(idx: number, field: "vault_name" | "vault_role", value: string) {
+  function updateVault(idx: number, value: string) {
     const updated = [...vaultAssignments];
-    updated[idx] = { ...updated[idx], [field]: value };
+    updated[idx] = { vault_name: value };
     setVaultAssignments(updated);
   }
 
@@ -493,7 +500,9 @@ function InviteUserButton({
               </div>
               {vaultAssignments.length === 0 ? (
                 <p className="text-sm text-text-muted">
-                  No vaults pre-assigned. User will join the instance without vault access.
+                  {role === "owner"
+                    ? "Owners auto-access every vault — no scope needed."
+                    : "No vaults pre-assigned. User will join the instance without vault access."}
                 </p>
               ) : (
                 <div className="space-y-2">
@@ -501,7 +510,7 @@ function InviteUserButton({
                     <div key={idx} className="flex items-center gap-2">
                       <select
                         value={assignment.vault_name}
-                        onChange={(e) => updateVault(idx, "vault_name", e.target.value)}
+                        onChange={(e) => updateVault(idx, e.target.value)}
                         className="flex-1 px-3 py-2 bg-surface border border-border rounded-lg text-text text-sm outline-none"
                       >
                         {availableVaults.map((v) => (
@@ -513,14 +522,6 @@ function InviteUserButton({
                             {v.name}
                           </option>
                         ))}
-                      </select>
-                      <select
-                        value={assignment.vault_role}
-                        onChange={(e) => updateVault(idx, "vault_role", e.target.value)}
-                        className="w-28 px-3 py-2 bg-surface border border-border rounded-lg text-text text-sm outline-none"
-                      >
-                        <option value="member">Member</option>
-                        <option value="admin">Admin</option>
                       </select>
                       <button
                         type="button"

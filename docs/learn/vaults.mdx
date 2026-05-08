@@ -89,15 +89,17 @@ Vault resolution priority: `--vault` flag > `AGENT_VAULT_VAULT` env var > `agent
 
 ## Manage members and agents
 
+Vault scope (who can touch this vault) is managed here. Effective power inside the vault comes from each actor's instance role — see [Permissions](/learn/permissions). To change someone's role, use `agent-vault owner user set-role` or `agent-vault agent set-role` instead.
+
 ```bash
 # List vault members
 agent-vault vault user list --vault my-vault
 
+# Grant a user access to the vault
+agent-vault vault user add alice@example.com --vault my-vault
+
 # Remove a member
 agent-vault vault user remove alice@example.com --vault my-vault
-
-# Change vault role
-agent-vault vault user set-role alice@example.com --role member --vault my-vault
 
 # List agents in a vault
 agent-vault vault agent list --vault my-vault

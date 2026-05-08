@@ -199,7 +199,7 @@ Key fields:
 
 ## Request Logs
 
-Agent Vault persists a per-request audit log for each vault (method, host, path, status, latency, matched service, credential key names -- **never** bodies or query strings). Useful for debugging "did the request go through?" and inspecting traffic patterns. Requires vault `member` or `admin` role.
+Agent Vault persists a per-request audit log for each vault (method, host, path, status, latency, matched service, credential key names -- **never** bodies or query strings). Useful for debugging "did the request go through?" and inspecting traffic patterns. Requires the instance `admin` or `owner` role with access to the vault.
 
 ```
 GET {AGENT_VAULT_ADDR}/v1/vaults/{vault}/logs

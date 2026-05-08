@@ -38,7 +38,9 @@ export interface AuthContext {
 
 export interface VaultContext {
   vault_name: string;
-  vault_role: string;
+  // Actor's instance role ("owner", "admin", or "agent") with access to
+  // the vault. Effective permissions in the vault come from this role.
+  role: string;
 }
 
 // --- Root Route ---

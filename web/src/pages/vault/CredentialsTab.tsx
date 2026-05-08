@@ -9,7 +9,7 @@ import FormField from "../../components/FormField";
 import { apiFetch } from "../../lib/api";
 
 export default function CredentialsTab() {
-  const { vaultName, vaultRole } = useVaultParams();
+  const { vaultName, isAdmin: isVaultAdmin, isAgent } = useVaultParams();
   const [keys, setKeys] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -87,8 +87,10 @@ export default function CredentialsTab() {
     }
   }
 
-  const isAdmin = vaultRole === "admin";
-  const canReveal = vaultRole === "member" || vaultRole === "admin";
+  // Owners and admins manage and reveal; instance-`agent` actors are
+  // proxy-only and see neither edit affordances nor decrypted values.
+  const isAdmin = isVaultAdmin;
+  const canReveal = !isAgent;
 
   // Reveal state: tracks which credential values have been fetched and are visible.
   const [revealedValues, setRevealedValues] = useState<Record<string, string>>({});
@@ -437,7 +439,7 @@ function CredentialModal({
       open
       onClose={onClose}
       title={isEdit ? "Edit Credential" : "Add Credential"}
-      description="Credentials are injected into proxied requests via services. Values are encrypted at rest and can be revealed by vault members and admins."
+      description="Credentials are injected into proxied requests via services. Values are encrypted at rest and can be revealed by anyone with vault access except instance `agent` actors."
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>

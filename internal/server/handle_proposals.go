@@ -121,7 +121,7 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resolvedVault, _, err := s.resolveVaultForSession(w, r, sess)
+	resolvedVault, err := s.resolveVaultForSession(w, r, sess)
 	if err != nil {
 		return
 	}
@@ -212,24 +212,39 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// notifyProposalCreated sends an email notification to all vault members
-// when a new proposal is created. Intended to be called in a goroutine.
+// notifyProposalCreated sends an email notification to every human who
+// can approve the proposal: instance admins with explicit vault scope,
+// plus all instance owners (owners auto-access every vault under the
+// unified instance-role model). Intended to be called in a goroutine.
 func (s *Server) notifyProposalCreated(vaultID, vaultName string, proposalID int, message, approvalURL, agentName string) {
 	ctx := context.Background()
 
-	grants, err := s.store.ListVaultMembersByType(ctx, vaultID, "user")
-	if err != nil || len(grants) == 0 {
-		return
-	}
+	emailSet := make(map[string]struct{})
 
-	var emails []string
-	for _, g := range grants {
-		if u, err := s.store.GetUserByID(ctx, g.ActorID); err == nil && u != nil {
-			emails = append(emails, u.Email)
+	// Scoped users (admins with explicit grant on this vault).
+	if grants, err := s.store.ListVaultMembersByType(ctx, vaultID, "user"); err == nil {
+		for _, g := range grants {
+			if u, err := s.store.GetUserByID(ctx, g.ActorID); err == nil && u != nil && u.IsActive {
+				emailSet[u.Email] = struct{}{}
+			}
 		}
 	}
-	if len(emails) == 0 {
+
+	// All instance owners — they auto-access every vault.
+	if users, err := s.store.ListUsers(ctx); err == nil {
+		for _, u := range users {
+			if u.Role == "owner" && u.IsActive {
+				emailSet[u.Email] = struct{}{}
+			}
+		}
+	}
+
+	if len(emailSet) == 0 {
 		return
+	}
+	emails := make([]string, 0, len(emailSet))
+	for email := range emailSet {
+		emails = append(emails, email)
 	}
 
 	// Truncate message for the email body.
@@ -260,7 +275,7 @@ func (s *Server) handleProposalGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resolvedVault, _, err := s.resolveVaultForSession(w, r, sess)
+	resolvedVault, err := s.resolveVaultForSession(w, r, sess)
 	if err != nil {
 		return
 	}
@@ -299,7 +314,7 @@ func (s *Server) handleProposalList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resolvedVault, _, err := s.resolveVaultForSession(w, r, sess)
+	resolvedVault, err := s.resolveVaultForSession(w, r, sess)
 	if err != nil {
 		return
 	}
@@ -362,8 +377,7 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Approving proposals requires member+ role (blocks proxy-role agents from self-approving).
-	if _, err := s.requireProposalReview(w, r, ns.ID); err != nil {
+	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
 		return
 	}
 
@@ -504,8 +518,7 @@ func (s *Server) handleAdminProposalReject(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Rejecting proposals requires member+ role (blocks proxy-role agents from self-rejecting).
-	if _, err := s.requireProposalReview(w, r, ns.ID); err != nil {
+	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
 		return
 	}
 
@@ -544,28 +557,18 @@ func (s *Server) handleAdminProposalList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if _, err := s.requireVaultAccess(w, r, ns.ID); err != nil {
+	actor, err := s.requireVaultAccess(w, r, ns.ID)
+	if err != nil {
 		return
-	}
-
-	// Proxy-role sessions can only view pending proposals (to avoid duplicates).
-	sess := sessionFromContext(r.Context())
-	isProxy := false
-	if sess != nil {
-		if sess.VaultID != "" {
-			isProxy = sess.VaultRole == "proxy"
-		} else if sess.AgentID != "" {
-			if role, err := s.store.GetVaultRole(ctx, sess.AgentID, ns.ID); err == nil {
-				isProxy = role == "proxy"
-			}
-		}
 	}
 
 	// Lazy expiration.
 	_, _ = s.store.ExpirePendingProposals(ctx, time.Now().Add(-7*24*time.Hour))
 
 	status := r.URL.Query().Get("status")
-	if isProxy {
+	// Agents can only see pending proposals — clamp the filter so they
+	// don't see their own proposals after approval/rejection.
+	if actor.IsAgent() {
 		status = "pending"
 	}
 	list, err := s.store.ListProposals(ctx, ns.ID, status)
@@ -620,7 +623,8 @@ func (s *Server) handleAdminProposalGet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if _, err := s.requireVaultAccess(w, r, ns.ID); err != nil {
+	actor, err := s.requireVaultAccess(w, r, ns.ID)
+	if err != nil {
 		return
 	}
 
@@ -637,10 +641,8 @@ func (s *Server) handleAdminProposalGet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Proxy-role agents can only view pending proposals.
-	sess := sessionFromContext(r.Context())
-	if sess != nil && sess.VaultID != "" && sess.VaultRole == "proxy" && cs.Status != "pending" {
-		jsonError(w, http.StatusForbidden, "Proxy-role agents can only view pending proposals")
+	if actor.IsAgent() && cs.Status != "pending" {
+		jsonError(w, http.StatusForbidden, "Agents can only view pending proposals")
 		return
 	}
 

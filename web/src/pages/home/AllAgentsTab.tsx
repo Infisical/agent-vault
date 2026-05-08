@@ -15,10 +15,12 @@ import type { AuthContext } from "../../router";
 
 interface AgentRow {
   name: string;
-  role: string; // instance-level role: "owner" or "admin"
+  role: string; // instance-level role: "owner", "admin", or "agent"
   status: string;
   created_at: string;
-  vaults: { vault_name: string; vault_role: string }[];
+  // Vault scope only — effective power inside each vault comes from the
+  // agent's instance role.
+  vaults: { vault_name: string }[];
   // For pending invites shown inline
   invite_id?: number;
 }
@@ -66,13 +68,19 @@ function RowActions({
   const items: { label: string; onClick: () => void; variant?: "danger" }[] = [];
 
   if (isOwner) {
-    const targetRole = agent.role === "owner" ? "admin" : "owner";
+    // Single click always advances to a different role.
+    const nextRoleByCurrent: Record<string, string> = {
+      owner: "admin",
+      admin: "agent",
+      agent: "owner",
+    };
+    const nextRole = nextRoleByCurrent[agent.role] ?? "agent";
     items.push({
-      label: `Set role: ${targetRole}`,
+      label: `Set role: ${nextRole}`,
       onClick: async () => {
         await apiFetch(
           `/v1/agents/${encodeURIComponent(agent.name)}/role`,
-          { method: "POST", body: JSON.stringify({ role: targetRole }) }
+          { method: "POST", body: JSON.stringify({ role: nextRole }) }
         );
         onDone();
       },
@@ -111,9 +119,9 @@ export default function AllAgentsTab() {
 
       const agentsData = await agentsResp.json();
       const activeRows: AgentRow[] = (agentsData.agents ?? []).map(
-        (a: { name: string; role: string; status: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
+        (a: { name: string; role: string; status: string; created_at: string; vaults?: { vault_name: string }[] }) => ({
           name: a.name,
-          role: a.role || "admin",
+          role: a.role || "agent",
           status: a.status,
           created_at: a.created_at,
           vaults: a.vaults ?? [],
@@ -129,9 +137,9 @@ export default function AllAgentsTab() {
             inv.status === "pending" && !agentNames.has(inv.agent_name)
           )
           .map(
-            (inv: { id: number; agent_name: string; agent_role?: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
+            (inv: { id: number; agent_name: string; agent_role?: string; created_at: string; vaults?: { vault_name: string }[] }) => ({
               name: inv.agent_name,
-              role: inv.agent_role || "admin",
+              role: inv.agent_role || "agent",
               status: "pending",
               created_at: inv.created_at,
               vaults: inv.vaults ?? [],
@@ -179,6 +187,11 @@ export default function AllAgentsTab() {
         key: "vaults",
         header: "Vaults",
         render: (agent) => {
+          if (agent.role === "owner") {
+            return (
+              <span className="text-xs text-text-dim italic">All (owner)</span>
+            );
+          }
           if (agent.vaults.length === 0) return <span className="text-sm text-text-dim">{"\u2014"}</span>;
           return (
             <div className="flex flex-wrap gap-1">
@@ -187,7 +200,7 @@ export default function AllAgentsTab() {
                   key={v.vault_name}
                   className="inline-block px-2 py-0.5 bg-primary/10 text-primary text-xs font-medium rounded-full"
                 >
-                  {v.vault_name}:{v.vault_role}
+                  {v.vault_name}
                 </span>
               ))}
             </div>
@@ -267,10 +280,20 @@ export default function AllAgentsTab() {
   );
 }
 
+// Pre-assigned vault scope on an agent invite. No per-vault role under
+// the unified instance-role model — effective power inside each vault
+// comes from the invite's instance role.
 interface VaultAssignment {
   vault_name: string;
-  vault_role: "proxy" | "member" | "admin";
 }
+
+type AgentRole = "owner" | "admin" | "agent";
+
+const ROLE_HELPER_TEXT: Record<AgentRole, string> = {
+  owner: "Owners auto-access every vault and manage users, vaults, and instance settings.",
+  admin: "Admins manage credentials, services, and proposals on their scoped vaults.",
+  agent: "Agents are proxy-only on scoped vaults — they can use the proxy and raise proposals but cannot reveal credentials or approve proposals.",
+};
 
 function InviteAgentButton({
   onInvited,
@@ -281,7 +304,7 @@ function InviteAgentButton({
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
-  const [agentRole, setAgentRole] = useState<"owner" | "admin">("admin");
+  const [agentRole, setAgentRole] = useState<AgentRole>("agent");
   const [vaultAssignments, setVaultAssignments] = useState<VaultAssignment[]>([]);
   const [availableVaults, setAvailableVaults] = useState<VaultOption[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -290,13 +313,12 @@ function InviteAgentButton({
 
   useEffect(() => {
     if (!open) return;
+    // Owners can pre-assign any vault. Admins are constrained to vaults
+    // already in their own scope (server enforces this regardless).
     apiFetch("/v1/vaults")
       .then((r) => r.json())
       .then((data) => {
-        const vaults = (data.vaults ?? []).filter(
-          (v: VaultOption) => isOwner || v.role === "admin"
-        );
-        setAvailableVaults(vaults);
+        setAvailableVaults(data.vaults ?? []);
       })
       .catch(() => {});
   }, [open, isOwner]);
@@ -304,7 +326,7 @@ function InviteAgentButton({
   function close() {
     setOpen(false);
     setName("");
-    setAgentRole("admin");
+    setAgentRole("agent");
     setVaultAssignments([]);
     setError("");
     setInviteResult(null);
@@ -314,7 +336,7 @@ function InviteAgentButton({
     const assignedNames = new Set(vaultAssignments.map((a) => a.vault_name));
     const next = availableVaults.find((v) => !assignedNames.has(v.name));
     if (next) {
-      setVaultAssignments([...vaultAssignments, { vault_name: next.name, vault_role: "proxy" }]);
+      setVaultAssignments([...vaultAssignments, { vault_name: next.name }]);
     }
   }
 
@@ -322,9 +344,9 @@ function InviteAgentButton({
     setVaultAssignments(vaultAssignments.filter((_, i) => i !== idx));
   }
 
-  function updateVault(idx: number, field: "vault_name" | "vault_role", value: string) {
+  function updateVault(idx: number, value: string) {
     const updated = [...vaultAssignments];
-    updated[idx] = { ...updated[idx], [field]: value };
+    updated[idx] = { vault_name: value };
     setVaultAssignments(updated);
   }
 
@@ -333,10 +355,7 @@ function InviteAgentButton({
     setSubmitting(true);
     setError("");
     try {
-      const payload: Record<string, unknown> = { name: name.trim() };
-      if (isOwner && agentRole !== "admin") {
-        payload.role = agentRole;
-      }
+      const payload: Record<string, unknown> = { name: name.trim(), role: agentRole };
       if (vaultAssignments.length > 0) {
         payload.vaults = vaultAssignments;
       }
@@ -440,22 +459,19 @@ function InviteAgentButton({
               />
             </FormField>
 
-            {isOwner && (
-              <FormField
-                label="Instance role"
-                helperText={agentRole === "owner"
-                  ? "This agent will be able to manage users, vaults, and instance settings."
-                  : "This agent will have standard access, scoped to its assigned vaults."}
+            <FormField
+              label="Instance role"
+              helperText={ROLE_HELPER_TEXT[agentRole]}
+            >
+              <Select
+                value={agentRole}
+                onChange={(e) => setAgentRole(e.target.value as AgentRole)}
               >
-                <Select
-                  value={agentRole}
-                  onChange={(e) => setAgentRole(e.target.value as "owner" | "admin")}
-                >
-                  <option value="admin">Admin</option>
-                  <option value="owner">Owner</option>
-                </Select>
-              </FormField>
-            )}
+                <option value="agent">Agent (proxy-only)</option>
+                <option value="admin">Admin</option>
+                {isOwner && <option value="owner">Owner</option>}
+              </Select>
+            </FormField>
 
             <div>
               <div className="flex items-center justify-between mb-2">
@@ -474,7 +490,9 @@ function InviteAgentButton({
               </div>
               {vaultAssignments.length === 0 ? (
                 <p className="text-sm text-text-muted">
-                  No vaults pre-assigned. The agent will join the instance without vault access.
+                  {agentRole === "owner"
+                    ? "Owners auto-access every vault — no scope needed."
+                    : "No vaults pre-assigned. The agent will join the instance without vault access."}
                 </p>
               ) : (
                 <div className="space-y-2">
@@ -482,7 +500,7 @@ function InviteAgentButton({
                     <div key={idx} className="flex items-center gap-2">
                       <select
                         value={assignment.vault_name}
-                        onChange={(e) => updateVault(idx, "vault_name", e.target.value)}
+                        onChange={(e) => updateVault(idx, e.target.value)}
                         className="flex-1 px-3 py-2 bg-surface border border-border rounded-lg text-text text-sm outline-none"
                       >
                         {availableVaults.map((v) => (
@@ -495,15 +513,6 @@ function InviteAgentButton({
                           </option>
                         ))}
                       </select>
-                      <Select
-                        value={assignment.vault_role}
-                        onChange={(e) => updateVault(idx, "vault_role", e.target.value)}
-                        className="w-28"
-                      >
-                        <option value="proxy">Proxy</option>
-                        <option value="member">Member</option>
-                        <option value="admin">Admin</option>
-                      </Select>
                       <button
                         type="button"
                         onClick={() => removeVault(idx)}
