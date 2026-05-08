@@ -1975,7 +1975,10 @@ func TestScopedSessionSuccess(t *testing.T) {
 	}
 }
 
-func TestScopedSessionExplicitRole(t *testing.T) {
+// TestScopedSessionRoleAdminRejected covers the new restriction: even an
+// owner with vault-admin can no longer request a non-proxy role through
+// POST /v1/sessions. Tokens are minted with role `proxy` only.
+func TestScopedSessionRoleAdminRejected(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))
 
@@ -1983,90 +1986,23 @@ func TestScopedSessionExplicitRole(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
-
 	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var resp scopedSessionResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	scopedSess := ms.sessions[resp.Token]
-	if scopedSess == nil {
-		t.Fatal("scoped session not found in store")
-	}
-	if scopedSess.VaultRole != "admin" {
-		t.Fatalf("expected vault_role admin, got %q", scopedSess.VaultRole)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestScopedSessionRoleRejected(t *testing.T) {
-	// Create a member-role user (not admin) to verify role escalation is rejected.
-	ms := newMockStore()
-	ms.users["member@test.com"] = &store.User{
-		ID: "member-user-id", Email: "member@test.com",
-		Role: "member", IsActive: true,
-	}
-	ms.GrantVaultRole(context.Background(), "member-user-id", "user", "root-ns-id", "member")
-	sess, err := ms.CreateSession(context.Background(), "member-user-id", time.Now().Add(time.Hour))
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-
-	srv := newTestServer(withStore(ms))
-
-	// Member requests admin — should be rejected.
-	body := `{"vault":"default","vault_role":"admin"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+sess.ID)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestScopedSessionMemberGetsMember(t *testing.T) {
-	// A vault member requesting member role should succeed.
-	ms := newMockStore()
-	ms.users["member@test.com"] = &store.User{
-		ID: "member-user-id", Email: "member@test.com",
-		Role: "member", IsActive: true,
-	}
-	ms.GrantVaultRole(context.Background(), "member-user-id", "user", "root-ns-id", "member")
-	sess, err := ms.CreateSession(context.Background(), "member-user-id", time.Now().Add(time.Hour))
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-
+func TestScopedSessionRoleMemberRejected(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))
 
 	body := `{"vault":"default","vault_role":"member"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+sess.ID)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
-
 	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var resp scopedSessionResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	scopedSess := ms.sessions[resp.Token]
-	if scopedSess == nil {
-		t.Fatal("scoped session not found in store")
-	}
-	if scopedSess.VaultRole != "member" {
-		t.Fatalf("expected vault_role member, got %q", scopedSess.VaultRole)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

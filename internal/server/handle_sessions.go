@@ -56,9 +56,12 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate role if provided.
-	if req.VaultRole != "" && req.VaultRole != "proxy" && req.VaultRole != "member" && req.VaultRole != "admin" {
-		jsonError(w, http.StatusBadRequest, "vault_role must be one of: proxy, member, admin")
+	// Tokens are minted with role `proxy` only; minting at member/admin
+	// is intentionally not exposed via this endpoint right now. The
+	// server-side cap in capRequestedRole still rejects scoped-session
+	// callers that lack member+ on the vault.
+	if req.VaultRole != "" && req.VaultRole != "proxy" {
+		jsonError(w, http.StatusBadRequest, "vault_role must be 'proxy'")
 		return
 	}
 

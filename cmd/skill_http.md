@@ -46,20 +46,19 @@ Under `--isolation=container`, the same env shape is injected inside a Docker co
 
 ### Scoped session tokens
 
-You almost never need to mint your own token — `vault run` already provides one. But if you must scope a child process down (e.g. a sub-agent that should only have proxy rights), call:
+You almost never need to mint your own token — `vault run` already provides one. But if you must hand a separate token to a child process, call:
 
 ```
 POST /v1/sessions
 {
-  "vault": "<vault-name>",
-  "vault_role": "proxy" | "member" | "admin",   // defaults to "proxy"; capped to your role
-  "ttl_seconds": 3600,                          // 300–604800; defaults to 24h
-  "label": "<optional, ≤100 chars>"             // shown in the Tokens UI
+  "vault":       "<vault-name>",
+  "ttl_seconds": 3600,                       // optional, 300–604800; defaults to 24h
+  "label":       "<optional, ≤100 chars>"    // shown in the Tokens UI
 }
 → { "token": "...", "expires_at": "...", "av_addr": "..." }
 ```
 
-Operators manage these via the **Tokens** tab in each vault, which uses `GET /v1/sessions?vault=<name>` (member+) and `DELETE /v1/sessions/{public_id}?vault=<name>` (member+). The raw token is only returned at creation; subsequent reads only ever show the `public_id`.
+Tokens are minted with vault role `proxy`. Operators manage them via the **Tokens** tab in each vault, which uses `GET /v1/sessions?vault=<name>` (member+) and `DELETE /v1/sessions/{public_id}?vault=<name>` (member+). The raw token is only returned at creation; subsequent reads only ever show the `public_id`.
 
 ## Discover Available Services (Start Here)
 

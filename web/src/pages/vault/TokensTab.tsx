@@ -19,17 +19,10 @@ import { apiFetch } from "../../lib/api";
 
 type VaultRole = "proxy" | "member" | "admin";
 
-interface CreatedBy {
-  id: string;
-  type: "user" | "agent";
-  display_name: string;
-}
-
 interface VaultToken {
   id: string;
   label?: string;
   vault_role: VaultRole;
-  created_by?: CreatedBy;
   created_at: string;
   expires_at?: string;
 }
@@ -40,12 +33,6 @@ const TTL_PRESETS: { label: string; seconds: number | "custom" }[] = [
   { label: "7 days", seconds: 604800 },
   { label: "Custom", seconds: "custom" },
 ];
-
-const ROLE_DESCRIPTIONS: Record<VaultRole, string> = {
-  proxy: "Proxy — use the proxy and raise proposals",
-  member: "Member — manage credentials and services",
-  admin: "Admin — invite humans",
-};
 
 const MIN_TTL_SECONDS = 300;
 const MAX_TTL_SECONDS = 604800;
@@ -139,19 +126,6 @@ export default function TokensTab() {
       ),
     },
     {
-      key: "created_by",
-      header: "Created by",
-      render: (t) =>
-        t.created_by ? (
-          <span className="text-sm text-text-muted">
-            {t.created_by.display_name}
-            <span className="text-text-dim ml-1.5">({t.created_by.type})</span>
-          </span>
-        ) : (
-          <span className="text-text-dim text-sm">&mdash;</span>
-        ),
-    },
-    {
       key: "created_at",
       header: "Created",
       render: (t) => (
@@ -217,11 +191,7 @@ export default function TokensTab() {
           </p>
         </div>
         {canManageTokens && (
-          <MintTokenButton
-            vaultName={vaultName}
-            vaultRole={vaultRole}
-            onMinted={fetchTokens}
-          />
+          <MintTokenButton vaultName={vaultName} onMinted={fetchTokens} />
         )}
       </div>
 
@@ -244,30 +214,22 @@ export default function TokensTab() {
 
 function MintTokenButton({
   vaultName,
-  vaultRole,
   onMinted,
 }: {
   vaultName: string;
-  vaultRole: string;
   onMinted: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [label, setLabel] = useState("");
-  const [role, setRole] = useState<VaultRole>("proxy");
   const [ttlPreset, setTtlPreset] = useState<number | "custom">(86400);
   const [customTtl, setCustomTtl] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [mintedToken, setMintedToken] = useState<string | null>(null);
 
-  const availableRoles: VaultRole[] = (["proxy", "member", "admin"] as const).filter(
-    (r) => roleSatisfies(vaultRole, r)
-  );
-
   function close() {
     setOpen(false);
     setLabel("");
-    setRole("proxy");
     setTtlPreset(86400);
     setCustomTtl("");
     setError("");
@@ -296,7 +258,7 @@ function MintTokenButton({
         method: "POST",
         body: JSON.stringify({
           vault: vaultName,
-          vault_role: role,
+          vault_role: "proxy",
           ttl_seconds: ttlSeconds,
           label: label.trim(),
         }),
@@ -385,14 +347,6 @@ function MintTokenButton({
                 maxLength={100}
                 autoFocus
               />
-            </FormField>
-
-            <FormField label="Role">
-              <Select value={role} onChange={(e) => setRole(e.target.value as VaultRole)}>
-                {availableRoles.map((r) => (
-                  <option key={r} value={r}>{ROLE_DESCRIPTIONS[r]}</option>
-                ))}
-              </Select>
             </FormField>
 
             <FormField label="Lifetime">

@@ -47,13 +47,13 @@ Under `--isolation=container`, the same env shape is injected inside a Docker co
 
 ### Scoped session tokens
 
-You almost never need to mint your own token — `agent-vault run` already provides one. But if you must scope a child process down, run:
+You almost never need to mint your own token — `agent-vault run` already provides one. But if you must hand a separate token to a child process, run:
 
 ```bash
-agent-vault vault token --role proxy --ttl 3600
+agent-vault vault token --ttl 3600
 ```
 
-Flags: `--role` (`proxy`/`member`/`admin`, capped to your own role; default `proxy`), `--ttl` (seconds, 300–604800; default 24h). The token is printed to stdout — pipe it into `AGENT_VAULT_SESSION_TOKEN` for the child process. Operators can list/revoke tokens from each vault's **Tokens** tab in the UI.
+Flag: `--ttl` (seconds, 300–604800; default 24h). Tokens are minted with vault role `proxy`. The token is printed to stdout — pipe it into `AGENT_VAULT_SESSION_TOKEN` for the child process. Operators can list/revoke tokens from each vault's **Tokens** tab in the UI.
 
 ## Discover Available Services (Start Here)
 

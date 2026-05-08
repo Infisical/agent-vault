@@ -267,7 +267,6 @@ description: "Complete reference for all Agent Vault CLI commands."
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--address` | | Server address override |
-    | `--role` | `proxy` | Vault role for the session: `proxy`, `member`, or `admin` |
     | `--ttl` | `0` | Session TTL in seconds (300–604800). Default: server default (24h). |
     | `--isolation` | `host` | Isolation mode for the child: `host` (default, cooperative — runs on the host with `HTTPS_PROXY`/`HTTP_PROXY`) or `container` (non-cooperative Docker container; see [Container isolation](/guides/container-isolation)). Also read from `AGENT_VAULT_ISOLATION`. |
     | `--image` | | Override the bundled container image (`--isolation=container` only). |
@@ -283,12 +282,11 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault token [flags]
     ```
 
-    Mint a vault-scoped session token and print it to stdout. Useful when you need a scoped token without wrapping a child process via `agent-vault run`.
+    Mint a vault-scoped session token and print it to stdout. Useful when you need a scoped token without wrapping a child process via `agent-vault run`. Tokens are minted with vault role `proxy`.
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--address` | | Server address override |
-    | `--role` | `proxy` | Vault role for the session: `proxy`, `member`, or `admin` |
     | `--ttl` | `0` | Session TTL in seconds (300–604800). Default: server default (24h). |
 
     ```bash
@@ -297,8 +295,8 @@ description: "Complete reference for all Agent Vault CLI commands."
     export AGENT_VAULT_ADDR=http://localhost:14321
     export AGENT_VAULT_VAULT=default
 
-    # Mint a short-lived token with member role
-    agent-vault vault token --vault myproject --role member --ttl 3600
+    # Mint a short-lived token (1 hour TTL)
+    agent-vault vault token --vault myproject --ttl 3600
     ```
   </Accordion>
 </AccordionGroup>
