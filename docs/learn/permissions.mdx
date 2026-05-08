@@ -1,123 +1,93 @@
 ---
 title: "Permissions"
-description: "Understand how instance roles and vault roles control access across Agent Vault."
+description: "Understand how the unified instance role system controls access across Agent Vault."
 ---
 
-Agent Vault separates permissions into two independent axes: **instance roles** and **vault roles**. Instance roles control who can manage the Agent Vault server itself (users, agents, global settings, resets). Vault roles control who can operate within a specific [vault](/learn/vaults), approving [proposals](/learn/proposals), managing members, and configuring [credentials](/learn/credentials). The two axes are fully independent, so having one does not imply the other.
+Agent Vault has a single permission tier: **instance roles**. Each user or agent holds exactly one role — `owner`, `admin`, or `agent` — and that role, together with the actor's set of scoped vaults, determines everything they can do. There is no separate per-vault role to keep in sync.
 
-## Instance roles
+## The three roles
 
-Instance-level roles govern administrative operations across the entire Agent Vault instance. Both **users** and **agents** have instance-level roles. There are two roles: `owner` and `admin`.
+| Role  | Who can hold it       | Effective power |
+| ----- | --------------------- | --------------- |
+| `owner` | Users and agents     | God mode. Auto-accesses every vault. Can manage instance settings, users, agents, and every vault. |
+| `admin` | Users and agents     | Manages scoped vaults end-to-end (services, credentials, proposal approval). Can create new vaults. Can invite other admins or agents — but cannot grant a role higher than their own and cannot pre-assign vaults outside their own scope. |
+| `agent` | **Programmatic agents only** | Proxy-only on scoped vaults. Can use the proxy and raise proposals; **cannot** reveal credentials, approve/reject proposals, or mutate services. Humans cannot hold this role. |
 
-| Capability                            | Owner           | Admin           |
-| ------------------------------------- | --------------- | --------------- |
-| [Instance settings](/guides/instance-settings) (invite-only, domains) | Yes | No |
-| Manage users (list, remove, set-role) | Yes             | No              |
-| Manage agents (invite, list, revoke, rotate, rename, set-role) | Yes | Yes |
-| List / delete all vaults              | Yes             | No              |
-| See all vaults & join as admin        | Yes             | No              |
-| Send test emails                      | Yes             | No              |
-| Reset instance                        | Yes             | No              |
-| Access vault contents                 | Only if member  | Only if member  |
+## Vault scope
 
-<Info>
-  Owners can **see** every vault and **join** any vault as admin, but they are
-  not automatic members. Until an owner explicitly joins a vault (via
-  `agent-vault owner vault join` or the web UI), they cannot view its
-  [credentials](/learn/credentials) or approve [proposals](/learn/proposals).
-  This lets owners recover orphaned vaults while keeping vault contents
-  access-controlled.
-</Info>
+Owners auto-access every vault — there is no "join" step. Admin and agent actors carry an explicit list of vaults they can touch (their **scope**). Adding a user or agent to a vault simply attaches that vault to their scope; effective power inside the vault still comes from their instance role.
 
-## Vault roles
+| Operation | Owner | Admin (in scope) | Agent (in scope) |
+| --- | --- | --- | --- |
+| Use the proxy | Yes | Yes | Yes |
+| Discover services | Yes | Yes | Yes |
+| Raise proposals | Yes | Yes | Yes |
+| List credential names | Yes | Yes | Yes |
+| Reveal credential values | Yes | Yes | No |
+| Set / delete credentials | Yes | Yes | No |
+| Approve / reject proposals | Yes | Yes | No |
+| Manage vault services | Yes | Yes | No |
+| Add or remove vault scope (users / agents) | Yes | Yes | No |
+| Delete vault | Yes | Yes | No |
+| Manage instance settings, users, agents, all vaults | Yes | Limited (see below) | No |
 
-Vault-level roles govern what users and [agents](/agents/overview) can do inside a [vault](/learn/vaults) they belong to. There are three roles: `admin`, `member`, and `proxy`.
+An admin with **zero** scoped vaults is still useful: they can create a new vault, which auto-grants them scope on it.
 
-| Capability                                     | Admin | Member   | Proxy    |
-| ---------------------------------------------- | ----- | -------- | -------- |
-| Use proxy                                      | Yes   | Yes      | Yes      |
-| Discover services                              | Yes   | Yes      | Yes      |
-| Raise [proposals](/learn/proposals)            | Yes   | Yes      | Yes      |
-| View credential names                          | Yes   | Yes      | Yes      |
-| Set / delete credentials directly               | Yes   | Yes      | No       |
-| Approve / reject [proposals](/learn/proposals) | Yes   | Yes      | No       |
-| Manage vault [services](/learn/services)       | Yes   | Yes      | No       |
-| Add agents to vault (proxy only)               | Yes   | Yes      | No       |
-| Add agents to vault (any role)                 | Yes   | No       | No       |
-| Invite users to vault                          | Yes   | No       | No       |
-| Manage vault users (remove, set-role)          | Yes   | No       | No       |
-| Manage vault agents (remove, set-role)         | Yes   | No       | No       |
-| Delete vault                                   | Yes   | No       | No       |
+## Inviting other actors
 
-The **proxy** role is the most restricted, ideal for agents that only need to proxy requests and raise proposals for human review. The **member** role adds the ability to manage credentials, approve proposals, and configure vault services. The **admin** role has full control, including inviting users and agents with any role.
+Admins can invite users and agents, with two safety rails:
 
-Vault admins and members can both review agent [proposals](/learn/proposals). When an agent raises a proposal, vault members receive the approval link (via email if SMTP is configured) and can approve or reject from the browser or CLI.
+- **Cannot escalate.** An admin can only create invites for `admin` or `agent`. Only owners can mint owner-tier invites.
+- **Cannot widen scope.** Pre-assigned vaults on an admin's invite must be a subset of the inviter's own scope. Owners are unrestricted.
 
-## How the two axes interact
+Owners have no such restrictions.
 
-The two permission axes are fully independent. An instance owner who has not joined a vault cannot see its credentials or approve proposals. A vault admin who is not an instance owner cannot manage users or reset the instance.
+## How proposals stay safe
 
-**Example**: Alice is an instance owner but has not joined the `payments` vault. She can see it in her vault list and join it at any time, but she cannot approve proposals or proxy requests through `payments` until she does. Meanwhile, Bob is a vault admin on `payments` but only an instance admin (not an instance owner). He can approve proposals and manage agents within `payments`, but he cannot create new users or reset the instance.
+Agents can raise proposals but cannot approve them. Approval requires the instance `admin` (with vault scope) or `owner` role. This is the same self-approval block the previous "proxy" tier provided, now structural — agents simply lack the verb.
 
 ## The first user
 
 <Steps>
   <Step title="Start the server">```bash agent-vault server ```</Step>
   <Step title="Register">
-    The first user to register becomes the instance **owner** and is
-    automatically granted **vault admin** on the default vault. ```bash agent-vault
-    register ```
+    The first user to register becomes the instance **owner** and auto-accesses every vault, including the default vault that the server seeds at startup. ```bash agent-vault register ```
   </Step>
   <Step title="Start working">
-    The owner can immediately invite agents, set
-    [credentials](/learn/credentials), and configure [services](/learn/services)
-    on the default vault. No further setup is needed.
+    The owner can immediately invite admins or agents, set [credentials](/learn/credentials), and configure [services](/learn/services). No further setup is needed.
   </Step>
 </Steps>
 
-<Tip>
-  A **default** vault is created automatically at startup. The first user is
-  granted admin on this vault as part of registration.
-</Tip>
+## Changing roles
 
-## Change roles
-
-### Instance role
-
-Only instance owners can change instance-level roles. Both users and agents can be promoted or demoted.
+Only instance owners can change roles, and the last owner cannot be demoted. Both users and agents accept the role flag.
 
 ```bash
-# Change a user's instance role
+# Promote a user to owner.
 agent-vault owner user set-role alice@example.com --role owner
 
-# Change an agent's instance role
-agent-vault agent set-role my-agent --role owner
-```
-
-### Vault role
-
-Vault admins (and instance owners for any vault) can change vault-level roles.
-
-```bash
-agent-vault vault user set-role alice@example.com --role proxy --vault my-vault
-agent-vault vault agent set-role my-agent --role member --vault my-vault
+# Set an agent's role.
+agent-vault agent set-role my-agent --role agent   # owner | admin | agent
 ```
 
 <Warning>
-  The last instance owner cannot be demoted. Agent Vault blocks `set-role` if it would
-  leave the instance with zero owners. This applies across both users and agents.
+  The last instance owner cannot be demoted. Agent Vault blocks `set-role` if it would leave the instance with zero owners. This applies across both users and agents.
 </Warning>
 
-<AccordionGroup>
-  <Accordion title="Owner-level vault operations">
-    Instance owners have a set of cross-vault operations that do not require vault membership:
+## Adding or removing vault scope
 
-    - **See all vaults**: Owners see every vault in their vault list, including vaults they have not joined.
-    - **Join any vault**: `agent-vault owner vault join <name>` grants the owner admin access to a vault. Useful for recovering orphaned vaults.
-    - **Delete any vault**: `agent-vault owner vault delete <name>` deletes a vault regardless of membership.
-    - **Manage agents**: `agent-vault agent list`, `info`, `delete`, `rotate`, `rename`, and `set-role` are instance-level operations. Any authenticated user can invite agents; vault admins control per-vault agent access.
+Adding scope replaces the old "vault role" assignment — there is no role to pick.
 
-    These operations affect vault existence and agent lifecycle. To access vault contents (credentials, proposals, proxy), the owner must first join the vault.
+```bash
+# Grant an existing user access to a vault.
+agent-vault vault user add alice@example.com --vault payments
 
-  </Accordion>
-</AccordionGroup>
+# Grant an existing agent access to a vault.
+agent-vault vault agent add my-agent --vault payments
+
+# Remove access.
+agent-vault vault user remove alice@example.com --vault payments
+agent-vault vault agent remove my-agent --vault payments
+```
+
+Owners auto-access every vault and do not appear in scope lists.

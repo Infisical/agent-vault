@@ -10,36 +10,22 @@ import { apiFetch } from "../../lib/api";
 
 interface AgentRow {
   name: string;
-  vault_role: string;
+  role: string;
   status: string;
 }
 
+// Rendered only inside the admin-gated actions column, so no role guard
+// here. Instance role changes happen on the instance-level Agents tab.
 function RowActions({
   agent,
   vaultName,
-  vaultRole,
   onDone,
 }: {
   agent: AgentRow;
   vaultName: string;
-  vaultRole: string;
   onDone: () => void;
 }) {
-  if (vaultRole !== "admin") return null;
   if (agent.status === "revoked") return null;
-
-  const currentRole = agent.vault_role;
-
-  async function handleSetRole(newRole: string) {
-    await apiFetch(
-      `/v1/vaults/${encodeURIComponent(vaultName)}/agents/${encodeURIComponent(agent.name)}/role`,
-      {
-        method: "POST",
-        body: JSON.stringify({ role: newRole }),
-      }
-    );
-    onDone();
-  }
 
   async function handleRemove() {
     await apiFetch(
@@ -49,18 +35,10 @@ function RowActions({
     onDone();
   }
 
-  const roleItems = (["proxy", "member", "admin"] as const)
-    .filter((r) => r !== currentRole)
-    .map((r) => ({
-      label: `Set role: ${r}`,
-      onClick: () => handleSetRole(r),
-    }));
-
   return (
     <DropdownMenu
       width={192}
       items={[
-        ...roleItems,
         { label: "Remove from vault", onClick: handleRemove, variant: "danger" as const },
       ]}
     />
@@ -68,7 +46,7 @@ function RowActions({
 }
 
 export default function AgentsTab() {
-  const { vaultName, vaultRole } = useVaultParams();
+  const { vaultName, isAdmin } = useVaultParams();
   const [rows, setRows] = useState<AgentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -89,15 +67,15 @@ export default function AgentsTab() {
       render: (agent) => <StatusBadge status={agent.status} />,
     },
     {
-      key: "vault_role",
+      key: "role",
       header: "Role",
       render: (agent) => (
         <span className="text-sm text-text-muted capitalize">
-          {agent.vault_role || "\u2014"}
+          {agent.role || "—"}
         </span>
       ),
     },
-    ...(vaultRole === "admin"
+    ...(isAdmin
       ? [
           {
             key: "actions" as const,
@@ -107,7 +85,6 @@ export default function AgentsTab() {
               <RowActions
                 agent={agent}
                 vaultName={vaultName}
-                vaultRole={vaultRole}
                 onDone={fetchData}
               />
             ),
@@ -137,9 +114,9 @@ export default function AgentsTab() {
       const data = await resp.json();
       setRows(
         (data.agents ?? []).map(
-          (a: { name: string; vault_role: string; status: string }) => ({
+          (a: { name: string; role: string; status: string }) => ({
             name: a.name,
-            vault_role: a.vault_role,
+            role: a.role,
             status: a.status,
           })
         )
@@ -159,10 +136,10 @@ export default function AgentsTab() {
             Agents
           </h2>
           <p className="text-sm text-text-muted">
-            AI agents with access to this vault.
+            AI agents with access to this vault. Permissions inside the vault come from each agent's instance role.
           </p>
         </div>
-        {vaultRole === "admin" && (
+        {isAdmin && (
           <AddAgentButton vaultName={vaultName} vaultAgents={rows} onAdded={fetchData} />
         )}
       </div>
@@ -186,6 +163,7 @@ export default function AgentsTab() {
 
 interface InstanceAgent {
   name: string;
+  role: string;
   status: string;
 }
 
@@ -200,7 +178,6 @@ function AddAgentButton({
 }) {
   const [open, setOpen] = useState(false);
   const [agentName, setAgentName] = useState("");
-  const [role, setRole] = useState("proxy");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [instanceAgents, setInstanceAgents] = useState<InstanceAgent[]>([]);
@@ -213,16 +190,19 @@ function AddAgentButton({
       .catch(() => {});
   }, [open]);
 
+  // Owners auto-access every vault, so they aren't candidates for an
+  // explicit grant. Filter them out alongside agents that already
+  // have access.
   const availableAgents = instanceAgents.filter(
     (a) =>
       (a.status === "active" || a.status === "pending") &&
-      !vaultAgents.some((va) => va.name === a.name)
+      a.role !== "owner" &&
+      !vaultAgents.some((va) => va.name === a.name),
   );
 
   function close() {
     setOpen(false);
     setAgentName("");
-    setRole("proxy");
     setError("");
   }
 
@@ -235,7 +215,7 @@ function AddAgentButton({
         `/v1/vaults/${encodeURIComponent(vaultName)}/agents`,
         {
           method: "POST",
-          body: JSON.stringify({ name: agentName, role }),
+          body: JSON.stringify({ name: agentName }),
         }
       );
       if (resp.ok) {
@@ -274,7 +254,7 @@ function AddAgentButton({
         open={open}
         onClose={close}
         title="Add Agent to Vault"
-        description="Add an existing instance agent to this vault."
+        description="Grant an existing instance agent access to this vault. Effective permissions inside the vault come from the agent's instance role."
         footer={
           <>
             <Button variant="secondary" onClick={close}>Cancel</Button>
@@ -288,7 +268,7 @@ function AddAgentButton({
           <FormField label="Agent">
             {availableAgents.length === 0 ? (
               <p className="text-sm text-text-muted py-2">
-                All instance agents already have access to this vault.
+                Every eligible instance agent already has access to this vault.
               </p>
             ) : (
               <Select
@@ -301,19 +281,11 @@ function AddAgentButton({
                 </option>
                 {availableAgents.map((a) => (
                   <option key={a.name} value={a.name}>
-                    {a.name}
+                    {a.name} ({a.role})
                   </option>
                 ))}
               </Select>
             )}
-          </FormField>
-
-          <FormField label="Role">
-            <Select value={role} onChange={(e) => setRole(e.target.value)}>
-              <option value="proxy">Proxy</option>
-              <option value="member">Member</option>
-              <option value="admin">Admin</option>
-            </Select>
           </FormField>
 
           {error && <ErrorBanner message={error} />}

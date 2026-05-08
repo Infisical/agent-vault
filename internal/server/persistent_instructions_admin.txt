@@ -26,8 +26,8 @@ For vaults where you have admin role, you can also:
 - Delete credentials: DELETE {AGENT_VAULT_ADDR}/v1/credentials with X-Vault header and {"vault": "...", "keys": ["KEY"]}
 - Approve proposals: POST {AGENT_VAULT_ADDR}/v1/admin/proposals/{id}/approve with {"vault": "...", "credentials": {"KEY": "value"}}
 - Reject proposals: POST {AGENT_VAULT_ADDR}/v1/admin/proposals/{id}/reject with {"vault": "...", "reason": "..."}
-- Invite agents: POST {AGENT_VAULT_ADDR}/v1/agents/invites with {"name": "...", "vaults": [{"vault_name": "...", "vault_role": "proxy|member|admin"}]}
-- Invite users: POST {AGENT_VAULT_ADDR}/v1/users/invites with {"email": "...", "vaults": [{"vault_name": "...", "vault_role": "member|admin"}]}
+- Invite agents: POST {AGENT_VAULT_ADDR}/v1/agents/invites with {"name": "...", "role": "owner|admin|agent", "vaults": [{"vault_name": "..."}]}. Effective power inside each vault comes from the invite's instance role.
+- Invite users: POST {AGENT_VAULT_ADDR}/v1/users/invites with {"email": "...", "role": "owner|admin", "vaults": [{"vault_name": "..."}]}. Humans cannot hold the `agent` role.
 
 ## Full Reference
 

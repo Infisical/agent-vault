@@ -175,11 +175,12 @@ func (m *mockStore) RevokeUserSession(_ context.Context, userID, publicID string
 	return sql.ErrNoRows
 }
 
-func (m *mockStore) CreateScopedSession(_ context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error) {
+func (m *mockStore) CreateScopedSession(_ context.Context, vaultID, userID, agentID string, expiresAt *time.Time) (*store.Session, error) {
 	s := &store.Session{
 		ID:        "scoped-session-id",
 		VaultID:   vaultID,
-		VaultRole: vaultRole,
+		UserID:    userID,
+		AgentID:   agentID,
 		ExpiresAt: expiresAt,
 		CreatedAt: time.Now(),
 	}
@@ -468,13 +469,10 @@ func (m *mockStore) GetPendingInviteByAgentName(_ context.Context, name string) 
 	return nil, fmt.Errorf("not found")
 }
 
-func (m *mockStore) AddAgentInviteVault(_ context.Context, inviteID int, vaultID, role string) error {
+func (m *mockStore) AddAgentInviteVault(_ context.Context, inviteID int, vaultID string) error {
 	for _, inv := range m.invites {
 		if inv.ID == inviteID {
-			inv.Vaults = append(inv.Vaults, store.AgentInviteVault{
-				VaultID:   vaultID,
-				VaultRole: role,
-			})
+			inv.Vaults = append(inv.Vaults, store.AgentInviteVault{VaultID: vaultID})
 			return nil
 		}
 	}
@@ -492,21 +490,6 @@ func (m *mockStore) RemoveAgentInviteVault(_ context.Context, inviteID int, vaul
 			}
 			inv.Vaults = filtered
 			return nil
-		}
-	}
-	return fmt.Errorf("invite not found")
-}
-
-func (m *mockStore) UpdateAgentInviteVaultRole(_ context.Context, inviteID int, vaultID, role string) error {
-	for _, inv := range m.invites {
-		if inv.ID == inviteID {
-			for i, v := range inv.Vaults {
-				if v.VaultID == vaultID {
-					inv.Vaults[i].VaultRole = role
-					return nil
-				}
-			}
-			return fmt.Errorf("vault not found on invite")
 		}
 	}
 	return fmt.Errorf("invite not found")
@@ -659,10 +642,17 @@ func (m *mockStore) ExpirePendingInvites(_ context.Context, before time.Time) (i
 }
 
 
-func (m *mockStore) GrantVaultRole(_ context.Context, actorID, actorType, vaultID, role string) error {
+// mockStore models scope as a yes/no per-actor-per-vault grant. The
+// per-vault role is gone; the actor's instance role determines power.
+func (m *mockStore) GrantVaultAccess(_ context.Context, actorID, actorType, vaultID string) error {
 	if actorType == "agent" {
+		for _, g := range m.agentVaultGrants {
+			if g.ActorID == actorID && g.VaultID == vaultID {
+				return nil
+			}
+		}
 		m.agentVaultGrants = append(m.agentVaultGrants, store.VaultGrant{
-			ActorID: actorID, ActorType: "agent", VaultID: vaultID, Role: role, CreatedAt: time.Now(),
+			ActorID: actorID, ActorType: "agent", VaultID: vaultID, CreatedAt: time.Now(),
 		})
 		return nil
 	}
@@ -672,27 +662,33 @@ func (m *mockStore) GrantVaultRole(_ context.Context, actorID, actorType, vaultI
 	if m.grants[actorID] == nil {
 		m.grants[actorID] = make(map[string]string)
 	}
-	m.grants[actorID][vaultID] = role
+	m.grants[actorID][vaultID] = ""
 	return nil
 }
 
-func (m *mockStore) RevokeVaultAccess(_ context.Context, userID, vaultID string) error {
-	if m.grants != nil && m.grants[userID] != nil {
-		delete(m.grants[userID], vaultID)
-		return nil
+func (m *mockStore) RevokeVaultAccess(_ context.Context, actorID, vaultID string) error {
+	if m.grants != nil && m.grants[actorID] != nil {
+		if _, ok := m.grants[actorID][vaultID]; ok {
+			delete(m.grants[actorID], vaultID)
+			return nil
+		}
+	}
+	for i, g := range m.agentVaultGrants {
+		if g.ActorID == actorID && g.VaultID == vaultID {
+			m.agentVaultGrants = append(m.agentVaultGrants[:i], m.agentVaultGrants[i+1:]...)
+			return nil
+		}
 	}
 	return fmt.Errorf("grant not found")
 }
 
 func (m *mockStore) ListActorGrants(_ context.Context, actorID string) ([]store.VaultGrant, error) {
 	var grants []store.VaultGrant
-	// Check user grants
 	if m.grants != nil && m.grants[actorID] != nil {
-		for nsID, role := range m.grants[actorID] {
-			grants = append(grants, store.VaultGrant{ActorID: actorID, ActorType: "user", VaultID: nsID, Role: role})
+		for nsID := range m.grants[actorID] {
+			grants = append(grants, store.VaultGrant{ActorID: actorID, ActorType: "user", VaultID: nsID})
 		}
 	}
-	// Check agent vault grants
 	for _, g := range m.agentVaultGrants {
 		if g.ActorID == actorID {
 			grants = append(grants, g)
@@ -701,42 +697,27 @@ func (m *mockStore) ListActorGrants(_ context.Context, actorID string) ([]store.
 	return grants, nil
 }
 
-func (m *mockStore) HasVaultAccess(_ context.Context, userID, vaultID string) (bool, error) {
-	if m.grants != nil && m.grants[userID] != nil {
-		_, ok := m.grants[userID][vaultID]
-		return ok, nil
+func (m *mockStore) HasVaultAccess(_ context.Context, actorID, vaultID string) (bool, error) {
+	if m.grants != nil && m.grants[actorID] != nil {
+		if _, ok := m.grants[actorID][vaultID]; ok {
+			return true, nil
+		}
+	}
+	for _, g := range m.agentVaultGrants {
+		if g.ActorID == actorID && g.VaultID == vaultID {
+			return true, nil
+		}
 	}
 	return false, nil
 }
 
-func (m *mockStore) GetVaultRole(_ context.Context, userID, vaultID string) (string, error) {
-	if m.grants != nil && m.grants[userID] != nil {
-		if role, ok := m.grants[userID][vaultID]; ok {
-			return role, nil
-		}
-	}
-	return "", fmt.Errorf("no grant found")
-}
-
-func (m *mockStore) CountVaultAdmins(_ context.Context, vaultID string) (int, error) {
-	count := 0
-	for _, userGrants := range m.grants {
-		if role, ok := userGrants[vaultID]; ok && role == "admin" {
-			count++
-		}
-	}
-	return count, nil
-}
-
 func (m *mockStore) ListVaultMembers(_ context.Context, vaultID string) ([]store.VaultGrant, error) {
 	var result []store.VaultGrant
-	// User grants
 	for userID, userGrants := range m.grants {
-		if role, ok := userGrants[vaultID]; ok {
-			result = append(result, store.VaultGrant{ActorID: userID, ActorType: "user", VaultID: vaultID, Role: role})
+		if _, ok := userGrants[vaultID]; ok {
+			result = append(result, store.VaultGrant{ActorID: userID, ActorType: "user", VaultID: vaultID})
 		}
 	}
-	// Agent grants
 	for _, g := range m.agentVaultGrants {
 		if g.VaultID == vaultID {
 			result = append(result, g)
@@ -750,8 +731,8 @@ func (m *mockStore) ListVaultMembersByType(_ context.Context, vaultID, actorType
 	switch actorType {
 	case "user":
 		for userID, userGrants := range m.grants {
-			if role, ok := userGrants[vaultID]; ok {
-				result = append(result, store.VaultGrant{ActorID: userID, ActorType: "user", VaultID: vaultID, Role: role})
+			if _, ok := userGrants[vaultID]; ok {
+				result = append(result, store.VaultGrant{ActorID: userID, ActorType: "user", VaultID: vaultID})
 			}
 		}
 	case "agent":
@@ -1770,7 +1751,7 @@ func setupMockStoreWithSession(t *testing.T) (*mockStore, string) {
 		Role: "owner", IsActive: true,
 	}
 	// Grant owner access to the default vault.
-	ms.GrantVaultRole(context.Background(), "owner-user-id", "user", "root-ns-id", "admin")
+	ms.GrantVaultAccess(context.Background(), "owner-user-id", "user", "root-ns-id")
 	sess, err := ms.CreateSession(context.Background(), "owner-user-id", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -1937,48 +1918,16 @@ func TestScopedSessionSuccess(t *testing.T) {
 	if scopedSess.VaultID != "root-ns-id" {
 		t.Fatalf("expected vault_id root-ns-id, got %q", scopedSess.VaultID)
 	}
-	if scopedSess.VaultRole != "proxy" {
-		t.Fatalf("expected vault_role proxy, got %q", scopedSess.VaultRole)
-	}
 }
 
-func TestScopedSessionExplicitRole(t *testing.T) {
-	ms, token := setupMockStoreWithSession(t)
-	srv := newTestServer(withStore(ms))
-
-	body := `{"vault":"default","vault_role":"admin"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var resp scopedSessionResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	scopedSess := ms.sessions[resp.Token]
-	if scopedSess == nil {
-		t.Fatal("scoped session not found in store")
-	}
-	if scopedSess.VaultRole != "admin" {
-		t.Fatalf("expected vault_role admin, got %q", scopedSess.VaultRole)
-	}
-}
-
-func TestScopedSessionRoleRejected(t *testing.T) {
-	// Create a non-owner user with vault role "member" (not vault admin) to verify
-	// scoped-session role escalation is rejected.
+func TestScopedSessionScopedAdminAllowed(t *testing.T) {
+	// An instance admin scoped to the vault can mint a scoped session.
 	ms := newMockStore()
 	ms.users["admin@test.com"] = &store.User{
 		ID: "admin-user-id", Email: "admin@test.com",
 		Role: "admin", IsActive: true,
 	}
-	ms.GrantVaultRole(context.Background(), "admin-user-id", "user", "root-ns-id", "member")
+	ms.GrantVaultAccess(context.Background(), "admin-user-id", "user", "root-ns-id")
 	sess, err := ms.CreateSession(context.Background(), "admin-user-id", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -1986,35 +1935,7 @@ func TestScopedSessionRoleRejected(t *testing.T) {
 
 	srv := newTestServer(withStore(ms))
 
-	// Member requests admin — should be rejected.
-	body := `{"vault":"default","vault_role":"admin"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+sess.ID)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestScopedSessionMemberGetsMember(t *testing.T) {
-	// A vault member requesting member role should succeed.
-	ms := newMockStore()
-	ms.users["admin@test.com"] = &store.User{
-		ID: "admin-user-id", Email: "admin@test.com",
-		Role: "admin", IsActive: true,
-	}
-	ms.GrantVaultRole(context.Background(), "admin-user-id", "user", "root-ns-id", "member")
-	sess, err := ms.CreateSession(context.Background(), "admin-user-id", time.Now().Add(time.Hour))
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-
-	srv := newTestServer(withStore(ms))
-
-	body := `{"vault":"default","vault_role":"member"}`
+	body := `{"vault":"default"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+sess.ID)
 	rec := httptest.NewRecorder()
@@ -2023,18 +1944,6 @@ func TestScopedSessionMemberGetsMember(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var resp scopedSessionResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	scopedSess := ms.sessions[resp.Token]
-	if scopedSess == nil {
-		t.Fatal("scoped session not found in store")
-	}
-	if scopedSess.VaultRole != "member" {
-		t.Fatalf("expected vault_role member, got %q", scopedSess.VaultRole)
 	}
 }
 
@@ -2075,15 +1984,21 @@ func setupMockStoreWithScopedSession(t *testing.T, vaultName, vaultID string) (*
 	return setupMockStoreWithScopedSessionRole(t, vaultName, vaultID, "proxy")
 }
 
-func setupMockStoreWithScopedSessionRole(t *testing.T, vaultName, vaultID, role string) (*mockStore, string) {
+func setupMockStoreWithScopedSessionRole(t *testing.T, vaultName, vaultID, _role string) (*mockStore, string) {
 	t.Helper()
 	ms := newMockStore()
-	// Add a second vault
 	if vaultName != "default" {
 		ms.vaults[vaultName] = &store.Vault{ID: vaultID, Name: vaultName}
 	}
-	// Create a scoped session locked to the given vault
-	sess, err := ms.CreateScopedSession(context.Background(), vaultID, role, tp(time.Now().Add(time.Hour)))
+	// Per-vault role is gone under the unified instance-role model; the
+	// role argument is retained for call-site compatibility but ignored.
+	// Bind the scoped session to a seeded owner so middleware can
+	// resolve an actor with admin-grade powers.
+	ms.users["owner@test.com"] = &store.User{
+		ID: "owner-user-id", Email: "owner@test.com",
+		Role: "owner", IsActive: true,
+	}
+	sess, err := ms.CreateScopedSession(context.Background(), vaultID, "owner-user-id", "", tp(time.Now().Add(time.Hour)))
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -2297,16 +2212,18 @@ func TestCredentialsRevealNotFoundKey(t *testing.T) {
 	}
 }
 
-func TestCredentialsRevealProxyBlocked(t *testing.T) {
-	// Scoped session with proxy role — should be blocked from reveal.
-	ms, token := setupMockStoreWithScopedSessionRole(t, "default", "root-ns-id", "proxy")
+func TestCredentialsRevealAgentRoleBlocked(t *testing.T) {
+	// Instance-`agent`-role actors are proxy-only and must not be able to
+	// reveal credentials, regardless of vault scope.
+	ms := newMockStore()
+	agentToken := setupAgentRoleSession(t, ms, "root-ns-id")
 	encKey := make([]byte, 32)
 	srv := newTestServer(withStore(ms), withEncKey(encKey))
 
 	seedEncryptedCredential(t, ms, encKey, "root-ns-id", "SECRET", "s3cr3t")
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default&reveal=true", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+agentToken)
 	rec := httptest.NewRecorder()
 
 	srv.httpServer.Handler.ServeHTTP(rec, req)
@@ -2420,7 +2337,11 @@ func setupVaultWithCredential(t *testing.T, servicesJSON string) (*mockStore, st
 	ms := newMockStore()
 	encKey := make([]byte, 32)
 
-	sess, err := ms.CreateScopedSession(context.Background(), "root-ns-id", "proxy", tp(time.Now().Add(time.Hour)))
+	ms.users["owner@test.com"] = &store.User{
+		ID: "owner-user-id", Email: "owner@test.com",
+		Role: "owner", IsActive: true,
+	}
+	sess, err := ms.CreateScopedSession(context.Background(), "root-ns-id", "owner-user-id", "", tp(time.Now().Add(time.Hour)))
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -2546,7 +2467,11 @@ func TestDiscoverEmptyRules(t *testing.T) {
 
 func TestDiscoverNoCredentials(t *testing.T) {
 	ms := newMockStore()
-	sess, err := ms.CreateScopedSession(context.Background(), "root-ns-id", "proxy", tp(time.Now().Add(time.Hour)))
+	ms.users["owner@test.com"] = &store.User{
+		ID: "owner-user-id", Email: "owner@test.com",
+		Role: "owner", IsActive: true,
+	}
+	sess, err := ms.CreateScopedSession(context.Background(), "root-ns-id", "owner-user-id", "", tp(time.Now().Add(time.Hour)))
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -2878,7 +2803,7 @@ func setupAdminProposalTest(t *testing.T) (*Server, *mockStore, string) {
 	ms.users["owner@test.com"] = &store.User{
 		ID: "owner-user-id", Email: "owner@test.com", Role: "owner", IsActive: true,
 	}
-	ms.GrantVaultRole(context.Background(), "owner-user-id", "user", "root-ns-id", "admin")
+	ms.GrantVaultAccess(context.Background(), "owner-user-id", "user", "root-ns-id")
 	adminSess := &store.Session{
 		ID:        "admin-session",
 		UserID:    "owner-user-id",
@@ -3199,9 +3124,138 @@ func setupAdminSession(t *testing.T, ms *mockStore, grantVaultIDs ...string) str
 	ms.sessions[adminSess.ID] = adminSess
 
 	for _, nsID := range grantVaultIDs {
-		ms.GrantVaultRole(context.Background(), "admin-user-id", "user", nsID, "member")
+		ms.GrantVaultAccess(context.Background(), "admin-user-id", "user", nsID)
 	}
 	return adminSess.ID
+}
+
+// --- Inviter constraint tests (unified instance-role model) ---
+//
+// An instance admin must not be able to invite an `owner`, and must not
+// be able to pre-assign vaults outside their own scope. The same applies
+// to agent invites. Owners are unrestricted; agents cannot invite at all.
+
+func TestUserInviteAdminCannotEscalateToOwner(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	adminToken := setupAdminSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	body := `{"email":"new@test.com","role":"owner"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/users/invites", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUserInviteAdminCannotPreAssignOutOfScope(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	// Admin is scoped to root-ns-id only.
+	adminToken := setupAdminSession(t, ms, "root-ns-id")
+	// Create a second vault the admin has no scope on.
+	if _, err := ms.CreateVault(context.Background(), "secret"); err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+	srv := newTestServer(withStore(ms))
+
+	body := `{"email":"new@test.com","role":"admin","vaults":[{"vault_name":"secret"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/users/invites", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUserInviteAdminCanInviteAdmin(t *testing.T) {
+	// An admin inviting another admin scoped to a vault they share is fine.
+	ms, _ := setupMockStoreWithSession(t)
+	adminToken := setupAdminSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	body := `{"email":"new@test.com","role":"admin","vaults":[{"vault_name":"default"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/users/invites", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUserInviteAgentRoleBlocked(t *testing.T) {
+	// Agents are proxy-only and cannot invite users.
+	ms := newMockStore()
+	agentToken := setupAgentRoleSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	body := `{"email":"new@test.com","role":"admin"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/users/invites", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+agentToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAgentInviteAdminCannotEscalateToOwner(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	adminToken := setupAdminSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	body := `{"name":"my-bot","role":"owner"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/invites", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAgentInviteAdminCannotPreAssignOutOfScope(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	adminToken := setupAdminSession(t, ms, "root-ns-id")
+	if _, err := ms.CreateVault(context.Background(), "secret"); err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+	srv := newTestServer(withStore(ms))
+
+	body := `{"name":"my-bot","role":"agent","vaults":[{"vault_name":"secret"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/invites", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAgentInviteAdminCanInviteAgentInOwnScope(t *testing.T) {
+	// Admins can mint agent-role invites scoped within their own vaults.
+	ms, _ := setupMockStoreWithSession(t)
+	adminToken := setupAdminSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	body := `{"name":"my-bot","role":"agent","vaults":[{"vault_name":"default"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/invites", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestAdminCanAccessGrantedVault(t *testing.T) {
@@ -3237,9 +3291,9 @@ func TestAdminCannotAccessNonGrantedVault(t *testing.T) {
 	}
 }
 
-func TestOwnerCannotAccessVaultWithoutGrant(t *testing.T) {
+func TestOwnerAutoAccessesAllVaults(t *testing.T) {
+	// Owners auto-access every vault; no explicit grant required.
 	ms, ownerToken := setupMockStoreWithSession(t)
-	// Add a second vault — owner should NOT access without explicit grant.
 	ms.vaults["prod"] = &store.Vault{ID: "prod-ns-id", Name: "prod"}
 	srv := newTestServer(withStore(ms))
 
@@ -3249,8 +3303,8 @@ func TestOwnerCannotAccessVaultWithoutGrant(t *testing.T) {
 
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -3316,29 +3370,33 @@ func TestAdminCanApproveProposalInAnyMemberVault(t *testing.T) {
 	}
 }
 
-// setupProxyRoleSession creates a proxy-role user with a login session and optional vault grants.
-func setupProxyRoleSession(t *testing.T, ms *mockStore, grantVaultIDs ...string) string {
+// setupAgentRoleSession creates an instance-`agent`-role agent with a
+// session and optional vault scope grants. Agents are programmatic-only
+// and cannot approve/reject proposals — the analogue of the previous
+// "instance-level proxy".
+func setupAgentRoleSession(t *testing.T, ms *mockStore, grantVaultIDs ...string) string {
 	t.Helper()
-	ms.users["proxybot@test.com"] = &store.User{
-		ID: "proxy-user-id", Email: "proxybot@test.com", Role: "admin", IsActive: true,
+	ms.agents["proxybot"] = &store.Agent{
+		ID: "proxy-agent-id", Name: "proxybot", Role: "agent", Status: "active",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
 	proxySess := &store.Session{
 		ID:        "proxy-session",
-		UserID:    "proxy-user-id",
+		AgentID:   "proxy-agent-id",
 		ExpiresAt: tp(time.Now().Add(time.Hour)),
 		CreatedAt: time.Now(),
 	}
 	ms.sessions[proxySess.ID] = proxySess
 
 	for _, nsID := range grantVaultIDs {
-		ms.GrantVaultRole(context.Background(), "proxy-user-id", "user", nsID, "proxy")
+		ms.GrantVaultAccess(context.Background(), "proxy-agent-id", "agent", nsID)
 	}
 	return proxySess.ID
 }
 
-func TestInstanceLevelProxyCannotApproveProposal(t *testing.T) {
+func TestAgentRoleCannotApproveProposal(t *testing.T) {
 	ms := newMockStore()
-	proxyToken := setupProxyRoleSession(t, ms, "root-ns-id")
+	proxyToken := setupAgentRoleSession(t, ms, "root-ns-id")
 
 	encKey := make([]byte, 32)
 	srv := newTestServer(withStore(ms), withEncKey(encKey))
@@ -3369,9 +3427,9 @@ func TestInstanceLevelProxyCannotApproveProposal(t *testing.T) {
 	}
 }
 
-func TestInstanceLevelProxyCannotRejectProposal(t *testing.T) {
+func TestAgentRoleCannotRejectProposal(t *testing.T) {
 	ms := newMockStore()
-	proxyToken := setupProxyRoleSession(t, ms, "root-ns-id")
+	proxyToken := setupAgentRoleSession(t, ms, "root-ns-id")
 
 	encKey := make([]byte, 32)
 	srv := newTestServer(withStore(ms), withEncKey(encKey))
@@ -3434,11 +3492,14 @@ func TestLastOwnerCannotBeRemoved(t *testing.T) {
 
 
 func TestEmailTestRequiresOwner(t *testing.T) {
-	ms, agentToken := setupMockStoreWithScopedSession(t, "default", "root-ns-id")
+	// An instance admin without owner role must be rejected from the
+	// owner-only email-test endpoint.
+	ms := newMockStore()
+	adminToken := setupAdminSession(t, ms, "root-ns-id")
 	srv := newTestServer(withStore(ms))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/email/test", nil)
-	req.Header.Set("Authorization", "Bearer "+agentToken)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
 	rec := httptest.NewRecorder()
 
 	srv.httpServer.Handler.ServeHTTP(rec, req)
@@ -3517,7 +3578,7 @@ func setupAgentTest(t *testing.T) (*Server, *mockStore, string) {
 	ms.users["owner@test.com"] = &store.User{
 		ID: "owner-user-id", Email: "owner@test.com", Role: "owner", IsActive: true,
 	}
-	ms.GrantVaultRole(context.Background(), "owner-user-id", "user", "root-ns-id", "admin")
+	ms.GrantVaultAccess(context.Background(), "owner-user-id", "user", "root-ns-id")
 	adminSess := &store.Session{
 		ID: "admin-session", UserID: "owner-user-id",
 		ExpiresAt: tp(time.Now().Add(time.Hour)), CreatedAt: time.Now(),
@@ -3706,8 +3767,8 @@ func TestAgentList(t *testing.T) {
 
 	ms.agents["bot1"] = &store.Agent{ID: "a1", Name: "bot1", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	ms.agents["bot2"] = &store.Agent{ID: "a2", Name: "bot2", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}
-	ms.agentVaultGrants = append(ms.agentVaultGrants, store.VaultGrant{ActorID: "a1", ActorType: "agent", VaultID: "root-ns-id", Role: "proxy"})
-	ms.agentVaultGrants = append(ms.agentVaultGrants, store.VaultGrant{ActorID: "a2", ActorType: "agent", VaultID: "root-ns-id", Role: "proxy"})
+	ms.agentVaultGrants = append(ms.agentVaultGrants, store.VaultGrant{ActorID: "a1", ActorType: "agent", VaultID: "root-ns-id"})
+	ms.agentVaultGrants = append(ms.agentVaultGrants, store.VaultGrant{ActorID: "a2", ActorType: "agent", VaultID: "root-ns-id"})
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/agents", nil)
 	req.Header.Set("Authorization", "Bearer "+sessID)
@@ -3803,7 +3864,7 @@ func TestVaultRename(t *testing.T) {
 
 	// Create a non-default vault to rename.
 	ms.vaults["oldvault"] = &store.Vault{ID: "old-vault-id", Name: "oldvault"}
-	ms.GrantVaultRole(context.Background(), "owner-user-id", "user", "old-vault-id", "admin")
+	ms.GrantVaultAccess(context.Background(), "owner-user-id", "user", "old-vault-id")
 
 	t.Run("success", func(t *testing.T) {
 		body := strings.NewReader(`{"name": "newvault"}`)
@@ -3930,35 +3991,33 @@ func TestVaultSettingsUnmatchedHostPolicy(t *testing.T) {
 		}
 	})
 
-	t.Run("non-admin member: GET reflects real policy, PATCH is forbidden", func(t *testing.T) {
-		// Persist deny so we can verify the non-admin GET sees the truth
-		// rather than the previous silent passthrough fallback.
+	t.Run("scoped admin: GET reflects real policy, PATCH succeeds", func(t *testing.T) {
+		// Under the unified instance-role model, an instance admin scoped
+		// to the vault has full vault-management power, including PATCH.
 		_ = ms.SetVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostPolicy, "deny")
 		adminToken := setupAdminSession(t, ms, "root-ns-id")
 
-		// GET should succeed and return the actual stored policy.
 		req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/settings", nil)
 		req.Header.Set("Authorization", "Bearer "+adminToken)
 		rec := httptest.NewRecorder()
 		srv.httpServer.Handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
-			t.Fatalf("expected GET 200 for member, got %d: %s", rec.Code, rec.Body.String())
+			t.Fatalf("expected GET 200 for scoped admin, got %d: %s", rec.Code, rec.Body.String())
 		}
 		var resp map[string]string
 		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 		if resp["unmatched_host_policy"] != "deny" {
-			t.Fatalf("member GET should see real deny policy, got %q", resp["unmatched_host_policy"])
+			t.Fatalf("scoped admin GET should see real deny policy, got %q", resp["unmatched_host_policy"])
 		}
 
-		// PATCH must still be admin/owner-only.
 		patchBody := strings.NewReader(`{"unmatched_host_policy": "passthrough"}`)
 		req = httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/settings", patchBody)
 		req.Header.Set("Authorization", "Bearer "+adminToken)
 		req.Header.Set("Content-Type", "application/json")
 		rec = httptest.NewRecorder()
 		srv.httpServer.Handler.ServeHTTP(rec, req)
-		if rec.Code != http.StatusForbidden {
-			t.Fatalf("expected PATCH 403 for member, got %d: %s", rec.Code, rec.Body.String())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected PATCH 200 for scoped admin, got %d: %s", rec.Code, rec.Body.String())
 		}
 	})
 }
@@ -4573,14 +4632,13 @@ func TestOwnerVaultListShowsAllVaultsWithMembership(t *testing.T) {
 		byName[v.Name] = struct{ Role, Membership string }{v.Role, v.Membership}
 	}
 
-	// default vault: owner has explicit admin grant
-	if v, ok := byName["default"]; !ok || v.Membership != "explicit" || v.Role != "admin" {
-		t.Errorf("default vault: expected explicit/admin, got %+v", byName["default"])
+	// Under the unified instance-role model, owners auto-access every
+	// vault — every vault is reported as implicit/owner.
+	if v, ok := byName["default"]; !ok || v.Membership != "implicit" || v.Role != "owner" {
+		t.Errorf("default vault: expected implicit/owner, got %+v", byName["default"])
 	}
-
-	// orphaned vault: owner has no grant, should be implicit
-	if v, ok := byName["orphaned"]; !ok || v.Membership != "implicit" || v.Role != "" {
-		t.Errorf("orphaned vault: expected implicit/empty role, got %+v", byName["orphaned"])
+	if v, ok := byName["orphaned"]; !ok || v.Membership != "implicit" || v.Role != "owner" {
+		t.Errorf("orphaned vault: expected implicit/owner, got %+v", byName["orphaned"])
 	}
 }
 
@@ -4619,11 +4677,12 @@ func TestAdminVaultListOnlyShowsGrantedVaults(t *testing.T) {
 	}
 }
 
-func TestOwnerVaultJoinSuccess(t *testing.T) {
+func TestOwnerVaultJoinNoOp(t *testing.T) {
+	// Owners auto-access every vault now; the legacy join endpoint is a
+	// no-op compatibility shim that returns 200 for owners.
 	ms, ownerToken := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))
 
-	// Create a vault the owner has no grant for.
 	ms.CreateVault(context.Background(), "team-x")
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/team-x/join", nil)
@@ -4633,27 +4692,6 @@ func TestOwnerVaultJoinSuccess(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	// Verify grant was created as admin.
-	role, err := ms.GetVaultRole(context.Background(), "owner-user-id", "ns-team-x")
-	if err != nil || role != "admin" {
-		t.Fatalf("expected admin grant, got role=%q err=%v", role, err)
-	}
-}
-
-func TestOwnerVaultJoinAlreadyMember(t *testing.T) {
-	ms, ownerToken := setupMockStoreWithSession(t)
-	srv := newTestServer(withStore(ms))
-
-	// Owner already has a grant on the default vault.
-	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/join", nil)
-	req.Header.Set("Authorization", "Bearer "+ownerToken)
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -4793,7 +4831,9 @@ func TestScopedSessionTTLBounds(t *testing.T) {
 	}
 }
 
-func TestScopedSessionInvalidRole(t *testing.T) {
+func TestScopedSessionIgnoresUnknownFields(t *testing.T) {
+	// Per-vault role is gone; legacy clients sending a `vault_role` field
+	// should not break — we simply ignore it and mint a normal session.
 	ms, token := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))
 
@@ -4802,8 +4842,8 @@ func TestScopedSessionInvalidRole(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for invalid role, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

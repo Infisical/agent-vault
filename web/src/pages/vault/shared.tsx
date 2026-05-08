@@ -14,9 +14,13 @@ export {
 export function useVaultParams() {
   const { auth } = useRouteContext({ from: "/_auth" }) as { auth: AuthContext };
   const vaultContext = useRouteContext({ from: "/_auth/vaults/$name" }) as VaultContext;
+  const role = vaultContext.role;
   return {
     vaultName: vaultContext.vault_name,
-    vaultRole: vaultContext.vault_role,
+    // Actor's instance role within this vault (owner | admin | agent).
+    role,
+    isAdmin: role === "owner" || role === "admin",
+    isAgent: role === "agent",
     email: auth.email,
     isOwner: auth.is_owner,
   };

@@ -33,16 +33,13 @@ var agentInviteCmd = &cobra.Command{
 
 		type vaultEntry struct {
 			VaultName string `json:"vault_name"`
-			VaultRole string `json:"vault_role"`
 		}
 
 		var vaults []vaultEntry
 		for _, v := range vaultFlags {
-			name, role, _ := strings.Cut(v, ":")
-			if role == "" {
-				role = "proxy"
-			}
-			vaults = append(vaults, vaultEntry{VaultName: name, VaultRole: role})
+			// Tolerate legacy "name:role" syntax — strip anything after ":".
+			name, _, _ := strings.Cut(v, ":")
+			vaults = append(vaults, vaultEntry{VaultName: name})
 		}
 
 		payload := map[string]any{
@@ -116,13 +113,13 @@ var agentInviteListCmd = &cobra.Command{
 		var resp struct {
 			Invites []struct {
 				AgentName string `json:"agent_name"`
+				AgentRole string `json:"agent_role"`
 				Status    string `json:"status"`
 				CreatedBy string `json:"created_by"`
 				CreatedAt string `json:"created_at"`
 				ExpiresAt string `json:"expires_at"`
 				Vaults    []struct {
 					VaultName string `json:"vault_name"`
-					VaultRole string `json:"vault_role"`
 				} `json:"vaults"`
 			} `json:"invites"`
 		}
@@ -136,11 +133,11 @@ var agentInviteListCmd = &cobra.Command{
 		}
 
 		t := newTable(cmd.OutOrStdout())
-		t.AppendHeader(table.Row{"NAME", "STATUS", "VAULTS", "INVITED BY", "CREATED", "EXPIRES"})
+		t.AppendHeader(table.Row{"NAME", "ROLE", "STATUS", "VAULTS", "INVITED BY", "CREATED", "EXPIRES"})
 		for _, inv := range resp.Invites {
 			var vaultParts []string
 			for _, v := range inv.Vaults {
-				vaultParts = append(vaultParts, fmt.Sprintf("%s:%s", v.VaultName, v.VaultRole))
+				vaultParts = append(vaultParts, v.VaultName)
 			}
 			vaults := strings.Join(vaultParts, ", ")
 			if vaults == "" {
@@ -154,7 +151,7 @@ var agentInviteListCmd = &cobra.Command{
 			if parsed, err := time.Parse(time.RFC3339, inv.ExpiresAt); err == nil {
 				expires = parsed.Format("2006-01-02 15:04")
 			}
-			t.AppendRow(table.Row{inv.AgentName, inv.Status, vaults, inv.CreatedBy, created, expires})
+			t.AppendRow(table.Row{inv.AgentName, inv.AgentRole, inv.Status, vaults, inv.CreatedBy, created, expires})
 		}
 		t.Render()
 		return nil
@@ -185,10 +182,10 @@ var agentInviteRevokeCmd = &cobra.Command{
 
 func init() {
 	agentInviteCmd.Flags().Duration("invite-ttl", 15*time.Minute, "invite link expiration time")
-	agentInviteCmd.Flags().StringArray("vault", nil, "vault pre-assignment (format: name:role, role defaults to proxy)")
+	agentInviteCmd.Flags().StringArray("vault", nil, "vault to grant access to (repeatable)")
 	agentInviteCmd.Flags().String("address", "", "Agent Vault server address (default: from session)")
 	agentInviteCmd.Flags().Bool("token-only", false, "output only the raw invite token (for programmatic use)")
-	agentInviteCmd.Flags().String("role", "admin", "instance-level role for the agent (owner or admin)")
+	agentInviteCmd.Flags().String("role", "agent", "instance-level role for the agent (owner, admin, or agent)")
 	agentInviteListCmd.Flags().String("status", "", "filter by status (pending, redeemed, expired, revoked)")
 
 	agentInviteCmd.AddCommand(agentInviteListCmd, agentInviteRevokeCmd)

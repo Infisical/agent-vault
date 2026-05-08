@@ -16,13 +16,13 @@ const MaxProxyBodyBytes = 64 << 20
 
 // ProxyScope is the resolved identity + vault context for a proxy request.
 // It is produced once per CONNECT on the MITM ingress and carried through
-// to credential injection.
+// to credential injection. Effective permissions in the vault come from
+// the actor's instance role and are not part of the scope.
 type ProxyScope struct {
 	AgentID   string // non-empty for agent tokens
 	UserID    string // non-empty for user sessions
 	VaultID   string
 	VaultName string
-	VaultRole string
 }
 
 // ActorID returns the non-empty principal ID — UserID for user
@@ -48,7 +48,8 @@ type SessionStore interface {
 	GetSession(ctx context.Context, rawToken string) (*store.Session, error)
 	GetVault(ctx context.Context, name string) (*store.Vault, error)
 	GetVaultByID(ctx context.Context, id string) (*store.Vault, error)
-	GetVaultRole(ctx context.Context, actorID, vaultID string) (string, error)
+	GetAgentByID(ctx context.Context, id string) (*store.Agent, error)
+	HasVaultAccess(ctx context.Context, actorID, vaultID string) (bool, error)
 	ListActorGrants(ctx context.Context, actorID string) ([]store.VaultGrant, error)
 }
 
@@ -99,33 +100,43 @@ func (r *StoreSessionResolver) ResolveForProxy(ctx context.Context, token, vault
 			AgentID:   sess.AgentID,
 			VaultID:   v.ID,
 			VaultName: v.Name,
-			VaultRole: sess.VaultRole,
 		}, nil
 	}
 
 	// Instance-level agent token: resolve vault from hint, or from the
-	// agent's unique grant if any.
+	// agent's unique grant if any. Owners auto-access every vault and
+	// therefore must always supply a hint (no unique-grant inference).
 	if sess.AgentID == "" {
 		return nil, ErrNoVaultContext
 	}
+
+	agent, err := r.Store.GetAgentByID(ctx, sess.AgentID)
+	if err != nil || agent == nil {
+		return nil, ErrInvalidSession
+	}
+	isOwner := agent.Role == "owner"
 
 	if vaultHint != "" {
 		v, err := r.Store.GetVault(ctx, vaultHint)
 		if err != nil || v == nil {
 			return nil, ErrVaultNotFound
 		}
-		role, err := r.Store.GetVaultRole(ctx, sess.AgentID, v.ID)
-		if err != nil || role == "" {
-			return nil, ErrVaultAccessDenied
+		if !isOwner {
+			ok, err := r.Store.HasVaultAccess(ctx, sess.AgentID, v.ID)
+			if err != nil || !ok {
+				return nil, ErrVaultAccessDenied
+			}
 		}
 		return &ProxyScope{
 			AgentID:   sess.AgentID,
 			VaultID:   v.ID,
 			VaultName: v.Name,
-			VaultRole: role,
 		}, nil
 	}
 
+	if isOwner {
+		return nil, ErrNoVaultContext
+	}
 	grants, err := r.Store.ListActorGrants(ctx, sess.AgentID)
 	if err != nil {
 		return nil, ErrNoVaultContext
@@ -139,7 +150,6 @@ func (r *StoreSessionResolver) ResolveForProxy(ctx context.Context, token, vault
 			AgentID:   sess.AgentID,
 			VaultID:   g.VaultID,
 			VaultName: g.VaultName,
-			VaultRole: g.Role,
 		}, nil
 	default:
 		return nil, ErrAgentVaultAmbiguous

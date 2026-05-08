@@ -162,7 +162,7 @@ func TestMITMInjectsCredentials(t *testing.T) {
 	upstreamHost, _, _ := net.SplitHostPort(upstreamAuthority)
 
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{
 			Headers: map[string]string{"Authorization": "Bearer injected-secret"},
@@ -238,7 +238,7 @@ func TestMITMForwardsBoundedBodiesWithContentLength(t *testing.T) {
 
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{
 			Headers: map[string]string{"Authorization": "Bearer injected-secret"},
@@ -330,7 +330,7 @@ func TestMITMWebSocketInjectsCredentialsAndPipesFrames(t *testing.T) {
 	upstreamTarget := strings.TrimPrefix(upstream.URL, "https://")
 
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{
 			Headers: map[string]string{"Authorization": "Bearer injected-ws-secret"},
@@ -436,7 +436,7 @@ func TestMITMWebSocketXAITTSIntegration(t *testing.T) {
 	}
 
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		"api.x.ai": {result: &brokercore.InjectResult{
 			Headers: map[string]string{"Authorization": "Bearer " + xaiKey},
@@ -526,7 +526,7 @@ func TestMITMWebSocketOpenAIRealtimeIntegration(t *testing.T) {
 	}
 
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		"api.openai.com": {result: &brokercore.InjectResult{
 			Headers: map[string]string{"Authorization": "Bearer " + openAIKey},
@@ -638,7 +638,7 @@ func TestMITMWebSocketSanitizesSwitchingResponseAndInjectedHeadersWin(t *testing
 	upstreamTarget := strings.TrimPrefix(upstream.URL, "https://")
 
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{AgentID: "agent1", VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{AgentID: "agent1", VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{
 			Headers: map[string]string{"Sec-WebSocket-Protocol": "injected-proto"},
@@ -739,7 +739,7 @@ func TestMITMWebSocketHoldsProxyConcurrencyUntilTunnelCloses(t *testing.T) {
 	upstreamTarget := strings.TrimPrefix(upstream.URL, "https://")
 
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{AgentID: "agent1", VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{AgentID: "agent1", VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{
 			Headers: map[string]string{"Authorization": "Bearer injected-secret"},
@@ -856,7 +856,7 @@ func TestMITMWebSocketUpstreamHandshakeTimeout(t *testing.T) {
 	upstreamTarget := strings.TrimPrefix(upstream.URL, "https://")
 
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{AgentID: "agent1", VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{AgentID: "agent1", VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{
 			Headers: map[string]string{"Authorization": "Bearer injected-secret"},
@@ -927,7 +927,7 @@ func TestMITMPassthroughForwardsClientAuthorization(t *testing.T) {
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
 
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{
 			MatchedHost: upstreamHost,
@@ -1001,7 +1001,7 @@ func TestMITMBearerForwardsArbitraryClientHeaders(t *testing.T) {
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
 
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{
 			MatchedHost: upstreamHost,
@@ -1237,7 +1237,7 @@ func TestMITMUnknownHostInTunnel(t *testing.T) {
 	defer upstream.Close()
 
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	// byHost empty → every Inject returns ErrServiceNotFound.
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{}}
 
@@ -1287,7 +1287,7 @@ func TestMITMUnknownHostPassthrough(t *testing.T) {
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
 
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{Passthrough: true}},
 	}}
@@ -1325,7 +1325,7 @@ func TestMITMUpstreamCertUntrusted(t *testing.T) {
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
 
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{
 			Headers: map[string]string{"Authorization": "Bearer whatever"},
@@ -1381,7 +1381,7 @@ func TestMITMSubstitutionRewritesPath(t *testing.T) {
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
 
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{
 			Headers: map[string]string{"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("AC12345:tok-shh"))},
@@ -1437,7 +1437,7 @@ func TestMITMSubstitutionCaseSensitive(t *testing.T) {
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
 
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{
 			Substitutions: []brokercore.ResolvedSubstitution{{
@@ -1478,7 +1478,7 @@ func TestMITMSubstitutionRewritesQueryAndHeader(t *testing.T) {
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
 
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{
 			Substitutions: []brokercore.ResolvedSubstitution{

@@ -107,7 +107,7 @@ func TestMITMForwardPlainHTTPInjectsCredentials(t *testing.T) {
 	upstreamHost, _, _ := net.SplitHostPort(upstreamAuthority)
 
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{
 			Headers: map[string]string{"Authorization": "Bearer injected-secret"},
@@ -167,7 +167,7 @@ func TestMITMForwardPlainHTTPInjectsCredentials(t *testing.T) {
 // nudges the client toward CONNECT for HTTPS upstreams.
 func TestMITMForwardRejectsHTTPSScheme(t *testing.T) {
 	proxyURL, clientRoots, _ := setupProxy(t,
-		validTokenResolver("av_sess_ok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"}),
+		validTokenResolver("av_sess_ok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default"}),
 		&fakeCredProvider{})
 
 	conn := dialProxyTLS(t, proxyURL, clientRoots)
@@ -196,7 +196,7 @@ func TestMITMForwardRejectsHTTPSScheme(t *testing.T) {
 // malformed forward-proxy requests.
 func TestMITMForwardRejectsNonHTTPSchemes(t *testing.T) {
 	proxyURL, clientRoots, _ := setupProxy(t,
-		validTokenResolver("av_sess_ok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"}),
+		validTokenResolver("av_sess_ok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default"}),
 		&fakeCredProvider{})
 
 	auth := base64.StdEncoding.EncodeToString([]byte("av_sess_ok:"))
@@ -222,7 +222,7 @@ func TestMITMForwardRejectsNonHTTPSchemes(t *testing.T) {
 // Proxy-Authorization gets a 407 challenge with Proxy-Authenticate.
 func TestMITMForwardRequiresProxyAuthorization(t *testing.T) {
 	proxyURL, clientRoots, _ := setupProxy(t,
-		validTokenResolver("av_sess_ok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"}),
+		validTokenResolver("av_sess_ok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default"}),
 		&fakeCredProvider{})
 
 	conn := dialProxyTLS(t, proxyURL, clientRoots)
@@ -304,7 +304,7 @@ func TestMITMForwardStripsHopByHopHeaders(t *testing.T) {
 
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{Passthrough: true}},
 	}}
@@ -388,7 +388,7 @@ func TestMITMForwardWebSocketPlainHTTP(t *testing.T) {
 
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{Passthrough: true}},
 	}}
@@ -451,7 +451,7 @@ func TestMITMForwardSSRFLoopbackBlocked(t *testing.T) {
 
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{Passthrough: true}},
 	}}
@@ -488,7 +488,6 @@ func TestMITMForwardEmitsRequestLogRow(t *testing.T) {
 			AgentID:   "agent-42",
 			VaultID:   "v1",
 			VaultName: "default",
-			VaultRole: "proxy",
 		})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{
@@ -562,7 +561,7 @@ func TestMITMForwardKeepalivePersistsAcrossRequests(t *testing.T) {
 
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{Passthrough: true}},
 	}}
@@ -622,7 +621,7 @@ func TestMITMForwardIPv6PreservesHostHeader(t *testing.T) {
 	})
 
 	sr := validTokenResolver("av_sess_ok",
-		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default"})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		"::1": {result: &brokercore.InjectResult{Passthrough: true}},
 	}}

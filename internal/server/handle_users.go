@@ -76,7 +76,6 @@ func (s *Server) buildOwnerUserList(ctx context.Context, users []store.User) []m
 
 	type vaultEntry struct {
 		VaultName string `json:"vault_name"`
-		VaultRole string `json:"vault_role"`
 	}
 	items := make([]map[string]interface{}, len(users))
 	for i, u := range users {
@@ -84,7 +83,7 @@ func (s *Server) buildOwnerUserList(ctx context.Context, users []store.User) []m
 		vaults := make([]vaultEntry, 0, len(grants))
 		for _, g := range grants {
 			if name, ok := vaultNameByID[g.VaultID]; ok {
-				vaults = append(vaults, vaultEntry{VaultName: name, VaultRole: g.Role})
+				vaults = append(vaults, vaultEntry{VaultName: name})
 			}
 		}
 		items[i] = map[string]interface{}{
@@ -192,7 +191,7 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Prevent deleting the last owner.
-	if user.Role == "owner" && s.guardLastOwner(ctx, w, "remove") {
+	if user.IsOwner() && s.guardLastOwner(ctx, w, "remove") {
 		return
 	}
 
@@ -235,7 +234,7 @@ func (s *Server) handleUserSetRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Prevent demoting the last owner.
-	if user.Role == "owner" && req.Role == "admin" && s.guardLastOwner(ctx, w, "demote") {
+	if user.IsOwner() && req.Role == "admin" && s.guardLastOwner(ctx, w, "demote") {
 		return
 	}
 
@@ -254,13 +253,12 @@ const maxPendingUserInvites = 50
 // userInviteVaultJSON is the JSON response shape for vault pre-assignments on invites.
 type userInviteVaultJSON struct {
 	VaultName string `json:"vault_name"`
-	VaultRole string `json:"vault_role"`
 }
 
 func vaultsToJSON(vaults []store.UserInviteVault) []userInviteVaultJSON {
 	items := make([]userInviteVaultJSON, len(vaults))
 	for i, v := range vaults {
-		items[i] = userInviteVaultJSON{VaultName: v.VaultName, VaultRole: v.VaultRole}
+		items[i] = userInviteVaultJSON{VaultName: v.VaultName}
 	}
 	return items
 }
@@ -305,13 +303,17 @@ func (s *Server) handleUserInviteCreate(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		return
 	}
+	// Agents are proxy-only and cannot invite other actors.
+	if actor.IsAgent() {
+		jsonError(w, http.StatusForbidden, "Agents cannot create user invites")
+		return
+	}
 
 	var req struct {
 		Email  string `json:"email"`
 		Role   string `json:"role"`
 		Vaults []struct {
 			VaultName string `json:"vault_name"`
-			VaultRole string `json:"vault_role"`
 		} `json:"vaults"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -366,30 +368,23 @@ func (s *Server) handleUserInviteCreate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Resolve and validate vault pre-assignments.
+	// Resolve and validate vault pre-assignments. Each entry is a pure
+	// scope grant; effective power inside the vault comes from the
+	// invite's instance role. Admin inviters cannot pre-assign vaults
+	// outside their own scope.
+	scope := s.actorVaultScope(ctx, actor)
 	var vaults []store.UserInviteVault
 	for _, v := range req.Vaults {
-		if v.VaultRole == "" {
-			v.VaultRole = "member"
-		}
-		if v.VaultRole != "admin" && v.VaultRole != "member" {
-			jsonError(w, http.StatusBadRequest, fmt.Sprintf("Vault role must be 'admin' or 'member', got %q", v.VaultRole))
-			return
-		}
 		vault, err := s.store.GetVault(ctx, v.VaultName)
 		if err != nil || vault == nil {
 			jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", v.VaultName))
 			return
 		}
-		// Non-owners must be admin of each pre-assigned vault.
-		if !actor.IsOwner() {
-			role, _ := s.store.GetVaultRole(ctx, actor.ID, vault.ID)
-			if role != "admin" {
-				jsonError(w, http.StatusForbidden, fmt.Sprintf("You must be an admin of vault %q to pre-assign it", v.VaultName))
-				return
-			}
+		if !scopeContains(scope, vault.ID) {
+			jsonError(w, http.StatusForbidden, fmt.Sprintf("You must have access to vault %q to pre-assign it", v.VaultName))
+			return
 		}
-		vaults = append(vaults, store.UserInviteVault{VaultID: vault.ID, VaultName: vault.Name, VaultRole: v.VaultRole})
+		vaults = append(vaults, store.UserInviteVault{VaultID: vault.ID, VaultName: vault.Name})
 	}
 
 	inv, err := s.store.CreateUserInvite(ctx, req.Email, actor.ID, role, time.Now().Add(userInviteTTL), vaults)
@@ -497,11 +492,14 @@ func (s *Server) handleUserInviteAccept(w http.ResponseWriter, r *http.Request) 
 		user = newUser
 	}
 
-	// Grant pre-assigned vault access.
-	for _, v := range inv.Vaults {
-		if err := s.store.GrantVaultRole(ctx, user.ID, "user", v.VaultID, v.VaultRole); err != nil {
-			jsonError(w, http.StatusInternalServerError, "Failed to grant vault access")
-			return
+	// Grant pre-assigned vault scope. Owners auto-access every vault, so
+	// we skip the writes for owner invites.
+	if inv.Role != "owner" {
+		for _, v := range inv.Vaults {
+			if err := s.store.GrantVaultAccess(ctx, user.ID, "user", v.VaultID); err != nil {
+				jsonError(w, http.StatusInternalServerError, "Failed to grant vault access")
+				return
+			}
 		}
 	}
 
@@ -534,24 +532,20 @@ func (s *Server) handleUserInviteList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Non-owners only see invites they created or invites with pre-assignments to vaults they admin.
-	if !actor.IsOwner() {
-		actorGrants, _ := s.store.ListActorGrants(ctx, actor.ID)
-		adminVaultIDs := map[string]bool{}
-		for _, g := range actorGrants {
-			if g.Role == "admin" {
-				adminVaultIDs[g.VaultID] = true
-			}
-		}
-
+	// Non-owners only see invites they created or invites with
+	// pre-assignments overlapping their own scope.
+	if scope := s.actorVaultScope(ctx, actor); scope != nil {
 		var filtered []store.UserInvite
 		for _, inv := range invites {
 			if inv.CreatedBy == actor.ID {
 				filtered = append(filtered, inv)
 				continue
 			}
+			if !actor.IsAdmin() {
+				continue
+			}
 			for _, v := range inv.Vaults {
-				if adminVaultIDs[v.VaultID] {
+				if scope[v.VaultID] {
 					filtered = append(filtered, inv)
 					break
 				}
@@ -604,18 +598,7 @@ func (s *Server) handleUserInviteRevoke(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Authorization: creator, owner, or admin of a pre-assigned vault
-	allowed := inv.CreatedBy == actor.ID || actor.IsOwner()
-	if !allowed {
-		for _, v := range inv.Vaults {
-			role, _ := s.store.GetVaultRole(ctx, actor.ID, v.VaultID)
-			if role == "admin" {
-				allowed = true
-				break
-			}
-		}
-	}
-	if !allowed {
+	if !s.canManageInvite(ctx, actor, inv.CreatedBy, userInviteVaultIDs(inv)) {
 		jsonError(w, http.StatusForbidden, "You don't have permission to revoke this invite")
 		return
 	}
@@ -650,18 +633,7 @@ func (s *Server) handleUserInviteReinvite(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Authorization: creator, owner, or admin of a pre-assigned vault
-	allowed := existing.CreatedBy == actor.ID || actor.IsOwner()
-	if !allowed {
-		for _, v := range existing.Vaults {
-			role, _ := s.store.GetVaultRole(ctx, actor.ID, v.VaultID)
-			if role == "admin" {
-				allowed = true
-				break
-			}
-		}
-	}
-	if !allowed {
+	if !s.canManageInvite(ctx, actor, existing.CreatedBy, userInviteVaultIDs(existing)) {
 		jsonError(w, http.StatusForbidden, "You don't have permission to reinvite")
 		return
 	}

@@ -16,9 +16,10 @@ import (
 )
 
 // resolveVaultForAdminOrOwner loads the vault and verifies the caller is
-// either a vault admin or the instance owner — the auth scope shared by
-// vault rename, delete, and settings handlers. On failure it writes the
-// error response and returns nil; callers should `return` immediately.
+// the instance owner or an instance admin scoped to it — the auth scope
+// shared by vault rename, delete, and settings handlers. On failure it
+// writes the error response and returns nil; callers should `return`
+// immediately.
 func (s *Server) resolveVaultForAdminOrOwner(w http.ResponseWriter, r *http.Request, name string) *store.Vault {
 	ctx := r.Context()
 	ns, err := s.store.GetVault(ctx, name)
@@ -26,13 +27,7 @@ func (s *Server) resolveVaultForAdminOrOwner(w http.ResponseWriter, r *http.Requ
 		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
 		return nil
 	}
-	actor, err := s.requireActor(w, r)
-	if err != nil {
-		return nil
-	}
-	role, _ := s.store.GetVaultRole(ctx, actor.ID, ns.ID)
-	if role != "admin" && !actor.IsOwner() {
-		jsonError(w, http.StatusForbidden, "Vault admin or instance owner required")
+	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
 		return nil
 	}
 	return ns
@@ -59,7 +54,10 @@ func readUnmatchedHostPolicy(ctx context.Context, st interface {
 	return policy, nil
 }
 
-// handleVaultContext returns the current user's membership context for a vault.
+// handleVaultContext returns the current actor's membership context for
+// a vault. Effective permissions come from the actor's instance role;
+// the response includes that role plus an explicit access flag so the
+// frontend can decide what to show.
 func (s *Server) handleVaultContext(w http.ResponseWriter, r *http.Request) {
 	vaultName := r.PathValue("name")
 	ctx := r.Context()
@@ -75,15 +73,23 @@ func (s *Server) handleVaultContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	vaultRole, err := s.store.GetVaultRole(ctx, actor.ID, vault.ID)
-	if err != nil {
+	hasAccess := actor.IsOwner()
+	if !hasAccess {
+		has, err := s.store.HasVaultAccess(ctx, actor.ID, vault.ID)
+		if err != nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to check vault access")
+			return
+		}
+		hasAccess = has
+	}
+	if !hasAccess {
 		jsonError(w, http.StatusForbidden, "No vault access")
 		return
 	}
 
 	jsonOK(w, map[string]interface{}{
 		"vault_name": vault.Name,
-		"vault_role": vaultRole,
+		"role":       actor.Role,
 	})
 }
 
@@ -119,15 +125,16 @@ func (s *Server) handleVaultUserList(w http.ResponseWriter, r *http.Request) {
 		if err != nil || u == nil {
 			continue
 		}
-		users = append(users, userItem{Email: u.Email, Role: g.Role, Status: "active"})
+		users = append(users, userItem{Email: u.Email, Role: u.Role, Status: "active"})
 	}
 
-	// Include pending invite entries for this vault.
+	// Include pending invite entries for this vault. The instance role
+	// (from the invite) determines effective power once accepted.
 	pendingInvites, _ := s.store.ListUserInvitesByVault(ctx, vault.ID, "pending")
 	for _, inv := range pendingInvites {
 		for _, v := range inv.Vaults {
 			if v.VaultID == vault.ID {
-				users = append(users, userItem{Email: inv.Email, Role: v.VaultRole, Status: "pending"})
+				users = append(users, userItem{Email: inv.Email, Role: inv.Role, Status: "pending"})
 				break
 			}
 		}
@@ -136,7 +143,10 @@ func (s *Server) handleVaultUserList(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"users": users})
 }
 
-// handleVaultUserAdd adds an existing instance user to a vault directly.
+// handleVaultUserAdd attaches an existing instance user to a vault as a
+// pure scope grant. Effective power inside the vault comes from the
+// user's instance role (admin / agent — owners auto-access every vault
+// already).
 func (s *Server) handleVaultUserAdd(w http.ResponseWriter, r *http.Request) {
 	vaultName := r.PathValue("name")
 	ctx := r.Context()
@@ -153,7 +163,6 @@ func (s *Server) handleVaultUserAdd(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Email string `json:"email"`
-		Role  string `json:"role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
@@ -163,17 +172,14 @@ func (s *Server) handleVaultUserAdd(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.Role == "" {
-		req.Role = "member"
-	}
-	if req.Role != "admin" && req.Role != "member" {
-		jsonError(w, http.StatusBadRequest, "Role must be 'admin' or 'member'")
-		return
-	}
 
 	target, err := s.store.GetUserByEmail(ctx, req.Email)
 	if err != nil || target == nil {
 		jsonError(w, http.StatusNotFound, fmt.Sprintf("User %q not found in this instance", req.Email))
+		return
+	}
+	if target.IsOwner() {
+		jsonError(w, http.StatusConflict, "Owners auto-access every vault")
 		return
 	}
 
@@ -183,14 +189,14 @@ func (s *Server) handleVaultUserAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.GrantVaultRole(ctx, target.ID, "user", vault.ID, req.Role); err != nil {
+	if err := s.store.GrantVaultAccess(ctx, target.ID, "user", vault.ID); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to grant vault access")
 		return
 	}
 
 	jsonCreated(w, map[string]interface{}{
 		"email": req.Email,
-		"role":  req.Role,
+		"role":  target.Role,
 	})
 }
 
@@ -215,81 +221,12 @@ func (s *Server) handleVaultUserRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Guard: can't remove last admin.
-	role, _ := s.store.GetVaultRole(ctx, user.ID, vault.ID)
-	if role == "admin" {
-		adminCount, _ := s.store.CountVaultAdmins(ctx, vault.ID)
-		if adminCount <= 1 {
-			jsonError(w, http.StatusConflict, "Cannot remove the last admin from this vault")
-			return
-		}
-	}
-
 	if err := s.store.RevokeVaultAccess(ctx, user.ID, vault.ID); err != nil {
 		jsonError(w, http.StatusNotFound, "User does not belong to this vault")
 		return
 	}
 
 	jsonOK(w, map[string]string{"message": fmt.Sprintf("removed %s from vault %s", email, vaultName)})
-}
-
-func (s *Server) handleVaultUserSetRole(w http.ResponseWriter, r *http.Request) {
-	vaultName := r.PathValue("name")
-	email := r.PathValue("email")
-	ctx := r.Context()
-
-	vault, err := s.store.GetVault(ctx, vaultName)
-	if err != nil || vault == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
-		return
-	}
-
-	if _, err := s.requireVaultAdmin(w, r, vault.ID); err != nil {
-		return
-	}
-
-	var req struct {
-		Role string `json:"role"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-	if req.Role != "admin" && req.Role != "member" {
-		jsonError(w, http.StatusBadRequest, "Role must be 'admin' or 'member'")
-		return
-	}
-
-	user, err := s.store.GetUserByEmail(ctx, email)
-	if err != nil || user == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("User %q not found", email))
-		return
-	}
-
-	// Guard: can't demote last admin.
-	currentRole, _ := s.store.GetVaultRole(ctx, user.ID, vault.ID)
-	if currentRole == "" {
-		jsonError(w, http.StatusNotFound, "User does not belong to this vault")
-		return
-	}
-	if currentRole == "admin" && req.Role == "member" {
-		adminCount, _ := s.store.CountVaultAdmins(ctx, vault.ID)
-		if adminCount <= 1 {
-			jsonError(w, http.StatusConflict, "Cannot demote the last admin of this vault")
-			return
-		}
-	}
-
-	if err := s.store.GrantVaultRole(ctx, user.ID, "user", vault.ID, req.Role); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to update role")
-		return
-	}
-
-	jsonOK(w, map[string]string{
-		"email":   email,
-		"role":    req.Role,
-		"message": fmt.Sprintf("updated %s's role to %s in vault %s", email, req.Role, vaultName),
-	})
 }
 
 func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
@@ -330,8 +267,11 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Creator becomes vault admin.
-	_ = s.store.GrantVaultRole(ctx, actor.ID, actor.Type, ns.ID, "admin")
+	// Creator gets explicit scope on the new vault. Owners auto-access
+	// every vault, so we skip the write for them.
+	if !actor.IsOwner() {
+		_ = s.store.GrantVaultAccess(ctx, actor.ID, actor.Type, ns.ID)
+	}
 
 	jsonCreated(w, map[string]interface{}{
 		"id":         ns.ID,
@@ -361,8 +301,7 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 	var items []nsItem
 
 	if actor.IsOwner() {
-		// Owners see all vaults. Vaults they have explicit grants for are
-		// "explicit"; the rest are "implicit" (visible but not yet joined).
+		// Owners auto-access every vault.
 		vaults, err := s.store.ListVaults(ctx)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "Failed to list vaults")
@@ -370,22 +309,17 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, v := range vaults {
 			pending, _ := s.store.CountPendingProposals(ctx, v.ID)
-			role, _ := s.store.GetVaultRole(ctx, actor.ID, v.ID)
-			membership := "implicit"
-			if role != "" {
-				membership = "explicit"
-			}
 			items = append(items, nsItem{
 				ID:               v.ID,
 				Name:             v.Name,
-				Role:             role,
-				Membership:       membership,
+				Role:             actor.Role,
+				Membership:       "implicit",
 				CreatedAt:        v.CreatedAt.Format(time.RFC3339),
 				PendingProposals: pending,
 			})
 		}
 	} else {
-		// Non-owners see only vaults they have explicit grants for.
+		// Non-owners see only vaults they have explicit scope on.
 		grants, err := s.store.ListActorGrants(ctx, actor.ID)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "Failed to list vaults")
@@ -400,7 +334,7 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 			items = append(items, nsItem{
 				ID:               ns.ID,
 				Name:             ns.Name,
-				Role:             g.Role,
+				Role:             actor.Role,
 				Membership:       "explicit",
 				CreatedAt:        ns.CreatedAt.Format(time.RFC3339),
 				PendingProposals: pending,
@@ -581,12 +515,14 @@ func (s *Server) handleVaultSettingsPatch(w http.ResponseWriter, r *http.Request
 	jsonOK(w, map[string]interface{}{"unmatched_host_policy": string(policy)})
 }
 
+// handleVaultJoin is a no-op compatibility shim for owner-only callers.
+// Owners auto-access every vault under the unified instance-role model,
+// so explicit joining is obsolete. Returns 200 for any vault that exists
+// so older clients keep working unchanged.
 func (s *Server) handleVaultJoin(w http.ResponseWriter, r *http.Request) {
-	actor, err := s.requireOwnerActor(w, r)
-	if err != nil {
+	if _, err := s.requireOwnerActor(w, r); err != nil {
 		return
 	}
-
 	name := r.PathValue("name")
 	ctx := r.Context()
 	ns, err := s.store.GetVault(ctx, name)
@@ -594,25 +530,9 @@ func (s *Server) handleVaultJoin(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
 		return
 	}
-
-	has, err := s.store.HasVaultAccess(ctx, actor.ID, ns.ID)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to check vault access")
-		return
-	}
-	if has {
-		jsonError(w, http.StatusConflict, "Already a member of this vault")
-		return
-	}
-
-	if err := s.store.GrantVaultRole(ctx, actor.ID, actor.Type, ns.ID, "admin"); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to join vault")
-		return
-	}
-
 	jsonOK(w, map[string]interface{}{
 		"vault":  name,
-		"role":   "admin",
+		"role":   "owner",
 		"joined": true,
 	})
 }

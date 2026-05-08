@@ -207,7 +207,7 @@ Key fields (JSON mode):
 
 ## Request Logs
 
-Agent Vault keeps a per-vault audit log of proxied requests (method, host, path, status, latency -- never bodies or query strings). The CLI does not wrap this yet; fetch via the HTTP API: `GET {AGENT_VAULT_ADDR}/v1/vaults/{vault}/logs` with `Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}`. Requires vault `member` or `admin` role. See `skill_http.md` for query params.
+Agent Vault keeps a per-vault audit log of proxied requests (method, host, path, status, latency -- never bodies or query strings). The CLI does not wrap this yet; fetch via the HTTP API: `GET {AGENT_VAULT_ADDR}/v1/vaults/{vault}/logs` with `Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}`. Requires the instance `admin` or `owner` role with access to the vault. See `skill_http.md` for query params.
 
 ## Building Code That Needs Credentials
 
@@ -246,7 +246,7 @@ agent-vault vault proposal create \
 
 ## Reading Credentials
 
-To read the decrypted value of a credential (requires member+ vault role):
+To read the decrypted value of a credential (requires the instance `admin` or `owner` role with access to the vault — instance `agent` actors are blocked):
 
 ```bash
 agent-vault vault credential get <key>

@@ -267,7 +267,6 @@ description: "Complete reference for all Agent Vault CLI commands."
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--address` | | Server address override |
-    | `--role` | `proxy` | Vault role for the session: `proxy`, `member`, or `admin` |
     | `--ttl` | `0` | Session TTL in seconds (300–604800). Default: server default (24h). |
     | `--isolation` | `host` | Isolation mode for the child: `host` (default, cooperative — runs on the host with `HTTPS_PROXY`/`HTTP_PROXY`) or `container` (non-cooperative Docker container; see [Container isolation](/guides/container-isolation)). Also read from `AGENT_VAULT_ISOLATION`. |
     | `--image` | | Override the bundled container image (`--isolation=container` only). |
@@ -283,12 +282,11 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault token [flags]
     ```
 
-    Mint a vault-scoped session token and print it to stdout. Useful when you need a scoped token without wrapping a child process via `agent-vault run`.
+    Mint a vault-scoped session token and print it to stdout. Useful when you need a scoped token without wrapping a child process via `agent-vault run`. Effective power inside the scoped session is the calling actor's instance role; there is no per-session role to choose.
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--address` | | Server address override |
-    | `--role` | `proxy` | Vault role for the session: `proxy`, `member`, or `admin` |
     | `--ttl` | `0` | Session TTL in seconds (300–604800). Default: server default (24h). |
 
     ```bash
@@ -297,8 +295,8 @@ description: "Complete reference for all Agent Vault CLI commands."
     export AGENT_VAULT_ADDR=http://localhost:14321
     export AGENT_VAULT_VAULT=default
 
-    # Mint a short-lived token with member role
-    agent-vault vault token --vault myproject --role member --ttl 3600
+    # Mint a short-lived scoped token.
+    agent-vault vault token --vault myproject --ttl 3600
     ```
   </Accordion>
 </AccordionGroup>
@@ -311,12 +309,11 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault user add <email> [flags]
     ```
 
-    Add an existing instance user to a vault (direct grant, no invite needed).
+    Add an existing instance user to a vault (direct scope grant, no invite needed). Effective power in the vault comes from the user's instance role.
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
-    | `--role` | `member` | Vault role: `admin` or `member` |
   </Accordion>
 
   <Accordion title="agent-vault vault user list">
@@ -343,18 +340,6 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--vault` | `default` | Target vault |
   </Accordion>
 
-  <Accordion title="agent-vault vault user set-role">
-    ```bash
-    agent-vault vault user set-role <email> [flags]
-    ```
-
-    Change a user's vault-level role.
-
-    | Flag | Default | Description |
-    |------|---------|-------------|
-    | `--vault` | `default` | Target vault |
-    | `--role` | | Vault role: `admin` or `member` (required) |
-  </Accordion>
 </AccordionGroup>
 
 ## Users
@@ -373,16 +358,16 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault user invite <email> [flags]
     ```
 
-    Invite a user to the Agent Vault instance. Sends an HTML email with an acceptance link if SMTP is configured; always returns the `invite_link` in the response. Any authenticated user can create invites. Invites optionally pre-assign vault access.
+    Invite a user to the Agent Vault instance. Sends an HTML email with an acceptance link if SMTP is configured; always returns the `invite_link` in the response. Owners and admins can create invites — admins cannot grant a role above their own and cannot pre-assign vaults outside their own scope. Invites optionally pre-assign vault scope.
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--role` | `admin` | Instance role for the invited user: `owner` or `admin` |
-    | `--vault` | | Vault pre-assignment in `name:role` format (repeatable). Role defaults to `member`. |
+    | `--vault` | | Vault to grant access to (repeatable). Effective power inside the vault comes from the user's instance role. |
 
     ```bash
-    # Invite with vault pre-assignments
-    agent-vault user invite alice@example.com --vault default:admin --vault payments:member
+    # Invite with vault scope pre-assignments
+    agent-vault user invite alice@example.com --vault default --vault payments
     ```
   </Accordion>
 
@@ -528,7 +513,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
-    | `--reveal` | `false` | Show decrypted credential values (requires member+ role) |
+    | `--reveal` | `false` | Show decrypted credential values (requires the instance `admin` or `owner` role with access to the vault — instance `agent` actors are blocked) |
   </Accordion>
 
   <Accordion title="agent-vault vault credential get">
@@ -536,7 +521,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential get <KEY> [flags]
     ```
 
-    Print the decrypted value of a single credential to stdout. Pipe-friendly. Requires member+ role. Alias: `agent-vault vault creds get`.
+    Print the decrypted value of a single credential to stdout. Pipe-friendly. Requires the instance `admin` or `owner` role with access to the vault — instance `agent` actors are blocked. Alias: `agent-vault vault creds get`.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -684,22 +669,22 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault agent invite <name> [flags]
     ```
 
-    Create an agent invite and print the onboarding prompt (copies to clipboard). The agent redeems the invite via HTTP and receives an instance-level agent token.
+    Create an agent invite and print the onboarding prompt (copies to clipboard). The agent redeems the invite via HTTP and receives an instance-level agent token. Owners and admins can create invites — admins cannot grant a role above their own and cannot pre-assign vaults outside their own scope.
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--role` | `admin` | Instance-level role: `owner` or `admin` |
-    | `--vault` | | Vault pre-assignment in `name:role` format (repeatable). Role defaults to `proxy`. |
+    | `--role` | `agent` | Instance-level role for the agent: `owner`, `admin`, or `agent` |
+    | `--vault` | | Vault to grant access to (repeatable). Effective power inside the vault comes from the agent's instance role. |
     | `--invite-ttl` | `15m` | Invite link expiration time (Go duration format) |
     | `--address` | | Agent Vault server address (default: from session) |
     | `--token-only` | `false` | Output only the raw invite token (for programmatic use) |
 
     ```bash
-    # Invite with vault pre-assignments
-    agent-vault agent invite my-agent --vault default:proxy --vault payments:member
+    # Proxy-only agent scoped to two vaults.
+    agent-vault agent invite my-agent --vault default --vault payments
 
-    # Invite as an instance owner
-    agent-vault agent invite my-agent --role owner --vault default:admin
+    # Scoped admin agent — full vault management on the listed vaults.
+    agent-vault agent invite my-agent --role admin --vault default
     ```
   </Accordion>
 
@@ -772,7 +757,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--role` | | Instance role: `owner` or `admin` (required) |
+    | `--role` | | Instance role: `owner`, `admin`, or `agent` (required) |
   </Accordion>
 </AccordionGroup>
 
@@ -796,12 +781,11 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault agent add <name> [flags]
     ```
 
-    Add an existing instance agent to a vault.
+    Grant an existing instance agent access to this vault. Effective power in the vault comes from the agent's instance role.
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
-    | `--role` | `proxy` | Vault role: `proxy`, `member`, or `admin` |
   </Accordion>
 
   <Accordion title="agent-vault vault agent remove">
@@ -809,24 +793,11 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault agent remove <name> [flags]
     ```
 
-    Remove an agent from a vault.
+    Remove an agent's access from a vault.
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
-  </Accordion>
-
-  <Accordion title="agent-vault vault agent set-role">
-    ```bash
-    agent-vault vault agent set-role <name> [flags]
-    ```
-
-    Change an agent's vault role.
-
-    | Flag | Default | Description |
-    |------|---------|-------------|
-    | `--vault` | `default` | Target vault |
-    | `--role` | | Vault role: `proxy`, `member`, or `admin` (required) |
   </Accordion>
 </AccordionGroup>
 
@@ -886,7 +857,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault owner vault join <name>
     ```
 
-    Join a vault as admin. Useful for recovering orphaned vaults. Owner only. Returns 409 if already a member.
+    No-op compatibility shim — owners now auto-access every vault, so explicit joining is unnecessary. Returns 200 for any vault that exists.
   </Accordion>
 
   <Accordion title="agent-vault owner vault delete">

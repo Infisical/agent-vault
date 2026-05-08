@@ -57,7 +57,7 @@ const AUTH_TYPE_OPTIONS: { value: AuthType; label: string }[] = [
 ];
 
 export default function ServicesTab() {
-  const { vaultName, vaultRole } = useVaultParams();
+  const { vaultName, isAdmin: isVaultAdmin } = useVaultParams();
   const [services, setServices] = useState<Service[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -160,7 +160,7 @@ export default function ServicesTab() {
     }
   }
 
-  const isAdmin = vaultRole === "admin";
+  const isAdmin = isVaultAdmin;
 
   const columns: Column<Service>[] = [
     {

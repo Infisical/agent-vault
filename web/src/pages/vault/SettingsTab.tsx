@@ -11,9 +11,9 @@ import { apiFetch } from "../../lib/api";
 type UnmatchedHostPolicy = "passthrough" | "deny";
 
 export default function SettingsTab() {
-  const { vaultName, vaultRole, isOwner } = useVaultParams();
+  // isAdmin already covers owner + admin under the unified role model.
+  const { vaultName, isAdmin: canManage } = useVaultParams();
   const navigate = useNavigate();
-  const canManage = vaultRole === "admin" || isOwner;
   const isDefault = vaultName === "default";
 
   // Rename state
