@@ -15,7 +15,7 @@ import type { AuthContext } from "../../router";
 
 interface AgentRow {
   name: string;
-  role: string; // instance-level role: "owner" or "member"
+  role: string; // instance-level role: "owner" or "admin"
   status: string;
   created_at: string;
   vaults: { vault_name: string; vault_role: string }[];
@@ -66,7 +66,7 @@ function RowActions({
   const items: { label: string; onClick: () => void; variant?: "danger" }[] = [];
 
   if (isOwner) {
-    const targetRole = agent.role === "owner" ? "member" : "owner";
+    const targetRole = agent.role === "owner" ? "admin" : "owner";
     items.push({
       label: `Set role: ${targetRole}`,
       onClick: async () => {
@@ -113,7 +113,7 @@ export default function AllAgentsTab() {
       const activeRows: AgentRow[] = (agentsData.agents ?? []).map(
         (a: { name: string; role: string; status: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
           name: a.name,
-          role: a.role || "member",
+          role: a.role || "admin",
           status: a.status,
           created_at: a.created_at,
           vaults: a.vaults ?? [],
@@ -131,7 +131,7 @@ export default function AllAgentsTab() {
           .map(
             (inv: { id: number; agent_name: string; agent_role?: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
               name: inv.agent_name,
-              role: inv.agent_role || "member",
+              role: inv.agent_role || "admin",
               status: "pending",
               created_at: inv.created_at,
               vaults: inv.vaults ?? [],
@@ -281,7 +281,7 @@ function InviteAgentButton({
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
-  const [agentRole, setAgentRole] = useState<"owner" | "member">("member");
+  const [agentRole, setAgentRole] = useState<"owner" | "admin">("admin");
   const [vaultAssignments, setVaultAssignments] = useState<VaultAssignment[]>([]);
   const [availableVaults, setAvailableVaults] = useState<VaultOption[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -304,7 +304,7 @@ function InviteAgentButton({
   function close() {
     setOpen(false);
     setName("");
-    setAgentRole("member");
+    setAgentRole("admin");
     setVaultAssignments([]);
     setError("");
     setInviteResult(null);
@@ -334,7 +334,7 @@ function InviteAgentButton({
     setError("");
     try {
       const payload: Record<string, unknown> = { name: name.trim() };
-      if (isOwner && agentRole !== "member") {
+      if (isOwner && agentRole !== "admin") {
         payload.role = agentRole;
       }
       if (vaultAssignments.length > 0) {
@@ -449,9 +449,9 @@ function InviteAgentButton({
               >
                 <Select
                   value={agentRole}
-                  onChange={(e) => setAgentRole(e.target.value as "owner" | "member")}
+                  onChange={(e) => setAgentRole(e.target.value as "owner" | "admin")}
                 >
-                  <option value="member">Member</option>
+                  <option value="admin">Admin</option>
                   <option value="owner">Owner</option>
                 </Select>
               </FormField>

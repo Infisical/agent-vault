@@ -992,7 +992,7 @@ func (s *Server) handleAgentInviteCreate(w http.ResponseWriter, r *http.Request)
 	}
 	var req struct {
 		Name              string     `json:"name"`
-		Role              string     `json:"role"` // instance-level role: "owner" or "member" (default: "member")
+		Role              string     `json:"role"` // instance-level role: "owner" or "admin" (default: "admin")
 		TTLSeconds        int        `json:"ttl_seconds"`
 		SessionTTLSeconds *int       `json:"session_ttl_seconds,omitempty"`
 		Vaults            []vaultReq `json:"vaults"`
@@ -1095,10 +1095,10 @@ func (s *Server) handleAgentInviteCreate(w http.ResponseWriter, r *http.Request)
 	// Validate and default agent instance role.
 	agentRole := req.Role
 	if agentRole == "" {
-		agentRole = "member"
+		agentRole = "admin"
 	}
-	if agentRole != "owner" && agentRole != "member" {
-		jsonError(w, http.StatusBadRequest, "Role must be one of: owner, member")
+	if agentRole != "owner" && agentRole != "admin" {
+		jsonError(w, http.StatusBadRequest, "Role must be one of: owner, admin")
 		return
 	}
 	// Only owner actors can create owner-role agent invites.
@@ -1139,7 +1139,7 @@ func (s *Server) handleAgentInviteCreate(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// handleAgentSetRole changes an agent's instance-level role (owner/member).
+// handleAgentSetRole changes an agent's instance-level role (owner/admin).
 func (s *Server) handleAgentSetRole(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")
@@ -1153,11 +1153,11 @@ func (s *Server) handleAgentSetRole(w http.ResponseWriter, r *http.Request) {
 		Role string `json:"role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Role == "" {
-		jsonError(w, http.StatusBadRequest, `Request body must include {"role": "owner|member"}`)
+		jsonError(w, http.StatusBadRequest, `Request body must include {"role": "owner|admin"}`)
 		return
 	}
-	if body.Role != "owner" && body.Role != "member" {
-		jsonError(w, http.StatusBadRequest, "Role must be one of: owner, member")
+	if body.Role != "owner" && body.Role != "admin" {
+		jsonError(w, http.StatusBadRequest, "Role must be one of: owner, admin")
 		return
 	}
 
@@ -1172,7 +1172,7 @@ func (s *Server) handleAgentSetRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Safety: cannot demote the last owner (user or agent).
-	if agent.Role == "owner" && body.Role == "member" && s.guardLastOwner(ctx, w, "demote") {
+	if agent.Role == "owner" && body.Role == "admin" && s.guardLastOwner(ctx, w, "demote") {
 		return
 	}
 

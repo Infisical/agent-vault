@@ -92,7 +92,7 @@ var userSetRoleCmd = &cobra.Command{
 		email := args[0]
 		role, _ := cmd.Flags().GetString("role")
 		if role == "" {
-			return fmt.Errorf("--role is required (owner or member)")
+			return fmt.Errorf("--role is required (owner or admin)")
 		}
 
 		sess, err := ensureSession()
@@ -111,7 +111,7 @@ var userSetRoleCmd = &cobra.Command{
 }
 
 func init() {
-	userSetRoleCmd.Flags().String("role", "", "role to set (owner or member)")
+	userSetRoleCmd.Flags().String("role", "", "role to set (owner or admin)")
 
 	userCmd.AddCommand(userInfoCmd, userRemoveCmd, userSetRoleCmd)
 	ownerCmd.AddCommand(userCmd)

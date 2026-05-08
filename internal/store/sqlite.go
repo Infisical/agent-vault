@@ -1409,7 +1409,7 @@ func (s *SQLiteStore) CreateAgentInvite(ctx context.Context, agentName, createdB
 	now := time.Now().UTC()
 	token := newInviteToken()
 	if agentRole == "" {
-		agentRole = "member"
+		agentRole = "admin"
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1838,7 +1838,7 @@ func (s *SQLiteStore) CreateUserInvite(ctx context.Context, email, createdBy, ro
 	nowStr := now.Format(time.DateTime)
 	expiresStr := expiresAt.UTC().Format(time.DateTime)
 	if role == "" {
-		role = "member"
+		role = "admin"
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)

@@ -788,7 +788,7 @@ func (m *mockStore) SetMasterKeyRecord(_ context.Context, record *store.MasterKe
 
 func (m *mockStore) CreateUserInvite(_ context.Context, email, createdBy, role string, expiresAt time.Time, vaults []store.UserInviteVault) (*store.UserInvite, error) {
 	if role == "" {
-		role = "member"
+		role = "admin"
 	}
 	token := "av_uinv_testtoken_" + email
 	inv := &store.UserInvite{
@@ -1570,7 +1570,7 @@ func TestVerifyReturnsTokenAndPersistsDeviceLabel(t *testing.T) {
 		ID: "u-new", Email: "new@test.com",
 		PasswordHash: hash, PasswordSalt: salt,
 		KDFTime: kdfP.Time, KDFMemory: kdfP.Memory, KDFThreads: kdfP.Threads,
-		Role: "member", IsActive: false,
+		Role: "admin", IsActive: false,
 	}
 	if _, err := ms.CreateEmailVerification(context.Background(), "new@test.com", "123456", time.Now().Add(15*time.Minute)); err != nil {
 		t.Fatalf("CreateEmailVerification: %v", err)
@@ -1971,14 +1971,15 @@ func TestScopedSessionExplicitRole(t *testing.T) {
 }
 
 func TestScopedSessionRoleRejected(t *testing.T) {
-	// Create a member-role user (not admin) to verify role escalation is rejected.
+	// Create a non-owner user with vault role "member" (not vault admin) to verify
+	// scoped-session role escalation is rejected.
 	ms := newMockStore()
-	ms.users["member@test.com"] = &store.User{
-		ID: "member-user-id", Email: "member@test.com",
-		Role: "member", IsActive: true,
+	ms.users["admin@test.com"] = &store.User{
+		ID: "admin-user-id", Email: "admin@test.com",
+		Role: "admin", IsActive: true,
 	}
-	ms.GrantVaultRole(context.Background(), "member-user-id", "user", "root-ns-id", "member")
-	sess, err := ms.CreateSession(context.Background(), "member-user-id", time.Now().Add(time.Hour))
+	ms.GrantVaultRole(context.Background(), "admin-user-id", "user", "root-ns-id", "member")
+	sess, err := ms.CreateSession(context.Background(), "admin-user-id", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -2001,12 +2002,12 @@ func TestScopedSessionRoleRejected(t *testing.T) {
 func TestScopedSessionMemberGetsMember(t *testing.T) {
 	// A vault member requesting member role should succeed.
 	ms := newMockStore()
-	ms.users["member@test.com"] = &store.User{
-		ID: "member-user-id", Email: "member@test.com",
-		Role: "member", IsActive: true,
+	ms.users["admin@test.com"] = &store.User{
+		ID: "admin-user-id", Email: "admin@test.com",
+		Role: "admin", IsActive: true,
 	}
-	ms.GrantVaultRole(context.Background(), "member-user-id", "user", "root-ns-id", "member")
-	sess, err := ms.CreateSession(context.Background(), "member-user-id", time.Now().Add(time.Hour))
+	ms.GrantVaultRole(context.Background(), "admin-user-id", "user", "root-ns-id", "member")
+	sess, err := ms.CreateSession(context.Background(), "admin-user-id", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -3183,33 +3184,33 @@ func TestHandleInviteRedeem_Revoked(t *testing.T) {
 
 // --- Multi-User Permission Model Tests ---
 
-// setupMemberSession creates a member user with a login session and optional vault grants.
-func setupMemberSession(t *testing.T, ms *mockStore, grantVaultIDs ...string) string {
+// setupAdminSession creates a non-owner instance user with a login session and optional vault-member grants.
+func setupAdminSession(t *testing.T, ms *mockStore, grantVaultIDs ...string) string {
 	t.Helper()
-	ms.users["member@test.com"] = &store.User{
-		ID: "member-user-id", Email: "member@test.com", Role: "member", IsActive: true,
+	ms.users["admin@test.com"] = &store.User{
+		ID: "admin-user-id", Email: "admin@test.com", Role: "admin", IsActive: true,
 	}
-	memberSess := &store.Session{
-		ID:        "member-session",
-		UserID:    "member-user-id",
+	adminSess := &store.Session{
+		ID:        "admin-session",
+		UserID:    "admin-user-id",
 		ExpiresAt: tp(time.Now().Add(time.Hour)),
 		CreatedAt: time.Now(),
 	}
-	ms.sessions[memberSess.ID] = memberSess
+	ms.sessions[adminSess.ID] = adminSess
 
 	for _, nsID := range grantVaultIDs {
-		ms.GrantVaultRole(context.Background(), "member-user-id", "user", nsID, "member")
+		ms.GrantVaultRole(context.Background(), "admin-user-id", "user", nsID, "member")
 	}
-	return memberSess.ID
+	return adminSess.ID
 }
 
-func TestMemberCanAccessGrantedVault(t *testing.T) {
+func TestAdminCanAccessGrantedVault(t *testing.T) {
 	ms, _ := setupMockStoreWithSession(t)
-	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	adminToken := setupAdminSession(t, ms, "root-ns-id")
 	srv := newTestServer(withStore(ms))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default", nil)
-	req.Header.Set("Authorization", "Bearer "+memberToken)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
 	rec := httptest.NewRecorder()
 
 	srv.httpServer.Handler.ServeHTTP(rec, req)
@@ -3219,14 +3220,14 @@ func TestMemberCanAccessGrantedVault(t *testing.T) {
 	}
 }
 
-func TestMemberCannotAccessNonGrantedVault(t *testing.T) {
+func TestAdminCannotAccessNonGrantedVault(t *testing.T) {
 	ms, _ := setupMockStoreWithSession(t)
-	// Create member without grants
-	memberToken := setupMemberSession(t, ms)
+	// Create admin (non-owner) without grants
+	adminToken := setupAdminSession(t, ms)
 	srv := newTestServer(withStore(ms))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default", nil)
-	req.Header.Set("Authorization", "Bearer "+memberToken)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
 	rec := httptest.NewRecorder()
 
 	srv.httpServer.Handler.ServeHTTP(rec, req)
@@ -3286,10 +3287,10 @@ func TestVaultCreateSlugValidation(t *testing.T) {
 	}
 }
 
-func TestMemberCanApproveProposalInAnyMemberVault(t *testing.T) {
+func TestAdminCanApproveProposalInAnyMemberVault(t *testing.T) {
 	ms := newMockStore()
 	ms.users["owner@test.com"] = &store.User{ID: "owner-user-id", Email: "owner@test.com", Role: "owner", IsActive: true}
-	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	adminToken := setupAdminSession(t, ms, "root-ns-id")
 
 	encKey := make([]byte, 32)
 	srv := newTestServer(withStore(ms), withEncKey(encKey))
@@ -3305,7 +3306,7 @@ func TestMemberCanApproveProposalInAnyMemberVault(t *testing.T) {
 
 	body := `{"vault":"default","credentials":{}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/proposals/1/approve", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+memberToken)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
 	rec := httptest.NewRecorder()
 
 	srv.httpServer.Handler.ServeHTTP(rec, req)
@@ -3319,7 +3320,7 @@ func TestMemberCanApproveProposalInAnyMemberVault(t *testing.T) {
 func setupProxyRoleSession(t *testing.T, ms *mockStore, grantVaultIDs ...string) string {
 	t.Helper()
 	ms.users["proxybot@test.com"] = &store.User{
-		ID: "proxy-user-id", Email: "proxybot@test.com", Role: "member", IsActive: true,
+		ID: "proxy-user-id", Email: "proxybot@test.com", Role: "admin", IsActive: true,
 	}
 	proxySess := &store.Session{
 		ID:        "proxy-session",
@@ -3403,7 +3404,7 @@ func TestLastOwnerCannotBeDemoted(t *testing.T) {
 	ms, ownerToken := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))
 
-	body := `{"role":"member"}`
+	body := `{"role":"admin"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/users/owner@test.com/role", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+ownerToken)
 	req.Header.Set("Content-Type", "application/json")
@@ -3447,13 +3448,13 @@ func TestEmailTestRequiresOwner(t *testing.T) {
 	}
 }
 
-func TestEmailTestMemberForbidden(t *testing.T) {
+func TestEmailTestAdminForbidden(t *testing.T) {
 	ms := newMockStore()
-	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	adminToken := setupAdminSession(t, ms, "root-ns-id")
 	srv := newTestServer(withStore(ms))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/email/test", nil)
-	req.Header.Set("Authorization", "Bearer "+memberToken)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
 	rec := httptest.NewRecorder()
 
 	srv.httpServer.Handler.ServeHTTP(rec, req)
@@ -3933,11 +3934,11 @@ func TestVaultSettingsUnmatchedHostPolicy(t *testing.T) {
 		// Persist deny so we can verify the non-admin GET sees the truth
 		// rather than the previous silent passthrough fallback.
 		_ = ms.SetVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostPolicy, "deny")
-		memberToken := setupMemberSession(t, ms, "root-ns-id")
+		adminToken := setupAdminSession(t, ms, "root-ns-id")
 
 		// GET should succeed and return the actual stored policy.
 		req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/settings", nil)
-		req.Header.Set("Authorization", "Bearer "+memberToken)
+		req.Header.Set("Authorization", "Bearer "+adminToken)
 		rec := httptest.NewRecorder()
 		srv.httpServer.Handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -3952,7 +3953,7 @@ func TestVaultSettingsUnmatchedHostPolicy(t *testing.T) {
 		// PATCH must still be admin/owner-only.
 		patchBody := strings.NewReader(`{"unmatched_host_policy": "passthrough"}`)
 		req = httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/settings", patchBody)
-		req.Header.Set("Authorization", "Bearer "+memberToken)
+		req.Header.Set("Authorization", "Bearer "+adminToken)
 		req.Header.Set("Content-Type", "application/json")
 		rec = httptest.NewRecorder()
 		srv.httpServer.Handler.ServeHTTP(rec, req)
@@ -4018,13 +4019,13 @@ func TestPublicUserListAsOwner(t *testing.T) {
 	}
 }
 
-func TestPublicUserListAsMember(t *testing.T) {
+func TestPublicUserListAsAdmin(t *testing.T) {
 	ms, _ := setupMockStoreWithSession(t)
-	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	adminToken := setupAdminSession(t, ms, "root-ns-id")
 	srv := newTestServer(withStore(ms))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/users", nil)
-	req.Header.Set("Authorization", "Bearer "+memberToken)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
 	rec := httptest.NewRecorder()
 
 	srv.httpServer.Handler.ServeHTTP(rec, req)
@@ -4042,10 +4043,10 @@ func TestPublicUserListAsMember(t *testing.T) {
 	if len(users) == 0 {
 		t.Fatal("expected at least one user")
 	}
-	// Members should NOT get vault membership data.
+	// Admins (non-owners) should NOT get vault membership data.
 	first := users[0].(map[string]interface{})
 	if _, hasVaults := first["vaults"]; hasVaults {
-		t.Fatal("expected no vaults field for member view")
+		t.Fatal("expected no vaults field for admin view")
 	}
 	// Should still have basic fields.
 	if _, hasEmail := first["email"]; !hasEmail {
@@ -4160,13 +4161,13 @@ func TestChangePasswordNoAuth(t *testing.T) {
 	}
 }
 
-func TestDeleteAccountMemberSuccess(t *testing.T) {
+func TestDeleteAccountAdminSuccess(t *testing.T) {
 	ms, _ := setupMockStoreWithSession(t)
-	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	adminToken := setupAdminSession(t, ms, "root-ns-id")
 	srv := newTestServer(withStore(ms))
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/auth/account", nil)
-	req.Header.Set("Authorization", "Bearer "+memberToken)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 
@@ -4175,8 +4176,8 @@ func TestDeleteAccountMemberSuccess(t *testing.T) {
 	}
 
 	// Verify user is gone.
-	if _, ok := ms.users["member@test.com"]; ok {
-		t.Fatal("expected member user to be deleted")
+	if _, ok := ms.users["admin@test.com"]; ok {
+		t.Fatal("expected admin user to be deleted")
 	}
 }
 
@@ -4583,16 +4584,16 @@ func TestOwnerVaultListShowsAllVaultsWithMembership(t *testing.T) {
 	}
 }
 
-func TestMemberVaultListOnlyShowsGrantedVaults(t *testing.T) {
+func TestAdminVaultListOnlyShowsGrantedVaults(t *testing.T) {
 	ms, _ := setupMockStoreWithSession(t)
-	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	adminToken := setupAdminSession(t, ms, "root-ns-id")
 	srv := newTestServer(withStore(ms))
 
-	// Create a vault the member has no access to.
+	// Create a vault the admin has no access to.
 	ms.CreateVault(context.Background(), "secret")
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/vaults", nil)
-	req.Header.Set("Authorization", "Bearer "+memberToken)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 
@@ -4610,10 +4611,10 @@ func TestMemberVaultListOnlyShowsGrantedVaults(t *testing.T) {
 
 	for _, v := range resp.Vaults {
 		if v.Name == "secret" {
-			t.Fatalf("member should not see vault %q", v.Name)
+			t.Fatalf("admin should not see vault %q", v.Name)
 		}
 		if v.Membership != "explicit" {
-			t.Errorf("member vault %q: expected explicit membership, got %q", v.Name, v.Membership)
+			t.Errorf("admin vault %q: expected explicit membership, got %q", v.Name, v.Membership)
 		}
 	}
 }
@@ -4656,15 +4657,15 @@ func TestOwnerVaultJoinAlreadyMember(t *testing.T) {
 	}
 }
 
-func TestMemberCannotJoinVault(t *testing.T) {
+func TestAdminCannotJoinVault(t *testing.T) {
 	ms, _ := setupMockStoreWithSession(t)
-	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	adminToken := setupAdminSession(t, ms, "root-ns-id")
 	srv := newTestServer(withStore(ms))
 
 	ms.CreateVault(context.Background(), "team-x")
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/team-x/join", nil)
-	req.Header.Set("Authorization", "Bearer "+memberToken)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 
@@ -4811,9 +4812,9 @@ func TestScopedSessionInvalidRole(t *testing.T) {
 func setupMockStoreWithInactiveUser(t *testing.T, email, password string) *mockStore {
 	t.Helper()
 	ms := setupMockStoreWithUser(t, email, password)
-	// Demote the user to inactive member; add a separate owner so count > 1.
+	// Demote the user to inactive admin; add a separate owner so count > 1.
 	ms.users[email].IsActive = false
-	ms.users[email].Role = "member"
+	ms.users[email].Role = "admin"
 	ms.users["owner@test.com"] = &store.User{
 		ID: "owner-id", Email: "owner@test.com",
 		Role: "owner", IsActive: true,

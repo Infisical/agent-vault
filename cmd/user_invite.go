@@ -106,14 +106,14 @@ var userInviteCmd = &cobra.Command{
 		}
 
 		role, _ := cmd.Flags().GetString("role")
-		if role != "" && role != "member" && role != "owner" {
-			return fmt.Errorf("role must be 'owner' or 'member'")
+		if role != "" && role != "admin" && role != "owner" {
+			return fmt.Errorf("role must be 'owner' or 'admin'")
 		}
 
 		payload := map[string]any{
 			"email": email,
 		}
-		if role != "" && role != "member" {
+		if role != "" && role != "admin" {
 			payload["role"] = role
 		}
 		if len(vaults) > 0 {
@@ -241,7 +241,7 @@ var userInviteRevokeCmd = &cobra.Command{
 }
 
 func init() {
-	userInviteCmd.Flags().String("role", "", "instance role for the invited user (owner or member, default member)")
+	userInviteCmd.Flags().String("role", "", "instance role for the invited user (owner or admin, default admin)")
 	userInviteCmd.Flags().StringArray("vault", nil, "vault pre-assignment (format: name:role, role defaults to member)")
 	userInviteListCmd.Flags().String("status", "", "filter by status (pending, accepted, expired, revoked)")
 

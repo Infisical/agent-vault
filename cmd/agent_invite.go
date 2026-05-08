@@ -188,7 +188,7 @@ func init() {
 	agentInviteCmd.Flags().StringArray("vault", nil, "vault pre-assignment (format: name:role, role defaults to proxy)")
 	agentInviteCmd.Flags().String("address", "", "Agent Vault server address (default: from session)")
 	agentInviteCmd.Flags().Bool("token-only", false, "output only the raw invite token (for programmatic use)")
-	agentInviteCmd.Flags().String("role", "member", "instance-level role for the agent (owner or member)")
+	agentInviteCmd.Flags().String("role", "admin", "instance-level role for the agent (owner or admin)")
 	agentInviteListCmd.Flags().String("status", "", "filter by status (pending, redeemed, expired, revoked)")
 
 	agentInviteCmd.AddCommand(agentInviteListCmd, agentInviteRevokeCmd)

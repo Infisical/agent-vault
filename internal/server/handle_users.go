@@ -223,8 +223,8 @@ func (s *Server) handleUserSetRole(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if req.Role != "owner" && req.Role != "member" {
-		jsonError(w, http.StatusBadRequest, "Role must be 'owner' or 'member'")
+	if req.Role != "owner" && req.Role != "admin" {
+		jsonError(w, http.StatusBadRequest, "Role must be 'owner' or 'admin'")
 		return
 	}
 
@@ -235,7 +235,7 @@ func (s *Server) handleUserSetRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Prevent demoting the last owner.
-	if user.Role == "owner" && req.Role == "member" && s.guardLastOwner(ctx, w, "demote") {
+	if user.Role == "owner" && req.Role == "admin" && s.guardLastOwner(ctx, w, "demote") {
 		return
 	}
 
@@ -326,10 +326,10 @@ func (s *Server) handleUserInviteCreate(w http.ResponseWriter, r *http.Request) 
 	// Validate and default instance role.
 	role := req.Role
 	if role == "" {
-		role = "member"
+		role = "admin"
 	}
-	if role != "owner" && role != "member" {
-		jsonError(w, http.StatusBadRequest, "Role must be one of: owner, member")
+	if role != "owner" && role != "admin" {
+		jsonError(w, http.StatusBadRequest, "Role must be one of: owner, admin")
 		return
 	}
 	if role == "owner" && !actor.IsOwner() {

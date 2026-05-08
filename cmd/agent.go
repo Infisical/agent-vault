@@ -352,10 +352,10 @@ var agentSetRoleCmd = &cobra.Command{
 		name := args[0]
 		role, _ := cmd.Flags().GetString("role")
 		if role == "" {
-			return fmt.Errorf("--role is required (owner or member)")
+			return fmt.Errorf("--role is required (owner or admin)")
 		}
-		if role != "owner" && role != "member" {
-			return fmt.Errorf("role must be 'owner' or 'member'")
+		if role != "owner" && role != "admin" {
+			return fmt.Errorf("role must be 'owner' or 'admin'")
 		}
 
 		sess, err := ensureSession()
@@ -378,7 +378,7 @@ func init() {
 	vaultAgentAddCmd.Flags().String("role", "proxy", "vault role (proxy, member, admin)")
 	vaultAgentSetRoleCmd.Flags().String("role", "", "vault role (proxy, member, admin)")
 
-	agentSetRoleCmd.Flags().String("role", "", "instance-level role (owner or member)")
+	agentSetRoleCmd.Flags().String("role", "", "instance-level role (owner or admin)")
 
 	// Instance-level agent commands: agent-vault agent [list|info|revoke|rotate|rename|set-role]
 	topAgentCmd.AddCommand(agentListCmd)

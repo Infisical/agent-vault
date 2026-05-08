@@ -120,7 +120,7 @@ function InviteDetails({ role, vaults }: { role?: string; vaults: InviteVault[] 
 
   return (
     <div className="bg-bg border border-border rounded-lg p-4 mb-6">
-      {role && role !== "member" && (
+      {role && role !== "admin" && (
         <div className="mb-3">
           <div className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-1">
             Instance Role

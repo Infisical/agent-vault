@@ -288,7 +288,7 @@ func sessionFromContext(ctx context.Context) *store.Session {
 type Actor struct {
 	ID    string       // user.ID or agent.ID
 	Type  string       // "user" or "agent"
-	Role  string       // "owner" or "member" (instance-level)
+	Role  string       // "owner" or "admin" (instance-level)
 	User  *store.User  // non-nil for user actors
 	Agent *store.Agent // non-nil for agent actors
 }

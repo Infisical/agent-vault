@@ -7,9 +7,9 @@ Agent Vault separates permissions into two independent axes: **instance roles** 
 
 ## Instance roles
 
-Instance-level roles govern administrative operations across the entire Agent Vault instance. Both **users** and **agents** have instance-level roles. There are two roles: `owner` and `member`.
+Instance-level roles govern administrative operations across the entire Agent Vault instance. Both **users** and **agents** have instance-level roles. There are two roles: `owner` and `admin`.
 
-| Capability                            | Owner           | Member          |
+| Capability                            | Owner           | Admin           |
 | ------------------------------------- | --------------- | --------------- |
 | [Instance settings](/guides/instance-settings) (invite-only, domains) | Yes | No |
 | Manage users (list, remove, set-role) | Yes             | No              |
@@ -57,7 +57,7 @@ Vault admins and members can both review agent [proposals](/learn/proposals). Wh
 
 The two permission axes are fully independent. An instance owner who has not joined a vault cannot see its credentials or approve proposals. A vault admin who is not an instance owner cannot manage users or reset the instance.
 
-**Example**: Alice is an instance owner but has not joined the `payments` vault. She can see it in her vault list and join it at any time, but she cannot approve proposals or proxy requests through `payments` until she does. Meanwhile, Bob is a vault admin on `payments` but a regular instance member. He can approve proposals and manage agents within `payments`, but he cannot create new users or reset the instance.
+**Example**: Alice is an instance owner but has not joined the `payments` vault. She can see it in her vault list and join it at any time, but she cannot approve proposals or proxy requests through `payments` until she does. Meanwhile, Bob is a vault admin on `payments` but only an instance admin (not an instance owner). He can approve proposals and manage agents within `payments`, but he cannot create new users or reset the instance.
 
 ## The first user
 

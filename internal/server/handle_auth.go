@@ -193,8 +193,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create as inactive member, require email verification.
-	_, err = s.store.CreateUser(ctx, req.Email, hash, salt, "member", kdfParams.Time, kdfParams.Memory, kdfParams.Threads)
+	// Create as inactive admin, require email verification.
+	_, err = s.store.CreateUser(ctx, req.Email, hash, salt, "admin", kdfParams.Time, kdfParams.Memory, kdfParams.Threads)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create user")
 		return
