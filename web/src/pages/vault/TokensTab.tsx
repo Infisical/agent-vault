@@ -307,7 +307,7 @@ function MintTokenButton({
         description={
           mintedToken
             ? "Copy the token now — this is the only time it will be shown."
-            : "Create a session token scoped to this vault."
+            : "Routes outbound requests through this vault. Cannot manage credentials, services, or members."
         }
         footer={
           mintedToken ? (
