@@ -57,7 +57,7 @@ function RowActions({
   const isOwner = user.role === "owner";
 
   async function handleToggleRole() {
-    const newRole = isOwner ? "admin" : "owner";
+    const newRole = isOwner ? "member" : "owner";
     const resp = await apiFetch(`/v1/admin/users/${encodeURIComponent(user.email)}/role`, {
       method: "POST",
       body: JSON.stringify({ role: newRole }),
@@ -75,7 +75,7 @@ function RowActions({
       width={192}
       items={[
         {
-          label: isOwner ? "Demote to admin" : "Promote to owner",
+          label: isOwner ? "Demote to member" : "Promote to owner",
           onClick: handleToggleRole,
         },
         { label: "Remove user", onClick: () => onRemove(user), variant: "danger" },
@@ -114,7 +114,7 @@ export default function AllUsersTab() {
         pendingUsers = (invData.invites ?? []).map(
           (inv: { email: string; role?: string; token: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
             email: inv.email,
-            role: inv.role || "admin",
+            role: inv.role || "member",
             status: "pending" as const,
             vaults: inv.vaults ?? [],
             created_at: inv.created_at,
@@ -300,7 +300,7 @@ function InviteUserButton({
 }) {
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
-  const [role, setRole] = useState<"owner" | "admin">("admin");
+  const [role, setRole] = useState<"owner" | "member">("member");
   const [vaultAssignments, setVaultAssignments] = useState<VaultAssignment[]>([]);
   const [availableVaults, setAvailableVaults] = useState<VaultOption[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -324,7 +324,7 @@ function InviteUserButton({
   function close() {
     setOpen(false);
     setEmail("");
-    setRole("admin");
+    setRole("member");
     setVaultAssignments([]);
     setError("");
     setInviteLink("");
@@ -354,7 +354,7 @@ function InviteUserButton({
     setError("");
     try {
       const payload: Record<string, unknown> = { email: email.trim() };
-      if (isOwner && role !== "admin") {
+      if (isOwner && role !== "member") {
         payload.role = role;
       }
       if (vaultAssignments.length > 0) {
@@ -468,9 +468,9 @@ function InviteUserButton({
               >
                 <Select
                   value={role}
-                  onChange={(e) => setRole(e.target.value as "owner" | "admin")}
+                  onChange={(e) => setRole(e.target.value as "owner" | "member")}
                 >
-                  <option value="admin">Admin</option>
+                  <option value="member">Member</option>
                   <option value="owner">Owner</option>
                 </Select>
               </FormField>
