@@ -126,7 +126,7 @@ CREATE TABLE sessions_new (
     created_at       TEXT NOT NULL DEFAULT (datetime('now')),
     vault_id         TEXT REFERENCES vaults(id) ON DELETE CASCADE,
     user_id          TEXT REFERENCES users(id) ON DELETE CASCADE,
-    agent_id         TEXT REFERENCES agents(id),
+    agent_id         TEXT REFERENCES agents(id) ON DELETE CASCADE,
     label            TEXT,
     last_used_at     TEXT,
     idle_ttl_seconds INTEGER,
