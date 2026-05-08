@@ -519,7 +519,13 @@ func (s *SQLiteStore) UpdateUserPassword(ctx context.Context, userID string, pas
 
 func (s *SQLiteStore) UpdateUserRole(ctx context.Context, userID, role string) error {
 	nowStr := nowUTC()
-	res, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx,
 		"UPDATE users SET role = ?, updated_at = ? WHERE id = ?",
 		role, nowStr, userID,
 	)
@@ -530,7 +536,18 @@ func (s *SQLiteStore) UpdateUserRole(ctx context.Context, userID, role string) e
 	if n == 0 {
 		return sql.ErrNoRows
 	}
-	return nil
+
+	// Owners auto-access every vault and must have no vault_grants rows
+	// (mirrors migration 045). Clean up any stale grants on promotion.
+	if role == "owner" {
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM vault_grants WHERE actor_id = ? AND actor_type = 'user'", userID,
+		); err != nil {
+			return fmt.Errorf("clearing user grants on owner promotion: %w", err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) DeleteUser(ctx context.Context, userID string) error {
@@ -2646,7 +2663,13 @@ func (s *SQLiteStore) batchLoadAgentVaultGrants(ctx context.Context, agents []Ag
 
 func (s *SQLiteStore) UpdateAgentRole(ctx context.Context, agentID, role string) error {
 	nowStr := nowUTC()
-	res, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx,
 		"UPDATE agents SET role = ?, updated_at = ? WHERE id = ?",
 		role, nowStr, agentID,
 	)
@@ -2657,7 +2680,18 @@ func (s *SQLiteStore) UpdateAgentRole(ctx context.Context, agentID, role string)
 	if n == 0 {
 		return sql.ErrNoRows
 	}
-	return nil
+
+	// Owners auto-access every vault and must have no vault_grants rows
+	// (mirrors migration 045). Clean up any stale grants on promotion.
+	if role == "owner" {
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM vault_grants WHERE actor_id = ? AND actor_type = 'agent'", agentID,
+		); err != nil {
+			return fmt.Errorf("clearing agent grants on owner promotion: %w", err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) CountAllOwners(ctx context.Context) (int, error) {
