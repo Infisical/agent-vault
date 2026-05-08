@@ -293,30 +293,17 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 		ID               string `json:"id"`
 		Name             string `json:"name"`
 		Role             string `json:"role,omitempty"`
-		Membership       string `json:"membership"`
 		CreatedAt        string `json:"created_at"`
 		PendingProposals int    `json:"pending_proposals"`
 	}
 
-	var items []nsItem
-
+	var vaults []store.Vault
 	if actor.IsOwner() {
 		// Owners auto-access every vault.
-		vaults, err := s.store.ListVaults(ctx)
+		vaults, err = s.store.ListVaults(ctx)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "Failed to list vaults")
 			return
-		}
-		for _, v := range vaults {
-			pending, _ := s.store.CountPendingProposals(ctx, v.ID)
-			items = append(items, nsItem{
-				ID:               v.ID,
-				Name:             v.Name,
-				Role:             actor.Role,
-				Membership:       "implicit",
-				CreatedAt:        v.CreatedAt.Format(time.RFC3339),
-				PendingProposals: pending,
-			})
 		}
 	} else {
 		// Non-owners see only vaults they have explicit scope on.
@@ -330,19 +317,20 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 			if err != nil || ns == nil {
 				continue
 			}
-			pending, _ := s.store.CountPendingProposals(ctx, ns.ID)
-			items = append(items, nsItem{
-				ID:               ns.ID,
-				Name:             ns.Name,
-				Role:             actor.Role,
-				Membership:       "explicit",
-				CreatedAt:        ns.CreatedAt.Format(time.RFC3339),
-				PendingProposals: pending,
-			})
+			vaults = append(vaults, *ns)
 		}
 	}
-	if items == nil {
-		items = []nsItem{}
+
+	items := make([]nsItem, 0, len(vaults))
+	for _, v := range vaults {
+		pending, _ := s.store.CountPendingProposals(ctx, v.ID)
+		items = append(items, nsItem{
+			ID:               v.ID,
+			Name:             v.Name,
+			Role:             actor.Role,
+			CreatedAt:        v.CreatedAt.Format(time.RFC3339),
+			PendingProposals: pending,
+		})
 	}
 
 	jsonOK(w, map[string]interface{}{"vaults": items})
@@ -515,24 +503,3 @@ func (s *Server) handleVaultSettingsPatch(w http.ResponseWriter, r *http.Request
 	jsonOK(w, map[string]interface{}{"unmatched_host_policy": string(policy)})
 }
 
-// handleVaultJoin is a no-op compatibility shim for owner-only callers.
-// Owners auto-access every vault under the unified instance-role model,
-// so explicit joining is obsolete. Returns 200 for any vault that exists
-// so older clients keep working unchanged.
-func (s *Server) handleVaultJoin(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.requireOwnerActor(w, r); err != nil {
-		return
-	}
-	name := r.PathValue("name")
-	ctx := r.Context()
-	ns, err := s.store.GetVault(ctx, name)
-	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
-		return
-	}
-	jsonOK(w, map[string]interface{}{
-		"vault":  name,
-		"role":   "owner",
-		"joined": true,
-	})
-}

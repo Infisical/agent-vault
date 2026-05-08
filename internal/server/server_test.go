@@ -4666,11 +4666,12 @@ func TestSettingsSetInviteOnly(t *testing.T) {
 	}
 }
 
-func TestOwnerVaultListShowsAllVaultsWithMembership(t *testing.T) {
+func TestOwnerVaultListShowsAllVaults(t *testing.T) {
 	ms, ownerToken := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))
 
-	// Create a second vault that the owner has NO grant for.
+	// Create a second vault that the owner has NO grant for; owners
+	// should see it anyway since they auto-access every vault.
 	ms.CreateVault(context.Background(), "orphaned")
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/vaults", nil)
@@ -4684,29 +4685,21 @@ func TestOwnerVaultListShowsAllVaultsWithMembership(t *testing.T) {
 
 	var resp struct {
 		Vaults []struct {
-			Name       string `json:"name"`
-			Role       string `json:"role"`
-			Membership string `json:"membership"`
+			Name string `json:"name"`
+			Role string `json:"role"`
 		} `json:"vaults"`
 	}
 	json.NewDecoder(rec.Body).Decode(&resp)
 
-	if len(resp.Vaults) < 2 {
-		t.Fatalf("expected at least 2 vaults, got %d", len(resp.Vaults))
-	}
-
-	byName := map[string]struct{ Role, Membership string }{}
+	byName := map[string]string{}
 	for _, v := range resp.Vaults {
-		byName[v.Name] = struct{ Role, Membership string }{v.Role, v.Membership}
+		byName[v.Name] = v.Role
 	}
-
-	// Under the unified instance-role model, owners auto-access every
-	// vault — every vault is reported as implicit/owner.
-	if v, ok := byName["default"]; !ok || v.Membership != "implicit" || v.Role != "owner" {
-		t.Errorf("default vault: expected implicit/owner, got %+v", byName["default"])
+	if role, ok := byName["default"]; !ok || role != "owner" {
+		t.Errorf("default vault: expected role=owner, got %q (present=%v)", role, ok)
 	}
-	if v, ok := byName["orphaned"]; !ok || v.Membership != "implicit" || v.Role != "owner" {
-		t.Errorf("orphaned vault: expected implicit/owner, got %+v", byName["orphaned"])
+	if role, ok := byName["orphaned"]; !ok || role != "owner" {
+		t.Errorf("orphaned vault: expected role=owner, got %q (present=%v)", role, ok)
 	}
 }
 
@@ -4729,8 +4722,7 @@ func TestAdminVaultListOnlyShowsGrantedVaults(t *testing.T) {
 
 	var resp struct {
 		Vaults []struct {
-			Name       string `json:"name"`
-			Membership string `json:"membership"`
+			Name string `json:"name"`
 		} `json:"vaults"`
 	}
 	json.NewDecoder(rec.Body).Decode(&resp)
@@ -4739,58 +4731,6 @@ func TestAdminVaultListOnlyShowsGrantedVaults(t *testing.T) {
 		if v.Name == "secret" {
 			t.Fatalf("admin should not see vault %q", v.Name)
 		}
-		if v.Membership != "explicit" {
-			t.Errorf("admin vault %q: expected explicit membership, got %q", v.Name, v.Membership)
-		}
-	}
-}
-
-func TestOwnerVaultJoinNoOp(t *testing.T) {
-	// Owners auto-access every vault now; the legacy join endpoint is a
-	// no-op compatibility shim that returns 200 for owners.
-	ms, ownerToken := setupMockStoreWithSession(t)
-	srv := newTestServer(withStore(ms))
-
-	ms.CreateVault(context.Background(), "team-x")
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/team-x/join", nil)
-	req.Header.Set("Authorization", "Bearer "+ownerToken)
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestAdminCannotJoinVault(t *testing.T) {
-	ms, _ := setupMockStoreWithSession(t)
-	adminToken := setupAdminSession(t, ms, "root-ns-id")
-	srv := newTestServer(withStore(ms))
-
-	ms.CreateVault(context.Background(), "team-x")
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/team-x/join", nil)
-	req.Header.Set("Authorization", "Bearer "+adminToken)
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestOwnerVaultJoinNotFound(t *testing.T) {
-	ms, ownerToken := setupMockStoreWithSession(t)
-	srv := newTestServer(withStore(ms))
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/nonexistent/join", nil)
-	req.Header.Set("Authorization", "Bearer "+ownerToken)
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -13,7 +13,6 @@ interface Vault {
   id: string;
   name: string;
   role: string;
-  membership: "explicit" | "implicit";
   is_default?: boolean;
   created_at: string;
   pending_proposals: number;
@@ -69,9 +68,6 @@ export default function VaultsListTab() {
     return vaults.filter((v) => v.name.toLowerCase().includes(q));
   }, [vaults, search]);
 
-  const myVaults = useMemo(() => filtered.filter((v) => v.membership === "explicit"), [filtered]);
-  const otherVaults = useMemo(() => filtered.filter((v) => v.membership === "implicit"), [filtered]);
-
   return (
     <div className="p-8 w-full max-w-[960px]">
       {/* Header */}
@@ -120,41 +116,16 @@ export default function VaultsListTab() {
           {search ? "No vaults match your search." : "No vaults yet."}
         </div>
       ) : (
-        <>
-          {myVaults.length > 0 && (
-            <div className={otherVaults.length > 0 ? "mb-10" : ""}>
-              {otherVaults.length > 0 && (
-                <h2 className="text-sm font-medium text-text-muted uppercase tracking-wide mb-3">My Vaults</h2>
-              )}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {myVaults.map((vault) => (
-                  <VaultCard
-                    key={vault.id}
-                    vault={vault}
-                    isOwner={auth.is_owner}
-                    onDelete={setDeleteTarget}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-          {otherVaults.length > 0 && (
-            <div>
-              <h2 className="text-sm font-medium text-text-muted uppercase tracking-wide mb-3">Other Vaults</h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {otherVaults.map((vault) => (
-                  <VaultCard
-                    key={vault.id}
-                    vault={vault}
-                    isOwner={auth.is_owner}
-                    onJoined={fetchVaults}
-                    onDelete={setDeleteTarget}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-        </>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {filtered.map((vault) => (
+            <VaultCard
+              key={vault.id}
+              vault={vault}
+              isOwner={auth.is_owner}
+              onDelete={setDeleteTarget}
+            />
+          ))}
+        </div>
       )}
 
       <ConfirmDeleteModal
@@ -174,118 +145,71 @@ export default function VaultsListTab() {
 function VaultCard({
   vault,
   isOwner,
-  onJoined,
   onDelete,
 }: {
   vault: Vault;
   isOwner: boolean;
-  onJoined?: () => void;
   onDelete: (vault: Vault) => void;
 }) {
-  const [joining, setJoining] = useState(false);
-  const [joinError, setJoinError] = useState("");
-  const navigate = useNavigate();
-
-  async function handleJoin(e: React.MouseEvent) {
-    e.preventDefault();
-    e.stopPropagation();
-    setJoining(true);
-    setJoinError("");
-    try {
-      const resp = await apiFetch(`/v1/vaults/${vault.name}/join`, { method: "POST" });
-      if (resp.ok) {
-        onJoined?.();
-      } else {
-        const data = await resp.json();
-        setJoinError(data.error || "Failed to join vault.");
-      }
-    } catch {
-      setJoinError("Network error.");
-    } finally {
-      setJoining(false);
-    }
-  }
-
   function handleDelete(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
     onDelete(vault);
   }
 
-  const isImplicit = vault.membership === "implicit";
   const canDelete = isOwner && !vault.is_default;
-
-  const card = (
-    <div
-      className={`bg-surface border border-border rounded-xl p-5 transition-colors ${isImplicit ? "" : "hover:border-border-focus/40 cursor-pointer"}`}
-      onClick={isImplicit ? undefined : () => navigate({ to: "/vaults/$name", params: { name: vault.name } })}
-    >
-      <div className="flex items-start justify-between mb-3">
-        <h3 className="text-base font-semibold text-text tracking-tight">
-          {vault.name}
-        </h3>
-        <div className="flex items-center gap-2">
-          {isImplicit ? (
-            <button
-              onClick={handleJoin}
-              disabled={joining}
-              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-primary text-primary-text hover:bg-primary-hover transition-colors disabled:opacity-50"
-            >
-              {joining ? "Joining..." : "Join"}
-            </button>
-          ) : vault.pending_proposals > 0 ? (
-            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-warning-bg text-warning border border-warning/20">
-              {vault.pending_proposals}{" "}
-              {vault.pending_proposals === 1 ? "review needed" : "reviews needed"}
-            </span>
-          ) : null}
-          {canDelete && (
-            <button
-              onClick={handleDelete}
-              className="p-1 rounded text-text-dim hover:text-danger transition-colors"
-              title="Delete vault"
-            >
-              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="3 6 5 6 21 6" />
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-              </svg>
-            </button>
-          )}
-        </div>
-      </div>
-      {joinError && (
-        <div className="text-xs text-danger mb-2">{joinError}</div>
-      )}
-      <div className="flex items-center gap-3 text-xs text-text-muted">
-        <span className="flex items-center gap-1.5">
-          <svg
-            className="w-3.5 h-3.5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <circle cx="12" cy="12" r="10" />
-            <polyline points="12 6 12 12 16 14" />
-          </svg>
-          {timeAgo(vault.created_at)}
-        </span>
-        {vault.role && (
-          <span className="text-text-dim">
-            {vault.role}
-          </span>
-        )}
-      </div>
-    </div>
-  );
-
-  if (isImplicit) return card;
 
   return (
     <Link to="/vaults/$name" params={{ name: vault.name }} className="block no-underline">
-      {card}
+      <div className="bg-surface border border-border rounded-xl p-5 transition-colors hover:border-border-focus/40 cursor-pointer">
+        <div className="flex items-start justify-between mb-3">
+          <h3 className="text-base font-semibold text-text tracking-tight">
+            {vault.name}
+          </h3>
+          <div className="flex items-center gap-2">
+            {vault.pending_proposals > 0 && (
+              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-warning-bg text-warning border border-warning/20">
+                {vault.pending_proposals}{" "}
+                {vault.pending_proposals === 1 ? "review needed" : "reviews needed"}
+              </span>
+            )}
+            {canDelete && (
+              <button
+                onClick={handleDelete}
+                className="p-1 rounded text-text-dim hover:text-danger transition-colors"
+                title="Delete vault"
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                </svg>
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-3 text-xs text-text-muted">
+          <span className="flex items-center gap-1.5">
+            <svg
+              className="w-3.5 h-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <polyline points="12 6 12 12 16 14" />
+            </svg>
+            {timeAgo(vault.created_at)}
+          </span>
+          {vault.role && (
+            <span className="text-text-dim">
+              {vault.role}
+            </span>
+          )}
+        </div>
+      </div>
     </Link>
   );
 }
