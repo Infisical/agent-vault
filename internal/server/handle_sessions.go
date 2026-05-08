@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -78,8 +77,8 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 
 	// Tokens are minted with role `proxy` only; minting at member/admin
 	// is intentionally not exposed via this endpoint right now. The
-	// server-side cap in capRequestedRole still rejects scoped-session
-	// callers that lack member+ on the vault.
+	// member+ floor on the caller is enforced by requireVaultMember
+	// below for users/agents and scoped sessions alike.
 	if req.VaultRole != "" && req.VaultRole != "proxy" {
 		jsonError(w, http.StatusBadRequest, "vault_role must be 'proxy'")
 		return
@@ -121,24 +120,16 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 	// Caller must be at least a vault `member`. A `proxy`-role caller
 	// (user, agent, or scoped session) can ONLY proxy requests through
 	// Agent Vault — they cannot mint new tokens, even at proxy role.
-	// requireVaultMember enforces this for instance-level user/agent
-	// sessions; capRequestedRole below handles the same floor for
-	// scoped-session callers.
 	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
 		return
 	}
-
-	// Default to "proxy" if no role specified; cap to caller's own role.
-	requestedRole := req.VaultRole
-	if requestedRole == "" {
-		requestedRole = "proxy"
-	}
 	parentSess := sessionFromContext(ctx)
-	cappedRole, errMsg := s.capRequestedRole(ctx, parentSess, ns.ID, requestedRole)
-	if errMsg != "" {
-		jsonError(w, http.StatusForbidden, errMsg)
-		return
-	}
+
+	// vault_role is locked to "proxy" by the validator above, and any
+	// member+ caller trivially satisfies that, so no role-cap check is
+	// needed here. If non-proxy minting is ever re-enabled, restore
+	// capRequestedRole (or equivalent) to gate role escalation.
+	cappedRole := "proxy"
 
 	// Compute expiry: use ttl_seconds if provided, otherwise default 24h.
 	var expiresAt *time.Time
@@ -282,41 +273,4 @@ func (s *Server) handleRevokeScopedSession(w http.ResponseWriter, r *http.Reques
 	jsonOK(w, map[string]string{"status": "revoked"})
 }
 
-// capRequestedRole enforces role-capping rules: the requested role cannot
-// exceed the caller's own vault role. Proxy-role agents cannot mint sessions at all.
-// Returns the validated role, or an error string if the caller lacks permission.
-func (s *Server) capRequestedRole(ctx context.Context, sess *store.Session, vaultID, requestedRole string) (string, string) {
-	if requestedRole == "" {
-		requestedRole = "proxy"
-	}
-
-	var callerRole string
-
-	if sess.VaultID != "" {
-		// Scoped session (agent or temp invite).
-		if sess.VaultID != vaultID {
-			return "", "Session not authorized for this vault"
-		}
-		if !roleSatisfies(sess.VaultRole, "member") {
-			return "", "Member role required"
-		}
-		callerRole = sess.VaultRole
-	} else {
-		// Instance-level session: resolve actor and check vault access.
-		actor, err := s.actorFromSession(ctx, sess)
-		if err != nil || actor == nil {
-			return "", "Invalid session"
-		}
-		role, err2 := s.store.GetVaultRole(ctx, actor.ID, vaultID)
-		if err2 != nil {
-			return "", "No access to this vault"
-		}
-		callerRole = role
-	}
-
-	if !roleSatisfies(callerRole, requestedRole) {
-		return "", fmt.Sprintf("Your vault role (%s) cannot mint sessions with role %s", callerRole, requestedRole)
-	}
-	return requestedRole, ""
-}
 

@@ -1979,10 +1979,8 @@ func TestScopedSessionSuccess(t *testing.T) {
 // owner with vault-admin can no longer request a non-proxy role through
 // POST /v1/sessions. Tokens are minted with role `proxy` only.
 // TestScopedSessionProxyUserRejected covers the rule that a proxy-role
-// vault user cannot mint scoped tokens — proxy is a "can only proxy
-// requests" tier and explicitly excludes the mint capability, even
-// though the legacy capRequestedRole fall-through previously allowed
-// proxy→proxy minting via the instance-level branch.
+// vault user cannot mint scoped tokens. Proxy is a "can only proxy
+// requests" tier and explicitly excludes mint, even at proxy role.
 func TestScopedSessionProxyUserRejected(t *testing.T) {
 	ms := newMockStore()
 	ms.users["proxy@test.com"] = &store.User{
