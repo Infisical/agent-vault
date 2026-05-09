@@ -186,7 +186,10 @@ export class ServicesResource {
     const res = await this.httpClient.get<ServicesList>(this.basePath);
     return {
       vault: res.vault,
-      services: res.services as Service[],
+      services: res.services.map((s) => ({
+        ...s,
+        description: s.description ?? undefined,
+      })) as Service[],
     };
   }
 

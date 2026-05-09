@@ -106,7 +106,9 @@ export interface WireSubstitution {
 /** @internal Wire format for a service entry. */
 export interface WireService {
   host: string;
-  description?: string;
+  /** Go's `*string` with no `omitempty` serializes nil as literal `null`,
+   *  not as a missing field. Normalized to `undefined` before reaching `Service`. */
+  description?: string | null;
   enabled?: boolean;
   auth: WireServiceAuth;
   substitutions?: WireSubstitution[];

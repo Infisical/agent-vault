@@ -34,6 +34,7 @@ describe("ServicesResource", () => {
             },
             {
               host: "proxy.example.com",
+              description: null,
               enabled: false,
               auth: { type: "passthrough" },
               substitutions: [
@@ -66,6 +67,7 @@ describe("ServicesResource", () => {
           { key: "ACCOUNT_ID", placeholder: "__ACCOUNT__", in: ["path"] },
         ],
       });
+      expect(result.services[1]!.description).toBeUndefined();
     });
 
     it("includes X-Vault header when created via AgentVault.vault()", async () => {
