@@ -20,6 +20,9 @@ var agentInviteCmd = &cobra.Command{
 		vaultFlags, _ := cmd.Flags().GetStringArray("vault")
 		tokenOnly, _ := cmd.Flags().GetBool("token-only")
 		agentRole, _ := cmd.Flags().GetString("role")
+		if !validInstanceRole(agentRole) {
+			return fmt.Errorf("role must be one of: %s", instanceRoleHelp)
+		}
 
 		sess, err := ensureSession()
 		if err != nil {

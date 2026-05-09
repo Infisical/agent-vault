@@ -33,11 +33,13 @@ function RowActions({
   isOwner,
   onRevoke,
   onDone,
+  onError,
 }: {
   agent: AgentRow;
   isOwner: boolean;
   onRevoke: (agent: AgentRow) => void;
   onDone: () => void;
+  onError: (msg: string) => void;
 }) {
   if (agent.status === "revoked") return null;
 
@@ -49,10 +51,15 @@ function RowActions({
           {
             label: "Revoke invite",
             onClick: async () => {
-              await apiFetch(
+              const resp = await apiFetch(
                 `/v1/agents/invites/by-id/${agent.invite_id}`,
                 { method: "DELETE" }
               );
+              if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                onError(data.error || "Failed to revoke invite");
+                return;
+              }
               onDone();
             },
             variant: "danger",
@@ -62,6 +69,19 @@ function RowActions({
     );
   }
 
+  async function setRoleTo(newRole: InstanceRole) {
+    const resp = await apiFetch(
+      `/v1/agents/${encodeURIComponent(agent.name)}/role`,
+      { method: "POST", body: JSON.stringify({ role: newRole }) }
+    );
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      onError(data.error || "Failed to change role");
+      return;
+    }
+    onDone();
+  }
+
   const items: { label: string; onClick: () => void; variant?: "danger" }[] = [];
 
   if (isOwner) {
@@ -69,13 +89,7 @@ function RowActions({
       if (opt.role === agent.role) continue;
       items.push({
         label: `Set role: ${opt.label}`,
-        onClick: async () => {
-          await apiFetch(
-            `/v1/agents/${encodeURIComponent(agent.name)}/role`,
-            { method: "POST", body: JSON.stringify({ role: opt.role }) }
-          );
-          onDone();
-        },
+        onClick: () => setRoleTo(opt.role),
       });
     }
   }
@@ -207,7 +221,7 @@ export default function AllAgentsTab() {
         header: "",
         align: "right" as const,
         render: (agent: AgentRow) => (
-          <RowActions agent={agent} isOwner={auth.is_owner} onRevoke={setRevokeTarget} onDone={fetchData} />
+          <RowActions agent={agent} isOwner={auth.is_owner} onRevoke={setRevokeTarget} onDone={fetchData} onError={setError} />
         ),
       },
     ];
