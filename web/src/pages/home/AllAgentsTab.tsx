@@ -282,7 +282,7 @@ function InviteAgentButton({
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
-  const [agentRole, setAgentRole] = useState<InstanceRole>("member");
+  const [agentRole, setAgentRole] = useState<InstanceRole>("no-access");
   const [vaultAssignments, setVaultAssignments] = useState<VaultAssignment[]>([]);
   const [availableVaults, setAvailableVaults] = useState<VaultOption[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -305,7 +305,7 @@ function InviteAgentButton({
   function close() {
     setOpen(false);
     setName("");
-    setAgentRole("member");
+    setAgentRole("no-access");
     setVaultAssignments([]);
     setError("");
     setInviteResult(null);
@@ -335,7 +335,7 @@ function InviteAgentButton({
     setError("");
     try {
       const payload: Record<string, unknown> = { name: name.trim() };
-      if (isOwner && agentRole !== "member") {
+      if (isOwner) {
         payload.role = agentRole;
       }
       if (vaultAssignments.length > 0) {
@@ -403,14 +403,14 @@ function InviteAgentButton({
           <line x1="1" y1="9" x2="4" y2="9" />
           <line x1="1" y1="14" x2="4" y2="14" />
         </svg>
-        Invite agent
+        Add agent
       </Button>
 
       <Modal
         open={open}
         onClose={close}
-        title={inviteResult ? "Connect Your Agent" : "Invite Agent"}
-        description={inviteResult ? "Paste this into your agent's chat." : "Invite an AI agent to the instance."}
+        title={inviteResult ? "Connect Your Agent" : "Add Agent"}
+        description={inviteResult ? "Paste this into your agent's chat." : "Connect an agent, app, or service to Agent Vault."}
         footer={
           inviteResult ? (
             <Button onClick={close}>Done</Button>
@@ -456,9 +456,9 @@ function InviteAgentButton({
                   value={agentRole}
                   onChange={(e) => setAgentRole(e.target.value as InstanceRole)}
                 >
+                  <option value="no-access">No Access</option>
                   <option value="member">Member</option>
                   <option value="owner">Owner</option>
-                  <option value="no-access">No Access</option>
                 </Select>
               </FormField>
             )}
@@ -486,21 +486,22 @@ function InviteAgentButton({
                 <div className="space-y-2">
                   {vaultAssignments.map((assignment, idx) => (
                     <div key={idx} className="flex items-center gap-2">
-                      <select
-                        value={assignment.vault_name}
-                        onChange={(e) => updateVault(idx, "vault_name", e.target.value)}
-                        className="flex-1 px-3 py-2 bg-surface border border-border rounded-lg text-text text-sm outline-none"
-                      >
-                        {availableVaults.map((v) => (
-                          <option
-                            key={v.name}
-                            value={v.name}
-                            disabled={assignedNames.has(v.name) && v.name !== assignment.vault_name}
-                          >
-                            {v.name}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="flex-1">
+                        <Select
+                          value={assignment.vault_name}
+                          onChange={(e) => updateVault(idx, "vault_name", e.target.value)}
+                        >
+                          {availableVaults.map((v) => (
+                            <option
+                              key={v.name}
+                              value={v.name}
+                              disabled={assignedNames.has(v.name) && v.name !== assignment.vault_name}
+                            >
+                              {v.name}
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
                       <Select
                         value={assignment.vault_role}
                         onChange={(e) => updateVault(idx, "vault_role", e.target.value)}

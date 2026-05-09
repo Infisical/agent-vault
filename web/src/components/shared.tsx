@@ -78,11 +78,12 @@ export function formatInstanceRole(role: string): string {
   return role;
 }
 
-// Highest privilege first; consumers filter out the actor's current role.
+// Lowest privilege first; "No Access" is the safe default offered to operators
+// when adding a new actor. Consumers filter out the actor's current role.
 export const INSTANCE_ROLE_OPTIONS: ReadonlyArray<{ role: InstanceRole; label: string }> = [
-  { role: "owner", label: "Owner" },
-  { role: "member", label: "Member" },
   { role: "no-access", label: "No Access" },
+  { role: "member", label: "Member" },
+  { role: "owner", label: "Owner" },
 ];
 
 export function timeUntil(dateStr: string): string {

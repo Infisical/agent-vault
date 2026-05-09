@@ -470,9 +470,9 @@ function InviteUserButton({
                   value={role}
                   onChange={(e) => setRole(e.target.value as InstanceRole)}
                 >
+                  <option value="no-access">No Access</option>
                   <option value="member">Member</option>
                   <option value="owner">Owner</option>
-                  <option value="no-access">No Access</option>
                 </Select>
               </FormField>
             )}
@@ -500,29 +500,30 @@ function InviteUserButton({
                 <div className="space-y-2">
                   {vaultAssignments.map((assignment, idx) => (
                     <div key={idx} className="flex items-center gap-2">
-                      <select
-                        value={assignment.vault_name}
-                        onChange={(e) => updateVault(idx, "vault_name", e.target.value)}
-                        className="flex-1 px-3 py-2 bg-surface border border-border rounded-lg text-text text-sm outline-none"
-                      >
-                        {availableVaults.map((v) => (
-                          <option
-                            key={v.name}
-                            value={v.name}
-                            disabled={assignedNames.has(v.name) && v.name !== assignment.vault_name}
-                          >
-                            {v.name}
-                          </option>
-                        ))}
-                      </select>
-                      <select
+                      <div className="flex-1">
+                        <Select
+                          value={assignment.vault_name}
+                          onChange={(e) => updateVault(idx, "vault_name", e.target.value)}
+                        >
+                          {availableVaults.map((v) => (
+                            <option
+                              key={v.name}
+                              value={v.name}
+                              disabled={assignedNames.has(v.name) && v.name !== assignment.vault_name}
+                            >
+                              {v.name}
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
+                      <Select
                         value={assignment.vault_role}
                         onChange={(e) => updateVault(idx, "vault_role", e.target.value)}
-                        className="w-28 px-3 py-2 bg-surface border border-border rounded-lg text-text text-sm outline-none"
+                        className="w-28"
                       >
                         <option value="member">Member</option>
                         <option value="admin">Admin</option>
-                      </select>
+                      </Select>
                       <button
                         type="button"
                         onClick={() => removeVault(idx)}
