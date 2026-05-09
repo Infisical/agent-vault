@@ -359,7 +359,7 @@ function MintTokenButton({
               <Input
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
-                placeholder="claude-code laptop"
+                placeholder="claude-code"
                 maxLength={100}
                 autoFocus
               />
