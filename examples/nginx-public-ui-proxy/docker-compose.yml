@@ -5,12 +5,12 @@ services:
       AGENT_VAULT_MASTER_PASSWORD: changeme-for-local-testing
       # Public URL the user hits — drives av_session Secure flag and email links.
       AGENT_VAULT_ADDR: http://localhost:8080
-      # Demo only: trust the whole compose network. Scope to gateway CIDR in prod.
+      # Demo only: trust the whole compose network. Scope to the reverse proxy CIDR in prod.
       AGENT_VAULT_TRUSTED_PROXIES: 0.0.0.0/0
     volumes:
       - agent-vault-data:/data
 
-  gateway:
+  reverse-proxy:
     build: .
     environment:
       PORT: 8080
@@ -21,7 +21,7 @@ services:
       - agent-vault
 
   # Verification harness for trust-header stripping: uncomment, then in the
-  # gateway service set AV_UPSTREAM=echo:8080.
+  # reverse-proxy service set AV_UPSTREAM=echo:8080.
   #
   # echo:
   #   image: mendhak/http-https-echo:34

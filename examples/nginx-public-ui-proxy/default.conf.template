@@ -7,14 +7,14 @@ server {
     listen ${PORT};
     server_name _;
 
-    # Gateway-local liveness probe; Agent Vault's own /health forwards through normally.
+    # Local liveness probe; Agent Vault's own /health forwards through normally.
     location = /healthz {
         access_log off;
         add_header Content-Type text/plain;
         return 200 "ok\n";
     }
 
-    # Refuse CONNECT — accepting it would turn this gateway into an open forward proxy.
+    # Refuse CONNECT — accepting it would turn this reverse proxy into an open forward proxy.
     if ($request_method = CONNECT) {
         return 405;
     }
