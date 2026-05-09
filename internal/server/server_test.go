@@ -734,18 +734,29 @@ func (m *mockStore) ListActorGrants(_ context.Context, actorID string) ([]store.
 	return grants, nil
 }
 
-func (m *mockStore) HasVaultAccess(_ context.Context, userID, vaultID string) (bool, error) {
-	if m.grants != nil && m.grants[userID] != nil {
-		_, ok := m.grants[userID][vaultID]
-		return ok, nil
+func (m *mockStore) HasVaultAccess(_ context.Context, actorID, vaultID string) (bool, error) {
+	if m.grants != nil && m.grants[actorID] != nil {
+		if _, ok := m.grants[actorID][vaultID]; ok {
+			return true, nil
+		}
+	}
+	for _, g := range m.agentVaultGrants {
+		if g.ActorID == actorID && g.VaultID == vaultID {
+			return true, nil
+		}
 	}
 	return false, nil
 }
 
-func (m *mockStore) GetVaultRole(_ context.Context, userID, vaultID string) (string, error) {
-	if m.grants != nil && m.grants[userID] != nil {
-		if role, ok := m.grants[userID][vaultID]; ok {
+func (m *mockStore) GetVaultRole(_ context.Context, actorID, vaultID string) (string, error) {
+	if m.grants != nil && m.grants[actorID] != nil {
+		if role, ok := m.grants[actorID][vaultID]; ok {
 			return role, nil
+		}
+	}
+	for _, g := range m.agentVaultGrants {
+		if g.ActorID == actorID && g.VaultID == vaultID {
+			return g.Role, nil
 		}
 	}
 	return "", fmt.Errorf("no grant found")
@@ -5350,6 +5361,28 @@ func TestServiceRemoveUnauthenticated(t *testing.T) {
 
 // --- no-access instance role tests ---
 
+// setupNoAccessAgentSession creates a no-access agent (not a user) with an
+// agent-token session and optional vault grants. Exercises the sess.AgentID
+// branch of actorFromSession, which the user-based helper does not cover.
+func setupNoAccessAgentSession(t *testing.T, ms *mockStore, grantVaultIDs ...string) string {
+	t.Helper()
+	ms.agents["scoped-bot"] = &store.Agent{
+		ID: "scoped-agent-id", Name: "scoped-bot", Role: "no-access", Status: "active",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	sess := &store.Session{
+		ID:        "scoped-agent-session",
+		AgentID:   "scoped-agent-id",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+		CreatedAt: time.Now(),
+	}
+	ms.sessions[sess.ID] = sess
+	for _, nsID := range grantVaultIDs {
+		ms.GrantVaultRole(context.Background(), "scoped-agent-id", "agent", nsID, "member")
+	}
+	return sess.ID
+}
+
 func setupNoAccessSession(t *testing.T, ms *mockStore, grantVaultIDs ...string) string {
 	t.Helper()
 	ms.users["scoped@test.com"] = &store.User{
@@ -5451,6 +5484,41 @@ func TestNoAccessActorCannotListAgents(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoAccessAgentBlockedAtInstanceScope(t *testing.T) {
+	// Agents (not just users) at no-access must fail instance-scoped checks.
+	// Covers the sess.AgentID path in actorFromSession.
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessAgentSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/agents", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoAccessAgentAllowedAtVaultScope(t *testing.T) {
+	// Motivating use case: no-access agent's only authority is its vault grant.
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessAgentSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

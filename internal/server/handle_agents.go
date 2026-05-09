@@ -1133,7 +1133,7 @@ func (s *Server) handleAgentInviteCreate(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// handleAgentSetRole changes an agent's instance-level role (owner/member).
+// handleAgentSetRole changes an agent's instance-level role (owner/member/no-access).
 func (s *Server) handleAgentSetRole(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")
