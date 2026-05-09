@@ -108,6 +108,7 @@ describe("SessionsResource", () => {
       expect(session.containerConfig!.env.HTTPS_PROXY).toContain("scoped-token-123");
       expect(session.containerConfig!.env.HTTPS_PROXY).toContain("test");
       expect(session.containerConfig!.env.HTTPS_PROXY).toContain("14322");
+      expect(session.containerConfig!.env.HTTP_PROXY).toBe(session.containerConfig!.env.HTTPS_PROXY);
       expect(session.containerConfig!.env.NO_PROXY).toBe("localhost,127.0.0.1");
       expect(session.containerConfig!.caCertificate).toBe(FAKE_PEM);
     });
@@ -226,6 +227,7 @@ describe("buildProxyEnv()", () => {
     const config: ContainerConfig = {
       env: {
         HTTPS_PROXY: "https://tok:vault@127.0.0.1:14322",
+        HTTP_PROXY: "https://tok:vault@127.0.0.1:14322",
         NO_PROXY: "localhost,127.0.0.1",
       },
       caCertificate: FAKE_PEM,
@@ -234,6 +236,7 @@ describe("buildProxyEnv()", () => {
     const env = buildProxyEnv(config, "/etc/ssl/agent-vault-ca.pem");
 
     expect(env.HTTPS_PROXY).toBe("https://tok:vault@127.0.0.1:14322");
+    expect(env.HTTP_PROXY).toBe("https://tok:vault@127.0.0.1:14322");
     expect(env.NO_PROXY).toBe("localhost,127.0.0.1");
     expect(env.NODE_USE_ENV_PROXY).toBe("1");
     expect(env.SSL_CERT_FILE).toBe("/etc/ssl/agent-vault-ca.pem");

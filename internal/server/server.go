@@ -22,7 +22,6 @@ import (
 	"github.com/Infisical/agent-vault/internal/mitm"
 	"github.com/Infisical/agent-vault/internal/netguard"
 	"github.com/Infisical/agent-vault/internal/notify"
-	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/pidfile"
 	"github.com/Infisical/agent-vault/internal/ratelimit"
 	"github.com/Infisical/agent-vault/internal/requestlog"
@@ -61,7 +60,6 @@ type Server struct {
 	notifier       *notify.Notifier
 	initialized    bool   // true when at least one owner account exists
 	baseURL        string // externally-reachable base URL (e.g. "https://sb.example.com")
-	oauthProviders map[string]oauth.Provider
 	skillCLI       []byte       // embedded CLI skill content (served at GET /v1/skills/cli)
 	skillHTTP      []byte       // embedded HTTP skill content (served at GET /v1/skills/http)
 	mitm           *mitm.Proxy          // transparent MITM proxy; nil only when --mitm-port 0
@@ -110,12 +108,23 @@ func (s *Server) SessionResolver() brokercore.SessionResolver {
 // CredentialProvider returns a brokercore.CredentialProvider backed by
 // this server's store and encryption key.
 func (s *Server) CredentialProvider() brokercore.CredentialProvider {
-	return brokercore.NewStoreCredentialProvider(s.store, s.encKey)
+	return brokercore.NewStoreCredentialProvider(credentialStoreAdapter{s.store}, s.encKey)
+}
+
+// credentialStoreAdapter satisfies brokercore.CredentialStore by adding
+// the typed UnmatchedHostPolicy lookup on top of the generic store.
+// The setting key lives at the server layer; the store stays a generic
+// key/value sink.
+type credentialStoreAdapter struct {
+	Store
+}
+
+func (a credentialStoreAdapter) UnmatchedHostPolicy(ctx context.Context, vaultID string) (brokercore.UnmatchedHostPolicy, error) {
+	return readUnmatchedHostPolicy(ctx, a.Store, vaultID)
 }
 
 // Logger returns the server's structured logger. Callers (e.g. the MITM
-// proxy constructed outside the server) use this to share a single logger
-// across ingress paths.
+// proxy constructed outside the server) use this to share a single logger.
 func (s *Server) Logger() *slog.Logger { return s.logger }
 
 // BaseURL returns the externally-reachable base URL of the server
@@ -135,13 +144,15 @@ type Store interface {
 	CountUsers(ctx context.Context) (int, error)
 	RegisterFirstUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, defaultVaultID string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*store.User, error)
 	CreateUserSession(ctx context.Context, p store.CreateUserSessionParams) (*store.Session, error)
-	CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error)
+	CreateScopedSession(ctx context.Context, p store.CreateScopedSessionParams) (*store.Session, error)
 	GetSession(ctx context.Context, id string) (*store.Session, error)
 	DeleteSession(ctx context.Context, id string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
 	TouchSession(ctx context.Context, rawToken, ip, userAgent string) error
 	ListUserSessions(ctx context.Context, userID string) ([]store.Session, error)
 	RevokeUserSession(ctx context.Context, userID, publicID string) error
+	ListScopedSessionsByVault(ctx context.Context, vaultID string) ([]store.Session, error)
+	RevokeScopedSession(ctx context.Context, vaultID, publicID string) error
 
 	// Vaults
 	CreateVault(ctx context.Context, name string) (*store.Vault, error)
@@ -228,27 +239,15 @@ type Store interface {
 	CountPendingPasswordResets(ctx context.Context, email string) (int, error)
 	ExpirePendingPasswordResets(ctx context.Context, before time.Time) (int, error)
 
-	// OAuth accounts
-	CreateOAuthAccount(ctx context.Context, userID, provider, providerUserID, email, name, avatarURL string) (*store.OAuthAccount, error)
-	GetOAuthAccount(ctx context.Context, provider, providerUserID string) (*store.OAuthAccount, error)
-	GetOAuthAccountByUser(ctx context.Context, userID, provider string) (*store.OAuthAccount, error)
-	ListUserOAuthAccounts(ctx context.Context, userID string) ([]store.OAuthAccount, error)
-	DeleteOAuthAccount(ctx context.Context, userID, provider string) error
-
-	// OAuth state
-	CreateOAuthState(ctx context.Context, stateHash, codeVerifier, nonce, redirectURL, mode, userID string, expiresAt time.Time) (*store.OAuthState, error)
-	GetOAuthStateByHash(ctx context.Context, stateHash string) (*store.OAuthState, error)
-	DeleteOAuthState(ctx context.Context, id string) error
-	ExpireOAuthStates(ctx context.Context, before time.Time) (int, error)
-
-	// OAuth user creation
-	CreateOAuthUser(ctx context.Context, email, role string) (*store.User, error)
-	CreateOAuthUserAndAccount(ctx context.Context, email, role, provider, providerUserID, oauthEmail, name, avatarURL string) (*store.User, *store.OAuthAccount, error)
-
 	// Instance settings
 	GetSetting(ctx context.Context, key string) (string, error)
 	SetSetting(ctx context.Context, key, value string) error
 	GetAllSettings(ctx context.Context) (map[string]string, error)
+
+	// Vault settings (per-vault key/value)
+	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
+	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
+	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
 
 	// Agents
 	CreateAgent(ctx context.Context, name, createdBy, role string) (*store.Agent, error)
@@ -291,13 +290,25 @@ func sessionFromContext(ctx context.Context) *store.Session {
 type Actor struct {
 	ID    string       // user.ID or agent.ID
 	Type  string       // "user" or "agent"
-	Role  string       // "owner" or "member" (instance-level)
+	Role  string       // "owner", "member", or "no-access" (instance-level)
 	User  *store.User  // non-nil for user actors
 	Agent *store.Agent // non-nil for agent actors
 }
 
 // IsOwner returns true if the actor has the instance-level owner role.
 func (a *Actor) IsOwner() bool { return a.Role == "owner" }
+
+// Hierarchy: no-access(0) < member(1) < owner(2).
+var instanceRoleRank = map[string]int{"no-access": 0, "member": 1, "owner": 2}
+
+func validInstanceRole(s string) bool {
+	_, ok := instanceRoleRank[s]
+	return ok
+}
+
+func instanceRoleSatisfies(role, required string) bool {
+	return satisfiesRank(instanceRoleRank, role, required)
+}
 
 // DisplayLabel returns a human-readable label for the actor (email for users, name for agents).
 func (a *Actor) DisplayLabel() string {
@@ -308,6 +319,27 @@ func (a *Actor) DisplayLabel() string {
 		return a.Agent.Name
 	}
 	return a.ID
+}
+
+// actorByID hydrates an Actor from a stored (id, type) pair. Used when an
+// actor is referenced by foreign-key columns (e.g. created_by on a scoped
+// session row) rather than by the calling session.
+func (s *Server) actorByID(ctx context.Context, actorID, actorType string) (*Actor, error) {
+	switch actorType {
+	case "user":
+		user, err := s.store.GetUserByID(ctx, actorID)
+		if err != nil || user == nil {
+			return nil, fmt.Errorf("user not found")
+		}
+		return &Actor{ID: user.ID, Type: "user", Role: user.Role, User: user}, nil
+	case "agent":
+		agent, err := s.store.GetAgentByID(ctx, actorID)
+		if err != nil || agent == nil {
+			return nil, fmt.Errorf("agent not found")
+		}
+		return &Actor{ID: agent.ID, Type: "agent", Role: agent.Role, Agent: agent}, nil
+	}
+	return nil, fmt.Errorf("unknown actor type: %s", actorType)
 }
 
 // actorFromSession resolves any session to an Actor.
@@ -352,6 +384,21 @@ func (s *Server) requireOwnerActor(w http.ResponseWriter, r *http.Request) (*Act
 	if !actor.IsOwner() {
 		jsonError(w, http.StatusForbidden, "Owner role required")
 		return nil, fmt.Errorf("not owner")
+	}
+	return actor, nil
+}
+
+// requireInstanceMember rejects no-access actors. Use for instance-scoped
+// actions (create vault, create invites, list actors) that don't already
+// require owner. Auth and own-profile reads should keep using requireActor.
+func (s *Server) requireInstanceMember(w http.ResponseWriter, r *http.Request) (*Actor, error) {
+	actor, err := s.requireActor(w, r)
+	if err != nil {
+		return nil, err
+	}
+	if !instanceRoleSatisfies(actor.Role, "member") {
+		jsonError(w, http.StatusForbidden, "Instance member role required")
+		return nil, fmt.Errorf("instance role too low: %s", actor.Role)
 	}
 	return actor, nil
 }
@@ -452,12 +499,17 @@ func (s *Server) requireVaultAdmin(w http.ResponseWriter, r *http.Request, vault
 	return actor, nil
 }
 
-// roleSatisfies returns true if role is at least as privileged as requiredRole.
 // Hierarchy: proxy(0) < member(1) < admin(2).
 var roleRank = map[string]int{"proxy": 0, "member": 1, "admin": 2}
 
+// satisfiesRank reports whether role meets or exceeds required in the given rank table.
+// Unknown roles rank as 0; unknown required values are satisfied by anything in rank.
+func satisfiesRank(rank map[string]int, role, required string) bool {
+	return rank[role] >= rank[required]
+}
+
 func roleSatisfies(role, requiredRole string) bool {
-	return roleRank[role] >= roleRank[requiredRole]
+	return satisfiesRank(roleRank, role, requiredRole)
 }
 
 // requireVaultMember checks that the session has member+ access to the vault.
@@ -503,8 +555,10 @@ func (s *Server) requireVaultMember(w http.ResponseWriter, r *http.Request, vaul
 }
 
 // requireProposalReview checks proposal approve/reject access.
-// Scoped sessions require admin role (proxy-role actors cannot self-approve).
-// Instance-level sessions require any vault access (member or admin — by design).
+// Scoped sessions require admin role (proxy-scoped sessions cannot self-approve).
+// Instance-level sessions require member+ — proxy-role actors are forbidden so
+// that a proxy cannot approve a proposal it raised and trick the broker into
+// injecting credentials toward an attacker-controlled host.
 func (s *Server) requireProposalReview(w http.ResponseWriter, r *http.Request, vaultID string) (*Actor, error) {
 	sess := sessionFromContext(r.Context())
 	if sess == nil {
@@ -525,8 +579,8 @@ func (s *Server) requireProposalReview(w http.ResponseWriter, r *http.Request, v
 		return nil, nil
 	}
 
-	// Instance-level session: any vault member can review proposals.
-	return s.requireVaultAccess(w, r, vaultID)
+	// Instance-level session: require member+ (proxy-role actors cannot self-approve).
+	return s.requireVaultMember(w, r, vaultID)
 }
 
 
@@ -557,13 +611,8 @@ func limitBody(next http.HandlerFunc) http.HandlerFunc {
 // The initialized parameter indicates whether at least one owner account exists.
 // When false, all endpoints except /health and POST /v1/init return 503.
 // logger must be non-nil; tests can pass slog.New(slog.DiscardHandler).
-func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string, oauthProviders map[string]oauth.Provider, logger *slog.Logger) *Server {
+func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
-
-	// Initialize proxy client once (reads AGENT_VAULT_ALLOW_PRIVATE_RANGES after env is configured).
-	if proxyClient == nil {
-		proxyClient = newProxyClient()
-	}
 
 	rlCfg, _ := ratelimit.LoadFromEnv()
 	rl := ratelimit.New(rlCfg)
@@ -582,7 +631,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 		notifier:       notifier,
 		initialized:    initialized,
 		baseURL:        strings.TrimRight(baseURL, "/"),
-		oauthProviders: oauthProviders,
 		logger:         logger,
 		rateLimit:      rl,
 		logSink:        requestlog.Nop{},
@@ -611,6 +659,8 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/auth/sessions", s.requireInitialized(s.requireAuth(actorAuthed(s.handleListUserSessions))))
 	mux.HandleFunc("DELETE /v1/auth/sessions/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleRevokeUserSession))))
 	mux.HandleFunc("POST /v1/sessions", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleScopedSession)))))
+	mux.HandleFunc("GET /v1/sessions", s.requireInitialized(s.requireAuth(actorAuthed(s.handleListScopedSessions))))
+	mux.HandleFunc("DELETE /v1/sessions/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleRevokeScopedSession))))
 	mux.HandleFunc("GET /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(s.handleCredentialsList))))
 	mux.HandleFunc("POST /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleCredentialsSet)))))
 	mux.HandleFunc("DELETE /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleCredentialsDelete)))))
@@ -620,8 +670,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/proposals", s.requireInitialized(s.requireAuth(actorAuthed(s.handleProposalList))))
 	mux.HandleFunc("POST /v1/admin/proposals/{id}/approve", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAdminProposalApprove)))))
 	mux.HandleFunc("POST /v1/admin/proposals/{id}/reject", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAdminProposalReject)))))
-	// /proxy/ enforces its rate limit inside the handler (needs the resolved vault).
-	mux.HandleFunc("/proxy/", s.requireInitialized(s.requireAuth(s.handleProxy)))
 
 	// Agent invite redemption (no auth — token is the credential)
 	mux.HandleFunc("GET /invite/{token}", s.requireInitialized(ipInviteToken(s.handleInviteRedeem)))
@@ -632,10 +680,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	}))
 	ipApprovalToken := s.tier(ratelimit.TierAuth, ratelimit.IPTokenKey(clientIP, func(r *http.Request) string {
 		return r.URL.Query().Get("token")
-	}))
-	// OAuth callback: keyed on the hashed state query param.
-	ipOAuthCallback := s.tier(ratelimit.TierAuth, ratelimit.IPTokenKey(clientIP, func(r *http.Request) string {
-		return r.URL.Query().Get("state")
 	}))
 
 	// Agent invites (instance-level, requires auth)
@@ -678,6 +722,8 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("DELETE /v1/vaults/{name}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultDelete))))
 	mux.HandleFunc("POST /v1/vaults/{name}/rename", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultRename)))))
 	mux.HandleFunc("POST /v1/vaults/{name}/join", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultJoin)))))
+	mux.HandleFunc("GET /v1/vaults/{name}/settings", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultSettingsGet))))
+	mux.HandleFunc("PATCH /v1/vaults/{name}/settings", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultSettingsPatch)))))
 
 	// Vault admin (owner-only)
 	mux.HandleFunc("GET /v1/admin/vaults", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAdminVaultList))))
@@ -726,13 +772,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 
 	mux.HandleFunc("POST /v1/auth/logout", s.requireInitialized(ipAuth(s.handleLogout)))
 
-	// OAuth
-	mux.HandleFunc("GET /v1/auth/oauth/providers", ipAuth(s.handleOAuthProviders))
-	mux.HandleFunc("GET /v1/auth/oauth/{provider}/login", s.requireInitialized(ipAuth(s.optionalAuth(s.handleOAuthLogin))))
-	mux.HandleFunc("GET /v1/auth/oauth/{provider}/callback", s.requireInitialized(ipOAuthCallback(s.handleOAuthCallback)))
-	mux.HandleFunc("POST /v1/auth/oauth/{provider}/connect", s.requireInitialized(s.requireAuth(actorAuthed(s.handleOAuthConnect))))
-	mux.HandleFunc("DELETE /v1/auth/oauth/{provider}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleOAuthDisconnect))))
-
 	// React app static assets (Vite outputs to /assets/ with base "/")
 	webFS, _ := fs.Sub(webDistFS, "webdist")
 	mux.Handle("GET /assets/", http.FileServer(http.FS(webFS)))
@@ -747,7 +786,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /approve/{id...}", s.handleSPA)
 	mux.HandleFunc("GET /manage/{path...}", s.handleSPA)
 	mux.HandleFunc("GET /change-password", s.handleSPA)
-	mux.HandleFunc("GET /oauth/callback", s.handleSPA)
 	mux.HandleFunc("GET /account/{path...}", s.handleSPA)
 	mux.HandleFunc("GET /{$}", s.handleSPA)
 
@@ -1009,32 +1047,6 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// optionalAuth is like requireAuth but does not reject unauthenticated
-// requests. If a valid session token is present it is placed in context;
-// otherwise the handler runs without a session.
-func (s *Server) optionalAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var token string
-		header := r.Header.Get("Authorization")
-		if strings.HasPrefix(header, "Bearer ") {
-			token = strings.TrimPrefix(header, "Bearer ")
-		} else if c, err := r.Cookie("av_session"); err == nil && c.Value != "" {
-			token = c.Value
-		}
-
-		if token != "" {
-			if sess, err := s.store.GetSession(r.Context(), token); err == nil && sess != nil && !sess.IsExpired(time.Now()) {
-				s.maybeTouchSession(r.Context(), sess, token, clientIP(r), r.UserAgent())
-				ctx := context.WithValue(r.Context(), sessionContextKey, sess)
-				next(w, r.WithContext(ctx))
-				return
-			}
-		}
-
-		next(w, r)
-	}
-}
-
 // maybeTouchSession bumps last_used_at on user sessions and refreshes
 // last_ip / last_user_agent, gated by an in-memory cache so the SQL
 // layer is hit at most once per session per TouchInterval. The store-
@@ -1093,6 +1105,16 @@ const (
 	scopedSessionDefaultTTL = 24 * time.Hour // when ttl_seconds is unset
 )
 
+// isSecureRequest reports whether the request arrived over TLS, deriving
+// the verdict from the trusted server-side baseURL when r.TLS is nil so
+// X-Forwarded-Proto cannot spoof it.
+func isSecureRequest(r *http.Request, baseURL string) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.HasPrefix(baseURL, "https://")
+}
+
 // sessionCookie builds an av_session cookie with all hardening flags set.
 // Secure is set based on TLS state or the server's configured baseURL.
 func sessionCookie(r *http.Request, baseURL, value string, maxAge int) *http.Cookie {
@@ -1125,3 +1147,7 @@ const settingAllowedDomains = "allowed_email_domains"
 const settingInviteOnly = "invite_only"
 
 const settingRateLimitConfig = "ratelimit_config"
+
+// settingUnmatchedHostPolicy is the per-vault key in vault_settings that
+// controls whether requests to unmatched hosts passthrough or are denied.
+const settingUnmatchedHostPolicy = "unmatched_host_policy"

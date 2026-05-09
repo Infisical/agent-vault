@@ -3,14 +3,10 @@ package server
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -42,6 +38,7 @@ type mockStore struct {
 	agents             map[string]*store.Agent               // keyed by name
 	agentVaultGrants   []store.VaultGrant                    // agent vault grants
 	settings           map[string]string                     // instance settings
+	vaultSettings      map[string]map[string]string          // per-vault: vaultID -> key -> value
 	sessionCounter     int
 }
 
@@ -56,6 +53,7 @@ func newMockStore() *mockStore {
 		userInvites:   make(map[string]*store.UserInvite),
 		agents:        make(map[string]*store.Agent),
 		settings:      make(map[string]string),
+		vaultSettings: make(map[string]map[string]string),
 	}
 	// Seed root vault
 	ms.vaults["default"] = &store.Vault{ID: "root-ns-id", Name: "default"}
@@ -177,16 +175,49 @@ func (m *mockStore) RevokeUserSession(_ context.Context, userID, publicID string
 	return sql.ErrNoRows
 }
 
-func (m *mockStore) CreateScopedSession(_ context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error) {
+func (m *mockStore) CreateScopedSession(_ context.Context, p store.CreateScopedSessionParams) (*store.Session, error) {
+	publicID := fmt.Sprintf("scoped-public-%d", len(m.sessions))
 	s := &store.Session{
-		ID:        "scoped-session-id",
-		VaultID:   vaultID,
-		VaultRole: vaultRole,
-		ExpiresAt: expiresAt,
-		CreatedAt: time.Now(),
+		ID:                 "scoped-session-id",
+		VaultID:            p.VaultID,
+		VaultRole:          p.VaultRole,
+		ExpiresAt:          p.ExpiresAt,
+		CreatedAt:          time.Now(),
+		PublicID:           publicID,
+		Label:              p.Label,
+		CreatedByActorID:   p.CreatedByActorID,
+		CreatedByActorType: p.CreatedByActorType,
 	}
 	m.sessions[s.ID] = s
 	return s, nil
+}
+
+func (m *mockStore) ListScopedSessionsByVault(_ context.Context, vaultID string) ([]store.Session, error) {
+	now := time.Now()
+	var out []store.Session
+	for _, sess := range m.sessions {
+		if sess.VaultID != vaultID || sess.PublicID == "" || sess.UserID != "" || sess.AgentID != "" {
+			continue
+		}
+		if sess.ExpiresAt != nil && sess.ExpiresAt.Before(now) {
+			continue
+		}
+		out = append(out, *sess)
+	}
+	return out, nil
+}
+
+func (m *mockStore) RevokeScopedSession(_ context.Context, vaultID, publicID string) error {
+	if vaultID == "" || publicID == "" {
+		return sql.ErrNoRows
+	}
+	for id, sess := range m.sessions {
+		if sess.VaultID == vaultID && sess.PublicID == publicID && sess.UserID == "" && sess.AgentID == "" {
+			delete(m.sessions, id)
+			return nil
+		}
+	}
+	return sql.ErrNoRows
 }
 
 func (m *mockStore) GetSession(_ context.Context, id string) (*store.Session, error) {
@@ -703,18 +734,29 @@ func (m *mockStore) ListActorGrants(_ context.Context, actorID string) ([]store.
 	return grants, nil
 }
 
-func (m *mockStore) HasVaultAccess(_ context.Context, userID, vaultID string) (bool, error) {
-	if m.grants != nil && m.grants[userID] != nil {
-		_, ok := m.grants[userID][vaultID]
-		return ok, nil
+func (m *mockStore) HasVaultAccess(_ context.Context, actorID, vaultID string) (bool, error) {
+	if m.grants != nil && m.grants[actorID] != nil {
+		if _, ok := m.grants[actorID][vaultID]; ok {
+			return true, nil
+		}
+	}
+	for _, g := range m.agentVaultGrants {
+		if g.ActorID == actorID && g.VaultID == vaultID {
+			return true, nil
+		}
 	}
 	return false, nil
 }
 
-func (m *mockStore) GetVaultRole(_ context.Context, userID, vaultID string) (string, error) {
-	if m.grants != nil && m.grants[userID] != nil {
-		if role, ok := m.grants[userID][vaultID]; ok {
+func (m *mockStore) GetVaultRole(_ context.Context, actorID, vaultID string) (string, error) {
+	if m.grants != nil && m.grants[actorID] != nil {
+		if role, ok := m.grants[actorID][vaultID]; ok {
 			return role, nil
+		}
+	}
+	for _, g := range m.agentVaultGrants {
+		if g.ActorID == actorID && g.VaultID == vaultID {
+			return g.Role, nil
 		}
 	}
 	return "", fmt.Errorf("no grant found")
@@ -1151,72 +1193,6 @@ func (m *mockStore) CreateRotationInvite(_ context.Context, agentID, createdBy s
 	return inv, nil
 }
 
-// --- OAuth mock methods (no-op stubs for interface compliance) ---
-
-func (m *mockStore) CreateOAuthAccount(_ context.Context, userID, provider, providerUserID, email, name, avatarURL string) (*store.OAuthAccount, error) {
-	return &store.OAuthAccount{
-		ID: "oa-" + provider + "-" + providerUserID, UserID: userID,
-		Provider: provider, ProviderUserID: providerUserID,
-		Email: email, Name: name, AvatarURL: avatarURL,
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
-	}, nil
-}
-
-func (m *mockStore) GetOAuthAccount(_ context.Context, provider, providerUserID string) (*store.OAuthAccount, error) {
-	return nil, nil
-}
-
-func (m *mockStore) GetOAuthAccountByUser(_ context.Context, userID, provider string) (*store.OAuthAccount, error) {
-	return nil, nil
-}
-
-func (m *mockStore) ListUserOAuthAccounts(_ context.Context, userID string) ([]store.OAuthAccount, error) {
-	return nil, nil
-}
-
-func (m *mockStore) DeleteOAuthAccount(_ context.Context, userID, provider string) error {
-	return nil
-}
-
-func (m *mockStore) CreateOAuthState(_ context.Context, stateHash, codeVerifier, nonce, redirectURL, mode, userID string, expiresAt time.Time) (*store.OAuthState, error) {
-	return &store.OAuthState{
-		ID: "state-1", StateHash: stateHash, CodeVerifier: codeVerifier, Nonce: nonce,
-		RedirectURL: redirectURL, Mode: mode, UserID: userID,
-		CreatedAt: time.Now(), ExpiresAt: expiresAt,
-	}, nil
-}
-
-func (m *mockStore) GetOAuthStateByHash(_ context.Context, stateHash string) (*store.OAuthState, error) {
-	return nil, nil
-}
-
-func (m *mockStore) DeleteOAuthState(_ context.Context, id string) error {
-	return nil
-}
-
-func (m *mockStore) ExpireOAuthStates(_ context.Context, before time.Time) (int, error) {
-	return 0, nil
-}
-
-func (m *mockStore) CreateOAuthUser(_ context.Context, email, role string) (*store.User, error) {
-	id := fmt.Sprintf("user-%d", len(m.users)+1)
-	u := &store.User{ID: id, Email: email, Role: role, IsActive: true, CreatedAt: time.Now(), UpdatedAt: time.Now()}
-	m.users[email] = u
-	return u, nil
-}
-
-func (m *mockStore) CreateOAuthUserAndAccount(_ context.Context, email, role, provider, providerUserID, oauthEmail, name, avatarURL string) (*store.User, *store.OAuthAccount, error) {
-	u, err := m.CreateOAuthUser(context.Background(), email, role)
-	if err != nil {
-		return nil, nil, err
-	}
-	oa, err := m.CreateOAuthAccount(context.Background(), u.ID, provider, providerUserID, oauthEmail, name, avatarURL)
-	if err != nil {
-		return nil, nil, err
-	}
-	return u, oa, nil
-}
-
 // --- Instance settings mock methods ---
 
 func (m *mockStore) GetSetting(_ context.Context, key string) (string, error) {
@@ -1237,6 +1213,30 @@ func (m *mockStore) GetAllSettings(_ context.Context) (map[string]string, error)
 		result[k] = v
 	}
 	return result, nil
+}
+
+func (m *mockStore) GetVaultSetting(_ context.Context, vaultID, key string) (string, error) {
+	if vs, ok := m.vaultSettings[vaultID]; ok {
+		if v, ok := vs[key]; ok {
+			return v, nil
+		}
+	}
+	return "", sql.ErrNoRows
+}
+
+func (m *mockStore) SetVaultSetting(_ context.Context, vaultID, key, value string) error {
+	if m.vaultSettings[vaultID] == nil {
+		m.vaultSettings[vaultID] = make(map[string]string)
+	}
+	m.vaultSettings[vaultID][key] = value
+	return nil
+}
+
+func (m *mockStore) DeleteVaultSetting(_ context.Context, vaultID, key string) error {
+	if vs, ok := m.vaultSettings[vaultID]; ok {
+		delete(vs, key)
+	}
+	return nil
 }
 
 // testKDFParams returns fast KDF params suitable for tests.
@@ -1986,7 +1986,37 @@ func TestScopedSessionSuccess(t *testing.T) {
 	}
 }
 
-func TestScopedSessionExplicitRole(t *testing.T) {
+// TestScopedSessionRoleAdminRejected covers the new restriction: even an
+// owner with vault-admin can no longer request a non-proxy role through
+// POST /v1/sessions. Tokens are minted with role `proxy` only.
+// TestScopedSessionProxyUserRejected covers the rule that a proxy-role
+// vault user cannot mint scoped tokens. Proxy is a "can only proxy
+// requests" tier and explicitly excludes mint, even at proxy role.
+func TestScopedSessionProxyUserRejected(t *testing.T) {
+	ms := newMockStore()
+	ms.users["proxy@test.com"] = &store.User{
+		ID: "proxy-user-id", Email: "proxy@test.com",
+		Role: "member", IsActive: true,
+	}
+	ms.GrantVaultRole(context.Background(), "proxy-user-id", "user", "root-ns-id", "proxy")
+	sess, err := ms.CreateSession(context.Background(), "proxy-user-id", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	srv := newTestServer(withStore(ms))
+
+	body := `{"vault":"default"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+sess.ID)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for proxy-role mint, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestScopedSessionRoleAdminRejected(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))
 
@@ -1994,90 +2024,23 @@ func TestScopedSessionExplicitRole(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
-
 	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var resp scopedSessionResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	scopedSess := ms.sessions[resp.Token]
-	if scopedSess == nil {
-		t.Fatal("scoped session not found in store")
-	}
-	if scopedSess.VaultRole != "admin" {
-		t.Fatalf("expected vault_role admin, got %q", scopedSess.VaultRole)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestScopedSessionRoleRejected(t *testing.T) {
-	// Create a member-role user (not admin) to verify role escalation is rejected.
-	ms := newMockStore()
-	ms.users["member@test.com"] = &store.User{
-		ID: "member-user-id", Email: "member@test.com",
-		Role: "member", IsActive: true,
-	}
-	ms.GrantVaultRole(context.Background(), "member-user-id", "user", "root-ns-id", "member")
-	sess, err := ms.CreateSession(context.Background(), "member-user-id", time.Now().Add(time.Hour))
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-
-	srv := newTestServer(withStore(ms))
-
-	// Member requests admin — should be rejected.
-	body := `{"vault":"default","vault_role":"admin"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+sess.ID)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestScopedSessionMemberGetsMember(t *testing.T) {
-	// A vault member requesting member role should succeed.
-	ms := newMockStore()
-	ms.users["member@test.com"] = &store.User{
-		ID: "member-user-id", Email: "member@test.com",
-		Role: "member", IsActive: true,
-	}
-	ms.GrantVaultRole(context.Background(), "member-user-id", "user", "root-ns-id", "member")
-	sess, err := ms.CreateSession(context.Background(), "member-user-id", time.Now().Add(time.Hour))
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-
+func TestScopedSessionRoleMemberRejected(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))
 
 	body := `{"vault":"default","vault_role":"member"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+sess.ID)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
-
 	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var resp scopedSessionResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	scopedSess := ms.sessions[resp.Token]
-	if scopedSess == nil {
-		t.Fatal("scoped session not found in store")
-	}
-	if scopedSess.VaultRole != "member" {
-		t.Fatalf("expected vault_role member, got %q", scopedSess.VaultRole)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -2126,7 +2089,11 @@ func setupMockStoreWithScopedSessionRole(t *testing.T, vaultName, vaultID, role 
 		ms.vaults[vaultName] = &store.Vault{ID: vaultID, Name: vaultName}
 	}
 	// Create a scoped session locked to the given vault
-	sess, err := ms.CreateScopedSession(context.Background(), vaultID, role, tp(time.Now().Add(time.Hour)))
+	sess, err := ms.CreateScopedSession(context.Background(), store.CreateScopedSessionParams{
+		VaultID:   vaultID,
+		VaultRole: role,
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+	})
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -2453,29 +2420,31 @@ func TestScopedSessionEnforcesVaultOnDelete(t *testing.T) {
 	}
 }
 
-// --- Proxy Endpoint ---
+// --- Discovery endpoint tests ---
 
-// setupProxyTest creates a mock store with a scoped session, broker config, and
-// encrypted credential. It returns the store, scoped token, and encryption key.
-func setupProxyTest(t *testing.T, servicesJSON string) (*mockStore, string, []byte) {
+// setupVaultWithCredential seeds a mock store with a scoped session, broker
+// config, and an encrypted STRIPE_KEY credential. Returns (store, scoped
+// token, encryption key).
+func setupVaultWithCredential(t *testing.T, servicesJSON string) (*mockStore, string, []byte) {
 	t.Helper()
 	ms := newMockStore()
 	encKey := make([]byte, 32)
 
-	// Create a scoped session for root vault.
-	sess, err := ms.CreateScopedSession(context.Background(), "root-ns-id", "proxy", tp(time.Now().Add(time.Hour)))
+	sess, err := ms.CreateScopedSession(context.Background(), store.CreateScopedSessionParams{
+		VaultID:   "root-ns-id",
+		VaultRole: "proxy",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+	})
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
 
-	// Set broker config.
 	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
-		ID:          "bc-1",
-		VaultID: "root-ns-id",
-		ServicesJSON:   servicesJSON,
+		ID:           "bc-1",
+		VaultID:      "root-ns-id",
+		ServicesJSON: servicesJSON,
 	}
 
-	// Store an encrypted credential "STRIPE_KEY" = "sk_live_xxx".
 	ct, nonce, err := crypto.Encrypt([]byte("sk_live_xxx"), encKey)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
@@ -2488,587 +2457,10 @@ func setupProxyTest(t *testing.T, servicesJSON string) (*mockStore, string, []by
 	return ms, sess.ID, encKey
 }
 
-func TestProxySuccess(t *testing.T) {
-	// Start a fake upstream server.
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer sk_live_xxx" {
-			t.Errorf("expected injected auth header, got %q", got)
-		}
-		if r.URL.Path != "/v1/charges" {
-			t.Errorf("expected path /v1/charges, got %s", r.URL.Path)
-		}
-		if r.URL.RawQuery != "limit=10" {
-			t.Errorf("expected query limit=10, got %s", r.URL.RawQuery)
-		}
-		w.Header().Set("X-Upstream", "true")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"ok":true}`))
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodPost, "/proxy/"+upstreamHost+"/v1/charges?limit=10",
-		strings.NewReader("amount=2000"))
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if rec.Header().Get("X-Upstream") != "true" {
-		t.Fatal("expected X-Upstream header from upstream")
-	}
-	body, _ := io.ReadAll(rec.Body)
-	if string(body) != `{"ok":true}` {
-		t.Fatalf("unexpected body: %s", body)
-	}
-}
-
-func TestProxyNoMatchingRule(t *testing.T) {
-	services := `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
-	ms, token, encKey := setupProxyTest(t, services)
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/evil.com/exfiltrate", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var resp map[string]interface{}
-	json.NewDecoder(rec.Body).Decode(&resp)
-	if resp["error"] != "forbidden" {
-		t.Fatalf("expected error 'forbidden', got %q", resp["error"])
-	}
-	// Verify proposal_hint is present.
-	hint, ok := resp["proposal_hint"].(map[string]interface{})
-	if !ok {
-		t.Fatal("expected proposal_hint in 403 response")
-	}
-	if hint["host"] != "evil.com" {
-		t.Fatalf("expected proposal_hint host 'evil.com', got %q", hint["host"])
-	}
-	if hint["endpoint"] != "POST /v1/proposals" {
-		t.Fatalf("expected proposal_hint endpoint, got %q", hint["endpoint"])
-	}
-	// Verify help field with actionable URLs is present.
-	help, ok := resp["help"].(string)
-	if !ok || help == "" {
-		t.Fatal("expected help field with actionable URLs in 403 response")
-	}
-}
-
-func TestProxyPassthroughForwardsClientHeaders(t *testing.T) {
-	// Upstream asserts: client-supplied Cookie and X-Trace-Id flow through,
-	// but broker-scoped X-Vault and the session-token Authorization are
-	// stripped (the session token must never reach the target).
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "" {
-			t.Errorf("Authorization on explicit /proxy ingress should be stripped (it is the session token), got %q", got)
-		}
-		if got := r.Header.Get("Cookie"); got != "session=abc" {
-			t.Errorf("Cookie: got %q, want %q", got, "session=abc")
-		}
-		if got := r.Header.Get("X-Trace-Id"); got != "trace-123" {
-			t.Errorf("X-Trace-Id: got %q, want %q", got, "trace-123")
-		}
-		if got := r.Header.Get("X-Vault"); got != "" {
-			t.Errorf("X-Vault should have been stripped, got %q", got)
-		}
-		w.Header().Set("X-Upstream", "true")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`passthrough-ok`))
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"}}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/data", nil)
-	req.Header.Set("Authorization", "Bearer "+token) // session auth — must not leak
-	req.Header.Set("Cookie", "session=abc")
-	req.Header.Set("X-Trace-Id", "trace-123")
-	req.Header.Set("X-Vault", "should-be-stripped")
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if rec.Header().Get("X-Upstream") != "true" {
-		t.Fatal("expected X-Upstream header from upstream")
-	}
-	body, _ := io.ReadAll(rec.Body)
-	if string(body) != "passthrough-ok" {
-		t.Fatalf("unexpected body: %s", body)
-	}
-}
-
-func TestProxyPassthroughDoesNotReadCredentials(t *testing.T) {
-	// Passthrough must not perform any credential lookup, even if the service
-	// name collides with a stored credential key. Use a credential provider
-	// that explodes on any read to catch it.
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"}}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-
-	// Sabotage: mark the only credential as unreachable. If the handler ever
-	// tried to read it, decryption or lookup would fail and the request
-	// would return 502.
-	delete(ms.credentials, "root-ns-id:STRIPE_KEY")
-
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/data", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 (no credential lookup for passthrough), got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestProxyBearerForwardsArbitraryClientHeaders(t *testing.T) {
-	// /proxy ingress: client's Authorization carries the AV session
-	// token and must be replaced by the injected credential, not leaked.
-	// Vendor headers must still reach the upstream.
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer sk_live_xxx" {
-			t.Errorf("Authorization: got %q, want injected stored credential", got)
-		}
-		if got := r.Header.Get("Anthropic-Version"); got != "2023-06-01" {
-			t.Errorf("Anthropic-Version: got %q, want passthrough", got)
-		}
-		if got := r.Header.Get("X-Trace-Id"); got != "trace-123" {
-			t.Errorf("X-Trace-Id: got %q, want passthrough", got)
-		}
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`bearer-ok`))
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/v1/messages", nil)
-	req.Header.Set("Authorization", "Bearer "+token) // session auth — must not leak
-	req.Header.Set("Anthropic-Version", "2023-06-01")
-	req.Header.Set("X-Trace-Id", "trace-123")
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	body, _ := io.ReadAll(rec.Body)
-	if string(body) != "bearer-ok" {
-		t.Fatalf("unexpected body: %s", body)
-	}
-}
-
-func TestProxyMissingCredential(t *testing.T) {
-	services := `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"nonexistent_key"}}]`
-	ms, token, encKey := setupProxyTest(t, services)
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/api.stripe.com/v1/charges", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("expected 502, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var resp map[string]string
-	json.NewDecoder(rec.Body).Decode(&resp)
-	if resp["error"] != "credential_not_found" {
-		t.Fatalf("expected error 'credential_not_found', got %q", resp["error"])
-	}
-}
-
-func TestProxyUnauthenticated(t *testing.T) {
-	ms := newMockStore()
-	srv := newTestServer(withStore(ms))
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/api.stripe.com/v1/charges", nil)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestProxyGlobalSessionForbidden(t *testing.T) {
-	ms := newMockStore()
-	sess, _ := ms.CreateSession(context.Background(), "", time.Now().Add(time.Hour))
-	srv := newTestServer(withStore(ms))
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/api.stripe.com/v1/charges", nil)
-	req.Header.Set("Authorization", "Bearer "+sess.ID)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestProxyStripsAuthHeader(t *testing.T) {
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		if strings.Contains(auth, "scoped-session") {
-			t.Errorf("agent token leaked to upstream: %q", auth)
-		}
-		if auth != "Bearer sk_live_xxx" {
-			t.Errorf("expected injected auth, got %q", auth)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/test", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestProxyPreservesMethod(t *testing.T) {
-	var receivedMethod string
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedMethod = r.Method
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodDelete, "/proxy/"+upstreamHost+"/resource/42", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if receivedMethod != http.MethodDelete {
-		t.Fatalf("expected DELETE, got %s", receivedMethod)
-	}
-}
-
-func TestProxyHeaderMerge(t *testing.T) {
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("X-Custom"); got != "injected-value" {
-			t.Errorf("expected injected header to win, got %q", got)
-		}
-		if got := r.Header.Get("Accept"); got != "application/json" {
-			t.Errorf("expected agent header preserved, got %q", got)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"custom","headers":{"Authorization":"Bearer {{ STRIPE_KEY }}","X-Custom":"injected-value"}}}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/test", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Custom", "agent-value")
-	req.Header.Set("Accept", "application/json")
-	rec := httptest.NewRecorder()
-
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-// --- Substitution proxy tests ---
-
-func TestProxySubstitutionRewritesPathAndInjectsAuth(t *testing.T) {
-	var (
-		sawAuth string
-		sawPath string
-	)
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sawAuth = r.Header.Get("Authorization")
-		sawPath = r.URL.Path
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"basic","username":"TWILIO_ACCOUNT_SID","password":"TWILIO_AUTH_TOKEN"},"substitutions":[{"key":"TWILIO_ACCOUNT_SID","placeholder":"__account_sid__","in":["path"]}]}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-
-	for k, v := range map[string]string{"TWILIO_ACCOUNT_SID": "AC12345", "TWILIO_AUTH_TOKEN": "tok-shh"} {
-		ct, nonce, err := crypto.Encrypt([]byte(v), encKey)
-		if err != nil {
-			t.Fatalf("encrypt %s: %v", k, err)
-		}
-		ms.credentials["root-ns-id:"+k] = &store.Credential{ID: "c-" + k, VaultID: "root-ns-id", Key: k, Ciphertext: ct, Nonce: nonce}
-	}
-
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/2010-04-01/Accounts/__account_sid__/Messages.json", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("AC12345:tok-shh"))
-	if sawAuth != want {
-		t.Fatalf("upstream Authorization: got %q want %q", sawAuth, want)
-	}
-	if sawPath != "/2010-04-01/Accounts/AC12345/Messages.json" {
-		t.Fatalf("upstream path: got %q", sawPath)
-	}
-}
-
-func TestProxySubstitutionScopingSkipsUndeclaredSurfaces(t *testing.T) {
-	var (
-		sawPath  string
-		sawQuery string
-		sawEcho  string
-	)
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sawPath = r.URL.Path
-		sawQuery = r.URL.RawQuery
-		sawEcho = r.Header.Get("X-Echo")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	// Substitution declared only for "path".
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"},"substitutions":[{"key":"ACCOUNT_SID","placeholder":"__account_sid__","in":["path"]}]}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	ct, nonce, _ := crypto.Encrypt([]byte("AC-REAL"), encKey)
-	ms.credentials["root-ns-id:ACCOUNT_SID"] = &store.Credential{ID: "c-sid", VaultID: "root-ns-id", Key: "ACCOUNT_SID", Ciphertext: ct, Nonce: nonce}
-
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	// Agent embeds the placeholder in path (declared), query (NOT declared),
-	// and a header (NOT declared). Only the path should be rewritten.
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/items/__account_sid__?id=__account_sid__", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Echo", "__account_sid__")
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if sawPath != "/items/AC-REAL" {
-		t.Fatalf("path should be rewritten, got %q", sawPath)
-	}
-	if sawQuery != "id=__account_sid__" {
-		t.Fatalf("query is not in `in:`, must reach upstream untouched, got %q", sawQuery)
-	}
-	if sawEcho != "__account_sid__" {
-		t.Fatalf("header is not in `in:`, must reach upstream untouched, got %q", sawEcho)
-	}
-}
-
-func TestProxySubstitutionMissingCredentialReturns502(t *testing.T) {
-	upstreamHit := false
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstreamHit = true
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"},"substitutions":[{"key":"MISSING_KEY","placeholder":"__sid__","in":["path"]}]}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/items/__sid__", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("expected 502 for missing substitution credential, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if upstreamHit {
-		t.Fatal("upstream must not be contacted when substitution credential is missing")
-	}
-}
-
-func TestProxySubstitutionRewritesQuery(t *testing.T) {
-	var sawQuery string
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sawQuery = r.URL.RawQuery
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"},"substitutions":[{"key":"LEGACY_API_KEY","placeholder":"__api_key__","in":["query"]}]}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	ct, nonce, _ := crypto.Encrypt([]byte("real-key&with=specials"), encKey)
-	ms.credentials["root-ns-id:LEGACY_API_KEY"] = &store.Credential{ID: "c-key", VaultID: "root-ns-id", Key: "LEGACY_API_KEY", Ciphertext: ct, Nonce: nonce}
-
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/data?api_key=__api_key__&format=json", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	parsed, err := url.ParseQuery(sawQuery)
-	if err != nil {
-		t.Fatalf("parse query %q: %v", sawQuery, err)
-	}
-	if parsed.Get("api_key") != "real-key&with=specials" {
-		t.Fatalf("expected query api_key to round-trip the encoded secret, got %q", parsed.Get("api_key"))
-	}
-	if parsed.Get("format") != "json" {
-		t.Fatalf("expected non-substituted query param preserved, got %q", parsed.Get("format"))
-	}
-}
-
-func TestProxySubstitutionRewritesHeader(t *testing.T) {
-	var sawTenant string
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sawTenant = r.Header.Get("X-Tenant")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	serviceHost, _, _ := net.SplitHostPort(upstreamHost)
-	services := fmt.Sprintf(`[{"host":"%s","auth":{"type":"passthrough"},"substitutions":[{"key":"TENANT_ID","placeholder":"__tenant__","in":["header"]}]}]`, serviceHost)
-	ms, token, encKey := setupProxyTest(t, services)
-	ct, nonce, _ := crypto.Encrypt([]byte("acme-co"), encKey)
-	ms.credentials["root-ns-id:TENANT_ID"] = &store.Credential{ID: "c-tenant", VaultID: "root-ns-id", Key: "TENANT_ID", Ciphertext: ct, Nonce: nonce}
-
-	srv := newTestServer(withStore(ms), withEncKey(encKey))
-	origClient := proxyClient
-	proxyClient = upstream.Client()
-	defer func() { proxyClient = origClient }()
-
-	req := httptest.NewRequest(http.MethodGet, "/proxy/"+upstreamHost+"/items", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Tenant", "tenant=__tenant__")
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if sawTenant != "tenant=acme-co" {
-		t.Fatalf("expected header rewritten to 'tenant=acme-co', got %q", sawTenant)
-	}
-}
-
-// --- Discovery endpoint tests ---
-
 func TestDiscoverSuccess(t *testing.T) {
 	desc := "GitHub API"
 	servicesJSON := `[{"host":"*.github.com","description":"GitHub API","auth":{"type":"bearer","token":"GITHUB_TOKEN"}},{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
-	ms, token, _ := setupProxyTest(t, servicesJSON)
+	ms, token, _ := setupVaultWithCredential(t, servicesJSON)
 	srv := newTestServer(withStore(ms))
 
 	req := httptest.NewRequest(http.MethodGet, "/discover", nil)
@@ -3089,9 +2481,6 @@ func TestDiscoverSuccess(t *testing.T) {
 	if resp.Vault != "default" {
 		t.Fatalf("expected vault 'default', got %q", resp.Vault)
 	}
-	if !strings.HasSuffix(resp.ProxyURL, "/proxy") {
-		t.Fatalf("expected proxy_url to end with /proxy, got %q", resp.ProxyURL)
-	}
 	if len(resp.Services) != 2 {
 		t.Fatalf("expected 2 services, got %d", len(resp.Services))
 	}
@@ -3108,7 +2497,7 @@ func TestDiscoverSuccess(t *testing.T) {
 	if resp.Services[1].Description != nil {
 		t.Fatalf("expected nil description, got %q", *resp.Services[1].Description)
 	}
-	// setupProxyTest seeds "STRIPE_KEY" — verify it appears in available_credentials.
+	// setupVaultWithCredential seeds "STRIPE_KEY" — verify it appears in available_credentials.
 	if len(resp.AvailableCredentials) != 1 || resp.AvailableCredentials[0] != "STRIPE_KEY" {
 		t.Fatalf("expected available_credentials [STRIPE_KEY], got %v", resp.AvailableCredentials)
 	}
@@ -3143,7 +2532,7 @@ func TestDiscoverGlobalSessionForbidden(t *testing.T) {
 }
 
 func TestDiscoverEmptyRules(t *testing.T) {
-	ms, token, _ := setupProxyTest(t, "[]")
+	ms, token, _ := setupVaultWithCredential(t, "[]")
 	srv := newTestServer(withStore(ms))
 
 	req := httptest.NewRequest(http.MethodGet, "/discover", nil)
@@ -3163,7 +2552,7 @@ func TestDiscoverEmptyRules(t *testing.T) {
 	if len(resp.Services) != 0 {
 		t.Fatalf("expected 0 services, got %d", len(resp.Services))
 	}
-	// setupProxyTest seeds "STRIPE_KEY" — still available even with empty services.
+	// setupVaultWithCredential seeds "STRIPE_KEY" — still available even with empty services.
 	if len(resp.AvailableCredentials) != 1 || resp.AvailableCredentials[0] != "STRIPE_KEY" {
 		t.Fatalf("expected available_credentials [STRIPE_KEY], got %v", resp.AvailableCredentials)
 	}
@@ -3171,7 +2560,11 @@ func TestDiscoverEmptyRules(t *testing.T) {
 
 func TestDiscoverNoCredentials(t *testing.T) {
 	ms := newMockStore()
-	sess, err := ms.CreateScopedSession(context.Background(), "root-ns-id", "proxy", tp(time.Now().Add(time.Hour)))
+	sess, err := ms.CreateScopedSession(context.Background(), store.CreateScopedSessionParams{
+		VaultID:   "root-ns-id",
+		VaultRole: "proxy",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+	})
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -3941,6 +3334,90 @@ func TestMemberCanApproveProposalInAnyMemberVault(t *testing.T) {
 	}
 }
 
+// setupProxyRoleSession creates a proxy-role user with a login session and optional vault grants.
+func setupProxyRoleSession(t *testing.T, ms *mockStore, grantVaultIDs ...string) string {
+	t.Helper()
+	ms.users["proxybot@test.com"] = &store.User{
+		ID: "proxy-user-id", Email: "proxybot@test.com", Role: "member", IsActive: true,
+	}
+	proxySess := &store.Session{
+		ID:        "proxy-session",
+		UserID:    "proxy-user-id",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+		CreatedAt: time.Now(),
+	}
+	ms.sessions[proxySess.ID] = proxySess
+
+	for _, nsID := range grantVaultIDs {
+		ms.GrantVaultRole(context.Background(), "proxy-user-id", "user", nsID, "proxy")
+	}
+	return proxySess.ID
+}
+
+func TestInstanceLevelProxyCannotApproveProposal(t *testing.T) {
+	ms := newMockStore()
+	proxyToken := setupProxyRoleSession(t, ms, "root-ns-id")
+
+	encKey := make([]byte, 32)
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{VaultID: "root-ns-id", ServicesJSON: `[]`}
+	ms.proposals = map[string][]store.Proposal{
+		"root-ns-id": {{
+			ID: 1, VaultID: "root-ns-id", Status: "pending",
+			ServicesJSON: `[]`, CredentialsJSON: `[]`,
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}},
+	}
+
+	body := `{"vault":"default","credentials":{}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/proposals/1/approve", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+proxyToken)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// The status check is load-bearing: it proves the apply step never ran,
+	// so the proxy could not have triggered credential injection downstream.
+	if got := ms.proposals["root-ns-id"][0].Status; got != "pending" {
+		t.Fatalf("proposal must remain pending after rejected approve; got %s", got)
+	}
+}
+
+func TestInstanceLevelProxyCannotRejectProposal(t *testing.T) {
+	ms := newMockStore()
+	proxyToken := setupProxyRoleSession(t, ms, "root-ns-id")
+
+	encKey := make([]byte, 32)
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{VaultID: "root-ns-id", ServicesJSON: `[]`}
+	ms.proposals = map[string][]store.Proposal{
+		"root-ns-id": {{
+			ID: 1, VaultID: "root-ns-id", Status: "pending",
+			ServicesJSON: `[]`, CredentialsJSON: `[]`,
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}},
+	}
+
+	body := `{"vault":"default","reason":"nope"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/proposals/1/reject", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+proxyToken)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := ms.proposals["root-ns-id"][0].Status; got != "pending" {
+		t.Fatalf("proposal must remain pending after rejected reject; got %s", got)
+	}
+}
+
 func TestLastOwnerCannotBeDemoted(t *testing.T) {
 	ms, ownerToken := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))
@@ -4390,6 +3867,116 @@ func TestVaultRename(t *testing.T) {
 
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestVaultSettingsUnmatchedHostPolicy(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	t.Run("default is passthrough", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/settings", nil)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var resp map[string]string
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		if resp["unmatched_host_policy"] != "passthrough" {
+			t.Fatalf("expected passthrough default, got %q", resp["unmatched_host_policy"])
+		}
+	})
+
+	t.Run("set to deny", func(t *testing.T) {
+		body := strings.NewReader(`{"unmatched_host_policy": "deny"}`)
+		req := httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/settings", body)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if ms.vaultSettings["root-ns-id"][settingUnmatchedHostPolicy] != "deny" {
+			t.Fatalf("expected stored policy=deny, got %q",
+				ms.vaultSettings["root-ns-id"][settingUnmatchedHostPolicy])
+		}
+		// Response must echo the validated value, not depend on a second
+		// store read — otherwise a transient read failure post-write
+		// would desync the UI from the persisted policy.
+		var resp map[string]string
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		if resp["unmatched_host_policy"] != "deny" {
+			t.Fatalf("expected response to echo deny, got %q", resp["unmatched_host_policy"])
+		}
+	})
+
+	t.Run("invalid value rejected", func(t *testing.T) {
+		body := strings.NewReader(`{"unmatched_host_policy": "log-and-allow"}`)
+		req := httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/settings", body)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("empty string reverts to default", func(t *testing.T) {
+		// First set to deny so we have something to revert.
+		_ = ms.SetVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostPolicy, "deny")
+
+		body := strings.NewReader(`{"unmatched_host_policy": ""}`)
+		req := httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/settings", body)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if v := ms.vaultSettings["root-ns-id"][settingUnmatchedHostPolicy]; v != "" {
+			t.Fatalf("expected setting cleared, got %q", v)
+		}
+	})
+
+	t.Run("non-admin member: GET reflects real policy, PATCH is forbidden", func(t *testing.T) {
+		// Persist deny so we can verify the non-admin GET sees the truth
+		// rather than the previous silent passthrough fallback.
+		_ = ms.SetVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostPolicy, "deny")
+		memberToken := setupMemberSession(t, ms, "root-ns-id")
+
+		// GET should succeed and return the actual stored policy.
+		req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/settings", nil)
+		req.Header.Set("Authorization", "Bearer "+memberToken)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected GET 200 for member, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var resp map[string]string
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		if resp["unmatched_host_policy"] != "deny" {
+			t.Fatalf("member GET should see real deny policy, got %q", resp["unmatched_host_policy"])
+		}
+
+		// PATCH must still be admin/owner-only.
+		patchBody := strings.NewReader(`{"unmatched_host_policy": "passthrough"}`)
+		req = httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/settings", patchBody)
+		req.Header.Set("Authorization", "Bearer "+memberToken)
+		req.Header.Set("Content-Type", "application/json")
+		rec = httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected PATCH 403 for member, got %d: %s", rec.Code, rec.Body.String())
 		}
 	})
 }
@@ -5194,9 +4781,6 @@ func TestScopedSessionWithTTL(t *testing.T) {
 	if resp.AVAddr != "http://127.0.0.1:14321" {
 		t.Fatalf("expected av_addr http://127.0.0.1:14321, got %q", resp.AVAddr)
 	}
-	if resp.ProxyURL != "http://127.0.0.1:14321/proxy" {
-		t.Fatalf("expected proxy_url with /proxy, got %q", resp.ProxyURL)
-	}
 	if resp.ExpiresAt == "" {
 		t.Fatal("expected non-empty expires_at")
 	}
@@ -5238,6 +4822,188 @@ func TestScopedSessionInvalidRole(t *testing.T) {
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid role, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- Tokens UI: list + revoke + label ---
+
+func TestScopedSessionMintWithLabel(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"vault":"default","label":"ci-bot"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp scopedSessionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	stored := ms.sessions[resp.Token]
+	if stored == nil {
+		t.Fatal("scoped session not stored")
+	}
+	if stored.Label != "ci-bot" {
+		t.Fatalf("expected label ci-bot, got %q", stored.Label)
+	}
+	if stored.CreatedByActorID != "owner-user-id" || stored.CreatedByActorType != "user" {
+		t.Fatalf("expected created_by user/owner-user-id, got %s/%s", stored.CreatedByActorType, stored.CreatedByActorID)
+	}
+	if stored.PublicID == "" {
+		t.Fatal("expected public_id to be populated on scoped session")
+	}
+}
+
+func TestScopedSessionLabelCJKWithinRuneLimit(t *testing.T) {
+	// 50 CJK characters = 150 bytes UTF-8, well under the 100-byte len()
+	// cap that previously rejected this — but within the 100-rune cap.
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	cjk := strings.Repeat("我", 50)
+	body := fmt.Sprintf(`{"vault":"default","label":%q}`, cjk)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for 50-rune CJK label, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp scopedSessionResponse
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if got := ms.sessions[resp.Token]; got == nil || got.Label != cjk {
+		t.Fatalf("expected label preserved, got %+v", got)
+	}
+}
+
+func TestScopedSessionLabelStripsControlChars(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"vault":"default","label":"line1\nline2\ttab"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp scopedSessionResponse
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	got := ms.sessions[resp.Token]
+	if got == nil || got.Label != "line1line2tab" {
+		t.Fatalf("expected control chars stripped, got %q", func() string {
+			if got == nil {
+				return "<nil>"
+			}
+			return got.Label
+		}())
+	}
+}
+
+func TestScopedSessionLabelTooLong(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	tooLong := strings.Repeat("a", maxScopedSessionLabel+1)
+	body := fmt.Sprintf(`{"vault":"default","label":%q}`, tooLong)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized label, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestScopedSessionListAndRevoke(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	mintBody := `{"vault":"default","label":"laptop"}`
+	mintReq := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(mintBody))
+	mintReq.Header.Set("Authorization", "Bearer "+token)
+	mintRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(mintRec, mintReq)
+	if mintRec.Code != http.StatusOK {
+		t.Fatalf("mint: expected 200, got %d: %s", mintRec.Code, mintRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v1/sessions?vault=default", nil)
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	listRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list: expected 200, got %d: %s", listRec.Code, listRec.Body.String())
+	}
+	var listResp struct {
+		Sessions []scopedSessionView `json:"sessions"`
+	}
+	if err := json.NewDecoder(listRec.Body).Decode(&listResp); err != nil {
+		t.Fatalf("list decode: %v", err)
+	}
+	if len(listResp.Sessions) != 1 {
+		t.Fatalf("expected 1 scoped session, got %d", len(listResp.Sessions))
+	}
+	row := listResp.Sessions[0]
+	if row.Label != "laptop" {
+		t.Fatalf("expected label laptop, got %q", row.Label)
+	}
+	if row.ID == "" {
+		t.Fatal("expected non-empty public_id in list view")
+	}
+	if row.CreatedBy == nil || row.CreatedBy.DisplayName != "owner@test.com" {
+		t.Fatalf("expected created_by display_name owner@test.com, got %+v", row.CreatedBy)
+	}
+
+	revokeReq := httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+row.ID+"?vault=default", nil)
+	revokeReq.Header.Set("Authorization", "Bearer "+token)
+	revokeRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(revokeRec, revokeReq)
+	if revokeRec.Code != http.StatusOK {
+		t.Fatalf("revoke: expected 200, got %d: %s", revokeRec.Code, revokeRec.Body.String())
+	}
+
+	listReq2 := httptest.NewRequest(http.MethodGet, "/v1/sessions?vault=default", nil)
+	listReq2.Header.Set("Authorization", "Bearer "+token)
+	listRec2 := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(listRec2, listReq2)
+	var listResp2 struct {
+		Sessions []scopedSessionView `json:"sessions"`
+	}
+	_ = json.NewDecoder(listRec2.Body).Decode(&listResp2)
+	if len(listResp2.Sessions) != 0 {
+		t.Fatalf("expected 0 sessions after revoke, got %d", len(listResp2.Sessions))
+	}
+}
+
+func TestScopedSessionRevokeNotFound(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/sessions/does-not-exist?vault=default", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestScopedSessionListRequiresAuth(t *testing.T) {
+	ms := newMockStore()
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions?vault=default", nil)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -5590,5 +5356,254 @@ func TestServiceRemoveUnauthenticated(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- no-access instance role tests ---
+
+// setupNoAccessAgentSession creates a no-access agent (not a user) with an
+// agent-token session and optional vault grants. Exercises the sess.AgentID
+// branch of actorFromSession, which the user-based helper does not cover.
+func setupNoAccessAgentSession(t *testing.T, ms *mockStore, grantVaultIDs ...string) string {
+	t.Helper()
+	ms.agents["scoped-bot"] = &store.Agent{
+		ID: "scoped-agent-id", Name: "scoped-bot", Role: "no-access", Status: "active",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	sess := &store.Session{
+		ID:        "scoped-agent-session",
+		AgentID:   "scoped-agent-id",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+		CreatedAt: time.Now(),
+	}
+	ms.sessions[sess.ID] = sess
+	for _, nsID := range grantVaultIDs {
+		ms.GrantVaultRole(context.Background(), "scoped-agent-id", "agent", nsID, "member")
+	}
+	return sess.ID
+}
+
+func setupNoAccessSession(t *testing.T, ms *mockStore, grantVaultIDs ...string) string {
+	t.Helper()
+	ms.users["scoped@test.com"] = &store.User{
+		ID: "scoped-user-id", Email: "scoped@test.com", Role: "no-access", IsActive: true,
+	}
+	sess := &store.Session{
+		ID:        "scoped-session",
+		UserID:    "scoped-user-id",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+		CreatedAt: time.Now(),
+	}
+	ms.sessions[sess.ID] = sess
+	for _, nsID := range grantVaultIDs {
+		ms.GrantVaultRole(context.Background(), "scoped-user-id", "user", nsID, "member")
+	}
+	return sess.ID
+}
+
+func TestNoAccessActorCannotCreateVault(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"name":"new-vault"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoAccessActorCannotCreateUserInvite(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"email":"new@test.com"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/users/invites", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoAccessActorCannotCreateAgentInvite(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"name":"new-agent"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/invites", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoAccessActorCannotListUsers(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/users", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoAccessActorCannotListAgents(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/agents", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoAccessAgentBlockedAtInstanceScope(t *testing.T) {
+	// Agents (not just users) at no-access must fail instance-scoped checks.
+	// Covers the sess.AgentID path in actorFromSession.
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessAgentSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/agents", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoAccessAgentAllowedAtVaultScope(t *testing.T) {
+	// Motivating use case: no-access agent's only authority is its vault grant.
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessAgentSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoAccessActorCannotGetAgent(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	ms.agents["existing-agent"] = &store.Agent{
+		ID: "existing-agent-id", Name: "existing-agent", Role: "member", Status: "active",
+	}
+	token := setupNoAccessSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/agents/existing-agent", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoAccessActorWithVaultGrantCanReadCredentials(t *testing.T) {
+	// The motivating use case: vault-scoped operations work via vault grant alone.
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoAccessActorCanReadOwnProfile(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/users/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLastOwnerCannotBeDemotedToNoAccess(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"role":"no-access"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/users/owner@test.com/role", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUserInviteWithNoAccessRoleAccepted(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"email":"new@test.com","role":"no-access"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/users/invites", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

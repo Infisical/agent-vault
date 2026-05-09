@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // expectedRunFlags is the single source of truth for flags both `vault run`
@@ -16,8 +18,8 @@ import (
 // the other is a bug. `vault` is inherited from vaultCmd's persistent flags
 // on `vault run` and registered locally on the top-level `run`.
 var expectedRunFlags = []string{
-	"address", "role", "ttl", "no-mitm", "vault",
-	"sandbox", "image", "mount", "keep", "no-firewall",
+	"address", "ttl", "vault",
+	"isolation", "image", "mount", "keep", "no-firewall",
 	"home-volume-shared", "share-agent-dir",
 }
 
@@ -89,6 +91,35 @@ func TestAugmentEnvWithMITM_Disabled(t *testing.T) {
 	}
 }
 
+func TestRequireMITMEnv_DisabledIsFatal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
+	_, _, err := requireMITMEnv(nil, srv.URL, "tok", "v", caPath)
+	if err == nil {
+		t.Fatal("expected fatal error when server has MITM disabled")
+	}
+	// Operator-facing message must point at the server-side fix.
+	if !strings.Contains(err.Error(), "--mitm-port 0") {
+		t.Errorf("error should reference --mitm-port 0; got: %v", err)
+	}
+}
+
+func TestRequireMITMEnv_TransportFailureIsFatal(t *testing.T) {
+	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
+	// Bogus address that will fail to dial.
+	_, _, err := requireMITMEnv(nil, "http://127.0.0.1:1", "tok", "v", caPath)
+	if err == nil {
+		t.Fatal("expected fatal error on transport failure")
+	}
+	if !strings.Contains(err.Error(), "MITM setup failed") {
+		t.Errorf("error should be wrapped with 'MITM setup failed'; got: %v", err)
+	}
+}
+
 // fakeMITMServer returns an httptest server that mimics the real
 // /v1/mitm/ca.pem endpoint. advertisedPort, when non-zero, is written
 // into the X-MITM-Port response header. advertiseTLS controls whether
@@ -134,6 +165,7 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 
 	want := map[string]string{
 		"HTTPS_PROXY":         "", // checked separately below
+		"HTTP_PROXY":          "", // checked separately below
 		"NO_PROXY":            "localhost,127.0.0.1",
 		"NODE_USE_ENV_PROXY":  "1",
 		"SSL_CERT_FILE":       caPath,
@@ -155,10 +187,11 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 		}
 	}
 
-	// HTTP_PROXY must NOT be set — the MITM proxy is HTTPS-only and would
-	// return 405 for plain http:// requests routed through it.
-	if v, ok := vars["HTTP_PROXY"]; ok {
-		t.Errorf("HTTP_PROXY should not be set (MITM is HTTPS-only), got %q", v)
+	// HTTP_PROXY must equal HTTPS_PROXY — both point at the same TLS-
+	// wrapped MITM ingress so plain http:// upstreams route through the
+	// broker via absolute-form forward-proxy requests.
+	if vars["HTTP_PROXY"] != vars["HTTPS_PROXY"] {
+		t.Errorf("HTTP_PROXY = %q, want it to equal HTTPS_PROXY = %q", vars["HTTP_PROXY"], vars["HTTPS_PROXY"])
 	}
 
 	// Proxy URL must parse cleanly and carry token:vault userinfo.
@@ -225,6 +258,7 @@ func TestAugmentEnvWithMITM_DedupesParentEnv(t *testing.T) {
 	parentEnv := []string{
 		"FOO=bar",
 		"HTTPS_PROXY=http://corp-proxy:3128",
+		"HTTP_PROXY=http://corp-proxy:3128",
 		"NO_PROXY=internal.example.com",
 		"SSL_CERT_FILE=/etc/ssl/corp-ca.pem",
 		"NODE_EXTRA_CA_CERTS=/etc/ssl/corp-ca.pem",
@@ -247,7 +281,7 @@ func TestAugmentEnvWithMITM_DedupesParentEnv(t *testing.T) {
 			counts[kv[:i]]++
 		}
 	}
-	for _, k := range []string{"HTTPS_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "DENO_CERT"} {
+	for _, k := range []string{"HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "DENO_CERT"} {
 		if counts[k] != 1 {
 			t.Errorf("%s appears %d times in env, want exactly 1 (POSIX getenv returns first match)", k, counts[k])
 		}
@@ -303,4 +337,108 @@ func envMap(env []string) map[string]string {
 		}
 	}
 	return m
+}
+
+// newRunCmdForTest builds a run command with --vault registered locally so
+// tests don't depend on the persistent flag inherited from vaultCmd.
+func newRunCmdForTest() *cobra.Command {
+	c := newRunCmd("test")
+	c.Flags().String("vault", "", "target vault")
+	return c
+}
+
+func TestResolveVaultForAgentMode(t *testing.T) {
+	t.Run("flag wins", func(t *testing.T) {
+		t.Setenv("AGENT_VAULT_VAULT", "env-vault")
+		c := newRunCmdForTest()
+		_ = c.Flags().Set("vault", "flag-vault")
+		got, err := resolveVaultForAgentMode(c)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "flag-vault" {
+			t.Errorf("got %q, want flag-vault", got)
+		}
+	})
+
+	t.Run("env when no flag", func(t *testing.T) {
+		t.Setenv("AGENT_VAULT_VAULT", "env-vault")
+		c := newRunCmdForTest()
+		got, err := resolveVaultForAgentMode(c)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "env-vault" {
+			t.Errorf("got %q, want env-vault", got)
+		}
+	})
+
+	t.Run("error when neither set", func(t *testing.T) {
+		t.Setenv("AGENT_VAULT_VAULT", "")
+		c := newRunCmdForTest()
+		_, err := resolveVaultForAgentMode(c)
+		if err == nil {
+			t.Fatal("expected error when no vault is configured")
+		}
+		if !strings.Contains(err.Error(), "AGENT_VAULT_VAULT") {
+			t.Errorf("error should mention AGENT_VAULT_VAULT; got: %v", err)
+		}
+	})
+}
+
+// TestStripEnvKeys_AgentVaultInjectedKeys is the AGENT_VAULT_* analogue of
+// TestAugmentEnvWithMITM_DedupesParentEnv. In agent mode the parent env is
+// guaranteed to already carry AGENT_VAULT_TOKEN/ADDR/VAULT (that's how agent
+// mode is detected), so without this strip the parent's stale value would
+// silently win in the child via POSIX getenv first-match semantics — most
+// dangerously, --vault would be overridden by a stale AGENT_VAULT_VAULT.
+func TestStripEnvKeys_AgentVaultInjectedKeys(t *testing.T) {
+	parent := []string{
+		"AGENT_VAULT_TOKEN=stale-tok",
+		"AGENT_VAULT_SESSION_TOKEN=stale-legacy",
+		"AGENT_VAULT_ADDR=https://stale.example/",
+		"AGENT_VAULT_VAULT=stale-vault",
+		"UNRELATED=keep-me",
+	}
+	stripped := stripEnvKeys(parent, agentVaultInjectedKeys)
+	for _, kv := range stripped {
+		key := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			key = kv[:i]
+		}
+		if _, dropped := agentVaultInjectedKeys[key]; dropped {
+			t.Errorf("expected %q to be stripped from parent env, still present as %q", key, kv)
+		}
+	}
+	if !contains(stripped, "UNRELATED=keep-me") {
+		t.Error("unrelated parent env vars must be preserved")
+	}
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRunCmdAgentMode_RejectsTTL exercises the runCmdRunE early-exit when a
+// pre-supplied token is used together with --ttl. The token's lifetime is
+// fixed at mint time, so --ttl is meaningless in agent mode.
+func TestRunCmdAgentMode_RejectsTTL(t *testing.T) {
+	t.Setenv("AGENT_VAULT_TOKEN", "tok123")
+	t.Setenv("AGENT_VAULT_ADDR", "http://example.invalid")
+	t.Setenv("AGENT_VAULT_VAULT", "myvault")
+
+	c := newRunCmd("test")
+	_ = c.Flags().Set("ttl", "3600")
+	err := runCmdRunE(c, []string{"true"})
+	if err == nil {
+		t.Fatal("expected error rejecting --ttl in agent mode")
+	}
+	if !strings.Contains(err.Error(), "--ttl has no effect") {
+		t.Errorf("error should mention --ttl rejection; got: %v", err)
+	}
 }

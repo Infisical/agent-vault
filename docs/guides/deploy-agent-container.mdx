@@ -1,0 +1,59 @@
+---
+title: "Deploy your agent in a container"
+description: "Run an Agent Vault-wrapped agent in an unattended container (k8s, Fly, ECS) using a pre-supplied token — no interactive `auth login` required."
+---
+
+For local development, `agent-vault run` uses the on-disk admin session created by `auth login`. That doesn't fit unattended container deploys: there's no TTY to prompt and no session file to mount. This guide covers the **agent mode** flow — pre-supply a token via env, and `agent-vault run` skips the mint step and uses it as the credential for the child.
+
+## Prerequisites
+
+- An Agent Vault instance reachable from where the container runs.
+- A long-lived agent token with access to the target vault. See [Agents](/agents/overview) for how to create the agent identity and obtain its token — this guide picks up once you have the token in hand. Operators can rotate or revoke the token from the **Agents** tab in the UI (or via `agent-vault agent rotate <name>` / `agent-vault agent delete <name>`) at any time.
+
+## Dockerfile
+
+```dockerfile
+FROM node:20-slim
+COPY --from=infisical/agent-vault:latest /usr/local/bin/agent-vault /usr/local/bin/agent-vault
+WORKDIR /app
+COPY . .
+RUN npm ci
+ENTRYPOINT ["agent-vault", "run", "--", "npm", "start"]
+```
+
+`agent-vault run` validates the token against the broker once at startup, then execs `npm start` with `HTTPS_PROXY` / `HTTP_PROXY` and the CA-trust env vars pre-configured — your application just calls real API URLs and Agent Vault attaches credentials at the proxy boundary.
+
+## Deploy-time env vars
+
+Set these on the container's environment (k8s `env:`, Fly `[env]`, ECS task definition, etc.):
+
+| Variable | Description |
+|---|---|
+| `AGENT_VAULT_ADDR` | Broker base URL (e.g. `https://vault.example.com`) |
+| `AGENT_VAULT_TOKEN` | Long-lived agent token (see [Agents](/agents/overview); or `agent-vault vault token` for short-lived runs) |
+| `AGENT_VAULT_VAULT` | Vault to scope the run to. Required in agent mode (no project-file or interactive-picker fallback, regardless of token type). |
+
+`agent-vault run` accepts both vault-scoped session tokens and long-lived agent tokens via `AGENT_VAULT_TOKEN` — the broker treats them identically for proxy / discover / proposal calls.
+
+## What changes vs. local mode
+
+- `agent-vault run` does **not** call the broker's mint endpoint; the env-supplied token is the credential.
+- The token is validated against `/discover` once before the child is exec'd. A bad/expired token fails fast with a clear error rather than producing 401s on every proxied call.
+- `--ttl` is rejected — the token's lifetime is fixed at mint time, so the flag has no effect.
+- `AGENT_VAULT_VAULT` is required (no project file or interactive picker fallback in agent mode).
+
+## Rotating the token
+
+Mint a new token the same way you minted the original (see [Agents](/agents/overview#rotating-an-agent-token)), then roll the deployment with the new `AGENT_VAULT_TOKEN`. Old tokens for the agent are invalidated when the agent redeems the rotation invite, not at the moment `agent-vault agent rotate` is run — so finish redeeming and rolling the deployment together to avoid a window where the in-flight container is still using the soon-to-be-invalid token.
+
+## Troubleshooting
+
+- **"agent token rejected by broker (HTTP 401)"** at startup — the token has been revoked or expired, or doesn't have access to `AGENT_VAULT_VAULT`. Verify with `curl -H "Authorization: Bearer $AGENT_VAULT_TOKEN" -H "X-Vault: $AGENT_VAULT_VAULT" $AGENT_VAULT_ADDR/discover`.
+- **"vault is required in agent mode"** — set `AGENT_VAULT_VAULT` (or pass `--vault`).
+- **`--ttl has no effect when AGENT_VAULT_TOKEN is supplied`** — drop the flag; it only applies when `agent-vault run` mints a fresh token.
+
+## Related
+
+- [Connect a custom agent](/guides/connect-custom-agent) — interactive / `vault run` flow on a developer machine.
+- [Container isolation](/guides/container-isolation) — `--isolation=container` for non-cooperative dev-machine sandboxing (different from this guide; that mode wraps the agent in a Docker container *from* `vault run`, this guide ships *as* a container).
+- [Agent overview](/agents/overview) — agent identities, tokens, and rotation.

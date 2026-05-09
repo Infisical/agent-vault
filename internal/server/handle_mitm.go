@@ -12,8 +12,8 @@ import (
 // Gated on IsListening, not just non-nil: when the proxy fails to bind
 // (port conflict with default-on MITM), s.mitm is still attached but
 // nothing is accepting connections. Returning a PEM in that state would
-// lead operators to install a cert and configure HTTPS_PROXY for a port
-// that silently refuses connections.
+// lead operators to install a cert and configure HTTPS_PROXY/HTTP_PROXY
+// for a port that silently refuses connections.
 //
 // The X-MITM-Port response header advertises the port the proxy is bound
 // to. Clients (e.g. `agent-vault vault run`) use this instead of a

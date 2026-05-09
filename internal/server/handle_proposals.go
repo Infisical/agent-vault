@@ -362,7 +362,7 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Approving proposals: agents need admin role; users need vault access.
+	// Approving proposals requires member+ role (blocks proxy-role agents from self-approving).
 	if _, err := s.requireProposalReview(w, r, ns.ID); err != nil {
 		return
 	}
@@ -504,7 +504,7 @@ func (s *Server) handleAdminProposalReject(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Rejecting proposals: agents need admin role; users need vault access.
+	// Rejecting proposals requires member+ role (blocks proxy-role agents from self-rejecting).
 	if _, err := s.requireProposalReview(w, r, ns.ID); err != nil {
 		return
 	}

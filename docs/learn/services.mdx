@@ -3,7 +3,7 @@ title: "Services"
 description: "Define which services your agents can access and how credentials are attached."
 ---
 
-A `Service` is a per-[vault](/learn/vaults) configuration that defines which hosts [agents](/agents/overview) can reach through the proxy and how Agent Vault authenticates to each one. When an agent makes a proxied request, Agent Vault matches the target host against the vault's services, attaches the configured [credentials](/learn/credentials), and forwards the request. If no service matches, Agent Vault returns `403`.
+A `Service` is a per-[vault](/learn/vaults) configuration that defines which hosts [agents](/agents/overview) can reach through the proxy and how Agent Vault authenticates to each one. When an agent makes a proxied request, Agent Vault matches the target host against the vault's services, attaches the configured [credentials](/learn/credentials), and forwards the request. If no service matches, the request is forwarded as plain proxy traffic by default; vault admins can flip a vault into **strict deny mode** (`unmatched_host_policy=deny` in vault settings) to reject unmatched hosts with `403` instead.
 
 Each service contains:
 
@@ -184,7 +184,7 @@ services:
         in: [path]
 ```
 
-The agent then sends `GET https://api.twilio.com/2010-04-01/Accounts/__account_sid__/Messages.json` (via the explicit `/proxy/...` ingress or `HTTPS_PROXY`). Agent Vault:
+The agent then sends `GET https://api.twilio.com/2010-04-01/Accounts/__account_sid__/Messages.json` (routed through the broker via `HTTPS_PROXY`/`HTTP_PROXY`). Agent Vault:
 
 1. Resolves the basic auth credentials and injects `Authorization: Basic <base64(SID:TOKEN)>`.
 2. Scans only the path (the only surface in `in:`), finds `__account_sid__`, replaces it with the URL-encoded SID.

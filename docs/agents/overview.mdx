@@ -3,13 +3,13 @@ title: "Agents"
 description: "Understand how agents connect to Agent Vault and how to manage them."
 ---
 
-An `Agent` is any AI-powered process that connects to Agent Vault to proxy requests and raise [proposals](/learn/proposals). Agents are **instance-level entities** (like users) with an instance-level role (`owner` or `member`) and can be granted access to multiple [vaults](/learn/vaults) with independent roles per vault.
+An `Agent` is any AI-powered process that connects to Agent Vault to proxy requests and raise [proposals](/learn/proposals). Agents are **instance-level entities** (like users) with an [instance-level role](/learn/permissions#instance-roles) (`owner`, `member`, or `no-access`) and can be granted access to multiple [vaults](/learn/vaults) with independent roles per vault.
 
 There are two ways to connect an agent: **wrapping** a local process or **inviting** any agent via a prompt.
 
 ## Wrapping with `vault run`
 
-The simplest approach for local development. Wraps a local agent process with the environment variables it needs — no invite, no token management. `vault run` also pre-configures `HTTPS_PROXY` and the CA trust chain on the child, so the agent calls upstream URLs directly and Agent Vault transparently injects credentials at the proxy boundary.
+The simplest approach for local development. Wraps a local agent process with the environment variables it needs — no invite, no token management. `vault run` also pre-configures `HTTPS_PROXY`/`HTTP_PROXY` and the CA trust chain on the child, so the agent calls upstream URLs directly (over `https://` or `http://`) and Agent Vault transparently injects credentials at the proxy boundary.
 
 ```bash
 agent-vault vault run -- claude    # Claude Code
@@ -19,7 +19,7 @@ agent-vault vault run --vault my-vault -- claude
 The agent receives a temporary, vault-scoped session and can immediately make authenticated requests and raise proposals.
 
 <Note>
-`vault run` is a convenience wrapper, not a sandbox. A child process can unset `HTTPS_PROXY` or bypass the injected CA and reach the network directly — local credentials and network access are still fully available to the agent. Stronger isolation for local development is on the roadmap.
+`vault run` is a convenience wrapper, not a sandbox. A child process can unset `HTTPS_PROXY`/`HTTP_PROXY` or bypass the injected CA and reach the network directly — local credentials and network access are still fully available to the agent. Stronger isolation for local development is on the roadmap.
 </Note>
 
 ## Inviting an agent
@@ -39,7 +39,13 @@ By default, invited agents are created with the `member` instance role. Use `--r
 ```bash
 # Invite an agent as an instance owner
 agent-vault agent invite my-agent --role owner
+
+# Invite an agent with no instance-scoped capabilities — useful when the
+# agent should only operate within a specific vault at proxy role.
+agent-vault agent invite my-agent --role no-access --vault payments:proxy
 ```
+
+See [Permissions](/learn/permissions#instance-roles) for what each role can do.
 
 ### Vault pre-assignments
 
@@ -131,11 +137,11 @@ Instance-level agent tokens are not scoped to a single vault. Instead, agents se
 
 ```
 GET /discover
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Authorization: Bearer {AGENT_VAULT_TOKEN}
 X-Vault: my-vault
 ```
 
-This applies to all vault-scoped requests: `/discover`, `/v1/proposals`, `/v1/credentials`, and the explicit `/proxy/` endpoint.
+This applies to `/discover` and `/v1/proposals`. (Endpoints like `/v1/credentials` resolve the vault from a `?vault=` query parameter or request body instead.)
 
 <Note>
 Agents created via `agent-vault vault run` receive vault-scoped sessions and do not need the `X-Vault` header — the vault is embedded in the session.
@@ -159,5 +165,5 @@ When in doubt, start with `agent-vault vault run`. You can always create a named
 Regardless of how an agent connects, it follows the same [protocol](/agents/protocol):
 
 1. Call `/discover` to learn which services are available
-2. Call upstream URLs directly — `HTTPS_PROXY` routes the request through Agent Vault transparently
+2. Call upstream URLs directly (over `https://` or `http://`) — `HTTPS_PROXY`/`HTTP_PROXY` routes the request through Agent Vault transparently
 3. Raise [proposals](/learn/proposals) when access to a new service is needed

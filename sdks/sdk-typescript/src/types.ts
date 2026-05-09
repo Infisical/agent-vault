@@ -7,7 +7,8 @@
 export interface ClientConfig {
   /**
    * Authentication token.
-   * Falls back to `AGENT_VAULT_SESSION_TOKEN` environment variable.
+   * Falls back to `AGENT_VAULT_TOKEN` environment variable
+   * (or the deprecated `AGENT_VAULT_SESSION_TOKEN` with a one-time warning).
    */
   token?: string;
 
@@ -42,7 +43,6 @@ export interface ScopedSession {
   token: string;
   expires_at: string;
   av_addr?: string;
-  proxy_url?: string;
 }
 
 /** @internal Wire format for POST /v1/vaults response. */

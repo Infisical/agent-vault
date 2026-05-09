@@ -1,6 +1,6 @@
 ---
 title: "Custom Agent"
-description: "Connect any HTTP-capable agent or script to Agent Vault through HTTPS_PROXY."
+description: "Connect any HTTP-capable agent or script to Agent Vault through HTTPS_PROXY/HTTP_PROXY."
 ---
 
 ## Prerequisites
@@ -10,7 +10,7 @@ description: "Connect any HTTP-capable agent or script to Agent Vault through HT
 
 ## Quick start
 
-Wrap your agent process with `vault run`. It sets `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT`, then pre-configures `HTTPS_PROXY` and the CA trust chain so standard HTTP clients transparently route through the broker:
+Wrap your agent process with `vault run`. It sets `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN`, and `AGENT_VAULT_VAULT`, then pre-configures `HTTPS_PROXY`/`HTTP_PROXY` and the CA trust chain so standard HTTP clients route both HTTP and HTTPS traffic through the broker transparently:
 
 ```bash
 agent-vault vault run -- my-agent
@@ -24,7 +24,7 @@ agent-vault vault run --vault myproject -- my-agent
 
 ## Try it out
 
-Your agent calls real API URLs directly. `HTTPS_PROXY` routes the request through Agent Vault, which matches the host against the vault's [services](/learn/services) and injects the stored credential into the auth header for that service.
+Your agent calls real API URLs directly (over `https://` or `http://`). `HTTPS_PROXY`/`HTTP_PROXY` routes the request through Agent Vault, which matches the host against the vault's [services](/learn/services) and injects the stored credential into the auth header for that service.
 
 <CodeGroup>
 
@@ -59,8 +59,7 @@ Your agent never sees or handles credentials. Agent Vault strips whatever the cl
 ## Other connection flows
 
 - **Agent invites** — for cloud-hosted agents or CI pipelines that can't be wrapped with `vault run`. See [Connect a custom agent](/guides/connect-custom-agent#get-connection-credentials).
-- **Manual HTTPS_PROXY setup** — for containerized agents and sandboxes that need to configure the proxy themselves. See [Set HTTPS_PROXY manually](/guides/connect-custom-agent#set-https-proxy-manually).
-- **Explicit `/proxy` endpoint** — for clients that can't honor `HTTPS_PROXY` (HTTP/2-only runtimes, no CA-mounting). See [Explicit proxy endpoint](/guides/connect-custom-agent#explicit-proxy-endpoint-fallback).
+- **Manual proxy setup** — for containerized agents and sandboxes that need to configure the proxy themselves. See [Set the proxy env vars manually](/guides/connect-custom-agent#set-the-proxy-env-vars-manually).
 
 ## Discover available services
 
@@ -68,13 +67,12 @@ Call `/discover` to check which hosts have credentials configured:
 
 ```bash
 curl ${AGENT_VAULT_ADDR}/discover \
-  -H "Authorization: Bearer ${AGENT_VAULT_SESSION_TOKEN}"
+  -H "Authorization: Bearer ${AGENT_VAULT_TOKEN}"
 ```
 
 ```json Response
 {
   "vault": "default",
-  "proxy_url": "http://127.0.0.1:14321/proxy",
   "services": [
     { "host": "api.stripe.com", "description": "Stripe API" }
   ],
@@ -88,7 +86,7 @@ Requests to hosts not in `services` go direct, not through the proxy.
 
 <CardGroup cols={2}>
   <Card title="Connect a custom agent" icon="plug" href="/guides/connect-custom-agent">
-    Full guide with manual HTTPS_PROXY setup, error handling, and proposals.
+    Full guide with manual proxy setup, error handling, and proposals.
   </Card>
   <Card title="Agent protocol" icon="code" href="/agents/protocol">
     HTTP reference for sessions, discovery, and proposals.

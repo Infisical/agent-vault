@@ -1,23 +1,35 @@
-// Package mitm implements a transparent TLS-intercepting HTTP proxy.
+// Package mitm implements a TLS-wrapped HTTP/1.1 proxy ingress for
+// agent traffic.
 //
-// A Proxy accepts HTTP CONNECT on a TLS-encrypted listener, hijacks the
-// connection, terminates client-side TLS using a certificate minted on
-// demand by a ca.Provider, and forwards each HTTP/1.1 request to the
-// originally-requested upstream over a fresh TLS connection with strict
-// verification against the system trust store.
+// A Proxy accepts two request shapes on the same TLS-wrapped listener:
 //
-// The listener itself is TLS-wrapped so that the CONNECT handshake
-// (which carries session tokens in Proxy-Authorization) is encrypted.
-// Clients use HTTPS_PROXY=https://... and trust the same CA that signs
+//   - CONNECT host:port — for HTTPS upstreams. The proxy hijacks the
+//     connection, terminates client-side TLS using a leaf minted on
+//     demand by a ca.Provider, and forwards each tunnelled HTTP/1.1
+//     request to the originally-requested upstream over a fresh TLS
+//     connection with strict verification against the system trust
+//     store.
+//
+//   - Absolute-form forward-proxy requests (e.g. POST http://host/path
+//     HTTP/1.1, RFC 7230 §5.3.2) — for plain-HTTP upstreams. The proxy
+//     authenticates the request inline (no hijack), forwards the body
+//     to the upstream over plain HTTP, and applies the same credential
+//     injection, host policy, and request logging as the CONNECT path.
+//
+// The listener itself is TLS-wrapped so that the CONNECT handshake and
+// the absolute-form request line (both of which carry session tokens
+// in Proxy-Authorization) are encrypted. Clients use HTTPS_PROXY and
+// HTTP_PROXY pointing at https://... and trust the same CA that signs
 // the per-host MITM leaves.
 //
-// v1 scope: HTTP/1.1 only (ALPN pinned).
+// v1 scope: HTTP/1.1 only (ALPN pinned). HTTPS upstreams must use
+// CONNECT — the forward-proxy path rejects https:// URLs to avoid
+// silently TLS-stripping.
 package mitm
 
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -44,15 +56,15 @@ type Proxy struct {
 	baseURL     string // externally-reachable control-plane URL for help links
 	logger      *slog.Logger
 	rateLimit   *ratelimit.Registry // shared with the HTTP server; nil = no-op
-	logSink     requestlog.Sink     // never nil (Nop default); shared with HTTP ingress
+	logSink     requestlog.Sink     // never nil (Nop default); shared with the HTTP server
 }
 
 // Options carries the dependencies a Proxy needs. BaseURL is the
 // externally-reachable control-plane URL used in help-link error
 // responses. Logger must be non-nil; tests can pass
 // slog.New(slog.DiscardHandler). RateLimit is shared with the HTTP
-// server so proxy limits apply uniformly across both ingresses; nil
-// disables rate limiting on the MITM path.
+// server so proxy limits and control-plane limits live in one registry;
+// nil disables rate limiting on the MITM path.
 type Options struct {
 	CA          ca.Provider
 	Sessions    brokercore.SessionResolver
@@ -168,5 +180,13 @@ func (p *Proxy) dispatch(w http.ResponseWriter, r *http.Request) {
 		p.handleConnect(w, r)
 		return
 	}
-	http.Error(w, fmt.Sprintf("method %s not supported on transparent proxy", r.Method), http.StatusMethodNotAllowed)
+	if isAbsoluteForwardProxyRequest(r) {
+		p.handleForward(w, r)
+		return
+	}
+	// Origin-form (no scheme/host), https://, ws://, file://, gopher://,
+	// etc. all land here. The CONNECT-vs-forward split above already
+	// covers every legitimate forward-proxy shape; anything else is a
+	// malformed request, not a method-not-allowed.
+	http.Error(w, "this endpoint is an HTTP forward proxy; non-CONNECT requests must use absolute-form URLs (http://host/path). Use CONNECT for https:// upstreams.", http.StatusBadRequest)
 }

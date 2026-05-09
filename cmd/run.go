@@ -6,15 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
-	"github.com/Infisical/agent-vault/internal/sandbox"
+	"github.com/Infisical/agent-vault/internal/isolation"
 	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/Infisical/agent-vault/internal/store"
 	"github.com/charmbracelet/huh"
@@ -37,44 +39,55 @@ func newRunCmd(examplePrefix string) *cobra.Command {
 		Long: `Start an agent process (e.g. claude, agent, codex, hermes, opencode) with an Agent Vault session.
 Everything after -- is treated as the command to execute.
 
-Environment variables always set on the child:
-  AGENT_VAULT_SESSION_TOKEN  — vault-scoped bearer token for the Agent Vault server
+Two modes:
+  Admin mode (default): use the on-disk session from 'agent-vault auth login'.
+    Mints a fresh vault-scoped session token for the child.
+  Agent mode: pre-supply a token via env. Used for unattended / containerized
+    deployments where there's no human to interactively log in.
+      AGENT_VAULT_TOKEN  — vault-scoped session token or long-lived agent token
+      AGENT_VAULT_ADDR   — broker base URL
+      AGENT_VAULT_VAULT  — vault to scope the run to (required in agent mode for both token types)
+    The token is validated against the broker once before the child is exec'd.
+    --ttl has no effect in agent mode and is rejected (the token's lifetime
+    is fixed at mint time).
+
+Environment variables set on the child:
+  AGENT_VAULT_TOKEN          — bearer token for the Agent Vault server
+  AGENT_VAULT_SESSION_TOKEN  — alias of AGENT_VAULT_TOKEN (deprecated; will be removed in a future major version)
   AGENT_VAULT_ADDR           — base URL of the Agent Vault HTTP control server
   AGENT_VAULT_VAULT          — vault the session is scoped to
 
-When the server's transparent MITM proxy is reachable (default), the child
-also inherits HTTPS_PROXY / NO_PROXY / NODE_USE_ENV_PROXY plus the root CA trust
-variables (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE,
-GIT_SSL_CAINFO, DENO_CERT) so standard HTTPS clients transparently route through the
-broker. NODE_USE_ENV_PROXY=1 enables Node.js built-in proxy support (v22.21.0+) so
-fetch() and https.get() honor HTTPS_PROXY natively. HTTP_PROXY is intentionally not set — the MITM proxy only handles
-HTTPS (CONNECT) and would 405 any plain http:// request. The root CA PEM
-is written to ~/.agent-vault/mitm-ca.pem. Pass --no-mitm to disable
-injection and rely solely on the explicit /proxy/{host}/{path} endpoint.
+The child also inherits HTTPS_PROXY / HTTP_PROXY / NO_PROXY /
+NODE_USE_ENV_PROXY plus the root CA trust variables (SSL_CERT_FILE,
+NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE, GIT_SSL_CAINFO,
+DENO_CERT) so both HTTPS and plain-HTTP clients transparently route
+through the broker. NODE_USE_ENV_PROXY=1 enables Node.js built-in proxy
+support (v22.21.0+) so fetch() and http.get()/https.get() honor the
+proxy env natively. HTTPS_PROXY and HTTP_PROXY both point at the same
+TLS-wrapped proxy URL — the listener accepts CONNECT for https://
+upstreams and absolute-form forward-proxy requests for http:// on the
+same port. The root CA PEM is written to ~/.agent-vault/mitm-ca.pem.
 
 Example:
   ` + examplePrefix + ` -- claude
-  ` + examplePrefix + ` --vault myproject -- claude
-  ` + examplePrefix + ` --no-mitm -- claude`,
+  ` + examplePrefix + ` --vault myproject -- claude`,
 		Args:                  cobra.MinimumNArgs(1),
 		DisableFlagsInUseLine: true,
 		RunE:                  runCmdRunE,
 	}
 
-	var sbx SandboxMode
-	c.Flags().Var(&sbx, "sandbox", "Sandbox mode: process (default) or container")
+	var iso IsolationMode
+	c.Flags().Var(&iso, "isolation", "Isolation mode: host (default) or container")
 
 	c.Flags().String("address", "", "Agent Vault server address (defaults to session address)")
-	c.Flags().String("role", "", "Vault role for the agent session (proxy, member, admin; default: proxy)")
 	c.Flags().Int("ttl", 0, "Session TTL in seconds (300–604800; default: server default 24h)")
-	c.Flags().Bool("no-mitm", false, "Skip HTTPS_PROXY/CA env injection for the child (explicit /proxy only)")
 
-	c.Flags().String("image", "", "Container image override (requires --sandbox=container)")
-	c.Flags().StringArray("mount", nil, "Extra bind mount src:dst[:ro] (repeatable; requires --sandbox=container)")
-	c.Flags().Bool("keep", false, "Don't pass --rm to docker (requires --sandbox=container)")
-	c.Flags().Bool("no-firewall", false, "Skip iptables egress rules inside the container (requires --sandbox=container; debug only)")
-	c.Flags().Bool("home-volume-shared", false, "Share /home/claude/.claude across invocations (requires --sandbox=container); default is a per-invocation volume, losing auth state but avoiding concurrency corruption")
-	c.Flags().Bool("share-agent-dir", false, "Bind-mount the host's agent state dir (~/.claude) into the container so the sandbox reuses your host login (requires --sandbox=container; mutually exclusive with --home-volume-shared)")
+	c.Flags().String("image", "", "Container image override (requires --isolation=container)")
+	c.Flags().StringArray("mount", nil, "Extra bind mount src:dst[:ro] (repeatable; requires --isolation=container)")
+	c.Flags().Bool("keep", false, "Don't pass --rm to docker (requires --isolation=container)")
+	c.Flags().Bool("no-firewall", false, "Skip iptables egress rules inside the container (requires --isolation=container; debug only)")
+	c.Flags().Bool("home-volume-shared", false, "Share /home/claude/.claude across invocations (requires --isolation=container); default is a per-invocation volume, losing auth state but avoiding concurrency corruption")
+	c.Flags().Bool("share-agent-dir", false, "Bind-mount the host's agent state dir (~/.claude) into the container so it reuses your host login (requires --isolation=container; mutually exclusive with --home-volume-shared)")
 
 	return c
 }
@@ -83,46 +96,77 @@ var runCmd = newRunCmd("agent-vault vault run")
 var topRunCmd = newRunCmd("agent-vault run")
 
 func runCmdRunE(cmd *cobra.Command, args []string) error {
-	// 0. Resolve sandbox mode and validate flag compatibility before any
+	// 0. Resolve isolation mode and validate flag compatibility before any
 	//    network I/O — the user sees conflicts immediately, not after
 	//    a slow session-mint round-trip.
-	mode := *cmd.Flags().Lookup("sandbox").Value.(*SandboxMode)
+	mode := *cmd.Flags().Lookup("isolation").Value.(*IsolationMode)
 	if mode == "" {
-		if v := os.Getenv("AGENT_VAULT_SANDBOX"); v != "" {
+		if v := os.Getenv("AGENT_VAULT_ISOLATION"); v != "" {
 			if err := mode.Set(v); err != nil {
-				return fmt.Errorf("AGENT_VAULT_SANDBOX: %w", err)
+				return fmt.Errorf("AGENT_VAULT_ISOLATION: %w", err)
 			}
 		}
 	}
 	if mode == "" {
-		mode = SandboxProcess
+		mode = IsolationHost
 	}
-	if err := validateSandboxFlagConflicts(cmd, mode); err != nil {
+	if err := validateIsolationFlagConflicts(cmd, mode); err != nil {
 		return err
 	}
 
-	// 1. Load the admin session from agent-vault auth login.
-	sess, err := ensureSession()
+	// 1. Resolve session: env-supplied token (agent mode) or on-disk admin
+	//    session (human mode). Agent mode is the path used by containerized
+	//    deployments where there's no TTY and no on-disk session.
+	//    tokenSource is "" in human mode; in agent mode it names the env var
+	//    the token was read from (envVarToken or the deprecated alias) so
+	//    downstream errors can reference the variable the user actually set.
+	sess, tokenSource, err := resolveSession()
 	if err != nil {
 		return err
 	}
+	fromEnv := tokenSource != ""
 
 	addr, _ := cmd.Flags().GetString("address")
 	if addr == "" {
 		addr = sess.Address
 	}
 
-	// 2-3. Resolve the vault and mint a vault-scoped session token,
-	//      retrying on session expiry. Shared with `vault token`.
-	role, _ := cmd.Flags().GetString("role")
-	ttl, _ := cmd.Flags().GetInt("ttl")
-	vault, scopedToken, err := mintScopedSession(cmd, sess, addr, role, ttl)
-	if err != nil {
-		return err
+	// 2-3. Determine the token + vault. In agent mode the env-supplied
+	//      token IS the credential; we validate it once against the broker
+	//      so a bad token fails fast at startup instead of producing 401s
+	//      on every proxied call. In admin mode we mint a fresh
+	//      vault-scoped token (existing behavior).
+	var (
+		vault, token string
+	)
+	if fromEnv {
+		// Hard-error on --ttl: the env-supplied token's lifetime is fixed
+		// at mint time, so silently ignoring would mislead users who
+		// believed they bounded the run.
+		if cmd.Flags().Changed("ttl") {
+			return fmt.Errorf("--ttl has no effect when %s is supplied; the token's lifetime is fixed at mint time", tokenSource)
+		}
+		v, err := resolveVaultForAgentMode(cmd)
+		if err != nil {
+			return err
+		}
+		vault = v
+		token = sess.Token
+		if err := validateEnvToken(addr, token, vault, tokenSource); err != nil {
+			return err
+		}
+	} else {
+		ttl, _ := cmd.Flags().GetInt("ttl")
+		v, scopedToken, err := mintScopedSession(cmd, sess, addr, ttl)
+		if err != nil {
+			return err
+		}
+		vault = v
+		token = scopedToken
 	}
 
-	if mode == SandboxContainer {
-		return runContainer(cmd, args, scopedToken, addr, vault)
+	if mode == IsolationContainer {
+		return runContainer(cmd, args, token, addr, vault)
 	}
 
 	// 4. Resolve the target binary.
@@ -131,28 +175,31 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("command not found: %s", args[0])
 	}
 
-	// 5. Build env: inherit current env + inject Agent Vault vars.
+	// 5. Build env: inherit current env + inject Agent Vault vars. Strip
+	//    any pre-existing AGENT_VAULT_* keys first — POSIX getenv returns
+	//    the *first* match (glibc, curl, libcurl-backed Python, Go's own
+	//    syscall.Getenv), so a stale parent-env value would otherwise
+	//    silently shadow the freshly-injected one. Particularly important
+	//    in agent mode, where the parent env is *guaranteed* to carry these
+	//    keys (that's how agent mode is detected).
 	env := os.Environ()
+	env = stripEnvKeys(env, agentVaultInjectedKeys)
 	env = append(env,
-		"AGENT_VAULT_SESSION_TOKEN="+scopedToken,
+		"AGENT_VAULT_TOKEN="+token,
+		"AGENT_VAULT_SESSION_TOKEN="+token, // deprecated alias
 		"AGENT_VAULT_ADDR="+addr,
 		"AGENT_VAULT_VAULT="+vault,
 	)
 
-	// 6. Route the child's HTTPS traffic through the transparent MITM
-	//    proxy. Explicit /proxy stays available as a fallback.
-	if noMITM, _ := cmd.Flags().GetBool("no-mitm"); !noMITM {
-		newEnv, mitmPort, ok, err := augmentEnvWithMITM(env, addr, scopedToken, vault, "")
-		switch {
-		case err != nil:
-			fmt.Fprintf(os.Stderr, "agent-vault: MITM setup failed (%v); continuing with explicit proxy only\n", err)
-		case !ok:
-			fmt.Fprintln(os.Stderr, "agent-vault: MITM proxy disabled on server; using explicit proxy only")
-		default:
-			env = newEnv
-			fmt.Fprintf(os.Stderr, "%s routing HTTPS through MITM proxy (127.0.0.1:%d)\n", successText("agent-vault:"), mitmPort)
-		}
+	// 6. Route the child's HTTP and HTTPS traffic through the transparent
+	//    MITM proxy. The MITM ingress is the only credential-injection
+	//    path, so a failure here is fatal.
+	newEnv, mitmPort, err := requireMITMEnv(env, addr, token, vault, "")
+	if err != nil {
+		return err
 	}
+	env = newEnv
+	fmt.Fprintf(os.Stderr, "%s routing HTTP/HTTPS through MITM proxy (%s)\n", successText("agent-vault:"), net.JoinHostPort(resolveMITMHost(addr), strconv.Itoa(mitmPort)))
 
 	// 7. If the target command is a supported agent, offer to install the
 	//    Agent Vault skill (only when not already present).
@@ -163,7 +210,10 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	// 8. Confirm, then exec — replaces this process entirely so the child
 	//    (e.g. Claude Code) gets direct terminal control.
 	fmt.Fprintf(os.Stderr, "%s agent-vault connected. Starting %s...\n\n", successText("agent-vault:"), boldText(args[0]))
-	return syscall.Exec(binary, args, env)
+	// gosec G702: this is an exec wrapper — the whole purpose is to run a
+	// user-specified binary with user-specified args, identical to the
+	// rationale for the G204 exclusion in .golangci.yml.
+	return syscall.Exec(binary, args, env) //nolint:gosec
 }
 
 // knownAgents maps CLI binary base-names to the (agentName, skillsDir)
@@ -241,6 +291,35 @@ func maybeInstallSkills(agentName, baseDir string) {
 		}
 	}
 	fmt.Fprintf(os.Stderr, "%s Installed Agent Vault skills for %s.\n", successText("agent-vault:"), agentName)
+}
+
+// resolveVaultForAgentMode picks the vault when the token is supplied via env
+// (agent / containerized run). No project-file or interactive-picker fallback
+// — neither makes sense in an unattended container, and silently defaulting
+// to "default" would mask misconfig. Priority: --vault > AGENT_VAULT_VAULT > error.
+func resolveVaultForAgentMode(cmd *cobra.Command) (string, error) {
+	if name, _ := cmd.Flags().GetString("vault"); name != "" {
+		return name, nil
+	}
+	if v := os.Getenv("AGENT_VAULT_VAULT"); v != "" {
+		return v, nil
+	}
+	return "", fmt.Errorf("vault is required in agent mode: set AGENT_VAULT_VAULT or pass --vault")
+}
+
+// resolveVaultForCommand is the agent-mode-aware vault resolver shared by
+// peer commands that talk to vault-scoped endpoints (discover, proposal
+// create). When tokenSource is non-empty (env-mode), it requires --vault or
+// AGENT_VAULT_VAULT — same contract `vault run` enforces — so a
+// misconfigured deploy fails fast with a clear remediation instead of
+// silently sending `X-Vault: default` and routing at the wrong vault.
+// In human mode it delegates to resolveVault, which falls back to project
+// file / vault context / "default".
+func resolveVaultForCommand(cmd *cobra.Command, tokenSource string) (string, error) {
+	if tokenSource != "" {
+		return resolveVaultForAgentMode(cmd)
+	}
+	return resolveVault(cmd), nil
 }
 
 // resolveVaultForRun picks the vault for a run session. Priority:
@@ -349,12 +428,25 @@ func fetchUserVaults(addr, token string) ([]string, error) {
 // corporate HTTPS_PROXY from the parent shell would otherwise silently
 // win and the MITM route would be bypassed entirely.
 var mitmInjectedKeys = func() map[string]struct{} {
-	m := make(map[string]struct{}, len(sandbox.ProxyEnvKeys))
-	for _, k := range sandbox.ProxyEnvKeys {
+	m := make(map[string]struct{}, len(isolation.ProxyEnvKeys))
+	for _, k := range isolation.ProxyEnvKeys {
 		m[k] = struct{}{}
 	}
 	return m
 }()
+
+// agentVaultInjectedKeys is the AGENT_VAULT_* keyset injected into the child
+// in step 5 of runCmdRunE. Same rationale as mitmInjectedKeys: in agent mode
+// the parent env is guaranteed to already carry these keys (that's how agent
+// mode is detected), and POSIX getenv returns the first match — so a stale
+// AGENT_VAULT_VAULT from the parent shell would silently override the value
+// we just resolved from --vault.
+var agentVaultInjectedKeys = map[string]struct{}{
+	"AGENT_VAULT_TOKEN":         {},
+	"AGENT_VAULT_SESSION_TOKEN": {},
+	"AGENT_VAULT_ADDR":          {},
+	"AGENT_VAULT_VAULT":         {},
+}
 
 // stripEnvKeys returns env with every entry whose key (the part before
 // '=') appears in keys removed. Case-sensitive, matching how the kernel
@@ -375,15 +467,42 @@ func stripEnvKeys(env []string, keys map[string]struct{}) []string {
 	return out
 }
 
-// augmentEnvWithMITM extends env so the child transparently routes HTTPS
-// through the broker. Returns (env, 0, false, nil) when the server has
-// MITM disabled. The second return value is the port the server reported;
-// callers log it so operators see the actual listen port (not a constant).
-// caPath is a test seam — pass "" for the default location.
+// resolveMITMHost extracts the host the child process should dial for
+// the MITM proxy from the configured server address. Falls back to
+// loopback when addr is unparseable or has no host.
+func resolveMITMHost(addr string) string {
+	if u, err := url.Parse(addr); err == nil {
+		if h := u.Hostname(); h != "" {
+			return h
+		}
+	}
+	return "127.0.0.1"
+}
+
+// requireMITMEnv calls augmentEnvWithMITM and converts both transport
+// failures and a server-side --mitm-port 0 into actionable errors.
+// MITM is the only ingress, so neither case is recoverable for vault run.
+func requireMITMEnv(env []string, addr, token, vault, caPath string) ([]string, int, error) {
+	newEnv, port, ok, err := augmentEnvWithMITM(env, addr, token, vault, caPath)
+	if err != nil {
+		return env, 0, fmt.Errorf("MITM setup failed: %w", err)
+	}
+	if !ok {
+		return env, 0, errors.New("MITM proxy is disabled on the Agent Vault server; restart the server without --mitm-port 0 to enable it")
+	}
+	return newEnv, port, nil
+}
+
+// augmentEnvWithMITM extends env so the child transparently routes HTTP
+// and HTTPS through the broker. Returns (env, 0, false, nil) when the
+// server has MITM disabled. The second return value is the port the
+// server reported; callers log it so operators see the actual listen
+// port (not a constant). caPath is a test seam — pass "" for the
+// default location.
 //
-// Only HTTPS_PROXY is injected — not HTTP_PROXY. The MITM proxy handles
-// HTTP CONNECT only and returns 405 for every other method, so setting
-// HTTP_PROXY would route plain http:// requests into a dead end.
+// Both HTTPS_PROXY and HTTP_PROXY are injected, pointing at the same
+// TLS-wrapped proxy URL. The listener handles CONNECT for https://
+// upstreams and absolute-form forward-proxy requests for http://.
 func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]string, int, bool, error) {
 	pem, port, enabled, mitmTLS, err := fetchMITMCA(addr)
 	if err != nil {
@@ -411,20 +530,16 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 	// The parent directory is already 0o700 so anyone with read access to
 	// the file is also the file owner — 0o600 adds no real restriction,
 	// but keeps gosec G306 happy.
-	if err := os.WriteFile(caPath, pem, 0o600); err != nil {
+	// gosec G703: caPath is derived from --mitm-ca flag or $HOME, both of
+	// which are user-controlled by design (same rationale as the existing
+	// G304 exclusion in .golangci.yml).
+	if err := os.WriteFile(caPath, pem, 0o600); err != nil { //nolint:gosec
 		return env, 0, false, fmt.Errorf("write CA: %w", err)
 	}
 
-	mitmHost := "127.0.0.1"
-	if u, err := url.Parse(addr); err == nil {
-		if h := u.Hostname(); h != "" {
-			mitmHost = h
-		}
-	}
-
 	env = stripEnvKeys(env, mitmInjectedKeys)
-	env = append(env, sandbox.BuildProxyEnv(sandbox.ProxyEnvParams{
-		Host:    mitmHost,
+	env = append(env, isolation.BuildProxyEnv(isolation.ProxyEnvParams{
+		Host:    resolveMITMHost(addr),
 		Port:    port,
 		Token:   token,
 		Vault:   vault,
@@ -441,7 +556,7 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 // re-auth would be a UX regression, and the user's earlier choice is
 // still valid because vault membership is rechecked server-side when
 // requestScopedSession fires.
-func mintScopedSession(cmd *cobra.Command, sess *session.ClientSession, addr, role string, ttl int) (vault, scopedToken string, err error) {
+func mintScopedSession(cmd *cobra.Command, sess *session.ClientSession, addr string, ttl int) (vault, scopedToken string, err error) {
 	err = withReauthRetry(sess, addr, func(s *session.ClientSession) error {
 		if vault == "" {
 			v, verr := resolveVaultForRun(cmd, addr, s.Token)
@@ -450,7 +565,7 @@ func mintScopedSession(cmd *cobra.Command, sess *session.ClientSession, addr, ro
 			}
 			vault = v
 		}
-		token, terr := requestScopedSession(addr, s.Token, vault, role, ttl)
+		token, terr := requestScopedSession(addr, s.Token, vault, ttl)
 		if terr != nil {
 			return terr
 		}
@@ -461,12 +576,11 @@ func mintScopedSession(cmd *cobra.Command, sess *session.ClientSession, addr, ro
 }
 
 // requestScopedSession calls the server to create a vault-scoped session
-// and returns the scoped token.
-func requestScopedSession(addr, adminToken, vault, role string, ttlSeconds int) (string, error) {
+// and returns the scoped token. Tokens are always minted with role
+// `proxy`; the server enforces this and the CLI no longer exposes a flag
+// for it.
+func requestScopedSession(addr, adminToken, vault string, ttlSeconds int) (string, error) {
 	body := map[string]any{"vault": vault}
-	if role != "" {
-		body["vault_role"] = role
-	}
 	if ttlSeconds > 0 {
 		body["ttl_seconds"] = ttlSeconds
 	}

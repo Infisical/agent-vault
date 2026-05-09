@@ -195,7 +195,7 @@ describe("HttpClient", () => {
       }
     });
 
-    it("parses proxy error format: {error: code, message: detail}", async () => {
+    it("parses broker error format: {error: code, message: detail}", async () => {
       const mockFetch = createMockFetch({
         ok: false,
         status: 403,
@@ -208,7 +208,7 @@ describe("HttpClient", () => {
       });
 
       try {
-        await client.get("/proxy/api.stripe.com/v1/charges");
+        await client.get("/discover");
         expect.unreachable("should have thrown");
       } catch (err) {
         expect(err).toBeInstanceOf(ApiError);

@@ -37,7 +37,7 @@ description: "Deploy Agent Vault to Fly.io with persistent storage"
     | `AGENT_VAULT_ADDR` | Recommended | Externally-reachable base URL. Used for generating links in emails, invites, and discovery responses. |
 
     <Tip>
-      Agent Vault supports additional configuration for SMTP email notifications, Google OAuth, domain restrictions, and more. See [Environment variables](/self-hosting/environment-variables) for the full reference.
+      Agent Vault supports additional configuration for SMTP email notifications, domain restrictions, and more. See [Environment variables](/self-hosting/environment-variables) for the full reference.
     </Tip>
   </Step>
 
@@ -73,7 +73,7 @@ description: "Deploy Agent Vault to Fly.io with persistent storage"
 ## Key details
 
 - **Config**: `fly.toml` exposes port 14321 via Fly's HTTP service (force HTTPS, auto-stop/auto-start) and port 14322 via TCP passthrough for the transparent MITM proxy — the MITM listener's own TLS cert handles the handshake, so Fly doesn't terminate TLS on that port
-- **Agent `HTTPS_PROXY`**: `https://<token>:<vault>@your-app.fly.dev:14322` — the root CA must be trusted by the agent's HTTP client (fetch with [`agent-vault ca fetch --address https://your-app.fly.dev`](docs/reference/cli.mdx))
+- **Agent `HTTPS_PROXY` / `HTTP_PROXY`**: `https://<token>:<vault>@your-app.fly.dev:14322` (the same URL serves both HTTPS via `CONNECT` and plain `http://` via absolute-form forward-proxy requests) — the root CA must be trusted by the agent's HTTP client (fetch with [`agent-vault ca fetch --address https://your-app.fly.dev`](docs/reference/cli.mdx))
 - **Entrypoint**: `scripts/docker-entrypoint.sh` forwards arguments to the `agent-vault` binary, which natively reads `AGENT_VAULT_MASTER_PASSWORD` from the environment
 - **Storage**: Persistent volume `agent_vault_data` mounted at `/data` -- all state is in a single SQLite file
 - **Cold starts**: `min_machines_running` defaults to `0`, so the app scales to zero when idle. The first request after sleep incurs a few seconds of cold-start latency. Set it to `1` in `fly.toml` if you need always-on availability.

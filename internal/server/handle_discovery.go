@@ -14,7 +14,6 @@ type discoverService struct {
 
 type discoverResponse struct {
 	Vault                string            `json:"vault"`
-	ProxyURL             string            `json:"proxy_url"`
 	Services             []discoverService `json:"services"`
 	AvailableCredentials []string          `json:"available_credentials"`
 }
@@ -42,7 +41,6 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		// No config means no services — return empty list.
 		jsonOK(w, discoverResponse{
 			Vault:                ns.Name,
-			ProxyURL:             s.baseURL + "/proxy",
 			Services:             []discoverService{},
 			AvailableCredentials: credentialKeys,
 		})
@@ -65,7 +63,6 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 
 	jsonOK(w, discoverResponse{
 		Vault:                ns.Name,
-		ProxyURL:             s.baseURL + "/proxy",
 		Services:             services,
 		AvailableCredentials: credentialKeys,
 	})

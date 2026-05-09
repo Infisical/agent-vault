@@ -78,7 +78,7 @@ Subsequent users can self-register via `agent-vault auth register`, the web regi
 
 ## Transparent proxy
 
-Agent Vault exposes a transparent `HTTPS_PROXY` listener on port `14322` — the canonical ingress agents use. Any standard HTTP client that honors `HTTPS_PROXY` (curl, fetch, requests, axios, the Go stdlib, SDKs, CLIs) transparently routes through the broker. The listener is TLS-encrypted (cert signed by the MITM CA) so the CONNECT handshake carrying session tokens is protected.
+Agent Vault exposes a transparent HTTP/HTTPS proxy listener on port `14322` — the canonical ingress agents use. Any standard HTTP client that honors `HTTPS_PROXY`/`HTTP_PROXY` (curl, fetch, requests, axios, the Go stdlib, SDKs, CLIs) transparently routes through the broker. The listener is TLS-encrypted (cert signed by the MITM CA) so the CONNECT handshake (for `https://` upstreams) and the absolute-form forward-proxy request line (for `http://` upstreams) both carry session tokens encrypted on the wire.
 
 ```bash
 agent-vault server               # transparent proxy on 14322 (default)
@@ -86,7 +86,7 @@ agent-vault server --mitm-port 0 # disable
 ```
 
 <Warning>
-HTTP/1.1 only today. Clients that negotiate HTTP/2 end-to-end bypass this ingress and must use the explicit [`/proxy/{host}/{path}`](/agents/protocol#explicit-proxy-endpoint-fallback) endpoint.
+HTTP/1.1 at the ingress (WebSocket upgrades over HTTP/1.1 are transparently brokered — useful for voice/realtime APIs like OpenAI Realtime). The terminator advertises only `http/1.1` in ALPN, so clients offering both `h2` and `http/1.1` fall back to `http/1.1` and have credentials injected normally; clients that strictly require `h2` fail the TLS handshake with a `no_application_protocol` alert.
 </Warning>
 
 A software-backed root CA is created on first launch under `~/.agent-vault/ca/` (private key encrypted with the DEK). Clients must trust this root before the proxied TLS handshake will succeed. `agent-vault vault run` handles this automatically for child processes — only fetch the CA manually when configuring agents outside of `vault run` (containers, CI, invited agents).

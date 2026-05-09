@@ -27,8 +27,8 @@ Traditional secrets management relies on returning credentials directly to the c
 
 Agent Vault takes a different approach: **Agent Vault never reveals vault-stored credentials to agents**. Instead, agents route HTTP requests through a local proxy that injects the right credentials at the network layer.
 
-- **Brokered access, not retrieval** - Your agent gets a scoped session and a local `HTTPS_PROXY`. It calls target APIs normally, and Agent Vault injects the right credential at the network layer (headers, or — for APIs like Twilio that need the value in the URL — declared placeholder rewrites in the path or query string). Credentials are never returned to the agent.
-- **Works with any agent** - Custom Python/TypeScript agents, sandboxed processes, and coding agents like Claude Code, Cursor, and Codex. Anything that speaks HTTP.
+- **Brokered access, not retrieval** - Your agent gets a scoped session and a local `HTTPS_PROXY`. It calls target APIs normally, and Agent Vault injects the right credential at the network layer (headers, or — for APIs like Twilio that need the value in the URL — declared placeholder rewrites in the path or query string). Credentials are never returned to the agent. Hosts without a configured service forward as plain proxy traffic by default; flip a vault into strict deny mode (`unmatched_host_policy=deny`) to reject them with 403 instead.
+- **Works with any agent** - Custom Python/TypeScript agents, sandboxed processes, and coding agents like Claude Code, Cursor, and Codex. Anything that speaks HTTP — including streaming responses and WebSocket-based voice/realtime APIs (e.g. OpenAI Realtime).
 - **Encrypted at rest** - Credentials are encrypted with AES-256-GCM using a random data encryption key (DEK). An optional master password wraps the DEK via Argon2id, so rotating the password does not re-encrypt credentials. A passwordless mode is available for PaaS deploys.
 - **Request logs** - Every proxied request is persisted per vault with method, host, path, status, latency, and the credential key names involved. Bodies, headers, and query strings are not recorded. Retention is configurable per vault.
 
@@ -71,13 +71,13 @@ sudo mv agent-vault /usr/local/bin/
 agent-vault server -d
 ```
 
-The server starts the HTTP API on port `14321` and a TLS-encrypted transparent HTTPS proxy on port `14322`. A web UI is available at `http://localhost:14321`.
+The server starts the HTTP API on port `14321` and a TLS-encrypted transparent HTTP/HTTPS proxy on port `14322` — the same listener handles `CONNECT` for `https://` upstreams and absolute-form forward-proxy requests for `http://` upstreams. A web UI is available at `http://localhost:14321`.
 
 ## Quickstart
 
 ### CLI — local agents (Claude Code, Cursor, Codex, OpenClaw, Hermes, OpenCode)
 
-Wrap any local agent process with `agent-vault run` (long form: `agent-vault vault run`). Agent Vault creates a scoped session, sets `HTTPS_PROXY` and CA-trust env vars, and launches the agent — all HTTPS traffic is transparently proxied and authenticated:
+Wrap any local agent process with `agent-vault run` (long form: `agent-vault vault run`). Agent Vault creates a scoped session, sets `HTTPS_PROXY`/`HTTP_PROXY` and CA-trust env vars, and launches the agent — all HTTP and HTTPS traffic is transparently proxied and authenticated:
 
 ```bash
 agent-vault run -- claude
@@ -88,15 +88,19 @@ agent-vault vault run -- opencode
 
 The agent calls APIs normally (e.g. `fetch("https://api.github.com/...")`). Agent Vault intercepts the request, injects the credential, and forwards it upstream. The agent never sees secrets.
 
-For **non-cooperative** sandboxing — where the child physically cannot reach anything except the Agent Vault proxy, regardless of what it tries — launch it in a Docker container with egress locked down by iptables:
+For **non-cooperative** isolation — where the child physically cannot reach anything except the Agent Vault proxy, regardless of what it tries — launch it in a Docker container with egress locked down by iptables:
 
 ```bash
-agent-vault run --sandbox=container --share-agent-dir -- claude
+agent-vault run --isolation=container --share-agent-dir -- claude
 ```
 
-`--share-agent-dir` bind-mounts your host's `~/.claude` into the container so the sandboxed agent reuses your existing login. Currently Claude-only; support for other agents is coming soon.
+`--share-agent-dir` bind-mounts your host's `~/.claude` into the container so the agent reuses your existing login. Currently Claude-only; support for other agents is coming soon.
 
-See [Container sandbox](https://docs.agent-vault.dev/guides/container-sandbox) for the threat model and flags.
+See [Container isolation](https://docs.agent-vault.dev/guides/container-isolation) for the threat model and flags.
+
+For **unattended / containerized deployments** (k8s, Fly, ECS — no human to `auth login`), set `AGENT_VAULT_TOKEN`, `AGENT_VAULT_ADDR`, and `AGENT_VAULT_VAULT` on the agent's env and `agent-vault run` will use the supplied token directly instead of minting a new one. See [Deploy your agent in a container](https://docs.agent-vault.dev/guides/deploy-agent-container).
+
+To mint, list, and revoke vault-scoped tokens without wrapping a child process, use either `agent-vault vault token` or the **Tokens** tab inside each vault in the web UI.
 
 ### SDK — sandboxed agents (Docker, Daytona, E2B)
 
@@ -120,9 +124,9 @@ const session = await av
 // certPath is where you'll mount the CA certificate inside the sandbox.
 const certPath = "/etc/ssl/agent-vault-ca.pem";
 
-// env: { HTTPS_PROXY, NO_PROXY, NODE_USE_ENV_PROXY, SSL_CERT_FILE,
-//         NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE,
-//         GIT_SSL_CAINFO, DENO_CERT }
+// env: { HTTPS_PROXY, HTTP_PROXY, NO_PROXY, NODE_USE_ENV_PROXY,
+//         SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE,
+//         CURL_CA_BUNDLE, GIT_SSL_CAINFO, DENO_CERT }
 const env = buildProxyEnv(session.containerConfig!, certPath);
 const caCert = session.containerConfig!.caCertificate;
 

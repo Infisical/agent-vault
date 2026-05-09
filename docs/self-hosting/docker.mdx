@@ -21,7 +21,7 @@ The final image runs as non-root user `agentvault` (UID 65532) and includes a bu
 
 ## Configuration
 
-Expose both the HTTP API (`14321`) and the transparent HTTPS proxy (`14322`) so agents' `HTTPS_PROXY` can reach the broker. Pass the master password via environment variable to wrap the data encryption key (DEK):
+Expose both the HTTP API (`14321`) and the transparent HTTP/HTTPS proxy (`14322`) so agents' `HTTPS_PROXY`/`HTTP_PROXY` can reach the broker. Pass the master password via environment variable to wrap the data encryption key (DEK):
 
 ```bash
 docker run -it -p 14321:14321 -p 14322:14322 \
@@ -52,7 +52,7 @@ See [transparent proxy setup](/self-hosting/local#transparent-proxy) for install
 </Warning>
 
 <Tip>
-  Agent Vault supports additional configuration for SMTP email notifications, Google OAuth, domain restrictions, and more. See [Environment variables](/self-hosting/environment-variables) for the full reference.
+  Agent Vault supports additional configuration for SMTP email notifications, domain restrictions, and more. See [Environment variables](/self-hosting/environment-variables) for the full reference.
 </Tip>
 
 ## Docker Compose

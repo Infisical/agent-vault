@@ -28,8 +28,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 40 {
-		t.Fatalf("expected migration version 40, got %d", version)
+	if version != 45 {
+		t.Fatalf("expected migration version 45, got %d", version)
 	}
 }
 
@@ -338,7 +338,11 @@ func TestScopedSessionCRUD(t *testing.T) {
 
 	expires := time.Now().Add(1 * time.Hour).UTC().Truncate(time.Second)
 
-	sess, err := s.CreateScopedSession(ctx, ns.ID, "proxy", &expires)
+	sess, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:   ns.ID,
+		VaultRole: "proxy",
+		ExpiresAt: &expires,
+	})
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -358,6 +362,223 @@ func TestScopedSessionCRUD(t *testing.T) {
 	}
 	if got.ExpiresAt == nil || !got.ExpiresAt.Equal(expires) {
 		t.Fatalf("expected ExpiresAt %v, got %v", expires, got.ExpiresAt)
+	}
+}
+
+func TestDeleteUserCascadesScopedTokensMintedByUser(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	ns, _ := s.GetVault(ctx, "default")
+	u, err := s.CreateUser(ctx, "minter@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	keeper, err := s.CreateUser(ctx, "keeper@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	if err != nil {
+		t.Fatalf("CreateUser keeper: %v", err)
+	}
+
+	// Token minted by `u`.
+	mintedByU, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:            ns.ID,
+		VaultRole:          "proxy",
+		ExpiresAt:          tp(time.Now().Add(time.Hour)),
+		CreatedByActorID:   u.ID,
+		CreatedByActorType: "user",
+	})
+	if err != nil {
+		t.Fatalf("CreateScopedSession u: %v", err)
+	}
+	// Token minted by `keeper` — must survive `u`'s deletion.
+	mintedByKeeper, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:            ns.ID,
+		VaultRole:          "proxy",
+		ExpiresAt:          tp(time.Now().Add(time.Hour)),
+		CreatedByActorID:   keeper.ID,
+		CreatedByActorType: "user",
+	})
+	if err != nil {
+		t.Fatalf("CreateScopedSession keeper: %v", err)
+	}
+
+	if err := s.DeleteUser(ctx, u.ID); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+
+	if got, _ := s.GetSession(ctx, mintedByU.ID); got != nil {
+		t.Fatal("expected u's minted token to be cascaded away")
+	}
+	if got, err := s.GetSession(ctx, mintedByKeeper.ID); err != nil || got == nil {
+		t.Fatalf("expected keeper's token to survive: got=%v err=%v", got, err)
+	}
+}
+
+func TestRevokeAgentCascadesScopedTokensMintedByAgent(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	ns, _ := s.GetVault(ctx, "default")
+	agent, err := s.CreateAgent(ctx, "minter-agent", "system", "member")
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+
+	// Agent's own auth token (agent_id = agent.ID).
+	agentToken, err := s.CreateAgentToken(ctx, agent.ID, tp(time.Now().Add(time.Hour)))
+	if err != nil {
+		t.Fatalf("CreateAgentToken: %v", err)
+	}
+	// Scoped token the agent minted on behalf of itself for a child process.
+	mintedByAgent, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:            ns.ID,
+		VaultRole:          "proxy",
+		ExpiresAt:          tp(time.Now().Add(time.Hour)),
+		CreatedByActorID:   agent.ID,
+		CreatedByActorType: "agent",
+	})
+	if err != nil {
+		t.Fatalf("CreateScopedSession: %v", err)
+	}
+
+	if err := s.RevokeAgent(ctx, agent.ID); err != nil {
+		t.Fatalf("RevokeAgent: %v", err)
+	}
+
+	if got, _ := s.GetSession(ctx, agentToken.ID); got != nil {
+		t.Fatal("expected agent token to be cascaded away")
+	}
+	if got, _ := s.GetSession(ctx, mintedByAgent.ID); got != nil {
+		t.Fatal("expected scoped token minted by agent to be cascaded away")
+	}
+}
+
+func TestListAndRevokeScopedSessions(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	ns, err := s.GetVault(ctx, "default")
+	if err != nil {
+		t.Fatalf("GetVault: %v", err)
+	}
+
+	// Mint two scoped sessions in `default` and one in a second vault to
+	// confirm vault scoping in both list and revoke.
+	other, err := s.CreateVault(ctx, "other")
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+
+	first, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:            ns.ID,
+		VaultRole:          "proxy",
+		ExpiresAt:          tp(time.Now().Add(time.Hour)),
+		Label:              "ci-bot",
+		CreatedByActorID:   "user-1",
+		CreatedByActorType: "user",
+	})
+	if err != nil {
+		t.Fatalf("CreateScopedSession default#1: %v", err)
+	}
+	// Sleep 1s so the second row sorts strictly after the first by created_at
+	// (sqlite's datetime resolution is per-second).
+	time.Sleep(1100 * time.Millisecond)
+	second, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:   ns.ID,
+		VaultRole: "member",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+	})
+	if err != nil {
+		t.Fatalf("CreateScopedSession default#2: %v", err)
+	}
+	if _, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:   other.ID,
+		VaultRole: "proxy",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+	}); err != nil {
+		t.Fatalf("CreateScopedSession other: %v", err)
+	}
+
+	rows, err := s.ListScopedSessionsByVault(ctx, ns.ID)
+	if err != nil {
+		t.Fatalf("ListScopedSessionsByVault: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows scoped to default, got %d", len(rows))
+	}
+	if rows[0].PublicID != second.PublicID || rows[1].PublicID != first.PublicID {
+		t.Fatalf("expected newest-first ordering: %s,%s — got %s,%s",
+			second.PublicID, first.PublicID, rows[0].PublicID, rows[1].PublicID)
+	}
+	if rows[1].Label != "ci-bot" {
+		t.Fatalf("expected label 'ci-bot' on first row, got %q", rows[1].Label)
+	}
+	if rows[1].CreatedByActorID != "user-1" || rows[1].CreatedByActorType != "user" {
+		t.Fatalf("expected created_by user/user-1, got %s/%s",
+			rows[1].CreatedByActorType, rows[1].CreatedByActorID)
+	}
+
+	// Cross-vault revoke must fail (publicID belongs to default, not other).
+	if err := s.RevokeScopedSession(ctx, other.ID, first.PublicID); err != sql.ErrNoRows {
+		t.Fatalf("expected sql.ErrNoRows on cross-vault revoke, got %v", err)
+	}
+
+	// Same-vault revoke succeeds and removes the row from list.
+	if err := s.RevokeScopedSession(ctx, ns.ID, first.PublicID); err != nil {
+		t.Fatalf("RevokeScopedSession: %v", err)
+	}
+	rows, err = s.ListScopedSessionsByVault(ctx, ns.ID)
+	if err != nil {
+		t.Fatalf("ListScopedSessionsByVault after revoke: %v", err)
+	}
+	if len(rows) != 1 || rows[0].PublicID != second.PublicID {
+		t.Fatalf("expected only second row to remain, got %+v", rows)
+	}
+
+	// Re-revoke is a no-op (sql.ErrNoRows).
+	if err := s.RevokeScopedSession(ctx, ns.ID, first.PublicID); err != sql.ErrNoRows {
+		t.Fatalf("expected sql.ErrNoRows on second revoke, got %v", err)
+	}
+}
+
+func TestListScopedSessionsExcludesExpiredAndUserRows(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	ns, _ := s.GetVault(ctx, "default")
+
+	// Active scoped row → included.
+	active, _ := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:   ns.ID,
+		VaultRole: "proxy",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+	})
+
+	// Expired scoped row → excluded by the SQL filter.
+	if _, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:   ns.ID,
+		VaultRole: "proxy",
+		ExpiresAt: tp(time.Now().Add(-time.Hour)),
+	}); err != nil {
+		t.Fatalf("CreateScopedSession (expired): %v", err)
+	}
+
+	// User-login row that happens to carry the same vault_id (none today, but
+	// the list query must defend against future cross-pollution by filtering
+	// user_id IS NULL AND agent_id IS NULL).
+	u, _ := s.CreateUser(ctx, "scoped-list@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	if _, err := s.CreateUserSession(ctx, CreateUserSessionParams{
+		UserID: u.ID, ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateUserSession: %v", err)
+	}
+
+	rows, err := s.ListScopedSessionsByVault(ctx, ns.ID)
+	if err != nil {
+		t.Fatalf("ListScopedSessionsByVault: %v", err)
+	}
+	if len(rows) != 1 || rows[0].PublicID != active.PublicID {
+		t.Fatalf("expected only the active scoped row, got %+v", rows)
 	}
 }
 
@@ -1834,7 +2055,11 @@ func TestGetSessionBackwardCompat(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	sess, _ := s.CreateScopedSession(ctx, ns.ID, "proxy", tp(time.Now().Add(24*time.Hour)))
+	sess, _ := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:   ns.ID,
+		VaultRole: "proxy",
+		ExpiresAt: tp(time.Now().Add(24 * time.Hour)),
+	})
 
 	fetched, err := s.GetSession(ctx, sess.ID)
 	if err != nil {
@@ -2095,5 +2320,25 @@ func TestListRequestLogsTailOrdering(t *testing.T) {
 	}
 	if tail[0].ID != boundary+1 {
 		t.Fatalf("tail should start at id %d, got %d", boundary+1, tail[0].ID)
+	}
+}
+
+// TestNoAccessRoleAcceptedByMigration verifies migration 045 widened the
+// instance-role CHECK constraint on agents.role. A wire value of "no-access"
+// must persist; an invalid value must still be rejected.
+func TestNoAccessRoleAcceptedByMigration(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	agent, err := s.CreateAgent(ctx, "scoped-agent", "system", "no-access")
+	if err != nil {
+		t.Fatalf("CreateAgent with no-access role: %v", err)
+	}
+	if agent.Role != "no-access" {
+		t.Fatalf("expected role no-access, got %q", agent.Role)
+	}
+
+	if _, err := s.CreateAgent(ctx, "bad-agent", "system", "bogus-role"); err == nil {
+		t.Fatalf("expected CreateAgent with bogus role to fail CHECK constraint")
 	}
 }

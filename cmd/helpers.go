@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -491,14 +492,112 @@ func resolveVault(cmd *cobra.Command) string {
 	return store.DefaultVault
 }
 
-// resolveSession returns a client session from env vars (agent mode) or falls back to ensureSession (human mode).
-func resolveSession() (*session.ClientSession, error) {
-	token := os.Getenv("AGENT_VAULT_SESSION_TOKEN")
-	addr := os.Getenv("AGENT_VAULT_ADDR")
-	if token != "" && addr != "" {
-		return &session.ClientSession{Token: token, Address: strings.TrimRight(addr, "/")}, nil
+// envVarToken is the canonical env var name for an Agent Vault bearer token
+// (vault-scoped session or long-lived agent token). envVarTokenLegacy is the
+// pre-rename alias kept for backward compatibility; reads still honor it but
+// emit a one-time deprecation warning. Drop the legacy name in a future
+// major version.
+const (
+	envVarToken       = "AGENT_VAULT_TOKEN"
+	envVarTokenLegacy = "AGENT_VAULT_SESSION_TOKEN"
+
+	// discoverRespMaxBytes caps JSON parsing of the /discover response so
+	// a hostile or misbehaving server can't make `vault run` hang on a
+	// multi-GB body. 1 MiB comfortably covers a vault with thousands of
+	// services + credential keys.
+	discoverRespMaxBytes = 1 << 20
+)
+
+var legacyTokenWarnOnce sync.Once
+
+// resolveSession returns a client session from env vars (agent mode) or falls
+// back to ensureSession (human mode). When the session came from env, the
+// returned string names the env var the token was read from (envVarToken or
+// the deprecated envVarTokenLegacy); callers thread it through to downstream
+// error messages so users see the variable they actually set. "" when the
+// session came from ensureSession — callers treat that as "not from env" and
+// branch on `tokenSource != ""` instead of a separate bool.
+//
+// If a token is set but AGENT_VAULT_ADDR is missing, returns a clear error
+// rather than silently falling through to interactive login — masking that
+// misconfig produces "why don't my creds work" tickets.
+func resolveSession() (*session.ClientSession, string, error) {
+	tokenSource := envVarToken
+	token := os.Getenv(envVarToken)
+	if token == "" {
+		if legacy := os.Getenv(envVarTokenLegacy); legacy != "" {
+			legacyTokenWarnOnce.Do(func() {
+				fmt.Fprintf(os.Stderr, "%s %s is deprecated; use %s instead.\n",
+					mutedText("agent-vault:"), envVarTokenLegacy, envVarToken)
+			})
+			token = legacy
+			tokenSource = envVarTokenLegacy
+		}
 	}
-	return ensureSession()
+	addr := os.Getenv("AGENT_VAULT_ADDR")
+	if token != "" && addr == "" {
+		return nil, "", fmt.Errorf("%s is set but AGENT_VAULT_ADDR is empty — both are required for agent mode", tokenSource)
+	}
+	if token != "" {
+		return &session.ClientSession{Token: token, Address: strings.TrimRight(addr, "/")}, tokenSource, nil
+	}
+	sess, err := ensureSession()
+	return sess, "", err
+}
+
+// validateEnvToken probes /discover with the env-supplied token before
+// `vault run` execs the child, so a bad/expired token fails fast at startup
+// instead of producing 401s on every proxied call. /discover is the same
+// auth path the proxy will use a moment later, so success here means the
+// token works end-to-end.
+//
+// Also catches a quiet footgun: if a vault-scoped session token is supplied
+// but AGENT_VAULT_VAULT names a different vault, the broker silently uses
+// the session's baked-in vault and ignores X-Vault. The discover response
+// echoes the actual vault, so we compare and reject the mismatch — otherwise
+// the child would see a misleading AGENT_VAULT_VAULT in its environment.
+func validateEnvToken(addr, token, vault, tokenSource string) error {
+	if tokenSource == "" {
+		tokenSource = envVarToken
+	}
+	url := strings.TrimRight(addr, "/") + "/discover"
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("validate token: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if vault != "" {
+		req.Header.Set("X-Vault", vault)
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("validate token: contacting %s: %w", addr, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("agent token rejected by broker (HTTP %d) — verify %s is current and has access to vault %q", resp.StatusCode, tokenSource, vault)
+	}
+	if resp.StatusCode/100 != 2 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("validate token: server returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var dr struct {
+		Vault string `json:"vault"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, discoverRespMaxBytes)).Decode(&dr); err != nil {
+		return fmt.Errorf("validate token: parsing /discover response: %w", err)
+	}
+	// Drain trailing bytes so net/http can pool the connection (Decode
+	// stops at the first JSON value's closing brace).
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if vault != "" && dr.Vault != "" && dr.Vault != vault {
+		// resolveVaultForAgentMode prioritizes --vault over AGENT_VAULT_VAULT,
+		// so name both surfaces in the remediation rather than hardcoding the
+		// env var (which may not even be set if the user passed --vault).
+		return fmt.Errorf("vault mismatch: requested vault %q does not match the supplied token's vault %q — set AGENT_VAULT_VAULT (or --vault) to %q, or use a token for %q",
+			vault, dr.Vault, dr.Vault, vault)
+	}
+	return nil
 }
 
 // resolveAddress determines the server address from flags, env vars, or session.
@@ -539,6 +638,16 @@ func fetchAndDecode[T any](method, path string) (*T, error) {
 
 // doAdminRequestWithBody makes an authenticated HTTP request to the server and returns the response body.
 func doAdminRequestWithBody(method, url, token string, body []byte) ([]byte, error) {
+	return doVaultScopedRequestWithBody(method, url, token, "", body)
+}
+
+// doVaultScopedRequestWithBody is like doAdminRequestWithBody but also sends
+// X-Vault: vault. Required for vault-scoped endpoints (/discover, /v1/proposals)
+// when the token may be an instance-level agent token — the broker returns
+// HTTP 400 ("Agent tokens require X-Vault header") without it. Vault-scoped
+// session tokens carry their vault on the session row, so the header is
+// ignored in that case; passing it unconditionally is safe.
+func doVaultScopedRequestWithBody(method, url, token, vault string, body []byte) ([]byte, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		bodyReader = bytes.NewReader(body)
@@ -549,6 +658,9 @@ func doAdminRequestWithBody(method, url, token string, body []byte) ([]byte, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	if vault != "" {
+		req.Header.Set("X-Vault", vault)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -619,4 +731,14 @@ func stopServer() error {
 	}
 
 	return fmt.Errorf("server process %d did not exit within 10 seconds; you may need to kill it manually", pid)
+}
+
+const instanceRoleHelp = "owner, member, or no-access"
+
+func validInstanceRole(s string) bool {
+	switch s {
+	case "owner", "member", "no-access":
+		return true
+	}
+	return false
 }

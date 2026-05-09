@@ -82,6 +82,14 @@ type Session struct {
 	DeviceLabel   string        // user-visible label, e.g. hostname
 	LastIP        string
 	LastUserAgent string
+
+	// Scoped-session metadata (populated only for vault-scoped tokens; left
+	// empty on user login sessions and agent tokens). Label is a
+	// user-supplied tag shown in the Tokens UI; CreatedByActorID/Type
+	// record the actor that minted the token.
+	Label              string
+	CreatedByActorID   string
+	CreatedByActorType string
 }
 
 // IsExpired reports whether the session is past its absolute expiry or its
@@ -98,8 +106,8 @@ func (s *Session) IsExpired(now time.Time) bool {
 }
 
 // CreateUserSessionParams carries all the fields persisted on a fresh
-// user-login session. Captured as a struct so login, OAuth callback, and
-// password-change call sites stay aligned without positional drift.
+// user-login session. Captured as a struct so login and password-change
+// call sites stay aligned without positional drift.
 type CreateUserSessionParams struct {
 	UserID        string
 	ExpiresAt     time.Time
@@ -107,6 +115,18 @@ type CreateUserSessionParams struct {
 	DeviceLabel   string
 	LastIP        string
 	LastUserAgent string
+}
+
+// CreateScopedSessionParams carries the fields persisted on a vault-scoped
+// session token. ExpiresAt is optional (nil = never expires); Label and
+// the CreatedBy fields are optional metadata for the Tokens UI.
+type CreateScopedSessionParams struct {
+	VaultID            string
+	VaultRole          string
+	ExpiresAt          *time.Time
+	Label              string
+	CreatedByActorID   string
+	CreatedByActorType string // "user" or "agent"
 }
 
 // User represents a human user account.
@@ -118,7 +138,7 @@ type User struct {
 	KDFTime      uint32 // Argon2id time parameter used when password was hashed
 	KDFMemory    uint32 // Argon2id memory parameter (KiB) used when password was hashed
 	KDFThreads   uint8  // Argon2id threads parameter used when password was hashed
-	Role         string // "owner" or "member"
+	Role         string // "owner", "member", or "no-access"
 	IsActive     bool   // false until email is verified (first user is auto-active)
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
@@ -198,7 +218,7 @@ type Invite struct {
 	Token             string
 	AgentName         string             // required: agent name (3-64 chars, lowercase alphanumeric + hyphens)
 	AgentID           string             // set for rotation invites (references existing agent)
-	AgentRole         string             // "owner" or "member" — instance role for the agent
+	AgentRole         string             // "owner", "member", or "no-access" — instance role for the agent
 	SessionTTLSeconds int                // desired session lifetime when redeemed (0 = no expiry)
 	Status            string             // pending, redeemed, expired, revoked
 	SessionID         string             // populated after redemption
@@ -222,7 +242,7 @@ type AgentInviteVault struct {
 type Agent struct {
 	ID        string
 	Name      string
-	Role      string // "owner" or "member" (instance-level role, like users)
+	Role      string // "owner", "member", or "no-access" (instance-level role, like users)
 	Status    string // "active" or "revoked"
 	CreatedBy string // user ID of the creator
 	Vaults    []VaultGrant
@@ -237,7 +257,7 @@ type UserInvite struct {
 	ID         int
 	Token      string // only populated on creation (not stored in DB)
 	Email      string
-	Role       string // "owner" or "member" — instance role for the invited user
+	Role       string // "owner", "member", or "no-access" — instance role for the invited user
 	Status     string // pending, accepted, expired, revoked
 	CreatedBy  string // user ID of the inviter
 	CreatedAt  time.Time
@@ -271,32 +291,6 @@ type PasswordReset struct {
 	Status    string // "pending", "used", "expired"
 	CreatedAt time.Time
 	ExpiresAt time.Time
-}
-
-// OAuthAccount links a user to an external OAuth provider identity.
-type OAuthAccount struct {
-	ID             string
-	UserID         string
-	Provider       string // "google", "github", etc.
-	ProviderUserID string // unique ID from provider (e.g. "sub" claim)
-	Email          string // email from provider (for display)
-	Name           string
-	AvatarURL      string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-}
-
-// OAuthState holds CSRF state and PKCE verifier for an in-progress OAuth flow.
-type OAuthState struct {
-	ID           string
-	StateHash    string // SHA-256 of the state parameter
-	CodeVerifier string // PKCE code_verifier
-	Nonce        string // OIDC nonce for ID token binding
-	RedirectURL  string // where to redirect after auth
-	Mode         string // "login" or "connect"
-	UserID       string // set when mode is "connect" (authenticated linking)
-	CreatedAt    time.Time
-	ExpiresAt    time.Time
 }
 
 // Store is the persistence interface for Agent Vault.
@@ -346,9 +340,15 @@ type Store interface {
 
 	// Sessions
 	CreateUserSession(ctx context.Context, p CreateUserSessionParams) (*Session, error)
-	CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*Session, error)
+	CreateScopedSession(ctx context.Context, p CreateScopedSessionParams) (*Session, error)
 	GetSession(ctx context.Context, id string) (*Session, error)
 	DeleteSession(ctx context.Context, id string) error
+	// ListScopedSessionsByVault returns active vault-scoped tokens for the
+	// vault, most recent first. Used by the Tokens tab.
+	ListScopedSessionsByVault(ctx context.Context, vaultID string) ([]Session, error)
+	// RevokeScopedSession deletes one scoped session by (vaultID, publicID).
+	// Vault scoping prevents cross-vault revocation.
+	RevokeScopedSession(ctx context.Context, vaultID, publicID string) error
 	// TouchSession bumps last_used_at for the given raw token and
 	// refreshes last_ip + last_user_agent (empty values leave the
 	// existing column unchanged). Throttled internally so per-request
@@ -425,24 +425,6 @@ type Store interface {
 	CountPendingPasswordResets(ctx context.Context, email string) (int, error)
 	ExpirePendingPasswordResets(ctx context.Context, before time.Time) (int, error)
 
-	// OAuth accounts
-	CreateOAuthAccount(ctx context.Context, userID, provider, providerUserID, email, name, avatarURL string) (*OAuthAccount, error)
-	GetOAuthAccount(ctx context.Context, provider, providerUserID string) (*OAuthAccount, error)
-	GetOAuthAccountByUser(ctx context.Context, userID, provider string) (*OAuthAccount, error)
-	ListUserOAuthAccounts(ctx context.Context, userID string) ([]OAuthAccount, error)
-	DeleteOAuthAccount(ctx context.Context, userID, provider string) error
-
-	// OAuth state (CSRF + PKCE)
-	CreateOAuthState(ctx context.Context, stateHash, codeVerifier, nonce, redirectURL, mode, userID string, expiresAt time.Time) (*OAuthState, error)
-	GetOAuthStateByHash(ctx context.Context, stateHash string) (*OAuthState, error)
-	DeleteOAuthState(ctx context.Context, id string) error
-	ExpireOAuthStates(ctx context.Context, before time.Time) (int, error)
-
-	// User creation without password (for OAuth registration)
-	CreateOAuthUser(ctx context.Context, email, role string) (*User, error)
-	// CreateOAuthUserAndAccount atomically creates a passwordless user and links an OAuth identity.
-	CreateOAuthUserAndAccount(ctx context.Context, email, role, provider, providerUserID, oauthEmail, name, avatarURL string) (*User, *OAuthAccount, error)
-
 	// Agents
 	CreateAgent(ctx context.Context, name, createdBy, role string) (*Agent, error)
 	GetAgentByID(ctx context.Context, id string) (*Agent, error)
@@ -462,6 +444,11 @@ type Store interface {
 	GetSetting(ctx context.Context, key string) (string, error)
 	SetSetting(ctx context.Context, key, value string) error
 	GetAllSettings(ctx context.Context) (map[string]string, error)
+
+	// Vault settings (per-vault key/value)
+	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
+	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
+	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
 
 	// Request logs
 	InsertRequestLogs(ctx context.Context, rows []RequestLog) error

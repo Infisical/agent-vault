@@ -1,11 +1,14 @@
 package server
 
 import (
-	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Infisical/agent-vault/internal/store"
 )
@@ -14,13 +17,55 @@ type scopedSessionRequest struct {
 	Vault      string `json:"vault"`
 	VaultRole  string `json:"vault_role"`
 	TTLSeconds *int   `json:"ttl_seconds,omitempty"`
+	Label      string `json:"label,omitempty"`
 }
 
 type scopedSessionResponse struct {
-	Token    string `json:"token"`
+	Token     string `json:"token"`
 	ExpiresAt string `json:"expires_at"`
-	AVAddr   string `json:"av_addr,omitempty"`
-	ProxyURL string `json:"proxy_url,omitempty"`
+	AVAddr    string `json:"av_addr,omitempty"`
+}
+
+// scopedSessionView is the JSON projection returned by GET /v1/sessions.
+// The raw token is intentionally absent — it is shown only at creation
+// time and never re-readable. Rows are referenced by `id` (the public_id).
+type scopedSessionView struct {
+	ID        string                  `json:"id"`
+	Label     string                  `json:"label,omitempty"`
+	VaultRole string                  `json:"vault_role"`
+	CreatedBy *scopedSessionActorView `json:"created_by,omitempty"`
+	CreatedAt string                  `json:"created_at"`
+	ExpiresAt string                  `json:"expires_at,omitempty"`
+}
+
+type scopedSessionActorView struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	DisplayName string `json:"display_name"`
+}
+
+// maxScopedSessionLabel caps the label length stored on a scoped session.
+// Labels are user-supplied free-form text shown in the Tokens UI, so we
+// keep them short to avoid table layout issues.
+const maxScopedSessionLabel = 100
+
+// sanitizeScopedSessionLabel trims surrounding whitespace and strips
+// ASCII control characters. Mirrors truncateDeviceLabel's policy for
+// user-session device labels, except it does not silently truncate —
+// the caller checks rune count and rejects with 400.
+func sanitizeScopedSessionLabel(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return ""
+	}
+	cleaned := make([]rune, 0, len(label))
+	for _, r := range label {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		cleaned = append(cleaned, r)
+	}
+	return string(cleaned)
 }
 
 func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
@@ -30,9 +75,12 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate role if provided.
-	if req.VaultRole != "" && req.VaultRole != "proxy" && req.VaultRole != "member" && req.VaultRole != "admin" {
-		jsonError(w, http.StatusBadRequest, "vault_role must be one of: proxy, member, admin")
+	// Tokens are minted with role `proxy` only; minting at member/admin
+	// is intentionally not exposed via this endpoint right now. The
+	// member+ floor on the caller is enforced by requireVaultMember
+	// below for users/agents and scoped sessions alike.
+	if req.VaultRole != "" && req.VaultRole != "proxy" {
+		jsonError(w, http.StatusBadRequest, "vault_role must be 'proxy'")
 		return
 	}
 
@@ -48,6 +96,19 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Trim and strip control chars before length-checking. Control chars
+	// (\n, \t, etc.) would break the Tokens table layout — the same
+	// concern truncateDeviceLabel addresses for user-session device
+	// labels. Length is measured in runes, not bytes, so a CJK or emoji
+	// label that fits the frontend's maxLength={100} also passes here.
+	req.Label = sanitizeScopedSessionLabel(req.Label)
+	if utf8.RuneCountInString(req.Label) > maxScopedSessionLabel {
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf(
+			"label must be at most %d characters", maxScopedSessionLabel,
+		))
+		return
+	}
+
 	ctx := r.Context()
 
 	ns, err := s.store.GetVault(ctx, req.Vault)
@@ -56,22 +117,19 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check that the caller has access to this vault.
-	if _, err := s.requireVaultAccess(w, r, ns.ID); err != nil {
+	// Caller must be at least a vault `member`. A `proxy`-role caller
+	// (user, agent, or scoped session) can ONLY proxy requests through
+	// Agent Vault — they cannot mint new tokens, even at proxy role.
+	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
 		return
-	}
-
-	// Default to "proxy" if no role specified; cap to caller's own role.
-	requestedRole := req.VaultRole
-	if requestedRole == "" {
-		requestedRole = "proxy"
 	}
 	parentSess := sessionFromContext(ctx)
-	cappedRole, errMsg := s.capRequestedRole(ctx, parentSess, ns.ID, requestedRole)
-	if errMsg != "" {
-		jsonError(w, http.StatusForbidden, errMsg)
-		return
-	}
+
+	// vault_role is locked to "proxy" by the validator above, and any
+	// member+ caller trivially satisfies that, so no role-cap check is
+	// needed here. If non-proxy minting is ever re-enabled, restore
+	// capRequestedRole (or equivalent) to gate role escalation.
+	cappedRole := "proxy"
 
 	// Compute expiry: use ttl_seconds if provided, otherwise default 24h.
 	var expiresAt *time.Time
@@ -83,7 +141,24 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 		expiresAt = &t
 	}
 
-	sess, err := s.store.CreateScopedSession(ctx, ns.ID, cappedRole, expiresAt)
+	// Resolve the calling actor so the Tokens UI can show "minted by X".
+	// A nil actor here means the caller is itself a vault-scoped session
+	// (e.g. an agent token or a previously-minted scoped token); we leave
+	// the created_by fields blank in that case rather than failing the mint.
+	var createdByID, createdByType string
+	if actor, err := s.actorFromSession(ctx, parentSess); err == nil && actor != nil {
+		createdByID = actor.ID
+		createdByType = actor.Type
+	}
+
+	sess, err := s.store.CreateScopedSession(ctx, store.CreateScopedSessionParams{
+		VaultID:            ns.ID,
+		VaultRole:          cappedRole,
+		ExpiresAt:          expiresAt,
+		Label:              req.Label,
+		CreatedByActorID:   createdByID,
+		CreatedByActorType: createdByType,
+	})
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create scoped session")
 		return
@@ -93,45 +168,107 @@ func (s *Server) handleScopedSession(w http.ResponseWriter, r *http.Request) {
 		Token:     sess.ID,
 		ExpiresAt: formatExpiresAt(sess.ExpiresAt),
 		AVAddr:    s.baseURL,
-		ProxyURL:  s.baseURL + "/proxy",
 	})
 }
 
-// capRequestedRole enforces role-capping rules: the requested role cannot
-// exceed the caller's own vault role. Proxy-role agents cannot mint sessions at all.
-// Returns the validated role, or an error string if the caller lacks permission.
-func (s *Server) capRequestedRole(ctx context.Context, sess *store.Session, vaultID, requestedRole string) (string, string) {
-	if requestedRole == "" {
-		requestedRole = "proxy"
+// handleListScopedSessions returns the active vault-scoped tokens for a
+// vault, sorted most recent first. Requires vault `member` or higher: the
+// list view exposes the email/name of whoever minted each token via
+// created_by.display_name, which is more identifying than what a
+// proxy-only caller should see.
+// The raw token is never returned — rows are referenced by public_id.
+func (s *Server) handleListScopedSessions(w http.ResponseWriter, r *http.Request) {
+	vaultName := r.URL.Query().Get("vault")
+	if vaultName == "" {
+		jsonError(w, http.StatusBadRequest, "vault is required")
+		return
 	}
 
-	var callerRole string
-
-	if sess.VaultID != "" {
-		// Scoped session (agent or temp invite).
-		if sess.VaultID != vaultID {
-			return "", "Session not authorized for this vault"
-		}
-		if !roleSatisfies(sess.VaultRole, "member") {
-			return "", "Member role required"
-		}
-		callerRole = sess.VaultRole
-	} else {
-		// Instance-level session: resolve actor and check vault access.
-		actor, err := s.actorFromSession(ctx, sess)
-		if err != nil || actor == nil {
-			return "", "Invalid session"
-		}
-		role, err2 := s.store.GetVaultRole(ctx, actor.ID, vaultID)
-		if err2 != nil {
-			return "", "No access to this vault"
-		}
-		callerRole = role
+	ctx := r.Context()
+	ns, err := s.store.GetVault(ctx, vaultName)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
+		return
 	}
 
-	if !roleSatisfies(callerRole, requestedRole) {
-		return "", fmt.Sprintf("Your vault role (%s) cannot mint sessions with role %s", callerRole, requestedRole)
+	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
+		return
 	}
-	return requestedRole, ""
+
+	rows, err := s.store.ListScopedSessionsByVault(ctx, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to list scoped sessions")
+		return
+	}
+
+	displayNames := make(map[string]string, len(rows))
+	out := make([]scopedSessionView, 0, len(rows))
+	for _, sess := range rows {
+		view := scopedSessionView{
+			ID:        sess.PublicID,
+			Label:     sess.Label,
+			VaultRole: sess.VaultRole,
+			CreatedAt: formatExpiresAt(&sess.CreatedAt),
+			ExpiresAt: formatExpiresAt(sess.ExpiresAt),
+		}
+		if sess.CreatedByActorID != "" && sess.CreatedByActorType != "" {
+			cacheKey := sess.CreatedByActorType + ":" + sess.CreatedByActorID
+			displayName, ok := displayNames[cacheKey]
+			if !ok {
+				if actor, err := s.actorByID(ctx, sess.CreatedByActorID, sess.CreatedByActorType); err == nil {
+					displayName = actor.DisplayLabel()
+				} else {
+					displayName = sess.CreatedByActorID
+				}
+				displayNames[cacheKey] = displayName
+			}
+			view.CreatedBy = &scopedSessionActorView{
+				ID:          sess.CreatedByActorID,
+				Type:        sess.CreatedByActorType,
+				DisplayName: displayName,
+			}
+		}
+		out = append(out, view)
+	}
+	jsonOK(w, map[string]interface{}{"sessions": out})
 }
 
+// handleRevokeScopedSession deletes one vault-scoped token by its
+// public_id. The caller must be at least a vault `member` of the row's
+// vault — proxy-only sessions cannot revoke. Cross-vault revocation is
+// blocked at the store level via the vault_id filter.
+func (s *Server) handleRevokeScopedSession(w http.ResponseWriter, r *http.Request) {
+	publicID := r.PathValue("id")
+	if publicID == "" {
+		jsonError(w, http.StatusBadRequest, "Session id is required")
+		return
+	}
+
+	vaultName := r.URL.Query().Get("vault")
+	if vaultName == "" {
+		jsonError(w, http.StatusBadRequest, "vault is required")
+		return
+	}
+
+	ctx := r.Context()
+	ns, err := s.store.GetVault(ctx, vaultName)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
+		return
+	}
+
+	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
+		return
+	}
+
+	err = s.store.RevokeScopedSession(ctx, ns.ID, publicID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			jsonError(w, http.StatusNotFound, "Session not found")
+			return
+		}
+		jsonError(w, http.StatusInternalServerError, "Failed to revoke scoped session")
+		return
+	}
+	jsonOK(w, map[string]string{"status": "revoked"})
+}

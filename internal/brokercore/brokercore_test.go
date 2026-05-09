@@ -111,8 +111,9 @@ func TestApplyInjection_StripsBrokerScoped(t *testing.T) {
 }
 
 func TestApplyInjection_StripsExtraStrip(t *testing.T) {
-	// extraStrip lets an ingress drop the header that carries its
-	// session token so it never reaches the upstream.
+	// extraStrip lets a caller drop additional headers (beyond the
+	// injection set and broker-scoped names) so they never reach the
+	// upstream.
 	src := http.Header{}
 	src.Set("Authorization", "Bearer session-token")
 	src.Set("X-Trace-Id", "trace-123")
@@ -301,7 +302,7 @@ func TestForbiddenHintBody(t *testing.T) {
 		t.Fatalf("help missing skills URL: %s", help)
 	}
 
-	// Must be JSON-serializable (used by both ingresses as response body).
+	// Must be JSON-serializable (used as the MITM ingress response body).
 	if _, err := json.Marshal(body); err != nil {
 		t.Fatalf("marshal: %v", err)
 	}

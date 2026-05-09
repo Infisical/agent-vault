@@ -14,9 +14,11 @@ import (
 
 // fakeCredStore satisfies CredentialStore for tests.
 type fakeCredStore struct {
-	brokerCfg map[string]*store.BrokerConfig // vaultID → config
-	creds     map[string]*store.Credential   // key = vaultID+"|"+key
-	missKey   string                         // if set, GetCredential for this key returns nil/err
+	brokerCfg     map[string]*store.BrokerConfig // vaultID → config
+	creds         map[string]*store.Credential   // key = vaultID+"|"+key
+	missKey       string                         // if set, GetCredential for this key returns nil/err
+	policy        UnmatchedHostPolicy            // unmatched-host policy returned by UnmatchedHostPolicy
+	brokerCfgErr  error                          // if non-nil, GetBrokerConfig returns this error
 
 	getCredentialCalls int // call count — used by passthrough tests to assert no lookup
 }
@@ -25,13 +27,17 @@ func newFakeCredStore() *fakeCredStore {
 	return &fakeCredStore{
 		brokerCfg: map[string]*store.BrokerConfig{},
 		creds:     map[string]*store.Credential{},
+		policy:    PolicyPassthrough,
 	}
 }
 
 func (f *fakeCredStore) GetBrokerConfig(_ context.Context, vaultID string) (*store.BrokerConfig, error) {
+	if f.brokerCfgErr != nil {
+		return nil, f.brokerCfgErr
+	}
 	c, ok := f.brokerCfg[vaultID]
 	if !ok {
-		return nil, errors.New("not found")
+		return nil, nil
 	}
 	return c, nil
 }
@@ -45,6 +51,13 @@ func (f *fakeCredStore) GetCredential(_ context.Context, vaultID, key string) (*
 		return nil, errors.New("not found")
 	}
 	return c, nil
+}
+
+func (f *fakeCredStore) UnmatchedHostPolicy(_ context.Context, _ string) (UnmatchedHostPolicy, error) {
+	if f.policy == "" {
+		return PolicyPassthrough, nil
+	}
+	return f.policy, nil
 }
 
 // make32 returns a deterministic 32-byte key for tests.
@@ -199,16 +212,29 @@ func TestInject_WildcardMatch(t *testing.T) {
 	}
 }
 
-func TestInject_ServiceNotFound_NoConfig(t *testing.T) {
+func TestInject_UnmatchedHost_DefaultPassthrough(t *testing.T) {
+	// With the default unmatched-host policy (passthrough), a host with
+	// no matching service forwards without injection.
 	f := newFakeCredStore()
 	p := NewStoreCredentialProvider(f, make32(0x77))
-	_, err := p.Inject(context.Background(), "v1", "api.example.com")
-	if !errors.Is(err, ErrServiceNotFound) {
-		t.Fatalf("expected ErrServiceNotFound, got %v", err)
+	res, err := p.Inject(context.Background(), "v1", "api.example.com")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res == nil || !res.Passthrough {
+		t.Fatalf("expected passthrough result, got %+v", res)
+	}
+	if len(res.Headers) != 0 {
+		t.Fatalf("expected no injected headers, got %v", res.Headers)
+	}
+	if res.MatchedHost != "" {
+		t.Fatalf("expected empty MatchedHost, got %q", res.MatchedHost)
 	}
 }
 
-func TestInject_ServiceNotFound_HostMiss(t *testing.T) {
+func TestInject_UnmatchedHost_HostMissPassthrough(t *testing.T) {
+	// Even with services configured, a host that matches none of them
+	// passes through under the default policy.
 	key32 := make32(0x88)
 	f := newFakeCredStore()
 	f.setServices(t, "v1", []broker.Service{{
@@ -218,9 +244,56 @@ func TestInject_ServiceNotFound_HostMiss(t *testing.T) {
 	f.setCred(t, key32, "v1", "T", "x")
 
 	p := NewStoreCredentialProvider(f, key32)
+	res, err := p.Inject(context.Background(), "v1", "other.example.com")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res == nil || !res.Passthrough {
+		t.Fatalf("expected passthrough result, got %+v", res)
+	}
+	if f.getCredentialCalls != 0 {
+		t.Fatalf("passthrough should not resolve credentials, got %d calls", f.getCredentialCalls)
+	}
+}
+
+func TestInject_UnmatchedHost_DenyPolicy(t *testing.T) {
+	f := newFakeCredStore()
+	f.policy = PolicyDeny
+	p := NewStoreCredentialProvider(f, make32(0x77))
+	_, err := p.Inject(context.Background(), "v1", "api.example.com")
+	if !errors.Is(err, ErrServiceNotFound) {
+		t.Fatalf("expected ErrServiceNotFound under deny policy, got %v", err)
+	}
+}
+
+func TestInject_UnmatchedHost_HostMissDeny(t *testing.T) {
+	key32 := make32(0x88)
+	f := newFakeCredStore()
+	f.policy = PolicyDeny
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "api.example.com",
+		Auth: broker.Auth{Type: "bearer", Token: "T"},
+	}})
+	f.setCred(t, key32, "v1", "T", "x")
+
+	p := NewStoreCredentialProvider(f, key32)
 	_, err := p.Inject(context.Background(), "v1", "other.example.com")
 	if !errors.Is(err, ErrServiceNotFound) {
-		t.Fatalf("expected ErrServiceNotFound, got %v", err)
+		t.Fatalf("expected ErrServiceNotFound under deny policy, got %v", err)
+	}
+}
+
+// Regression: a non-ErrNoRows GetBrokerConfig error must fail closed
+// (ErrServiceNotFound), not fall through to passthrough. Otherwise a
+// transient store failure silently strips credential injection from a
+// vault that has services configured.
+func TestInject_GetBrokerConfigError_FailsClosed(t *testing.T) {
+	f := newFakeCredStore()
+	f.brokerCfgErr = errors.New("transient sqlite I/O error")
+	p := NewStoreCredentialProvider(f, make32(0xAB))
+	_, err := p.Inject(context.Background(), "v1", "api.example.com")
+	if !errors.Is(err, ErrServiceNotFound) {
+		t.Fatalf("expected ErrServiceNotFound on store error, got %v", err)
 	}
 }
 

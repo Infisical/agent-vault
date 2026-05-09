@@ -24,6 +24,9 @@ var proposalCreateCmd = &cobra.Command{
 	Short: "Create a proposal to request services or credentials",
 	Long: `Create a proposal to request services or credentials for a vault.
 
+In agent mode (AGENT_VAULT_TOKEN set), AGENT_VAULT_VAULT (or --vault) is
+required — there is no project-file or interactive-picker fallback.
+
 Flag-driven mode (common cases):
 
   # Service + credential
@@ -41,7 +44,16 @@ JSON mode (complex/multi-service proposals):
   echo '{"services":[...],"credentials":[...]}' | agent-vault vault proposal create -f -`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		sess, err := resolveSession()
+		sess, tokenSource, err := resolveSession()
+		if err != nil {
+			return err
+		}
+
+		// Resolve the target vault. In agent mode, require an explicit
+		// --vault or AGENT_VAULT_VAULT — falling through to "default"
+		// would silently route the proposal at the wrong vault. Mirrors
+		// the agent-mode contract `vault run` already enforces.
+		vault, err := resolveVaultForCommand(cmd, tokenSource)
 		if err != nil {
 			return err
 		}
@@ -71,8 +83,11 @@ JSON mode (complex/multi-service proposals):
 			return err
 		}
 
+		// Pass the resolved vault as X-Vault so instance-level agent tokens
+		// (which carry no baked-in vault) can create proposals here too — the
+		// broker rejects agent-token POST /v1/proposals calls without it.
 		url := fmt.Sprintf("%s/v1/proposals", sess.Address)
-		respBody, err := doAdminRequestWithBody("POST", url, sess.Token, reqBody)
+		respBody, err := doVaultScopedRequestWithBody("POST", url, sess.Token, vault, reqBody)
 		if err != nil {
 			return err
 		}

@@ -33,8 +33,6 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `AGENT_VAULT_LOG_LEVEL` | Fallback for `--log-level` when the flag is not set. Accepts `info` or `debug`. |
     | `AGENT_VAULT_ADDR` | Externally-reachable base URL (e.g. `https://agent-vault.example.com`). Used for links in emails, invites, and discovery. Falls back to `https://<FLY_APP_NAME>.fly.dev` on Fly.io, then `http://{host}:{port}`. |
     | `FLY_APP_NAME` | Auto-detected on Fly.io. When `AGENT_VAULT_ADDR` is unset, derives the base URL as `https://<FLY_APP_NAME>.fly.dev`. |
-    | `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_ID` | Google OAuth client ID. When both this and the client secret are set, Google OAuth is enabled. |
-    | `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
     | `AGENT_VAULT_SMTP_HOST` | SMTP server host. If unset, email notifications are silently disabled. |
     | `AGENT_VAULT_SMTP_PORT` | SMTP server port (default `587`) |
     | `AGENT_VAULT_SMTP_USERNAME` | SMTP username |
@@ -311,7 +309,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault discover [flags]
     ```
 
-    Show available services and credentials for the current vault. Requires a vault-scoped session (via `agent-vault run` or `AGENT_VAULT_SESSION_TOKEN` + `AGENT_VAULT_ADDR` env vars).
+    Show available services and credentials for the current vault. Requires a vault-scoped session token or long-lived agent token (via `agent-vault run` or `AGENT_VAULT_TOKEN` + `AGENT_VAULT_ADDR` env vars; `AGENT_VAULT_SESSION_TOKEN` is the deprecated alias and still works). In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -327,21 +325,21 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     Wrap a process with Agent Vault environment variables. `agent-vault run` is the shorthand; `agent-vault vault run` is the long form. Both are identical in behavior and flags.
 
-    The child process always receives `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT`. When the server's transparent MITM proxy is reachable (default), it also receives `HTTPS_PROXY` / `NO_PROXY` / `NODE_USE_ENV_PROXY` plus CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) pointing at `~/.agent-vault/mitm-ca.pem`, so standard HTTPS clients transparently route through the broker.
+    The child process receives `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN` (and the deprecated alias `AGENT_VAULT_SESSION_TOKEN`), and `AGENT_VAULT_VAULT`, plus `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` / `NODE_USE_ENV_PROXY` and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) pointing at `~/.agent-vault/mitm-ca.pem`, so standard HTTP and HTTPS clients transparently route through the broker. `HTTPS_PROXY` and `HTTP_PROXY` both point at the same TLS-wrapped proxy URL — the listener handles CONNECT for `https://` upstreams and absolute-form forward-proxy requests for `http://` upstreams on the same port. If the server's MITM proxy is unreachable, `vault run` aborts.
+
+    **Agent mode (containerized / unattended deployments).** When `AGENT_VAULT_TOKEN` and `AGENT_VAULT_ADDR` are pre-set on the environment, `vault run` skips the admin-session login and uses the env-supplied token as the credential — `--ttl` is rejected in this mode since the token's lifetime is fixed at mint time. The token is validated against the broker once at startup so bad/expired tokens fail fast with a clear error rather than producing 401s on every proxied call. See [Deploy your agent in a container](/guides/deploy-agent-container).
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--address` | | Server address override |
-    | `--role` | `proxy` | Vault role for the session: `proxy`, `member`, or `admin` |
     | `--ttl` | `0` | Session TTL in seconds (300–604800). Default: server default (24h). |
-    | `--no-mitm` | `false` | Skip HTTPS_PROXY/CA env injection; rely solely on the explicit `/proxy/{host}/{path}` endpoint. |
-    | `--sandbox` | `process` | Sandbox mode for the child: `process` (default, cooperative) or `container` (non-cooperative Docker sandbox; see [Container sandbox](/guides/container-sandbox)). Also read from `AGENT_VAULT_SANDBOX`. |
-    | `--image` | | Override the bundled container image (`--sandbox=container` only). |
-    | `--mount` | | Extra bind mount `src:dst[:ro]`; repeatable (`--sandbox=container` only). Host paths are EvalSymlinks-resolved; reserved paths rejected. |
-    | `--keep` | `false` | Omit `--rm` from `docker run` (`--sandbox=container` only; useful for debugging). |
-    | `--no-firewall` | `false` | Skip the iptables egress lockdown (`--sandbox=container` only; debug, prints a warning). |
-    | `--home-volume-shared` | `false` | Share `/home/claude/.claude` across invocations via a persistent docker volume (`--sandbox=container` only). Default is a per-invocation volume — auth doesn't persist but concurrent runs can't corrupt each other. |
-    | `--share-agent-dir` | `false` | Bind-mount the host's agent state dir (`~/.claude`) at `/home/claude/.claude` so the sandbox reuses your host login (`--sandbox=container` only). On Linux the container's `claude` user is remapped to your host uid/gid so writes land owned by you. Mutually exclusive with `--home-volume-shared`. |
+    | `--isolation` | `host` | Isolation mode for the child: `host` (default, cooperative — runs on the host with `HTTPS_PROXY`/`HTTP_PROXY`) or `container` (non-cooperative Docker container; see [Container isolation](/guides/container-isolation)). Also read from `AGENT_VAULT_ISOLATION`. |
+    | `--image` | | Override the bundled container image (`--isolation=container` only). |
+    | `--mount` | | Extra bind mount `src:dst[:ro]`; repeatable (`--isolation=container` only). Host paths are EvalSymlinks-resolved; reserved paths rejected. |
+    | `--keep` | `false` | Omit `--rm` from `docker run` (`--isolation=container` only; useful for debugging). |
+    | `--no-firewall` | `false` | Skip the iptables egress lockdown (`--isolation=container` only; debug, prints a warning). |
+    | `--home-volume-shared` | `false` | Share `/home/claude/.claude` across invocations via a persistent docker volume (`--isolation=container` only). Default is a per-invocation volume — auth doesn't persist but concurrent runs can't corrupt each other. |
+    | `--share-agent-dir` | `false` | Bind-mount the host's agent state dir (`~/.claude`) at `/home/claude/.claude` so the container reuses your host login (`--isolation=container` only). On Linux the container's `claude` user is remapped to your host uid/gid so writes land owned by you. Mutually exclusive with `--home-volume-shared`. |
   </Accordion>
 
   <Accordion title="agent-vault vault token">
@@ -349,22 +347,21 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault token [flags]
     ```
 
-    Mint a vault-scoped session token and print it to stdout. Useful when you need a scoped token without wrapping a child process via `agent-vault run`.
+    Mint a vault-scoped session token and print it to stdout. Useful when you need a scoped token without wrapping a child process via `agent-vault run`. Tokens are minted with vault role `proxy`.
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--address` | | Server address override |
-    | `--role` | `proxy` | Vault role for the session: `proxy`, `member`, or `admin` |
     | `--ttl` | `0` | Session TTL in seconds (300–604800). Default: server default (24h). |
 
     ```bash
     # Export token for use in other commands
-    export AGENT_VAULT_SESSION_TOKEN=$(agent-vault vault token)
+    export AGENT_VAULT_TOKEN=$(agent-vault vault token)
     export AGENT_VAULT_ADDR=http://localhost:14321
     export AGENT_VAULT_VAULT=default
 
-    # Mint a short-lived token with member role
-    agent-vault vault token --vault myproject --role member --ttl 3600
+    # Mint a short-lived token (1 hour TTL)
+    agent-vault vault token --vault myproject --ttl 3600
     ```
   </Accordion>
 </AccordionGroup>
@@ -443,7 +440,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--role` | `member` | Instance role for the invited user: `owner` or `member` |
+    | `--role` | `member` | Instance role for the invited user: `owner`, `member`, or `no-access` |
     | `--vault` | | Vault pre-assignment in `name:role` format (repeatable). Role defaults to `member`. |
 
     ```bash
@@ -589,7 +586,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential list [flags]
     ```
 
-    List credential keys in a vault. Alias: `agent-vault vault creds list`.
+    List credential keys in a vault. Alias: `agent-vault vault creds list`. In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -602,7 +599,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential get <KEY> [flags]
     ```
 
-    Print the decrypted value of a single credential to stdout. Pipe-friendly. Requires member+ role. Alias: `agent-vault vault creds get`.
+    Print the decrypted value of a single credential to stdout. Pipe-friendly. Requires member+ role. Alias: `agent-vault vault creds get`. In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -614,7 +611,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential set <KEY=VALUE> [KEY2=VALUE2 ...] [flags]
     ```
 
-    Store one or more credentials using `KEY=VALUE` format. Alias: `agent-vault vault creds set`.
+    Store one or more credentials using `KEY=VALUE` format. Alias: `agent-vault vault creds set`. In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -626,7 +623,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential delete <KEY> [KEY2 ...] [flags]
     ```
 
-    Delete one or more credentials. Alias: `agent-vault vault creds delete`.
+    Delete one or more credentials. Alias: `agent-vault vault creds delete`. In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -667,7 +664,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault proposal create [flags]
     ```
 
-    Create a proposal to request services or credentials. Supports two modes: flag-driven (for simple single-service proposals) and JSON file (for complex or multi-service proposals).
+    Create a proposal to request services or credentials. Supports two modes: flag-driven (for simple single-service proposals) and JSON file (for complex or multi-service proposals). In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -754,7 +751,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--role` | `member` | Instance-level role: `owner` or `member` |
+    | `--role` | `member` | Instance-level role: `owner`, `member`, or `no-access` |
     | `--vault` | | Vault pre-assignment in `name:role` format (repeatable). Role defaults to `proxy`. |
     | `--invite-ttl` | `15m` | Invite link expiration time (Go duration format) |
     | `--address` | | Agent Vault server address (default: from session) |
@@ -838,7 +835,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--role` | | Instance role: `owner` or `member` (required) |
+    | `--role` | | Instance role: `owner`, `member`, or `no-access` (required) |
   </Accordion>
 </AccordionGroup>
 
@@ -932,7 +929,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--role` | | Instance role: `owner` or `member` (required) |
+    | `--role` | | Instance role: `owner`, `member`, or `no-access` (required) |
   </Accordion>
 </AccordionGroup>
 

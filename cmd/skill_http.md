@@ -1,11 +1,11 @@
 ---
 name: agent-vault-http
 description: >-
-  Agent Vault HTTP: a transparent HTTPS proxy that injects credentials for
+  Agent Vault HTTP: a transparent HTTP/HTTPS proxy that injects credentials for
   external services (Linear, GitHub, Stripe, Slack, Jira, etc.). Use when the
   task involves any third-party API or service that requires credentials, or
   when writing code that needs environment variables for secrets/API keys.
-compatibility: Requires a running Agent Vault server and AGENT_VAULT_SESSION_TOKEN environment variable
+compatibility: Requires a running Agent Vault server and AGENT_VAULT_TOKEN environment variable
 metadata:
   author: dangtony98
   version: "0.4.0"
@@ -13,14 +13,14 @@ metadata:
 
 # Agent Vault (HTTP)
 
-You have access to Agent Vault, a transparent HTTPS proxy that injects credentials into your outbound calls. You never see or handle credentials directly -- make API calls to the real host as normal and Agent Vault attaches the real credentials at the proxy boundary.
+You have access to Agent Vault, a transparent HTTP/HTTPS proxy that injects credentials into your outbound calls. You never see or handle credentials directly -- make API calls to the real host as normal (over `https://` or `http://`) and Agent Vault attaches the real credentials at the proxy boundary.
 
 ## CRITICAL: Always Check Agent Vault First
 
 **Before telling the user you cannot access an external service, you MUST check Agent Vault.** This applies whenever a task involves any third-party service or API -- project management (Linear, Jira, Asana), source control (GitHub, GitLab), communication (Slack, Discord), payments (Stripe), databases, or any other authenticated service.
 
 **Your workflow for ANY external service interaction:**
-1. Check that `AGENT_VAULT_SESSION_TOKEN` is set
+1. Check that `AGENT_VAULT_TOKEN` is set
 2. Call `GET {AGENT_VAULT_ADDR}/discover` to see which hosts have credentials configured
 3. If the host is listed, **just make the request to the real API URL** -- Agent Vault transparently injects the credential
 4. If the host is NOT listed, create a proposal (the user approves and provides credentials)
@@ -30,17 +30,60 @@ You have access to Agent Vault, a transparent HTTPS proxy that injects credentia
 
 **Not every HTTP request needs Agent Vault credentials.** Unauthenticated requests or requests to hosts not configured in Agent Vault still pass through the proxy unmodified -- no special handling required.
 
+By default each vault forwards unmatched hosts as plain proxy traffic (no credential injection). An operator may flip a vault into **strict deny mode** (`unmatched_host_policy=deny`), in which case requests to hosts that aren't in `/discover` return `403 forbidden` with a `proposal_hint`. If you see that error, propose the service rather than retrying.
+
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `AGENT_VAULT_ADDR` | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
-| `AGENT_VAULT_SESSION_TOKEN` | Bearer token for authenticating with Agent Vault's control-plane endpoints (`/discover`, proposals, etc.) |
-| `AGENT_VAULT_VAULT` | Vault name (set for user-scoped sessions via `vault run`) |
+| `AGENT_VAULT_TOKEN` | Bearer token for authenticating with Agent Vault's control-plane endpoints (`/discover`, proposals, etc.). Either a vault-scoped session token or a long-lived agent token. |
+| `AGENT_VAULT_VAULT` | Vault name. Set automatically by `agent-vault run` in admin mode; supplied by the operator in agent mode. |
 
-`vault run` also pre-configures `HTTPS_PROXY`, `NO_PROXY`, `NODE_USE_ENV_PROXY`, and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) so HTTPS calls from your process route through the broker transparently. You don't manage these yourself.
+> `AGENT_VAULT_SESSION_TOKEN` is the deprecated alias of `AGENT_VAULT_TOKEN` and is still honored with a one-time stderr warning. It will be removed in a future major version.
 
-Under `--sandbox=container`, the same env shape is injected inside a Docker container, but the proxy URL host is `host.docker.internal` instead of `127.0.0.1` and egress to any other destination is blocked by iptables. From your perspective nothing changes — standard HTTP clients pick up the envvars as normal.
+`vault run` also pre-configures `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `NODE_USE_ENV_PROXY`, and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) so HTTP and HTTPS calls from your process both route through the broker transparently. You don't manage these yourself.
+
+Under `--isolation=container`, the same env shape is injected inside a Docker container, but the proxy URL host is `host.docker.internal` instead of `127.0.0.1` and egress to any other destination is blocked by iptables. From your perspective nothing changes — standard HTTP clients pick up the envvars as normal.
+
+### Scoped session tokens
+
+You almost never need to mint your own token — `vault run` already provides one. But if you must hand a separate token to a child process, call:
+
+```
+POST /v1/sessions
+{
+  "vault":       "<vault-name>",
+  "ttl_seconds": 3600,                       // optional, 300–604800; defaults to 24h
+  "label":       "<optional, ≤100 chars>"    // shown in the Tokens UI
+}
+→ { "token": "...", "expires_at": "...", "av_addr": "..." }
+```
+
+Tokens are minted with vault role `proxy`. Operators manage them via the **Tokens** tab in each vault, which uses `GET /v1/sessions?vault=<name>` (member+) and `DELETE /v1/sessions/{id}?vault=<name>` (member+) — substitute `{id}` with the `id` field from the list response (a public-facing identifier, not the raw token). The raw token is only returned at creation; subsequent reads only ever show the `id`.
+
+### Containerized agent deployment
+
+For unattended deployments (k8s/Fly/ECS, where there's no human to `auth login`), supply the token via env. `agent-vault run` then skips the mint step and treats the env-supplied token as the credential:
+
+```dockerfile
+FROM node:20-slim
+COPY --from=infisical/agent-vault:latest /usr/local/bin/agent-vault /usr/local/bin/agent-vault
+WORKDIR /app
+COPY . .
+RUN npm ci
+ENTRYPOINT ["agent-vault", "run", "--", "npm", "start"]
+```
+
+Set three env vars at deploy time:
+
+```
+AGENT_VAULT_ADDR=https://vault.example.com
+AGENT_VAULT_TOKEN=av_agt_xxx
+AGENT_VAULT_VAULT=production
+```
+
+Use a long-lived agent token (no expiry) for production. Operators mint these out-of-band — see [Agents](https://docs.agent-vault.dev/agents/overview) for how to create the agent identity and obtain its token. `agent-vault run` validates the token against the broker once at startup; bad/expired tokens fail fast with a clear error. `--ttl` is rejected in this mode since the token's lifetime is fixed at mint time.
 
 ## Discover Available Services (Start Here)
 
@@ -48,11 +91,11 @@ Under `--sandbox=container`, the same env shape is injected inside a Docker cont
 
 ```
 GET {AGENT_VAULT_ADDR}/discover
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Authorization: Bearer {AGENT_VAULT_TOKEN}
 X-Vault: {vault_name}
 ```
 
-**Note:** If `AGENT_VAULT_VAULT` is set, the server uses it automatically. Instance-level agent tokens (persistent agents) must include the `X-Vault` header on all vault-scoped requests.
+**Note:** Instance-level agent tokens (persistent agents) must include the `X-Vault: {vault_name}` header on every control-plane call (`/discover`, `/v1/proposals`). The server only reads vault scope from this header — `AGENT_VAULT_VAULT` is a client-side env var; it is your responsibility to copy its value into the `X-Vault` header on each request. Vault-scoped session tokens carry the vault on the session row, so the header is ignored for those (passing it unconditionally is safe).
 
 Response includes `vault`, `services` (host + description), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots.
 
@@ -66,14 +109,29 @@ Returns built-in service templates with suggested credential keys and auth types
 
 ## Making Requests
 
-**Just call the real API URL.** When you were launched via `agent-vault vault run`, your HTTPS traffic already routes through Agent Vault transparently — `HTTPS_PROXY` and the broker's CA cert are pre-configured in your environment. Agent Vault intercepts the call, looks up the host in the vault's services, injects the credential, and forwards over HTTPS.
+**Just call the real API URL.** When you were launched via `agent-vault vault run`, your HTTP and HTTPS traffic already route through Agent Vault transparently — `HTTPS_PROXY`, `HTTP_PROXY`, and the broker's CA cert are pre-configured in your environment. Agent Vault intercepts the call, looks up the host in the vault's services, injects the credential, and forwards to the upstream.
 
 ```
 GET https://api.stripe.com/v1/charges
 GET https://api.github.com/user
+GET http://internal.example/api/v1/items   # plain http:// works the same way
 ```
 
-Your code can leave the upstream auth header blank or set it to a placeholder — Agent Vault attaches the real credential at the proxy boundary, so the value in your env can be anything (or absent). Standard HTTP clients (curl, fetch, requests, axios, the Go stdlib, etc.) honor `HTTPS_PROXY` automatically.
+Your code can leave the upstream auth header blank or set it to a placeholder — Agent Vault attaches the real credential at the proxy boundary, so the value in your env can be anything (or absent). Standard HTTP clients (curl, fetch, requests, axios, the Go stdlib, etc.) honor `HTTPS_PROXY`/`HTTP_PROXY` automatically.
+
+### WebSocket / Streaming
+
+`wss://` and `ws://` URLs are brokered through the same proxy mechanism as regular HTTP/HTTPS. Credentials are injected into the WebSocket handshake (`Authorization`, `Sec-WebSocket-Protocol`) the same way as on a normal request — point your client at the real WebSocket URL and Agent Vault attaches the real credential at the proxy boundary.
+
+```
+wss://api.openai.com/v1/realtime?model=gpt-realtime
+```
+
+Constraints:
+- HTTP/1.1 only at the MITM ingress today. HTTP/2 traffic is forwarded but not intercepted, so it bypasses credential injection — pin clients to HTTP/1.1 if you need brokered auth on a streaming endpoint.
+- Streaming HTTP responses (SSE, chunked) work transparently; no special handling needed.
+
+For a worked example of OpenAI Realtime over Agent Vault inside a locked-down container, see [`examples/daytona-openai-realtime`](https://github.com/Infisical/agent-vault/tree/main/examples/daytona-openai-realtime).
 
 ## Proposals -- Requesting and Storing Credentials
 
@@ -83,7 +141,7 @@ Proposals are the primary way to exchange credentials with a human operator. Use
 - **Want to store a credential back** -- include the value in a credential slot and the human confirms it at approval.
 - **Need proxy access to a new host** -- propose a service with an `auth` config so Agent Vault can authenticate on your behalf.
 
-When you get a `403` for a host not in `/discover`, the response includes a `proposal_hint` with the denied host.
+When you get a `403` for a host not in `/discover` (only happens when the vault is in strict deny mode), the response includes a `proposal_hint` with the denied host.
 
 ## Choosing the Right Auth Method
 
@@ -122,7 +180,7 @@ Example proposal (Twilio: basic auth header + path SID substitution):
 
 ```
 POST {AGENT_VAULT_ADDR}/v1/proposals
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Authorization: Bearer {AGENT_VAULT_TOKEN}
 Content-Type: application/json
 
 {
@@ -142,7 +200,7 @@ Content-Type: application/json
 }
 ```
 
-Once approved, the agent makes requests like `GET https://api.twilio.com/2010-04-01/Accounts/__account_sid__/Messages.json` (via `/proxy/api.twilio.com/...` or `HTTPS_PROXY`). The broker rewrites the path to `/Accounts/AC.../Messages.json` and injects the basic auth header.
+Once approved, the agent makes requests like `GET https://api.twilio.com/2010-04-01/Accounts/__account_sid__/Messages.json` (routed through the broker via `HTTPS_PROXY`/`HTTP_PROXY`). The broker rewrites the path to `/Accounts/AC.../Messages.json` and injects the basic auth header.
 
 Placeholder safety: must be ≥4 characters, contain at least one alphanumeric character, contain a `__` boundary or non-`[A-Za-z0-9_]` character (so bare words like `account_sid` are rejected — they would match legitimate URL words), and use only RFC 3986 unreserved characters `[A-Za-z0-9_-.~]`. The recommended convention is `__name__`.
 
@@ -150,7 +208,7 @@ Placeholder safety: must be ≥4 characters, contain at least one alphanumeric c
 
 ```
 POST {AGENT_VAULT_ADDR}/v1/proposals
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Authorization: Bearer {AGENT_VAULT_TOKEN}
 Content-Type: application/json
 
 {
@@ -176,7 +234,7 @@ Key fields:
 2. Immediately start polling `GET {AGENT_VAULT_ADDR}/v1/proposals/{id}` -- do NOT wait for the user to say "go on" or confirm. Poll every 3s for the first 30s, then every 10s. Stop after 10 minutes (proposal may have expired).
 3. Once status is `applied`, automatically retry your original request and continue your task
 
-**Check status:** `GET {AGENT_VAULT_ADDR}/v1/proposals/{id}` with `Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}` -- returns `pending`, `applied`, `rejected`, or `expired`
+**Check status:** `GET {AGENT_VAULT_ADDR}/v1/proposals/{id}` with `Authorization: Bearer {AGENT_VAULT_TOKEN}` -- returns `pending`, `applied`, `rejected`, or `expired`
 
 **List proposals:** `GET {AGENT_VAULT_ADDR}/v1/proposals?status=pending`
 
@@ -186,10 +244,10 @@ Agent Vault persists a per-request audit log for each vault (method, host, path,
 
 ```
 GET {AGENT_VAULT_ADDR}/v1/vaults/{vault}/logs
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Authorization: Bearer {AGENT_VAULT_TOKEN}
 ```
 
-Query params: `ingress` (`explicit`|`mitm`), `status_bucket` (`2xx`|`3xx`|`4xx`|`5xx`|`err`), `service`, `limit` (default 50, max 200), `before=<id>` (page back), `after=<id>` (tail forward for new rows). Response: `{ "logs": [...], "next_cursor": <id|null>, "latest_id": <id> }`.
+Query params: `status_bucket` (`2xx`|`3xx`|`4xx`|`5xx`|`err`), `service`, `limit` (default 50, max 200), `before=<id>` (page back), `after=<id>` (tail forward for new rows). Response: `{ "logs": [...], "next_cursor": <id|null>, "latest_id": <id> }`.
 
 ## Building Code That Needs Credentials
 
@@ -203,7 +261,7 @@ When you are writing or modifying application code that requires secrets or API 
 
 ```
 POST {AGENT_VAULT_ADDR}/v1/proposals
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Authorization: Bearer {AGENT_VAULT_TOKEN}
 Content-Type: application/json
 
 {
@@ -235,16 +293,17 @@ Content-Type: application/json
 
 ## Error Handling
 
-- 401: Invalid or expired token -- check `AGENT_VAULT_SESSION_TOKEN`
-- 403 `forbidden`: Host not allowed -- create a proposal
+- 401: Invalid or expired token -- check `AGENT_VAULT_TOKEN`
+- 403 `forbidden`: Host not allowed (only fires under `unmatched_host_policy=deny`) -- create a proposal
 - 403 `service_disabled`: Host is configured but currently disabled by an operator. Don't create a new proposal; surface the error to the user so they can re-enable it
-- 429: Rate limited. The response carries a `Retry-After` header (seconds) and a JSON body `{"error":"too_many_requests", ...}`. Respect `Retry-After` — wait that many seconds before retrying. Do **not** tight-loop or switch to a different Agent Vault ingress to bypass the limit; the MITM and explicit `/proxy/` paths share one budget. If the limit trips repeatedly on normal work, ask the instance owner to raise the limit in **Manage Instance → Settings → Rate Limiting**.
+- 403 `Instance member role required`: Your instance role is `no-access` and you tried an instance-scoped endpoint (create vault, create invites, list users/agents). You can still operate within vaults you've been granted -- stay on `/v1/vaults/{name}/...` endpoints and proxied calls. If you genuinely need to take an instance-scoped action, surface this to the user; an instance owner must change your role.
+- 429: Rate limited. The response carries a `Retry-After` header (seconds) and a JSON body `{"error":"too_many_requests", ...}`. Respect `Retry-After` — wait that many seconds before retrying. Do **not** tight-loop. If the limit trips repeatedly on normal work, ask the instance owner to raise the limit in **Manage Instance → Settings → Rate Limiting**.
 - 502: Missing credential or upstream unreachable, tell user a credential may need to be added
 
 ## Rules
 
 - **Never** attempt to extract, log, or display credentials
-- **Never** hardcode tokens -- always read from `AGENT_VAULT_SESSION_TOKEN`
+- **Never** hardcode tokens -- always read from `AGENT_VAULT_TOKEN`
 - **Only** request hosts returned by `/discover` -- if a host isn't listed, create a proposal
 - If you receive a `credential_not_found` error, inform the user which credential is missing
 - Do not modify or forge the `Authorization` header beyond using your token

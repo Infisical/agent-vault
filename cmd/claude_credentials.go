@@ -15,7 +15,7 @@ const keychainItemName = "Claude Code-credentials"
 
 // populateClaudeCredentialsFromKeychain extracts the host's Claude Code
 // credential from the macOS Keychain and writes it to the host's
-// ~/.claude/.credentials.json so the sandbox (Linux, file-based auth)
+// ~/.claude/.credentials.json so the container (Linux, file-based auth)
 // picks it up through the --share-agent-dir bind mount.
 //
 // Only runs on macOS hosts — other OSes already store auth in the file

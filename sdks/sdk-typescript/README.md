@@ -113,50 +113,9 @@ await vault.services.set([
 ]);
 ```
 
-### Explicit proxy (alternative)
-
-If you can't use the transparent MITM proxy, the agent can route requests through the explicit `/proxy` endpoint using `VaultClient`:
-
-```typescript
-import { VaultClient } from "@infisical/agent-vault-sdk";
-
-const client = new VaultClient({
-  token: session.token,
-  address: "http://localhost:14321",
-});
-
-const res = await client.proxy.get("api.stripe.com", "/v1/charges", {
-  query: { limit: 10 },
-});
-
-if (res.ok) {
-  const charges = await res.json<{ data: { id: string }[] }>();
-  console.log(charges.data);
-}
-```
-
-The agent never sees `sk_live_abc` — Agent Vault injects it into the request automatically. All standard HTTP methods are available: `get`, `post`, `put`, `patch`, `delete`, and `request` for arbitrary methods.
-
 ## Error handling
 
-The SDK distinguishes between broker errors (thrown as exceptions) and upstream errors (returned as responses):
-
-```typescript
-import { ProxyForbiddenError } from "@infisical/agent-vault-sdk";
-
-try {
-  await client.proxy.get("api.unknown-service.com", "/");
-} catch (err) {
-  if (err instanceof ProxyForbiddenError) {
-    // No proxy rule configured for this host
-    console.log(err.proposalHint.host);
-  }
-}
-```
-
-- **Upstream non-2xx** (e.g. Stripe 404): resolves normally with `res.ok === false`
-- **`ProxyForbiddenError`**: no proxy rule matches the target host
-- **`ApiError`**: other broker-level failures
+The SDK throws `ApiError` for non-2xx responses from Agent Vault control-plane endpoints. Upstream HTTP errors from agent-issued traffic — which travels through `HTTPS_PROXY`, not the SDK — surface in the agent's normal HTTP client.
 
 ## Documentation
 

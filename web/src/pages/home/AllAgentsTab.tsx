@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, type ReactNode } from "react";
 import { useRouteContext } from "@tanstack/react-router";
-import { LoadingSpinner, ErrorBanner, StatusBadge, timeAgo } from "../../components/shared";
+import { LoadingSpinner, ErrorBanner, StatusBadge, timeAgo, formatInstanceRole, INSTANCE_ROLE_OPTIONS, type InstanceRole } from "../../components/shared";
 import DataTable, { type Column } from "../../components/DataTable";
 import DropdownMenu from "../../components/DropdownMenu";
 import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
@@ -15,11 +15,10 @@ import type { AuthContext } from "../../router";
 
 interface AgentRow {
   name: string;
-  role: string; // instance-level role: "owner" or "member"
+  role: string;
   status: string;
   created_at: string;
   vaults: { vault_name: string; vault_role: string }[];
-  // For pending invites shown inline
   invite_id?: number;
 }
 
@@ -34,11 +33,13 @@ function RowActions({
   isOwner,
   onRevoke,
   onDone,
+  onError,
 }: {
   agent: AgentRow;
   isOwner: boolean;
   onRevoke: (agent: AgentRow) => void;
   onDone: () => void;
+  onError: (msg: string) => void;
 }) {
   if (agent.status === "revoked") return null;
 
@@ -50,10 +51,15 @@ function RowActions({
           {
             label: "Revoke invite",
             onClick: async () => {
-              await apiFetch(
+              const resp = await apiFetch(
                 `/v1/agents/invites/by-id/${agent.invite_id}`,
                 { method: "DELETE" }
               );
+              if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                onError(data.error || "Failed to revoke invite");
+                return;
+              }
               onDone();
             },
             variant: "danger",
@@ -63,20 +69,29 @@ function RowActions({
     );
   }
 
+  async function setRoleTo(newRole: InstanceRole) {
+    const resp = await apiFetch(
+      `/v1/agents/${encodeURIComponent(agent.name)}/role`,
+      { method: "POST", body: JSON.stringify({ role: newRole }) }
+    );
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      onError(data.error || "Failed to change role");
+      return;
+    }
+    onDone();
+  }
+
   const items: { label: string; onClick: () => void; variant?: "danger" }[] = [];
 
   if (isOwner) {
-    const targetRole = agent.role === "owner" ? "member" : "owner";
-    items.push({
-      label: `Set role: ${targetRole}`,
-      onClick: async () => {
-        await apiFetch(
-          `/v1/agents/${encodeURIComponent(agent.name)}/role`,
-          { method: "POST", body: JSON.stringify({ role: targetRole }) }
-        );
-        onDone();
-      },
-    });
+    for (const opt of INSTANCE_ROLE_OPTIONS) {
+      if (opt.role === agent.role) continue;
+      items.push({
+        label: `Set role: ${opt.label}`,
+        onClick: () => setRoleTo(opt.role),
+      });
+    }
   }
 
   items.push({ label: "Revoke agent", onClick: () => onRevoke(agent), variant: "danger" });
@@ -172,7 +187,7 @@ export default function AllAgentsTab() {
         key: "role",
         header: "Role",
         render: (agent) => (
-          <span className="text-sm text-text-muted capitalize">{agent.role}</span>
+          <span className="text-sm text-text-muted">{formatInstanceRole(agent.role)}</span>
         ),
       },
       {
@@ -206,7 +221,7 @@ export default function AllAgentsTab() {
         header: "",
         align: "right" as const,
         render: (agent: AgentRow) => (
-          <RowActions agent={agent} isOwner={auth.is_owner} onRevoke={setRevokeTarget} onDone={fetchData} />
+          <RowActions agent={agent} isOwner={auth.is_owner} onRevoke={setRevokeTarget} onDone={fetchData} onError={setError} />
         ),
       },
     ];
@@ -281,7 +296,7 @@ function InviteAgentButton({
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
-  const [agentRole, setAgentRole] = useState<"owner" | "member">("member");
+  const [agentRole, setAgentRole] = useState<InstanceRole>("no-access");
   const [vaultAssignments, setVaultAssignments] = useState<VaultAssignment[]>([]);
   const [availableVaults, setAvailableVaults] = useState<VaultOption[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -304,7 +319,7 @@ function InviteAgentButton({
   function close() {
     setOpen(false);
     setName("");
-    setAgentRole("member");
+    setAgentRole("no-access");
     setVaultAssignments([]);
     setError("");
     setInviteResult(null);
@@ -334,9 +349,9 @@ function InviteAgentButton({
     setError("");
     try {
       const payload: Record<string, unknown> = { name: name.trim() };
-      if (isOwner && agentRole !== "member") {
-        payload.role = agentRole;
-      }
+      // Always send role: non-owners don't see the picker, so agentRole stays
+      // at the "no-access" default — which is what we want them creating.
+      payload.role = agentRole;
       if (vaultAssignments.length > 0) {
         payload.vaults = vaultAssignments;
       }
@@ -402,14 +417,14 @@ function InviteAgentButton({
           <line x1="1" y1="9" x2="4" y2="9" />
           <line x1="1" y1="14" x2="4" y2="14" />
         </svg>
-        Invite agent
+        Add agent
       </Button>
 
       <Modal
         open={open}
         onClose={close}
-        title={inviteResult ? "Connect Your Agent" : "Invite Agent"}
-        description={inviteResult ? "Paste this into your agent's chat." : "Invite an AI agent to the instance."}
+        title={inviteResult ? "Connect Your Agent" : "Add Agent"}
+        description={inviteResult ? "Paste this into your agent's chat." : "Connect an agent, app, or service to Agent Vault."}
         footer={
           inviteResult ? (
             <Button onClick={close}>Done</Button>
@@ -443,14 +458,19 @@ function InviteAgentButton({
             {isOwner && (
               <FormField
                 label="Instance role"
-                helperText={agentRole === "owner"
-                  ? "This agent will be able to manage users, vaults, and instance settings."
-                  : "This agent will have standard access, scoped to its assigned vaults."}
+                helperText={
+                  agentRole === "owner"
+                    ? "This agent will be able to manage users, vaults, and instance settings."
+                    : agentRole === "member"
+                    ? "This agent will have standard access, scoped to its assigned vaults."
+                    : "This agent has no instance-level access. It can only operate within vaults you grant it below."
+                }
               >
                 <Select
                   value={agentRole}
-                  onChange={(e) => setAgentRole(e.target.value as "owner" | "member")}
+                  onChange={(e) => setAgentRole(e.target.value as InstanceRole)}
                 >
+                  <option value="no-access">No Access</option>
                   <option value="member">Member</option>
                   <option value="owner">Owner</option>
                 </Select>
@@ -480,21 +500,22 @@ function InviteAgentButton({
                 <div className="space-y-2">
                   {vaultAssignments.map((assignment, idx) => (
                     <div key={idx} className="flex items-center gap-2">
-                      <select
-                        value={assignment.vault_name}
-                        onChange={(e) => updateVault(idx, "vault_name", e.target.value)}
-                        className="flex-1 px-3 py-2 bg-surface border border-border rounded-lg text-text text-sm outline-none"
-                      >
-                        {availableVaults.map((v) => (
-                          <option
-                            key={v.name}
-                            value={v.name}
-                            disabled={assignedNames.has(v.name) && v.name !== assignment.vault_name}
-                          >
-                            {v.name}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="flex-1">
+                        <Select
+                          value={assignment.vault_name}
+                          onChange={(e) => updateVault(idx, "vault_name", e.target.value)}
+                        >
+                          {availableVaults.map((v) => (
+                            <option
+                              key={v.name}
+                              value={v.name}
+                              disabled={assignedNames.has(v.name) && v.name !== assignment.vault_name}
+                            >
+                              {v.name}
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
                       <Select
                         value={assignment.vault_role}
                         onChange={(e) => updateVault(idx, "vault_role", e.target.value)}
@@ -676,7 +697,7 @@ function ManualSetupView({
 
   const host = window.location.hostname;
   const tokenDisplay = sessionToken ?? "<TOKEN>";
-  const httpsProxy = `https://${tokenDisplay}@${host}:${mitm.port}`;
+  const proxyURL = `https://${tokenDisplay}@${host}:${mitm.port}`;
   const trustSnippets: Record<TrustTab, string> = {
     macos: `sudo security add-trusted-cert -d -r trustRoot \\\n  -k /Library/Keychains/System.keychain agent-vault-ca.pem`,
     linux: `sudo cp agent-vault-ca.pem /usr/local/share/ca-certificates/agent-vault-ca.crt\nsudo update-ca-certificates`,
@@ -726,9 +747,9 @@ function ManualSetupView({
 
       <ManualStep n={3} title="Point the agent at the proxy">
         <p className="text-sm text-text-muted">
-          The session token is embedded in the proxy URL — HTTP clients send it as <code className="text-text-muted">Proxy-Authorization</code> on every CONNECT handshake.
+          The session token is embedded in the proxy URL — HTTP clients send it as <code className="text-text-muted">Proxy-Authorization</code> on every CONNECT handshake (for <code className="text-text-muted">https://</code> upstreams) and on each absolute-form forward-proxy request (for <code className="text-text-muted">http://</code> upstreams). Set both env vars to the same TLS-wrapped URL.
         </p>
-        <Snippet value={`export HTTPS_PROXY="${httpsProxy}"`} />
+        <Snippet value={`export HTTPS_PROXY="${proxyURL}"\nexport HTTP_PROXY="${proxyURL}"`} />
         {!sessionToken && (
           <div className="flex items-center gap-2">
             <Button onClick={onRedeem} loading={redeeming}>

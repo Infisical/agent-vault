@@ -21,7 +21,7 @@ description: "All environment variables used to configure Agent Vault"
 | `AGENT_VAULT_LOGS_MAX_AGE_HOURS` | `168` | Retention for the per-vault request log (surfaced in **Vault → Logs**). Rows older than this many hours are trimmed by a background job every 15 minutes. Only secret-free metadata is stored (method, host, path, status, latency, matched service, credential key names) — never bodies or query strings. |
 | `AGENT_VAULT_LOGS_MAX_ROWS_PER_VAULT` | `10000` | Per-vault row cap for the request log. Whichever limit (age or rows) hits first wins, so heavy-traffic vaults retain a shorter window than the time-based TTL alone would suggest. Set to `0` to disable the row cap. |
 | `AGENT_VAULT_LOGS_RETENTION_LOCK` | `false` | When `true`, any owner-UI overrides for log retention are ignored and env values (or defaults) are pinned. Use when you want retention limits controlled only by the operator. |
-| `AGENT_VAULT_SANDBOX` | `process` | Default sandbox mode for `agent-vault vault run`. `process` forks the child with `HTTPS_PROXY` envvars (cooperative). `container` launches it inside a Docker container with iptables-locked egress (non-cooperative; see [Container sandbox](/guides/container-sandbox)). The `--sandbox` flag overrides this. |
+| `AGENT_VAULT_ISOLATION` | `host` | Default isolation mode for `agent-vault vault run`. `host` forks the child on the host with `HTTPS_PROXY`/`HTTP_PROXY` envvars (cooperative). `container` launches it inside a Docker container with iptables-locked egress (non-cooperative; see [Container isolation](/guides/container-isolation)). The `--isolation` flag overrides this. |
 
 Master password resolution order:
 
@@ -60,42 +60,31 @@ Configure SMTP to enable Agent Vault to send emails for verification codes, vaul
   To verify SMTP is working, run `agent-vault email test`. It sends a test email to the owner's address. See the [Configure Email SMTP](/guides/smtp) guide for step-by-step setup instructions for popular providers like SendGrid, AWS SES, Resend, and more.
 </Tip>
 
-## OAuth configuration
-
-When both variables for a provider are set, the corresponding "Continue with ..." button appears on login and registration pages. If either is unset, the provider is disabled.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_ID` | (unset) | Google OAuth 2.0 Client ID. Obtain from [Google Cloud Console](https://console.cloud.google.com/apis/credentials). |
-| `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET` | (unset) | Google OAuth 2.0 Client Secret. |
-
-The callback URL configured in Google Cloud Console must be `{AGENT_VAULT_ADDR}/v1/auth/oauth/google/callback`.
-
-<Tip>
-  See the [Configure Google SSO](/guides/oauth) guide for step-by-step setup instructions.
-</Tip>
-
 ## Agent runtime variables
 
-These variables are set automatically by `agent-vault vault run` on the agent's environment. You do not need to set them manually.
+These variables are set automatically by `agent-vault vault run` on the agent's environment for local / interactive use. You do not need to set them manually in that case.
+
+For **unattended / containerized deployments** (no human to `auth login`), set them yourself on the agent process — `agent-vault run` will skip the mint step and use the supplied token as the credential. See [Deploy your agent in a container](/guides/deploy-agent-container) for the full recipe.
 
 ### Control-plane
 
 | Variable | Description |
 |----------|-------------|
 | `AGENT_VAULT_ADDR` | Server base URL (e.g., `http://127.0.0.1:14321`) |
-| `AGENT_VAULT_SESSION_TOKEN` | Bearer token for authenticating with Agent Vault (control-plane: `/discover`, proposals, credentials). Scoped to the vault. |
+| `AGENT_VAULT_TOKEN` | Bearer token for authenticating with Agent Vault (control-plane: `/discover`, proposals, credentials). Either a vault-scoped session token or a long-lived agent token. |
+| `AGENT_VAULT_SESSION_TOKEN` | Deprecated alias of `AGENT_VAULT_TOKEN`. Still honored with a one-time stderr warning; will be removed in a future major version. |
 | `AGENT_VAULT_VAULT` | Name of the vault the session is scoped to |
 
 ### Transparent proxy
 
-`vault run` also wires up `HTTPS_PROXY` and the CA trust chain so standard HTTP clients transparently route through Agent Vault. Disable with `--no-mitm`.
+`vault run` wires up `HTTPS_PROXY`, `HTTP_PROXY`, and the CA trust chain so standard HTTP clients transparently route both HTTPS and plain-HTTP traffic through Agent Vault.
 
 | Variable | Description |
 |----------|-------------|
-| `HTTPS_PROXY` | Points at the MITM listener (`https://{token}:{vault}@host:14322`). HTTP_PROXY is intentionally not set — the MITM only handles HTTPS CONNECT. |
+| `HTTPS_PROXY` | Points at the MITM listener (`https://{token}:{vault}@host:14322`). Used for `https://` upstreams via the CONNECT method. |
+| `HTTP_PROXY` | Same URL as `HTTPS_PROXY`. Plain `http://` upstreams reach the same TLS-wrapped listener via absolute-form forward-proxy requests, so the broker still authenticates, injects credentials, and audits the traffic. |
 | `NO_PROXY` | `localhost,127.0.0.1` — so agent-to-vault control-plane traffic skips the proxy |
-| `NODE_USE_ENV_PROXY` | `1` — enables Node.js v22.21+ built-in proxy support for `fetch()` and `https.get()` |
+| `NODE_USE_ENV_PROXY` | `1` — enables Node.js v22.21+ built-in proxy support for `fetch()` and `http.get()`/`https.get()` |
 | `SSL_CERT_FILE` | Points OpenSSL-linked clients (Python, Ruby, PHP) at the Agent Vault root CA |
 | `NODE_EXTRA_CA_CERTS` | Trusts the root CA in Node.js |
 | `REQUESTS_CA_BUNDLE` | Trusts the root CA in Python `requests` |
@@ -103,4 +92,4 @@ These variables are set automatically by `agent-vault vault run` on the agent's 
 | `GIT_SSL_CAINFO` | Trusts the root CA in `git` |
 | `DENO_CERT` | Trusts the root CA in Deno |
 
-The CA PEM is written to `~/.agent-vault/mitm-ca.pem` by `vault run` on first launch. Agents use `HTTPS_PROXY` to make authenticated requests to upstream APIs transparently and call `GET {AGENT_VAULT_ADDR}/discover` over the control-plane to learn which services are available.
+The CA PEM is written to `~/.agent-vault/mitm-ca.pem` by `vault run` on first launch. Agents use `HTTPS_PROXY` and `HTTP_PROXY` to make authenticated requests to upstream APIs transparently and call `GET {AGENT_VAULT_ADDR}/discover` over the control-plane to learn which services are available.

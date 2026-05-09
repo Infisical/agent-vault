@@ -10,7 +10,7 @@ description: "Learn how to connect OpenCode to Agent Vault so it can make authen
 
 ## Quick start
 
-Launch OpenCode with `vault run`. It wraps OpenCode with a vault-scoped session, pre-configures `HTTPS_PROXY` and CA trust so outbound HTTPS routes through Agent Vault transparently, and installs the Agent Vault skills so OpenCode knows how to discover services and raise proposals. If you haven't logged in yet, you'll be guided through setup automatically.
+Launch OpenCode with `vault run`. It wraps OpenCode with a vault-scoped session, pre-configures `HTTPS_PROXY`/`HTTP_PROXY` and CA trust so outbound HTTP and HTTPS traffic both route through Agent Vault transparently, and installs the Agent Vault skills so OpenCode knows how to discover services and raise proposals. If you haven't logged in yet, you'll be guided through setup automatically.
 
 ```bash
 agent-vault vault run -- opencode
@@ -36,7 +36,7 @@ Ask OpenCode to do something that requires an external API:
 
 Here's what happens — with zero pre-configuration:
 
-1. OpenCode calls `https://api.stripe.com/...` directly. `HTTPS_PROXY` routes the call through Agent Vault
+1. OpenCode calls `https://api.stripe.com/...` (or `http://internal.example/...`) directly. `HTTPS_PROXY`/`HTTP_PROXY` routes the call through Agent Vault
 2. Agent Vault returns a **403** — Stripe isn't configured yet
 3. OpenCode reads the `proposal_hint` and creates a proposal requesting Stripe access
 4. OpenCode presents you with an approval link

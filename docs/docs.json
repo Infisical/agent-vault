@@ -41,7 +41,8 @@
             "pages": [
               "guides/connect-coding-agent",
               "guides/connect-custom-agent",
-              "guides/container-sandbox"
+              "guides/container-isolation",
+              "guides/deploy-agent-container"
             ]
           },
           {
@@ -53,8 +54,7 @@
               "self-hosting/fly-io",
               "self-hosting/environment-variables",
               "guides/instance-settings",
-              "guides/smtp",
-              "guides/oauth"
+              "guides/smtp"
             ]
           }
         ]
@@ -96,7 +96,6 @@
     { "source": "/configuration/policies", "destination": "/learn/services" },
     { "source": "/learn/policies", "destination": "/learn/services" },
     { "source": "/agents/persistent-agents", "destination": "/agents/overview" },
-    { "source": "/learn/oauth", "destination": "/guides/oauth" },
     { "source": "/how-it-works", "destination": "/" },
     { "source": "/learn/connect-custom-agent", "destination": "/guides/connect-custom-agent" }
   ]

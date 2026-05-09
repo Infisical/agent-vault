@@ -32,7 +32,7 @@ Ask NanoClaw to do something that requires an external API:
 
 Here's what happens — with zero pre-configuration:
 
-1. NanoClaw routes a request through Agent Vault's explicit `/proxy/api.stripe.com/...` endpoint
+1. NanoClaw routes a request to `https://api.stripe.com/...` (or `http://internal.example/...`) through Agent Vault via `HTTPS_PROXY`/`HTTP_PROXY`
 2. Agent Vault returns a **403** — Stripe isn't configured yet
 3. NanoClaw reads the `proposal_hint` and creates a proposal requesting Stripe access
 4. NanoClaw presents you with an approval link
@@ -40,7 +40,7 @@ Here's what happens — with zero pre-configuration:
 6. NanoClaw retries — Agent Vault injects your Stripe credentials at the proxy boundary and the request succeeds
 
 <Note>
-Invited agents like NanoClaw use the explicit `/proxy/{host}/{path}` endpoint rather than `HTTPS_PROXY`. For local agents you wrap with `agent-vault vault run` (Claude Code, Cursor, Codex, Hermes), the `HTTPS_PROXY` flow is transparent and no URL rewriting is needed.
+Invited agents like NanoClaw build their own `HTTPS_PROXY`/`HTTP_PROXY` from the token + vault returned by the redemption response (both env vars point at the same TLS-wrapped MITM URL so plain `http://` upstreams route through the broker via absolute-form forward-proxy requests) and fetch the root CA from `{AGENT_VAULT_ADDR}/v1/mitm/ca.pem` themselves — the embedded `instructions` field walks them through it. Local agents you wrap with `agent-vault vault run` (Claude Code, Cursor, Codex, Hermes) inherit the same env vars automatically.
 </Note>
 
 <Note>

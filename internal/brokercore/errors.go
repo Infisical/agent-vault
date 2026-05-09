@@ -4,7 +4,7 @@ import "errors"
 
 var (
 	// ErrInvalidSession means the supplied session token is missing, unknown,
-	// or expired. Callers should return 401 (/proxy) or 407 (MITM).
+	// or expired. The MITM ingress maps this to a 407 challenge.
 	ErrInvalidSession = errors.New("brokercore: invalid or expired session")
 
 	// ErrNoVaultContext means the session carries no vault scope and no hint
