@@ -539,6 +539,12 @@ func resolveSession() (*session.ClientSession, bool, error) {
 // instead of producing 401s on every proxied call. /discover is the same
 // auth path the proxy will use a moment later, so success here means the
 // token works end-to-end.
+//
+// Also catches a quiet footgun: if a vault-scoped session token is supplied
+// but AGENT_VAULT_VAULT names a different vault, the broker silently uses
+// the session's baked-in vault and ignores X-Vault. The discover response
+// echoes the actual vault, so we compare and reject the mismatch — otherwise
+// the child would see a misleading AGENT_VAULT_VAULT in its environment.
 func validateEnvToken(addr, token, vault string) error {
 	url := strings.TrimRight(addr, "/") + "/discover"
 	req, err := http.NewRequest("GET", url, nil)
@@ -553,7 +559,7 @@ func validateEnvToken(addr, token, vault string) error {
 	if err != nil {
 		return fmt.Errorf("validate token: contacting %s: %w", addr, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("agent token rejected by broker (HTTP %d) — verify %s is current and has access to vault %q", resp.StatusCode, envVarToken, vault)
 	}
@@ -561,8 +567,17 @@ func validateEnvToken(addr, token, vault string) error {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("validate token: server returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	// Drain so net/http can reuse the keep-alive connection.
-	_, _ = io.Copy(io.Discard, resp.Body)
+	var dr struct {
+		Vault string `json:"vault"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&dr); err != nil {
+		return fmt.Errorf("validate token: parsing /discover response: %w", err)
+	}
+	if vault != "" && dr.Vault != "" && dr.Vault != vault {
+		return fmt.Errorf("vault mismatch: AGENT_VAULT_VAULT=%q but the supplied token is scoped to vault %q — "+
+			"either drop AGENT_VAULT_VAULT (it has no effect on a vault-scoped session token) or supply a token for vault %q",
+			vault, dr.Vault, vault)
+	}
 	return nil
 }
 

@@ -768,6 +768,40 @@ func TestValidateEnvToken(t *testing.T) {
 			t.Errorf("expected friendly 'rejected by broker' message; got: %v", err)
 		}
 	})
+
+	t.Run("vault mismatch is rejected", func(t *testing.T) {
+		// Broker returns the session's baked-in vault, ignoring the
+		// X-Vault header on a vault-scoped session token.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"vault":"actual-vault","services":[],"available_credentials":[]}`))
+		}))
+		defer srv.Close()
+
+		err := validateEnvToken(srv.URL, "tok", "requested-vault")
+		if err == nil {
+			t.Fatal("expected mismatch error")
+		}
+		if !strings.Contains(err.Error(), "vault mismatch") {
+			t.Errorf("expected 'vault mismatch' wording; got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "actual-vault") || !strings.Contains(err.Error(), "requested-vault") {
+			t.Errorf("expected both vault names in error; got: %v", err)
+		}
+	})
+
+	t.Run("matching vaults pass", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"vault":"prod"}`))
+		}))
+		defer srv.Close()
+
+		if err := validateEnvToken(srv.URL, "tok", "prod"); err != nil {
+			t.Fatalf("expected nil err for matching vaults, got: %v", err)
+		}
+	})
 }
 
 func TestProposalCreateFlagsRegistered(t *testing.T) {

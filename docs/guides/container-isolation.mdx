@@ -12,6 +12,10 @@ description: "Run `vault run` agents inside a Docker container with iptables-loc
   Container mode is opt-in while it stabilizes. Host mode remains the default.
 </Note>
 
+<Note>
+  This guide is about running `vault run` on a developer machine and having it sandbox the child agent in a Docker container. If instead you want to ship *your own* agent as a container image (k8s, Fly, ECS) with `agent-vault run` as the entrypoint and a pre-supplied token, see [Deploy your agent in a container](/guides/deploy-agent-container).
+</Note>
+
 ## Quick start
 
 ```bash

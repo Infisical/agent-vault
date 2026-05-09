@@ -199,7 +199,10 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	// 8. Confirm, then exec — replaces this process entirely so the child
 	//    (e.g. Claude Code) gets direct terminal control.
 	fmt.Fprintf(os.Stderr, "%s agent-vault connected. Starting %s...\n\n", successText("agent-vault:"), boldText(args[0]))
-	return syscall.Exec(binary, args, env)
+	// gosec G702: this is an exec wrapper — the whole purpose is to run a
+	// user-specified binary with user-specified args, identical to the
+	// rationale for the G204 exclusion in .golangci.yml.
+	return syscall.Exec(binary, args, env) //nolint:gosec
 }
 
 // knownAgents maps CLI binary base-names to the (agentName, skillsDir)
@@ -488,7 +491,10 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 	// The parent directory is already 0o700 so anyone with read access to
 	// the file is also the file owner — 0o600 adds no real restriction,
 	// but keeps gosec G306 happy.
-	if err := os.WriteFile(caPath, pem, 0o600); err != nil {
+	// gosec G703: caPath is derived from --mitm-ca flag or $HOME, both of
+	// which are user-controlled by design (same rationale as the existing
+	// G304 exclusion in .golangci.yml).
+	if err := os.WriteFile(caPath, pem, 0o600); err != nil { //nolint:gosec
 		return env, 0, false, fmt.Errorf("write CA: %w", err)
 	}
 
