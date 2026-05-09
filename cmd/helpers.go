@@ -519,6 +519,7 @@ var legacyTokenWarnOnce sync.Once
 // rather than silently falling through to interactive login — masking that
 // misconfig produces "why don't my creds work" tickets.
 func resolveSession() (*session.ClientSession, bool, error) {
+	tokenSource := envVarToken
 	token := os.Getenv(envVarToken)
 	if token == "" {
 		if legacy := os.Getenv(envVarTokenLegacy); legacy != "" {
@@ -527,11 +528,12 @@ func resolveSession() (*session.ClientSession, bool, error) {
 					mutedText("agent-vault:"), envVarTokenLegacy, envVarToken)
 			})
 			token = legacy
+			tokenSource = envVarTokenLegacy
 		}
 	}
 	addr := os.Getenv("AGENT_VAULT_ADDR")
 	if token != "" && addr == "" {
-		return nil, false, fmt.Errorf("%s is set but AGENT_VAULT_ADDR is empty — both are required for agent mode", envVarToken)
+		return nil, false, fmt.Errorf("%s is set but AGENT_VAULT_ADDR is empty — both are required for agent mode", tokenSource)
 	}
 	if token != "" {
 		return &session.ClientSession{Token: token, Address: strings.TrimRight(addr, "/")}, true, nil

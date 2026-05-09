@@ -8,7 +8,7 @@ For local development, `agent-vault run` uses the on-disk admin session created 
 ## Prerequisites
 
 - An Agent Vault instance reachable from where the container runs.
-- A long-lived agent token with access to the target vault. See [Agents](/agents/overview) for how to create the agent identity and obtain its token — this guide picks up once you have the token in hand. Operators can revoke the token from the **Tokens** tab in the UI at any time.
+- A long-lived agent token with access to the target vault. See [Agents](/agents/overview) for how to create the agent identity and obtain its token — this guide picks up once you have the token in hand. Operators can rotate or revoke the token from the **Agents** tab in the UI (or via `agent-vault agent rotate <name>` / `agent-vault agent delete <name>`) at any time.
 
 ## Dockerfile
 
@@ -31,7 +31,7 @@ Set these on the container's environment (k8s `env:`, Fly `[env]`, ECS task defi
 |---|---|
 | `AGENT_VAULT_ADDR` | Broker base URL (e.g. `https://vault.example.com`) |
 | `AGENT_VAULT_TOKEN` | Long-lived agent token (see [Agents](/agents/overview); or `agent-vault vault token` for short-lived runs) |
-| `AGENT_VAULT_VAULT` | Vault to scope the run to. Required for agent tokens. |
+| `AGENT_VAULT_VAULT` | Vault to scope the run to. Required in agent mode (no project-file or interactive-picker fallback, regardless of token type). |
 
 `agent-vault run` accepts both vault-scoped session tokens and long-lived agent tokens via `AGENT_VAULT_TOKEN` — the broker treats them identically for proxy / discover / proposal calls.
 
@@ -44,7 +44,7 @@ Set these on the container's environment (k8s `env:`, Fly `[env]`, ECS task defi
 
 ## Rotating the token
 
-Mint a new token the same way you minted the original (see [Agents](/agents/overview#rotating-an-agent-token)), then roll the deployment with the new `AGENT_VAULT_TOKEN`. Old tokens for the agent are invalidated automatically by the rotation step.
+Mint a new token the same way you minted the original (see [Agents](/agents/overview#rotating-an-agent-token)), then roll the deployment with the new `AGENT_VAULT_TOKEN`. Old tokens for the agent are invalidated when the agent redeems the rotation invite, not at the moment `agent-vault agent rotate` is run — so finish redeeming and rolling the deployment together to avoid a window where the in-flight container is still using the soon-to-be-invalid token.
 
 ## Troubleshooting
 

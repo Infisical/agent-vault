@@ -46,7 +46,7 @@ Two modes:
     deployments where there's no human to interactively log in.
       AGENT_VAULT_TOKEN  — vault-scoped session token or long-lived agent token
       AGENT_VAULT_ADDR   — broker base URL
-      AGENT_VAULT_VAULT  — vault to scope the run to (required for agent tokens)
+      AGENT_VAULT_VAULT  — vault to scope the run to (required in agent mode for both token types)
     The token is validated against the broker once before the child is exec'd.
     --ttl has no effect in agent mode and is rejected (the token's lifetime
     is fixed at mint time).

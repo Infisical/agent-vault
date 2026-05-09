@@ -34,7 +34,7 @@ There are two session types:
 
 ### The X-Vault header
 
-Instance-level agent tokens must include `X-Vault: {vault_name}` on all vault-scoped requests (discover, proposals, credentials):
+Instance-level agent tokens must include `X-Vault: {vault_name}` on `/discover` and `/v1/proposals` requests:
 
 ```
 GET {AGENT_VAULT_ADDR}/discover

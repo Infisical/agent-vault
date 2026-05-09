@@ -60,7 +60,7 @@ POST /v1/sessions
 → { "token": "...", "expires_at": "...", "av_addr": "..." }
 ```
 
-Tokens are minted with vault role `proxy`. Operators manage them via the **Tokens** tab in each vault, which uses `GET /v1/sessions?vault=<name>` (member+) and `DELETE /v1/sessions/{public_id}?vault=<name>` (member+). The raw token is only returned at creation; subsequent reads only ever show the `public_id`.
+Tokens are minted with vault role `proxy`. Operators manage them via the **Tokens** tab in each vault, which uses `GET /v1/sessions?vault=<name>` (member+) and `DELETE /v1/sessions/{id}?vault=<name>` (member+) — substitute `{id}` with the `id` field from the list response (a public-facing identifier, not the raw token). The raw token is only returned at creation; subsequent reads only ever show the `id`.
 
 ### Containerized agent deployment
 
@@ -83,7 +83,7 @@ AGENT_VAULT_TOKEN=av_agent_token_xxx
 AGENT_VAULT_VAULT=production
 ```
 
-Use a long-lived agent token (no expiry) for production. Operators mint these out-of-band — see [Agents](https://docs.infisical.com/agents/overview) for how to create the agent identity and obtain its token. `agent-vault run` validates the token against the broker once at startup; bad/expired tokens fail fast with a clear error. `--ttl` is rejected in this mode since the token's lifetime is fixed at mint time.
+Use a long-lived agent token (no expiry) for production. Operators mint these out-of-band — see [Agents](https://docs.agent-vault.dev/agents/overview) for how to create the agent identity and obtain its token. `agent-vault run` validates the token against the broker once at startup; bad/expired tokens fail fast with a clear error. `--ttl` is rejected in this mode since the token's lifetime is fixed at mint time.
 
 ## Discover Available Services (Start Here)
 
@@ -95,7 +95,7 @@ Authorization: Bearer {AGENT_VAULT_TOKEN}
 X-Vault: {vault_name}
 ```
 
-**Note:** If `AGENT_VAULT_VAULT` is set, the server uses it automatically. Instance-level agent tokens (persistent agents) must include the `X-Vault` header on all vault-scoped requests.
+**Note:** Instance-level agent tokens (persistent agents) must include the `X-Vault: {vault_name}` header on every control-plane call (`/discover`, `/v1/proposals`). The server only reads vault scope from this header — `AGENT_VAULT_VAULT` is a client-side env var; it is your responsibility to copy its value into the `X-Vault` header on each request. Vault-scoped session tokens carry the vault on the session row, so the header is ignored for those (passing it unconditionally is safe).
 
 Response includes `vault`, `services` (host + description), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots.
 
