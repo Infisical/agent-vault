@@ -3,7 +3,7 @@ title: "Agents"
 description: "Understand how agents connect to Agent Vault and how to manage them."
 ---
 
-An `Agent` is any AI-powered process that connects to Agent Vault to proxy requests and raise [proposals](/learn/proposals). Agents are **instance-level entities** (like users) with an instance-level role (`owner` or `member`) and can be granted access to multiple [vaults](/learn/vaults) with independent roles per vault.
+An `Agent` is any AI-powered process that connects to Agent Vault to proxy requests and raise [proposals](/learn/proposals). Agents are **instance-level entities** (like users) with an [instance-level role](/learn/permissions#instance-roles) (`owner`, `member`, or `no-access`) and can be granted access to multiple [vaults](/learn/vaults) with independent roles per vault.
 
 There are two ways to connect an agent: **wrapping** a local process or **inviting** any agent via a prompt.
 
@@ -39,7 +39,13 @@ By default, invited agents are created with the `member` instance role. Use `--r
 ```bash
 # Invite an agent as an instance owner
 agent-vault agent invite my-agent --role owner
+
+# Invite an agent with no instance-scoped capabilities — useful when the
+# agent should only operate within a specific vault at proxy role.
+agent-vault agent invite my-agent --role no-access --vault payments:proxy
 ```
+
+See [Permissions](/learn/permissions#instance-roles) for what each role can do.
 
 ### Vault pre-assignments
 

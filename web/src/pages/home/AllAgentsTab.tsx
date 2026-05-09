@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, type ReactNode } from "react";
 import { useRouteContext } from "@tanstack/react-router";
-import { LoadingSpinner, ErrorBanner, StatusBadge, timeAgo } from "../../components/shared";
+import { LoadingSpinner, ErrorBanner, StatusBadge, timeAgo, formatInstanceRole, INSTANCE_ROLE_OPTIONS, type InstanceRole } from "../../components/shared";
 import DataTable, { type Column } from "../../components/DataTable";
 import DropdownMenu from "../../components/DropdownMenu";
 import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
@@ -15,11 +15,10 @@ import type { AuthContext } from "../../router";
 
 interface AgentRow {
   name: string;
-  role: string; // instance-level role: "owner" or "member"
+  role: string;
   status: string;
   created_at: string;
   vaults: { vault_name: string; vault_role: string }[];
-  // For pending invites shown inline
   invite_id?: number;
 }
 
@@ -66,17 +65,19 @@ function RowActions({
   const items: { label: string; onClick: () => void; variant?: "danger" }[] = [];
 
   if (isOwner) {
-    const targetRole = agent.role === "owner" ? "member" : "owner";
-    items.push({
-      label: `Set role: ${targetRole}`,
-      onClick: async () => {
-        await apiFetch(
-          `/v1/agents/${encodeURIComponent(agent.name)}/role`,
-          { method: "POST", body: JSON.stringify({ role: targetRole }) }
-        );
-        onDone();
-      },
-    });
+    for (const opt of INSTANCE_ROLE_OPTIONS) {
+      if (opt.role === agent.role) continue;
+      items.push({
+        label: `Set role: ${opt.label}`,
+        onClick: async () => {
+          await apiFetch(
+            `/v1/agents/${encodeURIComponent(agent.name)}/role`,
+            { method: "POST", body: JSON.stringify({ role: opt.role }) }
+          );
+          onDone();
+        },
+      });
+    }
   }
 
   items.push({ label: "Revoke agent", onClick: () => onRevoke(agent), variant: "danger" });
@@ -172,7 +173,7 @@ export default function AllAgentsTab() {
         key: "role",
         header: "Role",
         render: (agent) => (
-          <span className="text-sm text-text-muted capitalize">{agent.role}</span>
+          <span className="text-sm text-text-muted">{formatInstanceRole(agent.role)}</span>
         ),
       },
       {
@@ -281,7 +282,7 @@ function InviteAgentButton({
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
-  const [agentRole, setAgentRole] = useState<"owner" | "member">("member");
+  const [agentRole, setAgentRole] = useState<InstanceRole>("member");
   const [vaultAssignments, setVaultAssignments] = useState<VaultAssignment[]>([]);
   const [availableVaults, setAvailableVaults] = useState<VaultOption[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -443,16 +444,21 @@ function InviteAgentButton({
             {isOwner && (
               <FormField
                 label="Instance role"
-                helperText={agentRole === "owner"
-                  ? "This agent will be able to manage users, vaults, and instance settings."
-                  : "This agent will have standard access, scoped to its assigned vaults."}
+                helperText={
+                  agentRole === "owner"
+                    ? "This agent will be able to manage users, vaults, and instance settings."
+                    : agentRole === "member"
+                    ? "This agent will have standard access, scoped to its assigned vaults."
+                    : "This agent has no instance-level access. It can only operate within vaults you grant it below."
+                }
               >
                 <Select
                   value={agentRole}
-                  onChange={(e) => setAgentRole(e.target.value as "owner" | "member")}
+                  onChange={(e) => setAgentRole(e.target.value as InstanceRole)}
                 >
                   <option value="member">Member</option>
                   <option value="owner">Owner</option>
+                  <option value="no-access">No Access</option>
                 </Select>
               </FormField>
             )}

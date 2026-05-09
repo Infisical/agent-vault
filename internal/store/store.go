@@ -138,7 +138,7 @@ type User struct {
 	KDFTime      uint32 // Argon2id time parameter used when password was hashed
 	KDFMemory    uint32 // Argon2id memory parameter (KiB) used when password was hashed
 	KDFThreads   uint8  // Argon2id threads parameter used when password was hashed
-	Role         string // "owner" or "member"
+	Role         string // "owner", "member", or "no-access"
 	IsActive     bool   // false until email is verified (first user is auto-active)
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
@@ -218,7 +218,7 @@ type Invite struct {
 	Token             string
 	AgentName         string             // required: agent name (3-64 chars, lowercase alphanumeric + hyphens)
 	AgentID           string             // set for rotation invites (references existing agent)
-	AgentRole         string             // "owner" or "member" — instance role for the agent
+	AgentRole         string             // "owner", "member", or "no-access" — instance role for the agent
 	SessionTTLSeconds int                // desired session lifetime when redeemed (0 = no expiry)
 	Status            string             // pending, redeemed, expired, revoked
 	SessionID         string             // populated after redemption
@@ -242,7 +242,7 @@ type AgentInviteVault struct {
 type Agent struct {
 	ID        string
 	Name      string
-	Role      string // "owner" or "member" (instance-level role, like users)
+	Role      string // "owner", "member", or "no-access" (instance-level role, like users)
 	Status    string // "active" or "revoked"
 	CreatedBy string // user ID of the creator
 	Vaults    []VaultGrant
@@ -257,7 +257,7 @@ type UserInvite struct {
 	ID         int
 	Token      string // only populated on creation (not stored in DB)
 	Email      string
-	Role       string // "owner" or "member" — instance role for the invited user
+	Role       string // "owner", "member", or "no-access" — instance role for the invited user
 	Status     string // pending, accepted, expired, revoked
 	CreatedBy  string // user ID of the inviter
 	CreatedAt  time.Time

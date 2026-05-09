@@ -293,8 +293,9 @@ func (s *Server) handleVaultUserSetRole(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
-	// Any authenticated actor can create vaults.
-	actor, err := s.requireActor(w, r)
+	// no-access actors are blocked so they can't escalate by becoming admin
+	// of a brand-new vault they just created.
+	actor, err := s.requireInstanceMember(w, r)
 	if err != nil {
 		return
 	}

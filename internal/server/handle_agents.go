@@ -60,7 +60,7 @@ func (s *Server) handleInviteRedeem(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAgentInviteList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	actor, err := s.requireActor(w, r)
+	actor, err := s.requireInstanceMember(w, r)
 	if err != nil {
 		return
 	}
@@ -146,7 +146,7 @@ func (s *Server) handleAgentInviteRevoke(w http.ResponseWriter, r *http.Request)
 	ctx := r.Context()
 	token := r.PathValue("token")
 
-	actor, err := s.requireActor(w, r)
+	actor, err := s.requireInstanceMember(w, r)
 	if err != nil {
 		return
 	}
@@ -178,7 +178,7 @@ func (s *Server) handleAgentInviteRevoke(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleAgentInviteRevokeByID(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	actor, err := s.requireActor(w, r)
+	actor, err := s.requireInstanceMember(w, r)
 	if err != nil {
 		return
 	}
@@ -580,7 +580,7 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
 	// Owner or agent's creator can revoke.
-	actor, err := s.requireActor(w, r)
+	actor, err := s.requireInstanceMember(w, r)
 	if err != nil {
 		return
 	}
@@ -618,7 +618,7 @@ func (s *Server) handleAgentRotate(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
 	// Owner or agent's creator can rotate.
-	actor, err := s.requireActor(w, r)
+	actor, err := s.requireInstanceMember(w, r)
 	if err != nil {
 		return
 	}
@@ -670,7 +670,7 @@ func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
 	// Owner or agent's creator can rename.
-	actor, err := s.requireActor(w, r)
+	actor, err := s.requireInstanceMember(w, r)
 	if err != nil {
 		return
 	}
@@ -1034,8 +1034,7 @@ func (s *Server) handleAgentInviteCreate(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// Any authenticated actor can create agent invites.
-	actor, err := s.requireActor(w, r)
+	actor, err := s.requireInstanceMember(w, r)
 	if err != nil {
 		return
 	}
@@ -1097,8 +1096,8 @@ func (s *Server) handleAgentInviteCreate(w http.ResponseWriter, r *http.Request)
 	if agentRole == "" {
 		agentRole = "member"
 	}
-	if agentRole != "owner" && agentRole != "member" {
-		jsonError(w, http.StatusBadRequest, "Role must be one of: owner, member")
+	if !validInstanceRole(agentRole) {
+		jsonError(w, http.StatusBadRequest, "Role must be one of: owner, member, no-access")
 		return
 	}
 	// Only owner actors can create owner-role agent invites.
@@ -1153,11 +1152,11 @@ func (s *Server) handleAgentSetRole(w http.ResponseWriter, r *http.Request) {
 		Role string `json:"role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Role == "" {
-		jsonError(w, http.StatusBadRequest, `Request body must include {"role": "owner|member"}`)
+		jsonError(w, http.StatusBadRequest, `Request body must include {"role": "owner|member|no-access"}`)
 		return
 	}
-	if body.Role != "owner" && body.Role != "member" {
-		jsonError(w, http.StatusBadRequest, "Role must be one of: owner, member")
+	if !validInstanceRole(body.Role) {
+		jsonError(w, http.StatusBadRequest, "Role must be one of: owner, member, no-access")
 		return
 	}
 
@@ -1171,8 +1170,8 @@ func (s *Server) handleAgentSetRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Safety: cannot demote the last owner (user or agent).
-	if agent.Role == "owner" && body.Role == "member" && s.guardLastOwner(ctx, w, "demote") {
+	// Safety: cannot demote the last owner (user or agent) — to any non-owner role.
+	if agent.Role == "owner" && body.Role != "owner" && s.guardLastOwner(ctx, w, "demote") {
 		return
 	}
 

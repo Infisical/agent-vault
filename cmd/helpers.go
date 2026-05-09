@@ -620,3 +620,13 @@ func stopServer() error {
 
 	return fmt.Errorf("server process %d did not exit within 10 seconds; you may need to kill it manually", pid)
 }
+
+const instanceRoleHelp = "owner, member, or no-access"
+
+func validInstanceRole(s string) bool {
+	switch s {
+	case "owner", "member", "no-access":
+		return true
+	}
+	return false
+}

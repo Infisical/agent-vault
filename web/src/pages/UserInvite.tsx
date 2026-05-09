@@ -2,7 +2,7 @@ import { useState, useRef, type FormEvent } from "react";
 import { Link, useLoaderData } from "@tanstack/react-router";
 import Navbar from "../components/Navbar";
 import Button from "../components/Button";
-import { ErrorBanner } from "../components/shared";
+import { ErrorBanner, formatInstanceRole } from "../components/shared";
 import { DomainNotice } from "../components/DomainNotice";
 import { apiFetch } from "../lib/api";
 
@@ -125,8 +125,8 @@ function InviteDetails({ role, vaults }: { role?: string; vaults: InviteVault[] 
           <div className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-1">
             Instance Role
           </div>
-          <span className="inline-block px-2.5 py-0.5 bg-primary/10 text-primary text-xs font-semibold rounded-full capitalize">
-            {role}
+          <span className="inline-block px-2.5 py-0.5 bg-primary/10 text-primary text-xs font-semibold rounded-full">
+            {formatInstanceRole(role)}
           </span>
         </div>
       )}

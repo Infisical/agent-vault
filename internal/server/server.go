@@ -290,13 +290,25 @@ func sessionFromContext(ctx context.Context) *store.Session {
 type Actor struct {
 	ID    string       // user.ID or agent.ID
 	Type  string       // "user" or "agent"
-	Role  string       // "owner" or "member" (instance-level)
+	Role  string       // "owner", "member", or "no-access" (instance-level)
 	User  *store.User  // non-nil for user actors
 	Agent *store.Agent // non-nil for agent actors
 }
 
 // IsOwner returns true if the actor has the instance-level owner role.
 func (a *Actor) IsOwner() bool { return a.Role == "owner" }
+
+// Hierarchy: no-access(0) < member(1) < owner(2).
+var instanceRoleRank = map[string]int{"no-access": 0, "member": 1, "owner": 2}
+
+func validInstanceRole(s string) bool {
+	_, ok := instanceRoleRank[s]
+	return ok
+}
+
+func instanceRoleSatisfies(role, required string) bool {
+	return satisfiesRank(instanceRoleRank, role, required)
+}
 
 // DisplayLabel returns a human-readable label for the actor (email for users, name for agents).
 func (a *Actor) DisplayLabel() string {
@@ -372,6 +384,21 @@ func (s *Server) requireOwnerActor(w http.ResponseWriter, r *http.Request) (*Act
 	if !actor.IsOwner() {
 		jsonError(w, http.StatusForbidden, "Owner role required")
 		return nil, fmt.Errorf("not owner")
+	}
+	return actor, nil
+}
+
+// requireInstanceMember rejects no-access actors. Use for instance-scoped
+// actions (create vault, create invites, list actors) that don't already
+// require owner. Auth and own-profile reads should keep using requireActor.
+func (s *Server) requireInstanceMember(w http.ResponseWriter, r *http.Request) (*Actor, error) {
+	actor, err := s.requireActor(w, r)
+	if err != nil {
+		return nil, err
+	}
+	if !instanceRoleSatisfies(actor.Role, "member") {
+		jsonError(w, http.StatusForbidden, "Instance member role required")
+		return nil, fmt.Errorf("instance role too low: %s", actor.Role)
 	}
 	return actor, nil
 }
@@ -472,12 +499,17 @@ func (s *Server) requireVaultAdmin(w http.ResponseWriter, r *http.Request, vault
 	return actor, nil
 }
 
-// roleSatisfies returns true if role is at least as privileged as requiredRole.
 // Hierarchy: proxy(0) < member(1) < admin(2).
 var roleRank = map[string]int{"proxy": 0, "member": 1, "admin": 2}
 
+// satisfiesRank reports whether role meets or exceeds required in the given rank table.
+// Unknown roles rank as 0; unknown required values are satisfied by anything in rank.
+func satisfiesRank(rank map[string]int, role, required string) bool {
+	return rank[role] >= rank[required]
+}
+
 func roleSatisfies(role, requiredRole string) bool {
-	return roleRank[role] >= roleRank[requiredRole]
+	return satisfiesRank(roleRank, role, requiredRole)
 }
 
 // requireVaultMember checks that the session has member+ access to the vault.

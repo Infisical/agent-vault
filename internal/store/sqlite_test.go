@@ -28,8 +28,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 44 {
-		t.Fatalf("expected migration version 44, got %d", version)
+	if version != 45 {
+		t.Fatalf("expected migration version 45, got %d", version)
 	}
 }
 
@@ -2320,5 +2320,25 @@ func TestListRequestLogsTailOrdering(t *testing.T) {
 	}
 	if tail[0].ID != boundary+1 {
 		t.Fatalf("tail should start at id %d, got %d", boundary+1, tail[0].ID)
+	}
+}
+
+// TestNoAccessRoleAcceptedByMigration verifies migration 045 widened the
+// instance-role CHECK constraint on agents.role. A wire value of "no-access"
+// must persist; an invalid value must still be rejected.
+func TestNoAccessRoleAcceptedByMigration(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	agent, err := s.CreateAgent(ctx, "scoped-agent", "system", "no-access")
+	if err != nil {
+		t.Fatalf("CreateAgent with no-access role: %v", err)
+	}
+	if agent.Role != "no-access" {
+		t.Fatalf("expected role no-access, got %q", agent.Role)
+	}
+
+	if _, err := s.CreateAgent(ctx, "bad-agent", "system", "bogus-role"); err == nil {
+		t.Fatalf("expected CreateAgent with bogus role to fail CHECK constraint")
 	}
 }

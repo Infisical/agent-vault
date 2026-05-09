@@ -375,7 +375,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--role` | `member` | Instance role for the invited user: `owner` or `member` |
+    | `--role` | `member` | Instance role for the invited user: `owner`, `member`, or `no-access` |
     | `--vault` | | Vault pre-assignment in `name:role` format (repeatable). Role defaults to `member`. |
 
     ```bash
@@ -686,7 +686,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--role` | `member` | Instance-level role: `owner` or `member` |
+    | `--role` | `member` | Instance-level role: `owner`, `member`, or `no-access` |
     | `--vault` | | Vault pre-assignment in `name:role` format (repeatable). Role defaults to `proxy`. |
     | `--invite-ttl` | `15m` | Invite link expiration time (Go duration format) |
     | `--address` | | Agent Vault server address (default: from session) |
@@ -770,7 +770,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--role` | | Instance role: `owner` or `member` (required) |
+    | `--role` | | Instance role: `owner`, `member`, or `no-access` (required) |
   </Accordion>
 </AccordionGroup>
 
@@ -864,7 +864,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--role` | | Instance role: `owner` or `member` (required) |
+    | `--role` | | Instance role: `owner`, `member`, or `no-access` (required) |
   </Accordion>
 </AccordionGroup>
 

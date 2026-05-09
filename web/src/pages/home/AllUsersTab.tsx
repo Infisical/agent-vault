@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useRouteContext } from "@tanstack/react-router";
-import { LoadingSpinner, ErrorBanner, timeAgo } from "../../components/shared";
+import { LoadingSpinner, ErrorBanner, timeAgo, formatInstanceRole, INSTANCE_ROLE_OPTIONS, type InstanceRole } from "../../components/shared";
 import DataTable, { type Column } from "../../components/DataTable";
 import DropdownMenu from "../../components/DropdownMenu";
 import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
@@ -54,10 +54,7 @@ function RowActions({
     );
   }
 
-  const isOwner = user.role === "owner";
-
-  async function handleToggleRole() {
-    const newRole = isOwner ? "member" : "owner";
+  async function setRoleTo(newRole: InstanceRole) {
     const resp = await apiFetch(`/v1/admin/users/${encodeURIComponent(user.email)}/role`, {
       method: "POST",
       body: JSON.stringify({ role: newRole }),
@@ -74,10 +71,9 @@ function RowActions({
     <DropdownMenu
       width={192}
       items={[
-        {
-          label: isOwner ? "Demote to member" : "Promote to owner",
-          onClick: handleToggleRole,
-        },
+        ...INSTANCE_ROLE_OPTIONS
+          .filter((o) => o.role !== user.role)
+          .map((o) => ({ label: `Set role: ${o.label}`, onClick: () => setRoleTo(o.role) })),
         { label: "Remove user", onClick: () => onRemove(user), variant: "danger" },
       ]}
     />
@@ -187,7 +183,7 @@ export default function AllUsersTab() {
         key: "role",
         header: "Role",
         render: (u) => (
-          <span className="text-sm text-text-muted capitalize">{u.role}</span>
+          <span className="text-sm text-text-muted capitalize">{formatInstanceRole(u.role)}</span>
         ),
       },
     ];
@@ -300,7 +296,7 @@ function InviteUserButton({
 }) {
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
-  const [role, setRole] = useState<"owner" | "member">("member");
+  const [role, setRole] = useState<InstanceRole>("member");
   const [vaultAssignments, setVaultAssignments] = useState<VaultAssignment[]>([]);
   const [availableVaults, setAvailableVaults] = useState<VaultOption[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -462,16 +458,21 @@ function InviteUserButton({
             {isOwner && (
               <FormField
                 label="Instance role"
-                helperText={role === "owner"
-                  ? "This user will be able to manage users, vaults, and instance settings."
-                  : "This user will have standard access, scoped to their assigned vaults."}
+                helperText={
+                  role === "owner"
+                    ? "This user will be able to manage users, vaults, and instance settings."
+                    : role === "member"
+                    ? "This user will have standard access, scoped to their assigned vaults."
+                    : "This user has no instance-level access. They can only operate within vaults you grant them below."
+                }
               >
                 <Select
                   value={role}
-                  onChange={(e) => setRole(e.target.value as "owner" | "member")}
+                  onChange={(e) => setRole(e.target.value as InstanceRole)}
                 >
                   <option value="member">Member</option>
                   <option value="owner">Owner</option>
+                  <option value="no-access">No Access</option>
                 </Select>
               </FormField>
             )}

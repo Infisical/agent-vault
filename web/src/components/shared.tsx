@@ -67,6 +67,24 @@ export function timeAgo(dateStr: string): string {
   return `${months} ${months === 1 ? "month" : "months"} ago`;
 }
 
+export type InstanceRole = "owner" | "member" | "no-access";
+
+// CSS `capitalize` would render "no-access" as "No-access", so wire values
+// must be mapped to display labels by hand.
+export function formatInstanceRole(role: string): string {
+  if (role === "no-access") return "No Access";
+  if (role === "owner") return "Owner";
+  if (role === "member") return "Member";
+  return role;
+}
+
+// Highest privilege first; consumers filter out the actor's current role.
+export const INSTANCE_ROLE_OPTIONS: ReadonlyArray<{ role: InstanceRole; label: string }> = [
+  { role: "owner", label: "Owner" },
+  { role: "member", label: "Member" },
+  { role: "no-access", label: "No Access" },
+];
+
 export function timeUntil(dateStr: string): string {
   const date = new Date(dateStr);
   const now = new Date();

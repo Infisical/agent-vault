@@ -5347,3 +5347,160 @@ func TestServiceRemoveUnauthenticated(t *testing.T) {
 		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// --- no-access instance role tests ---
+
+func setupNoAccessSession(t *testing.T, ms *mockStore, grantVaultIDs ...string) string {
+	t.Helper()
+	ms.users["scoped@test.com"] = &store.User{
+		ID: "scoped-user-id", Email: "scoped@test.com", Role: "no-access", IsActive: true,
+	}
+	sess := &store.Session{
+		ID:        "scoped-session",
+		UserID:    "scoped-user-id",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+		CreatedAt: time.Now(),
+	}
+	ms.sessions[sess.ID] = sess
+	for _, nsID := range grantVaultIDs {
+		ms.GrantVaultRole(context.Background(), "scoped-user-id", "user", nsID, "member")
+	}
+	return sess.ID
+}
+
+func TestNoAccessActorCannotCreateVault(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"name":"new-vault"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoAccessActorCannotCreateUserInvite(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"email":"new@test.com"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/users/invites", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoAccessActorCannotCreateAgentInvite(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"name":"new-agent"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/invites", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoAccessActorCannotListUsers(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/users", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoAccessActorWithVaultGrantCanReadCredentials(t *testing.T) {
+	// The motivating use case: vault-scoped operations work via vault grant alone.
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/credentials?vault=default", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoAccessActorCanReadOwnProfile(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/users/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLastOwnerCannotBeDemotedToNoAccess(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"role":"no-access"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/users/owner@test.com/role", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUserInviteWithNoAccessRoleAccepted(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"email":"new@test.com","role":"no-access"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/users/invites", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
