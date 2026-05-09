@@ -25,10 +25,7 @@ const av = new AgentVault({
 const vault = av.vault("my-project");
 
 // Mint a scoped session — returns the token + container config in one call
-const session = await vault.sessions.create({
-  vaultRole: "proxy",
-  ttlSeconds: 3600,
-});
+const session = await vault.sessions.create({ ttlSeconds: 3600 });
 
 // Build the full env var set with your chosen CA cert mount path
 const certPath = "/etc/ssl/agent-vault-ca.pem";
