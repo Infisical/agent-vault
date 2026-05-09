@@ -246,7 +246,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault discover [flags]
     ```
 
-    Show available services and credentials for the current vault. Requires a vault-scoped session (via `agent-vault run` or `AGENT_VAULT_TOKEN` + `AGENT_VAULT_ADDR` env vars; `AGENT_VAULT_SESSION_TOKEN` is the deprecated alias and still works). In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
+    Show available services and credentials for the current vault. Requires a vault-scoped session token or long-lived agent token (via `agent-vault run` or `AGENT_VAULT_TOKEN` + `AGENT_VAULT_ADDR` env vars; `AGENT_VAULT_SESSION_TOKEN` is the deprecated alias and still works). In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -601,7 +601,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault proposal create [flags]
     ```
 
-    Create a proposal to request services or credentials. Supports two modes: flag-driven (for simple single-service proposals) and JSON file (for complex or multi-service proposals).
+    Create a proposal to request services or credentials. Supports two modes: flag-driven (for simple single-service proposals) and JSON file (for complex or multi-service proposals). In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|

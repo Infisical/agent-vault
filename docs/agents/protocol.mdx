@@ -30,7 +30,7 @@ Both methods deliver the same core connection details:
 There are two session types:
 
 - **Vault-scoped sessions** — created by `agent-vault vault run`. The vault is embedded in the session. No extra headers needed.
-- **Instance-level agent tokens** — created via agent invites. The agent must include an `X-Vault` header on every vault-scoped request to select which vault to use.
+- **Instance-level agent tokens** — created via agent invites. The agent must include an `X-Vault` header on `/discover` and `/v1/proposals` requests to select which vault to use.
 
 ### The X-Vault header
 

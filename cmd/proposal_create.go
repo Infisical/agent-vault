@@ -24,6 +24,9 @@ var proposalCreateCmd = &cobra.Command{
 	Short: "Create a proposal to request services or credentials",
 	Long: `Create a proposal to request services or credentials for a vault.
 
+In agent mode (AGENT_VAULT_TOKEN set), AGENT_VAULT_VAULT (or --vault) is
+required — there is no project-file or interactive-picker fallback.
+
 Flag-driven mode (common cases):
 
   # Service + credential

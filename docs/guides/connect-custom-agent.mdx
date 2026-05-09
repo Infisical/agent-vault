@@ -40,7 +40,7 @@ If you're using Claude Code, Cursor, or another supported agent, see the [Quicks
 
     Invited agents don't get `HTTPS_PROXY`/`HTTP_PROXY` auto-configured — set them yourself (see [Set the proxy env vars manually](#set-the-proxy-env-vars-manually)).
 
-    Instance-level agent tokens require the `X-Vault` header on every vault-scoped request.
+    Instance-level agent tokens require the `X-Vault` header on `/discover` and `/v1/proposals` requests.
   </Tab>
 </Tabs>
 
@@ -53,7 +53,7 @@ Your agent needs these values to operate:
 | `AGENT_VAULT_ADDR` | Yes | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
 | `AGENT_VAULT_TOKEN` | Yes | Bearer token for authenticating control-plane requests (`/discover`, proposals) |
 
-For instance-level agent tokens (from agent invites), the agent must also send the `X-Vault` header on every vault-scoped request. For vault-scoped sessions (from `vault run`), the vault is embedded in the session.
+For instance-level agent tokens (from agent invites), the agent must also send the `X-Vault` header on `/discover` and `/v1/proposals` requests. For vault-scoped sessions (from `vault run`), the vault is embedded in the session.
 
 When the agent is launched via `vault run`, these additional variables are also set automatically on the child:
 

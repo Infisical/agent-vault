@@ -21,12 +21,15 @@ var credentialListCmd = &cobra.Command{
 	Short: "List credential keys in a vault",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := ensureSession()
+		sess, tokenSource, err := resolveSession()
 		if err != nil {
 			return err
 		}
 
-		vault := resolveVault(cmd)
+		vault, err := resolveVaultForCommand(cmd, tokenSource)
+		if err != nil {
+			return err
+		}
 		reveal, _ := cmd.Flags().GetBool("reveal")
 
 		reqURL := sess.Address + "/v1/credentials?vault=" + url.QueryEscape(vault)
@@ -76,12 +79,15 @@ var credentialGetCmd = &cobra.Command{
 	Short: "Get the decrypted value of a credential",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := ensureSession()
+		sess, tokenSource, err := resolveSession()
 		if err != nil {
 			return err
 		}
 
-		vault := resolveVault(cmd)
+		vault, err := resolveVaultForCommand(cmd, tokenSource)
+		if err != nil {
+			return err
+		}
 		key := args[0]
 
 		reqURL := sess.Address + "/v1/credentials?vault=" + url.QueryEscape(vault) + "&reveal=true&key=" + url.QueryEscape(key)
@@ -115,12 +121,15 @@ var credentialSetCmd = &cobra.Command{
 	Short: "Set one or more credentials",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := ensureSession()
+		sess, tokenSource, err := resolveSession()
 		if err != nil {
 			return err
 		}
 
-		vault := resolveVault(cmd)
+		vault, err := resolveVaultForCommand(cmd, tokenSource)
+		if err != nil {
+			return err
+		}
 
 		creds := make(map[string]string, len(args))
 		for _, arg := range args {
@@ -164,12 +173,15 @@ var credentialDeleteCmd = &cobra.Command{
 	Short: "Delete one or more credentials",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := ensureSession()
+		sess, tokenSource, err := resolveSession()
 		if err != nil {
 			return err
 		}
 
-		vault := resolveVault(cmd)
+		vault, err := resolveVaultForCommand(cmd, tokenSource)
+		if err != nil {
+			return err
+		}
 
 		body, err := json.Marshal(map[string]interface{}{
 			"vault": vault,
