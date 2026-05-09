@@ -349,9 +349,9 @@ function InviteAgentButton({
     setError("");
     try {
       const payload: Record<string, unknown> = { name: name.trim() };
-      if (isOwner) {
-        payload.role = agentRole;
-      }
+      // Always send role: non-owners don't see the picker, so agentRole stays
+      // at the "no-access" default — which is what we want them creating.
+      payload.role = agentRole;
       if (vaultAssignments.length > 0) {
         payload.vaults = vaultAssignments;
       }
