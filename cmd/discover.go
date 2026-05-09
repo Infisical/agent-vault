@@ -25,8 +25,11 @@ AGENT_VAULT_SESSION_TOKEN is the deprecated alias and still works).`,
 
 		jsonOut, _ := cmd.Flags().GetBool("json")
 
+		// Pass the resolved vault as X-Vault so instance-level agent tokens
+		// (which carry no baked-in vault) can be used here too — the broker
+		// rejects agent-token /discover calls without this header.
 		url := fmt.Sprintf("%s/discover", sess.Address)
-		respBody, err := doAdminRequestWithBody("GET", url, sess.Token, nil)
+		respBody, err := doVaultScopedRequestWithBody("GET", url, sess.Token, resolveVault(cmd), nil)
 		if err != nil {
 			return err
 		}

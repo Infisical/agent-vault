@@ -63,7 +63,7 @@ For unattended deployments (k8s/Fly/ECS, where there's no human to `auth login`)
 
 ```dockerfile
 FROM node:20-slim
-COPY --from=ghcr.io/infisical/agent-vault:latest /agent-vault /usr/local/bin/
+COPY --from=infisical/agent-vault:latest /usr/local/bin/agent-vault /usr/local/bin/agent-vault
 WORKDIR /app
 COPY . .
 RUN npm ci
@@ -78,7 +78,7 @@ AGENT_VAULT_TOKEN=av_agent_token_xxx
 AGENT_VAULT_VAULT=production
 ```
 
-The token is either a vault-scoped session token (mint via `agent-vault vault token`) or — more commonly for production — a long-lived agent token minted from an agent identity (`agent-vault agent token <id>`). `agent-vault run` validates the token against the broker once at startup; bad/expired tokens fail fast with a clear error rather than producing 401s on every proxied call. `--ttl` is rejected in this mode since the token's lifetime is fixed at mint time.
+The token is either a vault-scoped session token (mint via `agent-vault vault token`) or — more commonly for production — a long-lived agent token issued out-of-band by an operator (see [Agents](https://docs.infisical.com/agents/overview)). `agent-vault run` validates the token against the broker once at startup; bad/expired tokens fail fast with a clear error rather than producing 401s on every proxied call. `--ttl` is rejected in this mode since the token's lifetime is fixed at mint time.
 
 ## Discover Available Services (Start Here)
 

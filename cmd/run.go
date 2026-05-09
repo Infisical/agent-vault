@@ -171,8 +171,15 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("command not found: %s", args[0])
 	}
 
-	// 5. Build env: inherit current env + inject Agent Vault vars.
+	// 5. Build env: inherit current env + inject Agent Vault vars. Strip
+	//    any pre-existing AGENT_VAULT_* keys first — POSIX getenv returns
+	//    the *first* match (glibc, curl, libcurl-backed Python, Go's own
+	//    syscall.Getenv), so a stale parent-env value would otherwise
+	//    silently shadow the freshly-injected one. Particularly important
+	//    in agent mode, where the parent env is *guaranteed* to carry these
+	//    keys (that's how agent mode is detected).
 	env := os.Environ()
+	env = stripEnvKeys(env, agentVaultInjectedKeys)
 	env = append(env,
 		"AGENT_VAULT_TOKEN="+token,
 		"AGENT_VAULT_SESSION_TOKEN="+token, // deprecated alias
@@ -408,6 +415,19 @@ var mitmInjectedKeys = func() map[string]struct{} {
 	}
 	return m
 }()
+
+// agentVaultInjectedKeys is the AGENT_VAULT_* keyset injected into the child
+// in step 5 of runCmdRunE. Same rationale as mitmInjectedKeys: in agent mode
+// the parent env is guaranteed to already carry these keys (that's how agent
+// mode is detected), and POSIX getenv returns the first match — so a stale
+// AGENT_VAULT_VAULT from the parent shell would silently override the value
+// we just resolved from --vault.
+var agentVaultInjectedKeys = map[string]struct{}{
+	"AGENT_VAULT_TOKEN":         {},
+	"AGENT_VAULT_SESSION_TOKEN": {},
+	"AGENT_VAULT_ADDR":          {},
+	"AGENT_VAULT_VAULT":         {},
+}
 
 // stripEnvKeys returns env with every entry whose key (the part before
 // '=') appears in keys removed. Case-sensitive, matching how the kernel

@@ -583,8 +583,11 @@ func validateEnvToken(addr, token, vault string) error {
 	// stops at the first JSON value's closing brace).
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if vault != "" && dr.Vault != "" && dr.Vault != vault {
-		return fmt.Errorf("vault mismatch: AGENT_VAULT_VAULT=%q but the supplied token is scoped to vault %q — drop AGENT_VAULT_VAULT or use a token for %q",
-			vault, dr.Vault, vault)
+		// resolveVaultForAgentMode prioritizes --vault over AGENT_VAULT_VAULT,
+		// so name both surfaces in the remediation rather than hardcoding the
+		// env var (which may not even be set if the user passed --vault).
+		return fmt.Errorf("vault mismatch: requested vault %q does not match the supplied token's vault %q — set AGENT_VAULT_VAULT (or --vault) to %q, or use a token for %q",
+			vault, dr.Vault, dr.Vault, vault)
 	}
 	return nil
 }
@@ -627,6 +630,16 @@ func fetchAndDecode[T any](method, path string) (*T, error) {
 
 // doAdminRequestWithBody makes an authenticated HTTP request to the server and returns the response body.
 func doAdminRequestWithBody(method, url, token string, body []byte) ([]byte, error) {
+	return doVaultScopedRequestWithBody(method, url, token, "", body)
+}
+
+// doVaultScopedRequestWithBody is like doAdminRequestWithBody but also sends
+// X-Vault: vault. Required for vault-scoped endpoints (/discover, /v1/proposals)
+// when the token may be an instance-level agent token — the broker returns
+// HTTP 400 ("Agent tokens require X-Vault header") without it. Vault-scoped
+// session tokens carry their vault on the session row, so the header is
+// ignored in that case; passing it unconditionally is safe.
+func doVaultScopedRequestWithBody(method, url, token, vault string, body []byte) ([]byte, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		bodyReader = bytes.NewReader(body)
@@ -637,6 +650,9 @@ func doAdminRequestWithBody(method, url, token string, body []byte) ([]byte, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	if vault != "" {
+		req.Header.Set("X-Vault", vault)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
