@@ -733,13 +733,13 @@ func TestResolveSessionFromEnvVars(t *testing.T) {
 }
 
 func TestValidateEnvToken(t *testing.T) {
-	t.Run("happy path: 200 OK", func(t *testing.T) {
+	t.Run("happy path: 200 OK with matching vault", func(t *testing.T) {
 		var gotAuth, gotVault string
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotAuth = r.Header.Get("Authorization")
 			gotVault = r.Header.Get("X-Vault")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("{}"))
+			_, _ = w.Write([]byte(`{"vault":"myvault"}`))
 		}))
 		defer srv.Close()
 
@@ -791,17 +791,6 @@ func TestValidateEnvToken(t *testing.T) {
 		}
 	})
 
-	t.Run("matching vaults pass", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"vault":"prod"}`))
-		}))
-		defer srv.Close()
-
-		if err := validateEnvToken(srv.URL, "tok", "prod"); err != nil {
-			t.Fatalf("expected nil err for matching vaults, got: %v", err)
-		}
-	})
 }
 
 func TestProposalCreateFlagsRegistered(t *testing.T) {

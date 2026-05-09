@@ -500,6 +500,12 @@ func resolveVault(cmd *cobra.Command) string {
 const (
 	envVarToken       = "AGENT_VAULT_TOKEN"
 	envVarTokenLegacy = "AGENT_VAULT_SESSION_TOKEN"
+
+	// discoverRespMaxBytes caps JSON parsing of the /discover response so
+	// a hostile or misbehaving server can't make `vault run` hang on a
+	// multi-GB body. 1 MiB comfortably covers a vault with thousands of
+	// services + credential keys.
+	discoverRespMaxBytes = 1 << 20
 )
 
 var legacyTokenWarnOnce sync.Once
@@ -570,12 +576,14 @@ func validateEnvToken(addr, token, vault string) error {
 	var dr struct {
 		Vault string `json:"vault"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&dr); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, discoverRespMaxBytes)).Decode(&dr); err != nil {
 		return fmt.Errorf("validate token: parsing /discover response: %w", err)
 	}
+	// Drain trailing bytes so net/http can pool the connection (Decode
+	// stops at the first JSON value's closing brace).
+	_, _ = io.Copy(io.Discard, resp.Body)
 	if vault != "" && dr.Vault != "" && dr.Vault != vault {
-		return fmt.Errorf("vault mismatch: AGENT_VAULT_VAULT=%q but the supplied token is scoped to vault %q — "+
-			"either drop AGENT_VAULT_VAULT (it has no effect on a vault-scoped session token) or supply a token for vault %q",
+		return fmt.Errorf("vault mismatch: AGENT_VAULT_VAULT=%q but the supplied token is scoped to vault %q — drop AGENT_VAULT_VAULT or use a token for %q",
 			vault, dr.Vault, vault)
 	}
 	return nil
