@@ -5438,6 +5438,41 @@ func TestNoAccessActorCannotListUsers(t *testing.T) {
 	}
 }
 
+func TestNoAccessActorCannotListAgents(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	token := setupNoAccessSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/agents", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoAccessActorCannotGetAgent(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	ms.agents["existing-agent"] = &store.Agent{
+		ID: "existing-agent-id", Name: "existing-agent", Role: "member", Status: "active",
+	}
+	token := setupNoAccessSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/agents/existing-agent", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestNoAccessActorWithVaultGrantCanReadCredentials(t *testing.T) {
 	// The motivating use case: vault-scoped operations work via vault grant alone.
 	ms, _ := setupMockStoreWithSession(t)

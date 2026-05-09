@@ -420,11 +420,10 @@ func (s *Server) handleRotationRedeem(w http.ResponseWriter, r *http.Request, in
 func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Any authenticated user can list agents.
-	// Owners see all; members see agents that share at least one vault.
-	sess := sessionFromContext(ctx)
-	if sess == nil {
-		jsonError(w, http.StatusForbidden, "Authentication required")
+	// Owners see all agents; members see agents that share at least one vault.
+	// no-access actors are blocked — the agent directory is instance-scoped.
+	actor, err := s.requireInstanceMember(w, r)
+	if err != nil {
 		return
 	}
 
@@ -435,10 +434,9 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// For non-owner actors, filter to agents sharing at least one vault.
-	actor, _ := s.actorFromSession(ctx, sess)
-	isOwner := actor != nil && actor.IsOwner()
+	isOwner := actor.IsOwner()
 	var accessibleVaults map[string]bool
-	if !isOwner && actor != nil {
+	if !isOwner {
 		grants, _ := s.store.ListActorGrants(ctx, actor.ID)
 		accessibleVaults = make(map[string]bool, len(grants))
 		for _, g := range grants {
@@ -534,10 +532,7 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")
 
-	// Any authenticated user can view an agent.
-	sess := sessionFromContext(ctx)
-	if sess == nil {
-		jsonError(w, http.StatusForbidden, "Authentication required")
+	if _, err := s.requireInstanceMember(w, r); err != nil {
 		return
 	}
 
@@ -992,7 +987,7 @@ func (s *Server) handleAgentInviteCreate(w http.ResponseWriter, r *http.Request)
 	}
 	var req struct {
 		Name              string     `json:"name"`
-		Role              string     `json:"role"` // instance-level role: "owner" or "member" (default: "member")
+		Role              string     `json:"role"` // instance-level role: "owner", "member", or "no-access" (default: "member")
 		TTLSeconds        int        `json:"ttl_seconds"`
 		SessionTTLSeconds *int       `json:"session_ttl_seconds,omitempty"`
 		Vaults            []vaultReq `json:"vaults"`
