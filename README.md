@@ -73,6 +73,8 @@ agent-vault server -d
 
 The server starts the HTTP API on port `14321` and a TLS-encrypted transparent HTTP/HTTPS proxy on port `14322` — the same listener handles `CONNECT` for `https://` upstreams and absolute-form forward-proxy requests for `http://` upstreams. A web UI is available at `http://localhost:14321`.
 
+When self-hosting on a platform with a public/private service split, you may find it helpful to keep port `14322` on the private network and front port `14321` with a reverse proxy so humans can reach the management UI without exposing the broker. See [examples/nginx-public-ui-proxy/](examples/nginx-public-ui-proxy/) for a working nginx example.
+
 ## Quickstart
 
 ### CLI — local agents (Claude Code, Cursor, Codex, OpenClaw, Hermes, OpenCode)
