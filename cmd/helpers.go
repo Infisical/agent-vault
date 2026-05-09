@@ -511,14 +511,17 @@ const (
 var legacyTokenWarnOnce sync.Once
 
 // resolveSession returns a client session from env vars (agent mode) or falls
-// back to ensureSession (human mode). The bool is true when the session came
-// from env vars — callers use it to skip mintScopedSession and treat the
-// env-supplied token as the credential to thread to the child.
+// back to ensureSession (human mode). When the session came from env, the
+// returned string names the env var the token was read from (envVarToken or
+// the deprecated envVarTokenLegacy); callers thread it through to downstream
+// error messages so users see the variable they actually set. "" when the
+// session came from ensureSession — callers treat that as "not from env" and
+// branch on `tokenSource != ""` instead of a separate bool.
 //
 // If a token is set but AGENT_VAULT_ADDR is missing, returns a clear error
 // rather than silently falling through to interactive login — masking that
 // misconfig produces "why don't my creds work" tickets.
-func resolveSession() (*session.ClientSession, bool, error) {
+func resolveSession() (*session.ClientSession, string, error) {
 	tokenSource := envVarToken
 	token := os.Getenv(envVarToken)
 	if token == "" {
@@ -533,13 +536,13 @@ func resolveSession() (*session.ClientSession, bool, error) {
 	}
 	addr := os.Getenv("AGENT_VAULT_ADDR")
 	if token != "" && addr == "" {
-		return nil, false, fmt.Errorf("%s is set but AGENT_VAULT_ADDR is empty — both are required for agent mode", tokenSource)
+		return nil, "", fmt.Errorf("%s is set but AGENT_VAULT_ADDR is empty — both are required for agent mode", tokenSource)
 	}
 	if token != "" {
-		return &session.ClientSession{Token: token, Address: strings.TrimRight(addr, "/")}, true, nil
+		return &session.ClientSession{Token: token, Address: strings.TrimRight(addr, "/")}, tokenSource, nil
 	}
 	sess, err := ensureSession()
-	return sess, false, err
+	return sess, "", err
 }
 
 // validateEnvToken probes /discover with the env-supplied token before
@@ -553,7 +556,10 @@ func resolveSession() (*session.ClientSession, bool, error) {
 // the session's baked-in vault and ignores X-Vault. The discover response
 // echoes the actual vault, so we compare and reject the mismatch — otherwise
 // the child would see a misleading AGENT_VAULT_VAULT in its environment.
-func validateEnvToken(addr, token, vault string) error {
+func validateEnvToken(addr, token, vault, tokenSource string) error {
+	if tokenSource == "" {
+		tokenSource = envVarToken
+	}
 	url := strings.TrimRight(addr, "/") + "/discover"
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -569,7 +575,7 @@ func validateEnvToken(addr, token, vault string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("agent token rejected by broker (HTTP %d) — verify %s is current and has access to vault %q", resp.StatusCode, envVarToken, vault)
+		return fmt.Errorf("agent token rejected by broker (HTTP %d) — verify %s is current and has access to vault %q", resp.StatusCode, tokenSource, vault)
 	}
 	if resp.StatusCode/100 != 2 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))

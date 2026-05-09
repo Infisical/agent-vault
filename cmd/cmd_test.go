@@ -658,12 +658,12 @@ func TestResolveSessionFromEnvVars(t *testing.T) {
 		t.Setenv("AGENT_VAULT_TOKEN", "test-token-123")
 		t.Setenv("AGENT_VAULT_ADDR", "http://localhost:9999")
 
-		sess, fromEnv, err := resolveSession()
+		sess, tokenSource, err := resolveSession()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !fromEnv {
-			t.Error("expected fromEnv=true when token came from env")
+		if tokenSource != "AGENT_VAULT_TOKEN" {
+			t.Errorf("expected tokenSource=AGENT_VAULT_TOKEN, got %q", tokenSource)
 		}
 		if sess.Token != "test-token-123" {
 			t.Errorf("expected token %q, got %q", "test-token-123", sess.Token)
@@ -679,12 +679,12 @@ func TestResolveSessionFromEnvVars(t *testing.T) {
 		t.Setenv("AGENT_VAULT_SESSION_TOKEN", "legacy-token")
 		t.Setenv("AGENT_VAULT_ADDR", "http://localhost:9999")
 
-		sess, fromEnv, err := resolveSession()
+		sess, tokenSource, err := resolveSession()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !fromEnv {
-			t.Error("expected fromEnv=true")
+		if tokenSource != "AGENT_VAULT_SESSION_TOKEN" {
+			t.Errorf("expected tokenSource=AGENT_VAULT_SESSION_TOKEN (legacy), got %q", tokenSource)
 		}
 		if sess.Token != "legacy-token" {
 			t.Errorf("expected legacy token to be honored; got %q", sess.Token)
@@ -743,7 +743,7 @@ func TestValidateEnvToken(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		if err := validateEnvToken(srv.URL, "tok123", "myvault"); err != nil {
+		if err := validateEnvToken(srv.URL, "tok123", "myvault", "AGENT_VAULT_TOKEN"); err != nil {
 			t.Fatalf("expected nil err, got %v", err)
 		}
 		if gotAuth != "Bearer tok123" {
@@ -754,18 +754,24 @@ func TestValidateEnvToken(t *testing.T) {
 		}
 	})
 
-	t.Run("401 produces friendly error", func(t *testing.T) {
+	t.Run("401 produces friendly error naming the user-supplied env var", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusUnauthorized)
 		}))
 		defer srv.Close()
 
-		err := validateEnvToken(srv.URL, "bad", "v")
+		// Pass the legacy alias as tokenSource — the rejection error must
+		// name it back, not the canonical-name constant, so users see the
+		// variable they actually set.
+		err := validateEnvToken(srv.URL, "bad", "v", "AGENT_VAULT_SESSION_TOKEN")
 		if err == nil {
 			t.Fatal("expected error on 401")
 		}
 		if !strings.Contains(err.Error(), "rejected by broker") {
 			t.Errorf("expected friendly 'rejected by broker' message; got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "AGENT_VAULT_SESSION_TOKEN") {
+			t.Errorf("expected error to name the legacy env var the caller used; got: %v", err)
 		}
 	})
 
@@ -779,7 +785,7 @@ func TestValidateEnvToken(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		err := validateEnvToken(srv.URL, "tok", "requested-vault")
+		err := validateEnvToken(srv.URL, "tok", "requested-vault", "AGENT_VAULT_TOKEN")
 		if err == nil {
 			t.Fatal("expected mismatch error")
 		}

@@ -117,10 +117,14 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	// 1. Resolve session: env-supplied token (agent mode) or on-disk admin
 	//    session (human mode). Agent mode is the path used by containerized
 	//    deployments where there's no TTY and no on-disk session.
-	sess, fromEnv, err := resolveSession()
+	//    tokenSource is "" in human mode; in agent mode it names the env var
+	//    the token was read from (envVarToken or the deprecated alias) so
+	//    downstream errors can reference the variable the user actually set.
+	sess, tokenSource, err := resolveSession()
 	if err != nil {
 		return err
 	}
+	fromEnv := tokenSource != ""
 
 	addr, _ := cmd.Flags().GetString("address")
 	if addr == "" {
@@ -140,7 +144,7 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		// at mint time, so silently ignoring would mislead users who
 		// believed they bounded the run.
 		if cmd.Flags().Changed("ttl") {
-			return fmt.Errorf("--ttl has no effect when %s is supplied; the token's lifetime is fixed at mint time", envVarToken)
+			return fmt.Errorf("--ttl has no effect when %s is supplied; the token's lifetime is fixed at mint time", tokenSource)
 		}
 		v, err := resolveVaultForAgentMode(cmd)
 		if err != nil {
@@ -148,7 +152,7 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		}
 		vault = v
 		token = sess.Token
-		if err := validateEnvToken(addr, token, vault); err != nil {
+		if err := validateEnvToken(addr, token, vault, tokenSource); err != nil {
 			return err
 		}
 	} else {
