@@ -65,10 +65,12 @@ Set these on the upstream Agent Vault service so it behaves correctly behind a r
 |--------|---------------|
 | Public traffic to port `14322` | The reverse proxy has no route there. The `proxy_pass` only ever points at `14321`. |
 | `CONNECT` tunneling through the reverse proxy | Explicit `return 405` on `CONNECT`. |
-| oauth2-proxy-style header spoofing | `X-Forwarded-User` and `X-Auth-Request-User` are stripped. |
+
+The config also strips `X-Forwarded-User` and `X-Auth-Request-User` preemptively. Agent Vault doesn't trust these headers today, but stripping prevents a client from arriving pre-authed if a future version grows oauth2-proxy-style trusted-header support before this config is reviewed.
 
 ## What this does NOT protect
 
+- **TLS termination at this reverse proxy.** It listens on plain HTTP at `${PORT}`. The example assumes TLS is terminated in front (PaaS load balancer, Cloudflare). On a bare VM or plain Docker host, add an `ssl` listener here too.
 - **In-network traffic encryption.** Reverse proxy → Agent Vault is plain HTTP. Most PaaS private networks are isolated; if your threat model needs in-network encryption, terminate TLS at the upstream too.
 - **A compromised reverse proxy host.** If the reverse proxy VM is rooted, the attacker can reach the upstream. This reverse proxy is one layer of defense in depth, not the only one.
 
