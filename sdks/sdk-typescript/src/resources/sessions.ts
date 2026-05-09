@@ -5,9 +5,8 @@ import type { ScopedSession } from "../types.js";
  * Options for creating a vault-scoped session.
  */
 export interface CreateSessionOptions {
-  /** Vault role for the scoped session. Default: `"proxy"`. */
-  vaultRole?: "proxy" | "member" | "admin";
-  /** Session TTL in seconds (60-86400). Defaults to server's 24h. */
+  /** Session TTL in seconds (300-604800, i.e. 5 minutes to 7 days).
+   *  Defaults to the server's 24h. */
   ttlSeconds?: number;
 }
 
@@ -114,7 +113,6 @@ export class SessionsResource {
     const [res, mitmInfo] = await Promise.all([
       this.httpClient.post<ScopedSession>("/v1/sessions", {
         vault: this.vaultName,
-        vault_role: options?.vaultRole,
         ttl_seconds: options?.ttlSeconds,
       }),
       this.getMitmInfo(),

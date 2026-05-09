@@ -46,8 +46,35 @@ export interface CustomAuth {
   headers: Record<string, string>;
 }
 
+/** Passthrough auth — host is allowlisted, headers flow through, no credential injected. */
+export interface PassthroughAuth {
+  type: "passthrough";
+}
+
 /** Authentication configuration for a service. */
-export type ServiceAuth = BearerAuth | BasicAuth | ApiKeyAuth | CustomAuth;
+export type ServiceAuth =
+  | BearerAuth
+  | BasicAuth
+  | ApiKeyAuth
+  | CustomAuth
+  | PassthroughAuth;
+
+// ---------------------------------------------------------------------------
+// Substitution
+// ---------------------------------------------------------------------------
+
+/** Surfaces where a substitution may be applied. */
+export type SubstitutionSurface = "path" | "query" | "header";
+
+/** Replaces a placeholder in the request with a credential value before forwarding. */
+export interface Substitution {
+  /** Credential key (UPPER_SNAKE_CASE) whose value replaces the placeholder. */
+  key: string;
+  /** Literal placeholder string that appears in the outgoing request. */
+  placeholder: string;
+  /** Surfaces to scan. Defaults server-side to ["path", "query"] when omitted. */
+  in?: SubstitutionSurface[];
+}
 
 // ---------------------------------------------------------------------------
 // Service type
@@ -59,8 +86,12 @@ export interface Service {
   host: string;
   /** Optional description. */
   description?: string;
+  /** Whether the service is active. Omitted/undefined is treated as enabled. */
+  enabled?: boolean;
   /** Authentication configuration. */
   auth: ServiceAuth;
+  /** Optional placeholder→credential substitutions applied before forwarding. */
+  substitutions?: Substitution[];
 }
 
 // ---------------------------------------------------------------------------

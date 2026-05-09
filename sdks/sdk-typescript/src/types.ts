@@ -96,11 +96,20 @@ export interface WireServiceAuth {
   headers?: Record<string, string>;
 }
 
+/** @internal Wire format for a substitution entry. */
+export interface WireSubstitution {
+  key: string;
+  placeholder: string;
+  in?: string[];
+}
+
 /** @internal Wire format for a service entry. */
 export interface WireService {
   host: string;
   description?: string;
+  enabled?: boolean;
   auth: WireServiceAuth;
+  substitutions?: WireSubstitution[];
 }
 
 /** @internal Wire format for GET /v1/vaults/{name}/services response. */

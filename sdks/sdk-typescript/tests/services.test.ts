@@ -32,6 +32,14 @@ describe("ServicesResource", () => {
               description: "Stripe API",
               auth: { type: "bearer", token: "STRIPE_KEY" },
             },
+            {
+              host: "proxy.example.com",
+              enabled: false,
+              auth: { type: "passthrough" },
+              substitutions: [
+                { key: "ACCOUNT_ID", placeholder: "__ACCOUNT__", in: ["path"] },
+              ],
+            },
           ],
         },
       });
@@ -44,11 +52,19 @@ describe("ServicesResource", () => {
       const result = await av.vault("default").services!.list();
 
       expect(result.vault).toBe("default");
-      expect(result.services).toHaveLength(1);
+      expect(result.services).toHaveLength(2);
       expect(result.services[0]).toEqual({
         host: "api.stripe.com",
         description: "Stripe API",
         auth: { type: "bearer", token: "STRIPE_KEY" },
+      });
+      expect(result.services[1]).toEqual({
+        host: "proxy.example.com",
+        enabled: false,
+        auth: { type: "passthrough" },
+        substitutions: [
+          { key: "ACCOUNT_ID", placeholder: "__ACCOUNT__", in: ["path"] },
+        ],
       });
     });
 
@@ -162,6 +178,38 @@ describe("ServicesResource", () => {
       const init = mockFetch.mock.calls[0]![1]!;
       const headers = init.headers as Record<string, string>;
       expect(headers["X-Vault"]).toBe("production");
+    });
+
+    it("forwards passthrough auth, enabled, and substitutions verbatim", async () => {
+      const mockFetch = createMockFetch({
+        body: { vault: "default", upserted: ["proxy.example.com"], services_count: 1 },
+      });
+
+      const av = new AgentVault({
+        token: "agent-token",
+        address: "http://localhost:14321",
+        fetch: mockFetch,
+      });
+      await av.vault("default").services!.set([
+        {
+          host: "proxy.example.com",
+          enabled: false,
+          auth: { type: "passthrough" },
+          substitutions: [
+            { key: "ACCOUNT_ID", placeholder: "__ACCOUNT__", in: ["path", "query"] },
+          ],
+        },
+      ]);
+
+      const body = JSON.parse(mockFetch.mock.calls[0]![1]?.body as string);
+      expect(body.services[0]).toEqual({
+        host: "proxy.example.com",
+        enabled: false,
+        auth: { type: "passthrough" },
+        substitutions: [
+          { key: "ACCOUNT_ID", placeholder: "__ACCOUNT__", in: ["path", "query"] },
+        ],
+      });
     });
   });
 
