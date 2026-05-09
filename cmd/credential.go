@@ -19,7 +19,11 @@ var credentialCmd = &cobra.Command{
 var credentialListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List credential keys in a vault",
-	Args:  cobra.NoArgs,
+	Long: `List credential keys in a vault.
+
+In agent mode (AGENT_VAULT_TOKEN set), AGENT_VAULT_VAULT (or --vault) is
+required — there is no project-file or interactive-picker fallback.`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sess, tokenSource, err := resolveSession()
 		if err != nil {
@@ -77,7 +81,11 @@ var credentialListCmd = &cobra.Command{
 var credentialGetCmd = &cobra.Command{
 	Use:   "get <key>",
 	Short: "Get the decrypted value of a credential",
-	Args:  cobra.ExactArgs(1),
+	Long: `Get the decrypted value of a credential.
+
+In agent mode (AGENT_VAULT_TOKEN set), AGENT_VAULT_VAULT (or --vault) is
+required — there is no project-file or interactive-picker fallback.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sess, tokenSource, err := resolveSession()
 		if err != nil {
@@ -119,7 +127,11 @@ var credentialGetCmd = &cobra.Command{
 var credentialSetCmd = &cobra.Command{
 	Use:   "set <key=value> [key2=value2 ...]",
 	Short: "Set one or more credentials",
-	Args:  cobra.MinimumNArgs(1),
+	Long: `Set one or more credentials in a vault.
+
+In agent mode (AGENT_VAULT_TOKEN set), AGENT_VAULT_VAULT (or --vault) is
+required — there is no project-file or interactive-picker fallback.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sess, tokenSource, err := resolveSession()
 		if err != nil {
@@ -171,7 +183,11 @@ var credentialSetCmd = &cobra.Command{
 var credentialDeleteCmd = &cobra.Command{
 	Use:   "delete <key> [key2 ...]",
 	Short: "Delete one or more credentials",
-	Args:  cobra.MinimumNArgs(1),
+	Long: `Delete one or more credentials from a vault.
+
+In agent mode (AGENT_VAULT_TOKEN set), AGENT_VAULT_VAULT (or --vault) is
+required — there is no project-file or interactive-picker fallback.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sess, tokenSource, err := resolveSession()
 		if err != nil {

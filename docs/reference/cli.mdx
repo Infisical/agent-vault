@@ -523,7 +523,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential list [flags]
     ```
 
-    List credential keys in a vault. Alias: `agent-vault vault creds list`.
+    List credential keys in a vault. Alias: `agent-vault vault creds list`. In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -536,7 +536,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential get <KEY> [flags]
     ```
 
-    Print the decrypted value of a single credential to stdout. Pipe-friendly. Requires member+ role. Alias: `agent-vault vault creds get`.
+    Print the decrypted value of a single credential to stdout. Pipe-friendly. Requires member+ role. Alias: `agent-vault vault creds get`. In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -548,7 +548,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential set <KEY=VALUE> [KEY2=VALUE2 ...] [flags]
     ```
 
-    Store one or more credentials using `KEY=VALUE` format. Alias: `agent-vault vault creds set`.
+    Store one or more credentials using `KEY=VALUE` format. Alias: `agent-vault vault creds set`. In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -560,7 +560,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential delete <KEY> [KEY2 ...] [flags]
     ```
 
-    Delete one or more credentials. Alias: `agent-vault vault creds delete`.
+    Delete one or more credentials. Alias: `agent-vault vault creds delete`. In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|

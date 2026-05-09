@@ -39,7 +39,7 @@ By default each vault forwards unmatched hosts as plain proxy traffic (no creden
 |----------|-------------|
 | `AGENT_VAULT_ADDR` | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
 | `AGENT_VAULT_TOKEN` | Bearer token for authenticating with Agent Vault's control-plane endpoints (`discover`, proposals, etc.). Either a vault-scoped session token or a long-lived agent token. |
-| `AGENT_VAULT_VAULT` | Vault name (set for user-scoped sessions via `agent-vault run`) |
+| `AGENT_VAULT_VAULT` | Vault name. Set automatically by `agent-vault run` in admin mode; supplied by the operator in agent mode. |
 
 > `AGENT_VAULT_SESSION_TOKEN` is the deprecated alias of `AGENT_VAULT_TOKEN` and is still honored with a one-time stderr warning. It will be removed in a future major version.
 
@@ -74,7 +74,7 @@ Set three env vars at deploy time:
 
 ```
 AGENT_VAULT_ADDR=https://vault.example.com
-AGENT_VAULT_TOKEN=av_agent_token_xxx
+AGENT_VAULT_TOKEN=av_agt_xxx
 AGENT_VAULT_VAULT=production
 ```
 
