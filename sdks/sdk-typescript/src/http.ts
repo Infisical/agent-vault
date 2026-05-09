@@ -33,8 +33,28 @@ const SDK_VERSION = "0.1.0";
 const USER_AGENT = `agent-vault-sdk-typescript/${SDK_VERSION}`;
 const DEFAULT_TIMEOUT = 30_000;
 const DEFAULT_ADDRESS = "http://localhost:14321";
-const ENV_TOKEN = "AGENT_VAULT_SESSION_TOKEN";
+const ENV_TOKEN = "AGENT_VAULT_TOKEN";
+const ENV_TOKEN_LEGACY = "AGENT_VAULT_SESSION_TOKEN";
 const ENV_ADDR = "AGENT_VAULT_ADDR";
+
+let legacyTokenWarned = false;
+
+/**
+ * Resolve a token from env: prefer AGENT_VAULT_TOKEN, fall back to the
+ * deprecated AGENT_VAULT_SESSION_TOKEN with a one-time warning. Returns
+ * undefined if neither is set.
+ */
+function readEnvToken(): string | undefined {
+  const fresh = process.env[ENV_TOKEN];
+  if (fresh) return fresh;
+  const legacy = process.env[ENV_TOKEN_LEGACY];
+  if (legacy && !legacyTokenWarned) {
+    legacyTokenWarned = true;
+    // eslint-disable-next-line no-console
+    console.warn(`agent-vault: ${ENV_TOKEN_LEGACY} is deprecated; use ${ENV_TOKEN} instead.`);
+  }
+  return legacy;
+}
 
 /**
  * Internal HTTP client that wraps `fetch` with Agent Vault conventions.
@@ -65,7 +85,7 @@ export class HttpClient {
    */
   static fromConfig(config?: ClientConfig): HttpClient {
     const cfg = config ?? {};
-    const token = cfg.token ?? process.env[ENV_TOKEN];
+    const token = cfg.token ?? readEnvToken();
     if (!token) {
       throw new AgentVaultError(
         `Token is required. Provide it in the config or set the ${ENV_TOKEN} environment variable.`,

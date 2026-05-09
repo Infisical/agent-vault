@@ -39,8 +39,21 @@ func newRunCmd(examplePrefix string) *cobra.Command {
 		Long: `Start an agent process (e.g. claude, agent, codex, hermes, opencode) with an Agent Vault session.
 Everything after -- is treated as the command to execute.
 
+Two modes:
+  Admin mode (default): use the on-disk session from 'agent-vault auth login'.
+    Mints a fresh vault-scoped session token for the child.
+  Agent mode: pre-supply a token via env. Used for unattended / containerized
+    deployments where there's no human to interactively log in.
+      AGENT_VAULT_TOKEN  — vault-scoped session token or long-lived agent token
+      AGENT_VAULT_ADDR   — broker base URL
+      AGENT_VAULT_VAULT  — vault to scope the run to (required for agent tokens)
+    The token is validated against the broker once before the child is exec'd.
+    --ttl has no effect in agent mode and is rejected (the token's lifetime
+    is fixed at mint time).
+
 Environment variables set on the child:
-  AGENT_VAULT_SESSION_TOKEN  — vault-scoped bearer token for the Agent Vault server
+  AGENT_VAULT_TOKEN          — bearer token for the Agent Vault server
+  AGENT_VAULT_SESSION_TOKEN  — alias of AGENT_VAULT_TOKEN (deprecated; will be removed in a future major version)
   AGENT_VAULT_ADDR           — base URL of the Agent Vault HTTP control server
   AGENT_VAULT_VAULT          — vault the session is scoped to
 
@@ -101,8 +114,10 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// 1. Load the admin session from agent-vault auth login.
-	sess, err := ensureSession()
+	// 1. Resolve session: env-supplied token (agent mode) or on-disk admin
+	//    session (human mode). Agent mode is the path used by containerized
+	//    deployments where there's no TTY and no on-disk session.
+	sess, fromEnv, err := resolveSession()
 	if err != nil {
 		return err
 	}
@@ -112,16 +127,42 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		addr = sess.Address
 	}
 
-	// 2-3. Resolve the vault and mint a vault-scoped session token,
-	//      retrying on session expiry. Shared with `vault token`.
-	ttl, _ := cmd.Flags().GetInt("ttl")
-	vault, scopedToken, err := mintScopedSession(cmd, sess, addr, ttl)
-	if err != nil {
-		return err
+	// 2-3. Determine the token + vault. In agent mode the env-supplied
+	//      token IS the credential; we validate it once against the broker
+	//      so a bad token fails fast at startup instead of producing 401s
+	//      on every proxied call. In admin mode we mint a fresh
+	//      vault-scoped token (existing behavior).
+	var (
+		vault, token string
+	)
+	if fromEnv {
+		// Hard-error on --ttl: the env-supplied token's lifetime is fixed
+		// at mint time, so silently ignoring would mislead users who
+		// believed they bounded the run.
+		if cmd.Flags().Changed("ttl") {
+			return fmt.Errorf("--ttl has no effect when %s is supplied; the token's lifetime is fixed at mint time", envVarToken)
+		}
+		v, err := resolveVaultForAgentMode(cmd)
+		if err != nil {
+			return err
+		}
+		vault = v
+		token = sess.Token
+		if err := validateEnvToken(addr, token, vault); err != nil {
+			return err
+		}
+	} else {
+		ttl, _ := cmd.Flags().GetInt("ttl")
+		v, scopedToken, err := mintScopedSession(cmd, sess, addr, ttl)
+		if err != nil {
+			return err
+		}
+		vault = v
+		token = scopedToken
 	}
 
 	if mode == IsolationContainer {
-		return runContainer(cmd, args, scopedToken, addr, vault)
+		return runContainer(cmd, args, token, addr, vault)
 	}
 
 	// 4. Resolve the target binary.
@@ -133,7 +174,8 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	// 5. Build env: inherit current env + inject Agent Vault vars.
 	env := os.Environ()
 	env = append(env,
-		"AGENT_VAULT_SESSION_TOKEN="+scopedToken,
+		"AGENT_VAULT_TOKEN="+token,
+		"AGENT_VAULT_SESSION_TOKEN="+token, // deprecated alias
 		"AGENT_VAULT_ADDR="+addr,
 		"AGENT_VAULT_VAULT="+vault,
 	)
@@ -141,7 +183,7 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	// 6. Route the child's HTTP and HTTPS traffic through the transparent
 	//    MITM proxy. The MITM ingress is the only credential-injection
 	//    path, so a failure here is fatal.
-	newEnv, mitmPort, err := requireMITMEnv(env, addr, scopedToken, vault, "")
+	newEnv, mitmPort, err := requireMITMEnv(env, addr, token, vault, "")
 	if err != nil {
 		return err
 	}
@@ -235,6 +277,20 @@ func maybeInstallSkills(agentName, baseDir string) {
 		}
 	}
 	fmt.Fprintf(os.Stderr, "%s Installed Agent Vault skills for %s.\n", successText("agent-vault:"), agentName)
+}
+
+// resolveVaultForAgentMode picks the vault when the token is supplied via env
+// (agent / containerized run). No project-file or interactive-picker fallback
+// — neither makes sense in an unattended container, and silently defaulting
+// to "default" would mask misconfig. Priority: --vault > AGENT_VAULT_VAULT > error.
+func resolveVaultForAgentMode(cmd *cobra.Command) (string, error) {
+	if name, _ := cmd.Flags().GetString("vault"); name != "" {
+		return name, nil
+	}
+	if v := os.Getenv("AGENT_VAULT_VAULT"); v != "" {
+		return v, nil
+	}
+	return "", fmt.Errorf("vault is required in agent mode: set AGENT_VAULT_VAULT or pass --vault")
 }
 
 // resolveVaultForRun picks the vault for a run session. Priority:

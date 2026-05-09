@@ -74,8 +74,11 @@ func TestBuildContainerEnv_AgentVaultAddrUsesContainerHost(t *testing.T) {
 	if vars["AGENT_VAULT_ADDR"] != want {
 		t.Errorf("AGENT_VAULT_ADDR = %q, want %q", vars["AGENT_VAULT_ADDR"], want)
 	}
+	if vars["AGENT_VAULT_TOKEN"] != "tok" {
+		t.Errorf("AGENT_VAULT_TOKEN = %q", vars["AGENT_VAULT_TOKEN"])
+	}
 	if vars["AGENT_VAULT_SESSION_TOKEN"] != "tok" {
-		t.Errorf("session token = %q", vars["AGENT_VAULT_SESSION_TOKEN"])
+		t.Errorf("AGENT_VAULT_SESSION_TOKEN (deprecated alias) = %q", vars["AGENT_VAULT_SESSION_TOKEN"])
 	}
 	if vars["AGENT_VAULT_VAULT"] != "v" {
 		t.Errorf("vault = %q", vars["AGENT_VAULT_VAULT"])

@@ -15,7 +15,7 @@ Every request an agent makes to Agent Vault requires a bearer token. How the age
 
 | Method | How the agent gets a token |
 |---|---|
-| `agent-vault vault run` | Agent Vault sets `AGENT_VAULT_SESSION_TOKEN` on the child process automatically |
+| `agent-vault vault run` | Agent Vault sets `AGENT_VAULT_TOKEN` on the child process automatically |
 | Agent invite | Agent calls `POST {invite_url}` and receives an agent token |
 
 Both methods deliver the same core connection details:
@@ -23,7 +23,7 @@ Both methods deliver the same core connection details:
 | Variable | Description |
 |---|---|
 | `AGENT_VAULT_ADDR` | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
-| `AGENT_VAULT_SESSION_TOKEN` | Bearer token for all Agent Vault requests |
+| `AGENT_VAULT_TOKEN` | Bearer token for all Agent Vault requests. (`AGENT_VAULT_SESSION_TOKEN` is the deprecated alias and still works.) |
 
 ### Session types
 
@@ -38,7 +38,7 @@ Instance-level agent tokens must include `X-Vault: {vault_name}` on all vault-sc
 
 ```
 GET {AGENT_VAULT_ADDR}/discover
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Authorization: Bearer {AGENT_VAULT_TOKEN}
 X-Vault: my-vault
 ```
 
@@ -50,7 +50,7 @@ Before making any proxied request, the agent calls `/discover` to learn which ho
 
 ```
 GET {AGENT_VAULT_ADDR}/discover
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Authorization: Bearer {AGENT_VAULT_TOKEN}
 X-Vault: my-vault
 ```
 
@@ -102,7 +102,7 @@ When an agent needs access to a service that is not in the vault's services, it 
 
 ```json
 POST {AGENT_VAULT_ADDR}/v1/proposals
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Authorization: Bearer {AGENT_VAULT_TOKEN}
 Content-Type: application/json
 
 {
@@ -152,7 +152,7 @@ See [Proposals](/learn/proposals) for the full proposal lifecycle, including sto
 
 | Status | Meaning | What the agent does |
 |---|---|---|
-| 401 | Invalid or expired token | Re-check `AGENT_VAULT_SESSION_TOKEN`. Contact operator for a new token or [rotation](/agents/overview#rotating-an-agent-token). |
+| 401 | Invalid or expired token | Re-check `AGENT_VAULT_TOKEN`. Contact operator for a new token or [rotation](/agents/overview#rotating-an-agent-token). |
 | 403 `forbidden` | Host not allowed (only fires when the vault has `unmatched_host_policy=deny`; the default is passthrough) | Create a proposal to request access. The response includes a `proposal_hint`. |
 | 403 `service_disabled` | Host is configured but disabled | Surface to the user — don't create a duplicate proposal. |
 | 429 | Rate limited | Respect the `Retry-After` header. |
@@ -161,6 +161,6 @@ See [Proposals](/learn/proposals) for the full proposal lifecycle, including sto
 ## Security constraints
 
 - Never extract, log, or display credential values
-- Never hardcode tokens. Always read from `AGENT_VAULT_SESSION_TOKEN`.
+- Never hardcode tokens. Always read from `AGENT_VAULT_TOKEN`.
 - Only reach hosts returned by `/discover`. For unlisted hosts, create a proposal.
 - If a `credential_not_found` error occurs, inform the user which key is missing.

@@ -3,10 +3,13 @@ package cmd
 import (
 	"bytes"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Infisical/agent-vault/internal/pidfile"
@@ -651,13 +654,16 @@ func TestResolveVaultWithEnvVar(t *testing.T) {
 }
 
 func TestResolveSessionFromEnvVars(t *testing.T) {
-	t.Run("returns session from env vars", func(t *testing.T) {
-		t.Setenv("AGENT_VAULT_SESSION_TOKEN", "test-token-123")
+	t.Run("returns session from new env var name", func(t *testing.T) {
+		t.Setenv("AGENT_VAULT_TOKEN", "test-token-123")
 		t.Setenv("AGENT_VAULT_ADDR", "http://localhost:9999")
 
-		sess, err := resolveSession()
+		sess, fromEnv, err := resolveSession()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if !fromEnv {
+			t.Error("expected fromEnv=true when token came from env")
 		}
 		if sess.Token != "test-token-123" {
 			t.Errorf("expected token %q, got %q", "test-token-123", sess.Token)
@@ -667,16 +673,99 @@ func TestResolveSessionFromEnvVars(t *testing.T) {
 		}
 	})
 
+	t.Run("legacy env var name still works (deprecation path)", func(t *testing.T) {
+		legacyTokenWarnOnce = sync.Once{} // reset gate so the warn-once path is exercisable
+		t.Setenv("AGENT_VAULT_TOKEN", "")
+		t.Setenv("AGENT_VAULT_SESSION_TOKEN", "legacy-token")
+		t.Setenv("AGENT_VAULT_ADDR", "http://localhost:9999")
+
+		sess, fromEnv, err := resolveSession()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !fromEnv {
+			t.Error("expected fromEnv=true")
+		}
+		if sess.Token != "legacy-token" {
+			t.Errorf("expected legacy token to be honored; got %q", sess.Token)
+		}
+	})
+
+	t.Run("new env var preferred over legacy when both set", func(t *testing.T) {
+		t.Setenv("AGENT_VAULT_TOKEN", "new-token")
+		t.Setenv("AGENT_VAULT_SESSION_TOKEN", "legacy-token")
+		t.Setenv("AGENT_VAULT_ADDR", "http://localhost:9999")
+
+		sess, _, err := resolveSession()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if sess.Token != "new-token" {
+			t.Errorf("expected new token to win; got %q", sess.Token)
+		}
+	})
+
+	t.Run("token without addr is a clear error", func(t *testing.T) {
+		t.Setenv("AGENT_VAULT_TOKEN", "test-token")
+		t.Setenv("AGENT_VAULT_ADDR", "")
+
+		_, _, err := resolveSession()
+		if err == nil {
+			t.Fatal("expected error when token is set but addr is missing")
+		}
+		if !strings.Contains(err.Error(), "AGENT_VAULT_ADDR") {
+			t.Errorf("error should mention AGENT_VAULT_ADDR; got: %v", err)
+		}
+	})
+
 	t.Run("trims trailing slash from address", func(t *testing.T) {
-		t.Setenv("AGENT_VAULT_SESSION_TOKEN", "test-token")
+		t.Setenv("AGENT_VAULT_TOKEN", "test-token")
 		t.Setenv("AGENT_VAULT_ADDR", "http://localhost:9999/")
 
-		sess, err := resolveSession()
+		sess, _, err := resolveSession()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if sess.Address != "http://localhost:9999" {
 			t.Errorf("expected address without trailing slash, got %q", sess.Address)
+		}
+	})
+}
+
+func TestValidateEnvToken(t *testing.T) {
+	t.Run("happy path: 200 OK", func(t *testing.T) {
+		var gotAuth, gotVault string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotAuth = r.Header.Get("Authorization")
+			gotVault = r.Header.Get("X-Vault")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}))
+		defer srv.Close()
+
+		if err := validateEnvToken(srv.URL, "tok123", "myvault"); err != nil {
+			t.Fatalf("expected nil err, got %v", err)
+		}
+		if gotAuth != "Bearer tok123" {
+			t.Errorf("Authorization header = %q, want Bearer tok123", gotAuth)
+		}
+		if gotVault != "myvault" {
+			t.Errorf("X-Vault header = %q, want myvault", gotVault)
+		}
+	})
+
+	t.Run("401 produces friendly error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer srv.Close()
+
+		err := validateEnvToken(srv.URL, "bad", "v")
+		if err == nil {
+			t.Fatal("expected error on 401")
+		}
+		if !strings.Contains(err.Error(), "rejected by broker") {
+			t.Errorf("expected friendly 'rejected by broker' message; got: %v", err)
 		}
 	})
 }

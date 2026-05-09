@@ -10,7 +10,7 @@ description: "Connect any HTTP-capable agent or script to Agent Vault through HT
 
 ## Quick start
 
-Wrap your agent process with `vault run`. It sets `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT`, then pre-configures `HTTPS_PROXY`/`HTTP_PROXY` and the CA trust chain so standard HTTP clients route both HTTP and HTTPS traffic through the broker transparently:
+Wrap your agent process with `vault run`. It sets `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN`, and `AGENT_VAULT_VAULT`, then pre-configures `HTTPS_PROXY`/`HTTP_PROXY` and the CA trust chain so standard HTTP clients route both HTTP and HTTPS traffic through the broker transparently:
 
 ```bash
 agent-vault vault run -- my-agent
@@ -67,7 +67,7 @@ Call `/discover` to check which hosts have credentials configured:
 
 ```bash
 curl ${AGENT_VAULT_ADDR}/discover \
-  -H "Authorization: Bearer ${AGENT_VAULT_SESSION_TOKEN}"
+  -H "Authorization: Bearer ${AGENT_VAULT_TOKEN}"
 ```
 
 ```json Response

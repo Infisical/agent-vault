@@ -93,7 +93,8 @@ func BuildContainerEnv(token, vault string, httpPort, mitmPort int, mitmTLS bool
 		MITMTLS: mitmTLS,
 	})
 	return append(env,
-		"AGENT_VAULT_SESSION_TOKEN="+token,
+		"AGENT_VAULT_TOKEN="+token,
+		"AGENT_VAULT_SESSION_TOKEN="+token, // deprecated alias
 		"AGENT_VAULT_ADDR="+fmt.Sprintf("http://%s:%d", ContainerProxyHost, httpPort),
 		"AGENT_VAULT_VAULT="+vault,
 		fmt.Sprintf("VAULT_HTTP_PORT=%d", httpPort),

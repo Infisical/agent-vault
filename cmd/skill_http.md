@@ -5,7 +5,7 @@ description: >-
   external services (Linear, GitHub, Stripe, Slack, Jira, etc.). Use when the
   task involves any third-party API or service that requires credentials, or
   when writing code that needs environment variables for secrets/API keys.
-compatibility: Requires a running Agent Vault server and AGENT_VAULT_SESSION_TOKEN environment variable
+compatibility: Requires a running Agent Vault server and AGENT_VAULT_TOKEN environment variable
 metadata:
   author: dangtony98
   version: "0.4.0"
@@ -20,7 +20,7 @@ You have access to Agent Vault, a transparent HTTP/HTTPS proxy that injects cred
 **Before telling the user you cannot access an external service, you MUST check Agent Vault.** This applies whenever a task involves any third-party service or API -- project management (Linear, Jira, Asana), source control (GitHub, GitLab), communication (Slack, Discord), payments (Stripe), databases, or any other authenticated service.
 
 **Your workflow for ANY external service interaction:**
-1. Check that `AGENT_VAULT_SESSION_TOKEN` is set
+1. Check that `AGENT_VAULT_TOKEN` is set
 2. Call `GET {AGENT_VAULT_ADDR}/discover` to see which hosts have credentials configured
 3. If the host is listed, **just make the request to the real API URL** -- Agent Vault transparently injects the credential
 4. If the host is NOT listed, create a proposal (the user approves and provides credentials)
@@ -37,8 +37,10 @@ By default each vault forwards unmatched hosts as plain proxy traffic (no creden
 | Variable | Description |
 |----------|-------------|
 | `AGENT_VAULT_ADDR` | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
-| `AGENT_VAULT_SESSION_TOKEN` | Bearer token for authenticating with Agent Vault's control-plane endpoints (`/discover`, proposals, etc.) |
+| `AGENT_VAULT_TOKEN` | Bearer token for authenticating with Agent Vault's control-plane endpoints (`/discover`, proposals, etc.). Either a vault-scoped session token or a long-lived agent token. |
 | `AGENT_VAULT_VAULT` | Vault name (set for user-scoped sessions via `vault run`) |
+
+> `AGENT_VAULT_SESSION_TOKEN` is the deprecated alias of `AGENT_VAULT_TOKEN` and is still honored with a one-time stderr warning. It will be removed in a future major version.
 
 `vault run` also pre-configures `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `NODE_USE_ENV_PROXY`, and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) so HTTP and HTTPS calls from your process both route through the broker transparently. You don't manage these yourself.
 
@@ -60,13 +62,36 @@ POST /v1/sessions
 
 Tokens are minted with vault role `proxy`. Operators manage them via the **Tokens** tab in each vault, which uses `GET /v1/sessions?vault=<name>` (member+) and `DELETE /v1/sessions/{public_id}?vault=<name>` (member+). The raw token is only returned at creation; subsequent reads only ever show the `public_id`.
 
+### Containerized agent deployment
+
+For unattended deployments (k8s/Fly/ECS, where there's no human to `auth login`), supply the token via env. `agent-vault run` then skips the mint step and treats the env-supplied token as the credential:
+
+```dockerfile
+FROM node:20-slim
+COPY --from=ghcr.io/infisical/agent-vault:latest /agent-vault /usr/local/bin/
+WORKDIR /app
+COPY . .
+RUN npm ci
+ENTRYPOINT ["agent-vault", "run", "--", "npm", "start"]
+```
+
+Set three env vars at deploy time:
+
+```
+AGENT_VAULT_ADDR=https://vault.example.com
+AGENT_VAULT_TOKEN=av_agent_token_xxx
+AGENT_VAULT_VAULT=production
+```
+
+Use a long-lived agent token (no expiry) for production: an operator creates an agent identity with `agent-vault agent create <name>` and mints a token via `agent-vault agent token <id>`. `agent-vault run` validates the token against the broker once at startup; bad/expired tokens fail fast with a clear error. `--ttl` is rejected in this mode since the token's lifetime is fixed at mint time.
+
 ## Discover Available Services (Start Here)
 
 **Always call this first** to learn which hosts have credentials configured:
 
 ```
 GET {AGENT_VAULT_ADDR}/discover
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Authorization: Bearer {AGENT_VAULT_TOKEN}
 X-Vault: {vault_name}
 ```
 
@@ -155,7 +180,7 @@ Example proposal (Twilio: basic auth header + path SID substitution):
 
 ```
 POST {AGENT_VAULT_ADDR}/v1/proposals
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Authorization: Bearer {AGENT_VAULT_TOKEN}
 Content-Type: application/json
 
 {
@@ -183,7 +208,7 @@ Placeholder safety: must be ≥4 characters, contain at least one alphanumeric c
 
 ```
 POST {AGENT_VAULT_ADDR}/v1/proposals
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Authorization: Bearer {AGENT_VAULT_TOKEN}
 Content-Type: application/json
 
 {
@@ -209,7 +234,7 @@ Key fields:
 2. Immediately start polling `GET {AGENT_VAULT_ADDR}/v1/proposals/{id}` -- do NOT wait for the user to say "go on" or confirm. Poll every 3s for the first 30s, then every 10s. Stop after 10 minutes (proposal may have expired).
 3. Once status is `applied`, automatically retry your original request and continue your task
 
-**Check status:** `GET {AGENT_VAULT_ADDR}/v1/proposals/{id}` with `Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}` -- returns `pending`, `applied`, `rejected`, or `expired`
+**Check status:** `GET {AGENT_VAULT_ADDR}/v1/proposals/{id}` with `Authorization: Bearer {AGENT_VAULT_TOKEN}` -- returns `pending`, `applied`, `rejected`, or `expired`
 
 **List proposals:** `GET {AGENT_VAULT_ADDR}/v1/proposals?status=pending`
 
@@ -219,7 +244,7 @@ Agent Vault persists a per-request audit log for each vault (method, host, path,
 
 ```
 GET {AGENT_VAULT_ADDR}/v1/vaults/{vault}/logs
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Authorization: Bearer {AGENT_VAULT_TOKEN}
 ```
 
 Query params: `status_bucket` (`2xx`|`3xx`|`4xx`|`5xx`|`err`), `service`, `limit` (default 50, max 200), `before=<id>` (page back), `after=<id>` (tail forward for new rows). Response: `{ "logs": [...], "next_cursor": <id|null>, "latest_id": <id> }`.
@@ -236,7 +261,7 @@ When you are writing or modifying application code that requires secrets or API 
 
 ```
 POST {AGENT_VAULT_ADDR}/v1/proposals
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Authorization: Bearer {AGENT_VAULT_TOKEN}
 Content-Type: application/json
 
 {
@@ -268,7 +293,7 @@ Content-Type: application/json
 
 ## Error Handling
 
-- 401: Invalid or expired token -- check `AGENT_VAULT_SESSION_TOKEN`
+- 401: Invalid or expired token -- check `AGENT_VAULT_TOKEN`
 - 403 `forbidden`: Host not allowed (only fires under `unmatched_host_policy=deny`) -- create a proposal
 - 403 `service_disabled`: Host is configured but currently disabled by an operator. Don't create a new proposal; surface the error to the user so they can re-enable it
 - 403 `Instance member role required`: Your instance role is `no-access` and you tried an instance-scoped endpoint (create vault, create invites, list users/agents). You can still operate within vaults you've been granted -- stay on `/v1/vaults/{name}/...` endpoints and proxied calls. If you genuinely need to take an instance-scoped action, surface this to the user; an instance owner must change your role.
@@ -278,7 +303,7 @@ Content-Type: application/json
 ## Rules
 
 - **Never** attempt to extract, log, or display credentials
-- **Never** hardcode tokens -- always read from `AGENT_VAULT_SESSION_TOKEN`
+- **Never** hardcode tokens -- always read from `AGENT_VAULT_TOKEN`
 - **Only** request hosts returned by `/discover` -- if a host isn't listed, create a proposal
 - If you receive a `credential_not_found` error, inform the user which credential is missing
 - Do not modify or forge the `Authorization` header beyond using your token

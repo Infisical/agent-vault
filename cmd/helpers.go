@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -491,14 +492,78 @@ func resolveVault(cmd *cobra.Command) string {
 	return store.DefaultVault
 }
 
-// resolveSession returns a client session from env vars (agent mode) or falls back to ensureSession (human mode).
-func resolveSession() (*session.ClientSession, error) {
-	token := os.Getenv("AGENT_VAULT_SESSION_TOKEN")
-	addr := os.Getenv("AGENT_VAULT_ADDR")
-	if token != "" && addr != "" {
-		return &session.ClientSession{Token: token, Address: strings.TrimRight(addr, "/")}, nil
+// envVarToken is the canonical env var name for an Agent Vault bearer token
+// (vault-scoped session or long-lived agent token). envVarTokenLegacy is the
+// pre-rename alias kept for backward compatibility; reads still honor it but
+// emit a one-time deprecation warning. Drop the legacy name in a future
+// major version.
+const (
+	envVarToken       = "AGENT_VAULT_TOKEN"
+	envVarTokenLegacy = "AGENT_VAULT_SESSION_TOKEN"
+)
+
+var legacyTokenWarnOnce sync.Once
+
+// resolveSession returns a client session from env vars (agent mode) or falls
+// back to ensureSession (human mode). The bool is true when the session came
+// from env vars — callers use it to skip mintScopedSession and treat the
+// env-supplied token as the credential to thread to the child.
+//
+// If a token is set but AGENT_VAULT_ADDR is missing, returns a clear error
+// rather than silently falling through to interactive login — masking that
+// misconfig produces "why don't my creds work" tickets.
+func resolveSession() (*session.ClientSession, bool, error) {
+	token := os.Getenv(envVarToken)
+	if token == "" {
+		if legacy := os.Getenv(envVarTokenLegacy); legacy != "" {
+			legacyTokenWarnOnce.Do(func() {
+				fmt.Fprintf(os.Stderr, "%s %s is deprecated; use %s instead.\n",
+					mutedText("agent-vault:"), envVarTokenLegacy, envVarToken)
+			})
+			token = legacy
+		}
 	}
-	return ensureSession()
+	addr := os.Getenv("AGENT_VAULT_ADDR")
+	if token != "" && addr == "" {
+		return nil, false, fmt.Errorf("%s is set but AGENT_VAULT_ADDR is empty — both are required for agent mode", envVarToken)
+	}
+	if token != "" {
+		return &session.ClientSession{Token: token, Address: strings.TrimRight(addr, "/")}, true, nil
+	}
+	sess, err := ensureSession()
+	return sess, false, err
+}
+
+// validateEnvToken probes /discover with the env-supplied token before
+// `vault run` execs the child, so a bad/expired token fails fast at startup
+// instead of producing 401s on every proxied call. /discover is the same
+// auth path the proxy will use a moment later, so success here means the
+// token works end-to-end.
+func validateEnvToken(addr, token, vault string) error {
+	url := strings.TrimRight(addr, "/") + "/discover"
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("validate token: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if vault != "" {
+		req.Header.Set("X-Vault", vault)
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("validate token: contacting %s: %w", addr, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("agent token rejected by broker (HTTP %d) — verify %s is current and has access to vault %q", resp.StatusCode, envVarToken, vault)
+	}
+	if resp.StatusCode/100 != 2 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("validate token: server returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	// Drain so net/http can reuse the keep-alive connection.
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return nil
 }
 
 // resolveAddress determines the server address from flags, env vars, or session.

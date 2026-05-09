@@ -62,14 +62,17 @@ Configure SMTP to enable Agent Vault to send emails for verification codes, vaul
 
 ## Agent runtime variables
 
-These variables are set automatically by `agent-vault vault run` on the agent's environment. You do not need to set them manually.
+These variables are set automatically by `agent-vault vault run` on the agent's environment for local / interactive use. You do not need to set them manually in that case.
+
+For **unattended / containerized deployments** (no human to `auth login`), set them yourself on the agent process — `agent-vault run` will skip the mint step and use the supplied token as the credential. See [Deploy your agent in a container](/guides/deploy-agent-container) for the full recipe.
 
 ### Control-plane
 
 | Variable | Description |
 |----------|-------------|
 | `AGENT_VAULT_ADDR` | Server base URL (e.g., `http://127.0.0.1:14321`) |
-| `AGENT_VAULT_SESSION_TOKEN` | Bearer token for authenticating with Agent Vault (control-plane: `/discover`, proposals, credentials). Scoped to the vault. |
+| `AGENT_VAULT_TOKEN` | Bearer token for authenticating with Agent Vault (control-plane: `/discover`, proposals, credentials). Either a vault-scoped session token or a long-lived agent token. |
+| `AGENT_VAULT_SESSION_TOKEN` | Deprecated alias of `AGENT_VAULT_TOKEN`. Still honored with a one-time stderr warning; will be removed in a future major version. |
 | `AGENT_VAULT_VAULT` | Name of the vault the session is scoped to |
 
 ### Transparent proxy

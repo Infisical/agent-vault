@@ -41,7 +41,7 @@ JSON mode (complex/multi-service proposals):
   echo '{"services":[...],"credentials":[...]}' | agent-vault vault proposal create -f -`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		sess, err := resolveSession()
+		sess, _, err := resolveSession()
 		if err != nil {
 			return err
 		}

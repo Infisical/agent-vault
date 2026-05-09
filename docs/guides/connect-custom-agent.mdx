@@ -24,7 +24,7 @@ If you're using Claude Code, Cursor, or another supported agent, see the [Quicks
     agent-vault vault run -- my-agent
     ```
 
-    `vault run` sets `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT` on the child, then pre-configures `HTTPS_PROXY`/`HTTP_PROXY` and the CA trust chain so standard HTTP clients route both HTTP and HTTPS traffic through the broker transparently. No invite needed.
+    `vault run` sets `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN`, and `AGENT_VAULT_VAULT` on the child, then pre-configures `HTTPS_PROXY`/`HTTP_PROXY` and the CA trust chain so standard HTTP clients route both HTTP and HTTPS traffic through the broker transparently. No invite needed.
   </Tab>
   <Tab title="Agent invite">
     For CI pipelines, cloud-hosted agents, or when you need the agent to redeem an invite via HTTP:
@@ -51,7 +51,7 @@ Your agent needs these values to operate:
 | Variable | Required | Description |
 |---|---|---|
 | `AGENT_VAULT_ADDR` | Yes | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
-| `AGENT_VAULT_SESSION_TOKEN` | Yes | Bearer token for authenticating control-plane requests (`/discover`, proposals) |
+| `AGENT_VAULT_TOKEN` | Yes | Bearer token for authenticating control-plane requests (`/discover`, proposals) |
 
 For instance-level agent tokens (from agent invites), the agent must also send the `X-Vault` header on every vault-scoped request. For vault-scoped sessions (from `vault run`), the vault is embedded in the session.
 
@@ -125,7 +125,7 @@ If your agent wasn't launched via `vault run` (e.g. an invited agent, a Docker c
 agent-vault ca fetch -o /etc/ssl/certs/agent-vault-ca.pem
 
 # 2. Build the proxy URL (basic auth: token:vault)
-export HTTPS_PROXY="https://${AGENT_VAULT_SESSION_TOKEN}:my-vault@127.0.0.1:14322"
+export HTTPS_PROXY="https://${AGENT_VAULT_TOKEN}:my-vault@127.0.0.1:14322"
 export HTTP_PROXY="$HTTPS_PROXY"
 export NO_PROXY="localhost,127.0.0.1"
 export NODE_USE_ENV_PROXY=1
@@ -147,7 +147,7 @@ Your agent can call `/discover` to check which hosts have credentials configured
 
 ```bash
 curl ${AGENT_VAULT_ADDR}/discover \
-  -H "Authorization: Bearer ${AGENT_VAULT_SESSION_TOKEN}"
+  -H "Authorization: Bearer ${AGENT_VAULT_TOKEN}"
 ```
 
 ```json Response

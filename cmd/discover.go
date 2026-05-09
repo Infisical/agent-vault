@@ -14,10 +14,11 @@ var discoverCmd = &cobra.Command{
 	Long: `Show the services and credentials available in the current vault.
 
 Requires a vault-scoped session (e.g. via agent-vault vault run or
-AGENT_VAULT_SESSION_TOKEN + AGENT_VAULT_ADDR environment variables).`,
+AGENT_VAULT_TOKEN + AGENT_VAULT_ADDR environment variables;
+AGENT_VAULT_SESSION_TOKEN is the deprecated alias and still works).`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		sess, err := resolveSession()
+		sess, _, err := resolveSession()
 		if err != nil {
 			return err
 		}

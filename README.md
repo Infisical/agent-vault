@@ -98,6 +98,8 @@ agent-vault run --isolation=container --share-agent-dir -- claude
 
 See [Container isolation](https://docs.agent-vault.dev/guides/container-isolation) for the threat model and flags.
 
+For **unattended / containerized deployments** (k8s, Fly, ECS — no human to `auth login`), set `AGENT_VAULT_TOKEN`, `AGENT_VAULT_ADDR`, and `AGENT_VAULT_VAULT` on the agent's env and `agent-vault run` will use the supplied token directly instead of minting a new one. See [Deploy your agent in a container](https://docs.agent-vault.dev/guides/deploy-agent-container).
+
 To mint, list, and revoke vault-scoped tokens without wrapping a child process, use either `agent-vault vault token` or the **Tokens** tab inside each vault in the web UI.
 
 ### SDK — sandboxed agents (Docker, Daytona, E2B)
