@@ -183,7 +183,7 @@ export default function AllUsersTab() {
         key: "role",
         header: "Role",
         render: (u) => (
-          <span className="text-sm text-text-muted capitalize">{formatInstanceRole(u.role)}</span>
+          <span className="text-sm text-text-muted">{formatInstanceRole(u.role)}</span>
         ),
       },
     ];
