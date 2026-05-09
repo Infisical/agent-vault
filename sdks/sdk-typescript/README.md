@@ -25,7 +25,7 @@ const av = new AgentVault({
 const vault = av.vault("my-project");
 
 // Mint a scoped session — returns the token + container config in one call
-const session = await vault.sessions.create({ ttlSeconds: 3600 });
+const session = await vault.sessions!.create({ ttlSeconds: 3600 });
 
 // Build the full env var set with your chosen CA cert mount path
 const certPath = "/etc/ssl/agent-vault-ca.pem";
@@ -101,7 +101,7 @@ const vault = av.vault("my-project");
 await vault.credentials.set({ STRIPE_KEY: "sk_live_abc" });
 
 // Configure a proxy rule — the token field references the credential key above
-await vault.services.set([
+await vault.services!.set([
   {
     host: "api.stripe.com",
     description: "Stripe API",
