@@ -307,6 +307,21 @@ func resolveVaultForAgentMode(cmd *cobra.Command) (string, error) {
 	return "", fmt.Errorf("vault is required in agent mode: set AGENT_VAULT_VAULT or pass --vault")
 }
 
+// resolveVaultForCommand is the agent-mode-aware vault resolver shared by
+// peer commands that talk to vault-scoped endpoints (discover, proposal
+// create). When tokenSource is non-empty (env-mode), it requires --vault or
+// AGENT_VAULT_VAULT — same contract `vault run` enforces — so a
+// misconfigured deploy fails fast with a clear remediation instead of
+// silently sending `X-Vault: default` and routing at the wrong vault.
+// In human mode it delegates to resolveVault, which falls back to project
+// file / vault context / "default".
+func resolveVaultForCommand(cmd *cobra.Command, tokenSource string) (string, error) {
+	if tokenSource != "" {
+		return resolveVaultForAgentMode(cmd)
+	}
+	return resolveVault(cmd), nil
+}
+
 // resolveVaultForRun picks the vault for a run session. Priority:
 // --vault flag > project file > vault context > interactive select (if multiple) > "default".
 func resolveVaultForRun(cmd *cobra.Command, addr, token string) (string, error) {

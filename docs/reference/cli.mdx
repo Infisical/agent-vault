@@ -246,7 +246,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault discover [flags]
     ```
 
-    Show available services and credentials for the current vault. Requires a vault-scoped session (via `agent-vault run` or `AGENT_VAULT_TOKEN` + `AGENT_VAULT_ADDR` env vars; `AGENT_VAULT_SESSION_TOKEN` is the deprecated alias and still works).
+    Show available services and credentials for the current vault. Requires a vault-scoped session (via `agent-vault run` or `AGENT_VAULT_TOKEN` + `AGENT_VAULT_ADDR` env vars; `AGENT_VAULT_SESSION_TOKEN` is the deprecated alias and still works). In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
