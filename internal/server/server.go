@@ -74,20 +74,16 @@ type Server struct {
 	// backstop. Bounded by a periodic prune (see runTouchCachePruner)
 	// that drops entries past the throttle window.
 	touchCache sync.Map // raw token (string) -> time.Time
-	// vaultServiceMu serializes the read-modify-write cycle that all
-	// service-mutating handlers (POST/PATCH/PUT/DELETE on /services and
-	// proposal apply) follow. SQLite's MaxOpenConns(1) only serializes
-	// individual SQL statements, not the load → mutate → save sequence:
-	// without this lock, two concurrent upserts can both pass auto-slug
-	// collision checks against the same pre-state and the second writer
-	// silently overwrites the first.
+	// vaultServiceMu serializes the load → mutate → save cycle for
+	// /services handlers and proposal apply. SQLite's MaxOpenConns(1)
+	// only serializes individual statements; without this lock two
+	// concurrent upserts can both pass collision checks against the
+	// same pre-state.
 	vaultServiceMu sync.Map // vaultID (string) -> *sync.Mutex
 }
 
-// lockVaultServices acquires the per-vault mutation lock and returns an
-// unlock function. Callers MUST defer the returned func. Used by every
-// handler that runs the load → modify → save cycle on a vault's
-// services config (see vaultServiceMu docstring).
+// lockVaultServices acquires the per-vault mutation lock. Callers MUST
+// defer the returned unlock func.
 func (s *Server) lockVaultServices(vaultID string) func() {
 	v, _ := s.vaultServiceMu.LoadOrStore(vaultID, &sync.Mutex{})
 	mu := v.(*sync.Mutex)

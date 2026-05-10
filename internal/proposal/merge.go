@@ -6,28 +6,21 @@ import (
 	"github.com/Infisical/agent-vault/internal/broker"
 )
 
-// MergeServices applies proposed service changes to existing services,
-// indexed by canonical service Name. Set-action services upsert (add or
-// replace by Name); delete-action services remove by Name. Callers must
-// have already populated Name on every existing and proposed service —
-// server handlers run broker.NormalizeServices on existing and auto-slug
-// proposals via broker.Slugify before reaching MergeServices. Returns
-// the merged slice and a list of warnings for no-op operations.
-//
-// Panics if any input has an empty Name. The Name-keyed index would
-// otherwise collapse every empty-name entry onto the "" key and the
-// last writer would silently overwrite the rest — a class of data-loss
-// bug worth crashing on rather than papering over, since the contract
-// is a programming-error invariant.
+// MergeServices upserts and deletes by Name. Callers must normalize
+// every input (existing + proposed) to have a non-empty Name first;
+// MergeServices panics otherwise because the Name-keyed index would
+// silently collapse empty-name entries onto the "" key and overwrite
+// unrelated services — a data-loss class bug not worth papering over.
+// Returns the merged slice and warnings for no-op operations.
 func MergeServices(existing []broker.Service, proposed []Service) ([]broker.Service, []string) {
 	for i, s := range existing {
 		if s.Name == "" {
-			panic(fmt.Sprintf("proposal.MergeServices: existing[%d] has empty Name (host=%q) — caller must normalize first", i, s.Host))
+			panic(fmt.Sprintf("proposal.MergeServices: existing[%d] has empty Name (host=%q)", i, s.Host))
 		}
 	}
 	for i, p := range proposed {
 		if p.Name == "" {
-			panic(fmt.Sprintf("proposal.MergeServices: proposed[%d] has empty Name (host=%q, action=%q) — caller must normalize first", i, p.Host, p.Action))
+			panic(fmt.Sprintf("proposal.MergeServices: proposed[%d] has empty Name (host=%q, action=%q)", i, p.Host, p.Action))
 		}
 	}
 	nameIndex := make(map[string]int, len(existing))
@@ -57,15 +50,12 @@ func MergeServices(existing []broker.Service, proposed []Service) ([]broker.Serv
 			idx, exists := nameIndex[p.Name]
 			switch {
 			case exists && p.Auth == nil && p.Enabled != nil:
-				// Enable/disable-only change on an existing service:
-				// preserve Auth, Host, and Path, overlay just the flag.
+				// Enable/disable-only: preserve Auth/Host/Path.
 				merged[idx].Enabled = p.Enabled
 			case exists:
 				next := toBrokerService(p)
-				// Empty Substitutions means "leave existing alone"; clear
-				// by delete+recreate. The aliased slice is safe — the
-				// caller marshals the merged config to JSON and does not
-				// mutate it.
+				// Empty Substitutions means "leave existing alone";
+				// callers clear by delete+recreate.
 				if len(p.Substitutions) == 0 {
 					next.Substitutions = merged[idx].Substitutions
 				}

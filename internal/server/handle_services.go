@@ -12,11 +12,10 @@ import (
 	"github.com/Infisical/agent-vault/internal/proposal"
 )
 
-// rejectDeprecatedDescription scans a raw JSON services array for the
-// now-removed `description` field. Returns the zero-based index of the
-// first offending entry, or -1 if none. Best-effort: malformed JSON
-// returns -1 so the typed decoder downstream produces a structured
-// error instead of two layered ones.
+// rejectDeprecatedDescription returns the index of the first services
+// entry carrying the now-removed `description` field, or -1. Returns
+// -1 on malformed JSON so the typed decoder produces the structured
+// error downstream.
 func rejectDeprecatedDescription(servicesRaw json.RawMessage) int {
 	var probes []map[string]json.RawMessage
 	if err := json.Unmarshal(servicesRaw, &probes); err != nil {
@@ -32,11 +31,10 @@ func rejectDeprecatedDescription(servicesRaw json.RawMessage) int {
 
 const deprecatedDescriptionMsg = "description is no longer supported; rename via the service name field instead"
 
-// normalizeIncoming applies broker.SplitInlineHost to every service then
-// backfills missing Names via broker.NormalizeServices. Suitable for
-// replace-all flows (handleServicesSet) where existing state is about
-// to be overwritten — for partial upserts use normalizeIncomingAgainstExisting
-// so auto-slugged names don't collide with unrelated stored services.
+// normalizeIncoming splits inline-form host and backfills missing
+// Names. For replace-all flows only; partial upserts must use
+// normalizeIncomingAgainstExisting so auto-slugs don't collide with
+// unrelated stored services.
 func normalizeIncoming(in []broker.Service) []broker.Service {
 	out := make([]broker.Service, len(in))
 	for i, svc := range in {
@@ -47,23 +45,12 @@ func normalizeIncoming(in []broker.Service) []broker.Service {
 }
 
 // normalizeIncomingAgainstExisting is the upsert-aware counterpart to
-// normalizeIncoming. For each incoming service with no Name:
-//
-//  1. Look up an existing service with the same (Host, Path). If found,
-//     adopt its Name. This preserves the legacy "upsert by host" pattern
-//     (`agent-vault vault service add --host api.stripe.com …` updates
-//     the stored api.stripe.com service even when its Name was assigned
-//     explicitly or by an older slug).
-//  2. Otherwise, auto-slug from broker.Slugify(Host, Path). If the slug
-//     collides with a name already taken — by an existing service or by
-//     an explicit name elsewhere in this batch — bump (`-2`) so the
-//     downstream byName upsert can't silently overwrite an unrelated
-//     stored service. Mirrors normalizeProposalServices's seeding.
-//
-// Explicit-name collisions are left alone: a caller resubmitting an
-// upsert with the same Name as an existing service is asking for
-// upsert-by-name (the intended POST semantic). Intra-batch duplicate
-// explicit Names fall through to broker.Validate's duplicate-name check.
+// normalizeIncoming. For each incoming service with no Name: adopt the
+// Name of any existing service with matching (Host, Path) — preserving
+// the legacy "upsert by host" pattern — else auto-slug and bump on
+// collision so byName upsert can't silently overwrite an unrelated
+// stored service. Explicit-name collisions are left alone since
+// resubmitting the same Name is the intended upsert-by-name semantic.
 func normalizeIncomingAgainstExisting(in []broker.Service, existing []broker.Service) []broker.Service {
 	out := make([]broker.Service, len(in))
 	autoSlugged := make([]bool, len(in))
@@ -103,9 +90,6 @@ func normalizeIncomingAgainstExisting(in []broker.Service, existing []broker.Ser
 	return out
 }
 
-// findByHostPath returns the first existing service whose Host and Path
-// equal the given pair, or nil. First-match preserves declaration order
-// in the same way broker.MatchService falls back to it on score ties.
 func findByHostPath(existing []broker.Service, host, path string) *broker.Service {
 	for i := range existing {
 		if existing[i].Host == host && existing[i].Path == path {
@@ -115,9 +99,8 @@ func findByHostPath(existing []broker.Service, host, path string) *broker.Servic
 	return nil
 }
 
-// hostAmbiguityError signals that an ActionDelete proposal targeted a
-// host with multiple registered services and no Name to disambiguate.
-// Carries the candidate list for the caller to surface in the 409.
+// hostAmbiguityError is returned when an unnamed ActionDelete targets a
+// host with multiple registered services. Carries the candidate list.
 type hostAmbiguityError struct {
 	host       string
 	candidates []broker.Service
@@ -127,21 +110,18 @@ func (e *hostAmbiguityError) Error() string {
 	return fmt.Sprintf("multiple services match host %q — retry with a service name", e.host)
 }
 
-// hostNotFoundError signals that an ActionDelete proposal targeted a
-// host that matches no registered service and carried no Name to fall
-// back on.
+// hostNotFoundError is returned when an unnamed ActionDelete targets a
+// host with no matching service.
 type hostNotFoundError struct{ host string }
 
 func (e *hostNotFoundError) Error() string {
 	return fmt.Sprintf("no service matches host %q — delete target must be addressable by host or service name", e.host)
 }
 
-// writeNormalizeError translates a normalizeProposalServices error into
-// an HTTP response. Ambiguity always returns 409 with the candidate
-// list. Not-found and default use call-site-supplied status codes
-// (404 at create vs 409 at apply; 400 at create vs 500 at apply); a
-// non-nil notFoundMsg overrides hostNotFoundError.Error() so the apply
-// path can frame the same condition as a state conflict.
+// writeNormalizeError maps a normalizeProposalServices error to an HTTP
+// response. Ambiguity → 409 with candidates. Not-found uses
+// notFoundStatus (caller picks 404 at create, 409 at apply); notFoundMsg
+// optionally overrides the body.
 func writeNormalizeError(w http.ResponseWriter, err error, notFoundStatus, defaultStatus int, notFoundMsg func(host string) string) {
 	var ambig *hostAmbiguityError
 	if errors.As(err, &ambig) {
@@ -163,23 +143,18 @@ func writeNormalizeError(w http.ResponseWriter, err error, notFoundStatus, defau
 	jsonError(w, defaultStatus, err.Error())
 }
 
-// normalizeProposalServices auto-fills proposal.Service.Name when
-// missing and splits inline-form host (slack.com/api/* → host + path)
-// for every entry. Mirrors the bulk-upsert ingest semantics so the
-// proposal flow accepts the same legacy and inline-form payloads.
+// normalizeProposalServices auto-fills proposal.Service.Name and splits
+// inline-form host for every entry. Proposal-flow counterpart to
+// normalizeIncomingAgainstExisting.
 //
-// For ActionSet entries with no Name, the (Host, Path) pair is matched
-// against existing services first — if found, the existing Name is
-// adopted so a legacy "rotate-credentials" proposal (host-only, no
-// name) updates the stored service rather than creating a duplicate.
-// Only when no host+path match exists does the entry fall through to
-// broker.Slugify with collision bumping. For ActionDelete entries, Name
-// is resolved against the vault's existing services: a unique host
-// match fills Name, a 2+ match returns *hostAmbiguityError so the
-// caller can surface the candidate list as a 409, and 0 matches
-// returns *hostNotFoundError so the caller can emit a clear
-// "host not found" response rather than letting downstream surface a
-// confusing "name is required" error (the previous behavior).
+// ActionSet without Name: adopt the Name of any existing (Host, Path)
+// match, else slugify and bump on collision.
+//
+// ActionDelete without Name: resolve against existing services by Host
+// (and Path when inline-form scoped). Unique match fills Name; 2+ →
+// *hostAmbiguityError; 0 → *hostNotFoundError. Fabricating a slug here
+// would risk deleting an unrelated service whose explicit Name happens
+// to collide with Slugify(host).
 func normalizeProposalServices(in []proposal.Service, existing []broker.Service) ([]proposal.Service, error) {
 	out := make([]proposal.Service, len(in))
 	autoSlugged := make([]bool, len(in))
@@ -191,9 +166,16 @@ func normalizeProposalServices(in []proposal.Service, existing []broker.Service)
 			if svc.Name == "" {
 				var matches []broker.Service
 				for _, e := range existing {
-					if e.Host == svc.Host {
-						matches = append(matches, e)
+					if e.Host != svc.Host {
+						continue
 					}
+					// Narrow by Path when the caller scoped via inline
+					// form; empty Path stays a host-level delete that
+					// intentionally surfaces multi-service ambiguity.
+					if svc.Path != "" && e.Path != svc.Path {
+						continue
+					}
+					matches = append(matches, e)
 				}
 				switch {
 				case len(matches) == 1:
@@ -217,17 +199,10 @@ func normalizeProposalServices(in []proposal.Service, existing []broker.Service)
 		out[i] = svc
 	}
 
-	// Resolve auto-slug collisions for set actions. Seed `used` with
-	// names already taken — both by existing vault services and by
-	// explicit (user-supplied) names elsewhere in this proposal — so
-	// that auto-slugs bump (`-2`) rather than silently replacing an
-	// unrelated existing service.
-	//
-	// Explicit-name collisions are left alone: a user resubmitting a
-	// proposal with the same Name as an existing service is asking for
-	// upsert-by-name (the intended ActionSet semantic), and an
-	// intra-proposal duplicate-explicit-Name is caught by
-	// proposal.Validate's duplicate-name check.
+	// Seed `used` with existing names + explicit batch names so
+	// auto-slugs bump rather than silently replace an unrelated service.
+	// Explicit-name collisions are left alone (upsert-by-name semantic);
+	// intra-batch dup explicit names fall through to Validate.
 	used := make(map[string]bool, len(existing)+len(out))
 	for _, e := range existing {
 		used[e.Name] = true
@@ -252,14 +227,8 @@ func normalizeProposalServices(in []proposal.Service, existing []broker.Service)
 	return out, nil
 }
 
-// loadServices reads and parses the broker config, returning a
-// name-normalized slice (legacy services missing Name get slugged on
-// the fly so callers always see populated names without a write).
-// Splits any inline-form host (`slack.com/api/*`) into bare Host +
-// Path so the matcher invariant — stored Host never contains "/" —
-// holds even after broker.Service.MarshalJSON persists the joined
-// form. Idempotent: a Host with no "/" passes through unchanged.
-// Returns nil, nil when the vault has no broker config.
+// loadServices reads, splits inline-form Host, and name-normalizes
+// the vault's broker config. Returns nil, nil when no config exists.
 func (s *Server) loadServices(ctx context.Context, vaultID string) ([]broker.Service, error) {
 	bc, err := s.store.GetBrokerConfig(ctx, vaultID)
 	if err != nil {
@@ -278,12 +247,9 @@ func (s *Server) loadServices(ctx context.Context, vaultID string) ([]broker.Ser
 	return broker.NormalizeServices(services), nil
 }
 
-// resolveServiceRef looks up a service by the {host} URL slot, which we
-// reinterpret as a name-or-host slot. Tries Name match first (1:1, no
-// ambiguity); falls back to Host match (1 hit applies, 2+ returns the
-// candidate list for the caller to surface as 409). Returns the matched
-// index, the candidate list (set only when host-match was ambiguous),
-// and ok=false when nothing matched.
+// resolveServiceRef looks up a service by name first, then by host.
+// Returns ambiguous host matches as candidates (ok=false) for the
+// caller to surface as 409.
 func resolveServiceRef(services []broker.Service, ref string) (idx int, candidates []broker.Service, ok bool) {
 	for i, svc := range services {
 		if svc.Name == ref {
@@ -309,10 +275,8 @@ func resolveServiceRef(services []broker.Service, ref string) (idx int, candidat
 	return -1, nil, false
 }
 
-// candidateRefs is the body shape returned with 409 when a host slot
-// matches multiple services. Caller picks one by Name and retries.
-// Host is the joined inline form (`slack.com/api/*`) so the field
-// matches the single-host wire shape used everywhere else.
+// candidateRef is the 409-body entry callers pick from to retry. Host
+// is in joined inline form (`slack.com/api/*`).
 type candidateRef struct {
 	Name string `json:"name"`
 	Host string `json:"host"`
@@ -352,14 +316,10 @@ func (s *Server) handleServicesGet(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"vault": name, "services": services})
 }
 
-// handleServicesCredentialUsage returns the {name, host} of every
-// service that references the given credential key. Gated at proxy+
-// (requireVaultAccess) deliberately: this is a strict subset of what
-// /discover already exposes to the same role — /discover lists every
-// service in the vault and every available credential key, so an
-// agent could filter client-side and arrive at the same answer.
-// Tightening to member+ here would create asymmetry without preventing
-// access.
+// handleServicesCredentialUsage returns {name, host} for every service
+// referencing the given credential key. Gated at proxy+ deliberately:
+// /discover already exposes the same data to the same role, so member+
+// gating here would only create asymmetry.
 func (s *Server) handleServicesCredentialUsage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")
@@ -447,17 +407,11 @@ func (s *Server) handleServicesUpsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Serialize the load → normalize → save cycle. SQLite serializes
-	// individual statements but not the sequence; without this, two
-	// concurrent upserts can both pass the auto-slug collision check
-	// against the same pre-state and the second writer wins.
+	// SQLite serializes statements but not the load → normalize → save
+	// sequence; without this lock concurrent upserts can both pass the
+	// collision check against the same pre-state.
 	defer s.lockVaultServices(ns.ID)()
 
-	// Load existing first so the incoming-batch normalization can seed
-	// its collision map with names already taken in the vault.
-	// Otherwise an incoming service with no Name whose Slugify(Host,Path)
-	// happens to match an unrelated stored service's Name would silently
-	// overwrite that service via the byName upsert below.
 	existing, err := s.loadServices(ctx, ns.ID)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to parse services")
@@ -532,7 +486,6 @@ func (s *Server) handleServiceRemove(w http.ResponseWriter, r *http.Request) {
 
 	defer s.lockVaultServices(ns.ID)()
 
-	// Load existing services (auto-normalized: legacy names backfilled).
 	services, err := s.loadServices(ctx, ns.ID)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to parse services")
@@ -580,13 +533,9 @@ func (s *Server) handleServiceRemove(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleServicePatch applies a partial update to a single service. The
-// {host} URL slot is interpreted as a name-or-host reference: name match
-// wins (1:1, no ambiguity); host match falls back, with a 409 candidate
-// list when more than one service shares that host. Today only the
-// `enabled` field is patchable — other fields change through the
-// POST/PUT upsert/set flow so auth-config validation has a single code
-// path. Admin-only.
+// handleServicePatch updates a single service via name-or-host
+// reference. Only `enabled` is patchable; all other fields change via
+// the POST/PUT upsert/set flow so auth validation has one code path.
 func (s *Server) handleServicePatch(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")

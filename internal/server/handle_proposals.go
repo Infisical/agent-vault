@@ -469,25 +469,10 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		finalCredentials[slot.Key] = store.EncryptedCredential{Ciphertext: ct, Nonce: nonce}
 	}
 
-	// MergeServices indexes by Name, so every entry on both sides must
-	// carry a canonical Name — otherwise Name="" entries collide on the
-	// "" key and a stray upsert overwrites the wrong service.
-	// loadServices normalizes existing; the call below normalizes proposed
-	// entries that predate the create-path normalization (Name-less,
-	// possibly inline-form Host) using the exact same helper used at
-	// create time, so apply-time semantics stay symmetric:
-	//
-	//   - ActionSet with Name="": adopt an existing (Host, Path) match
-	//     (rotate semantics), else slugify and bump (`-2`) on collision.
-	//   - ActionDelete with Name="": adopt the unique host match, return
-	//     409 on 2+ matches, leave Name empty on 0 matches so the
-	//     downstream guard rejects rather than letting Slugify(host) pick
-	//     an arbitrary existing service whose Name happens to share that
-	//     slug — the silent-data-loss path that motivated this guard.
-	//
-	// The lock serializes this whole load → merge → apply sequence
-	// against concurrent direct upserts on /services so a mid-apply
-	// upsert can't see partial state.
+	// MergeServices requires non-empty Name on both sides; normalize
+	// proposed entries against current existing state using the same
+	// helper as the create path. The lock serializes load → merge →
+	// apply against concurrent direct upserts on /services.
 	defer s.lockVaultServices(ns.ID)()
 
 	existingServices, err := s.loadServices(ctx, ns.ID)
@@ -495,9 +480,8 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		jsonError(w, http.StatusInternalServerError, "Failed to load existing services")
 		return
 	}
-	// At apply time, both error modes are state conflicts — the vault
-	// changed between proposal creation and approval — so not-found
-	// surfaces as 409 with a "reject manually" framing instead of 404.
+	// At apply time both error modes are state conflicts: surface
+	// not-found as 409 with a "reject manually" framing instead of 404.
 	proposedServices, err = normalizeProposalServices(proposedServices, existingServices)
 	if err != nil {
 		writeNormalizeError(w, err, http.StatusConflict, http.StatusInternalServerError, func(host string) string {

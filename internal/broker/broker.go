@@ -17,46 +17,26 @@ type Config struct {
 	Services []Service `yaml:"services" json:"services"`
 }
 
-// Service defines a credential-attachment rule scoped by host and an
-// optional URL path glob. Name is the canonical per-vault identifier
-// (slug) used by the proposal merge index, the HTTP API, and the SDK;
-// Host + Path are the matcher key consumed by MatchService.
+// Service defines a credential-attachment rule. Name is the canonical
+// per-vault identifier; Host + Path are the matcher key consumed by
+// MatchService. JSON callers see a single Host field carrying the
+// joined inline form (`slack.com/api/*`); ingest splits it back into
+// Host + Path before validation. YAML retains the split form.
 //
-// At every entrypoint and read surface (HTTP API, CLI, SDK, YAML config)
-// the matcher is exposed as a single Host field — Host accepts a bare
-// hostname, a one-level wildcard (`*.github.com`), or an inline
-// path-scoped form (`slack.com/api/*`). Ingest splits the inline form
-// into Host + Path before validation, so the stored bare Host never
-// contains "/". JSON reads emit the joined inline form via MarshalJSON
-// so the wire surface is symmetric: callers see the same single Host
-// field they wrote. The split Path field stays internal (and in YAML
-// for matcher inspection); JSON consumers should treat MatcherPattern()
-// as the canonical readable form.
-//
-// Path may contain a single greedy `*` glob (cross-`/`); see
-// ValidatePath for the format and MatchService for the prioritization
-// rules. An empty Path is a catch-all on the host.
-//
-// Enabled is a nullable toggle. nil means "not set" and is treated as
-// enabled so existing persisted services (which predate this field) stay
-// live after upgrade. Callers should use IsEnabled() rather than
+// Enabled is nullable so persisted services from before the field
+// existed stay live after upgrade — use IsEnabled() rather than
 // dereferencing the pointer.
 type Service struct {
-	Name string `yaml:"name" json:"name"`
-	Host string `yaml:"host" json:"host"`
-	// Path keeps the json tag for backwards-compatible unmarshal of
-	// pre-MarshalJSON on-disk records (which stored host + path split).
-	// MarshalJSON suppresses it on output via the omitempty path.
+	Name          string         `yaml:"name" json:"name"`
+	Host          string         `yaml:"host" json:"host"`
 	Path          string         `yaml:"path,omitempty" json:"path,omitempty"`
 	Enabled       *bool          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Auth          Auth           `yaml:"auth" json:"auth"`
 	Substitutions []Substitution `yaml:"substitutions,omitempty" json:"substitutions,omitempty"`
 }
 
-// MatcherPattern returns the joined inline form of Host and Path —
-// e.g. `slack.com` for a host-only rule and `slack.com/api/*` for a
-// path-scoped rule. This is the canonical readable form exposed on
-// every read surface (HTTP API, CLI tables, SDK).
+// MatcherPattern returns the joined inline form (`slack.com/api/*`),
+// or just Host when Path is empty.
 func (s Service) MatcherPattern() string {
 	if s.Path == "" {
 		return s.Host
@@ -64,11 +44,6 @@ func (s Service) MatcherPattern() string {
 	return s.Host + s.Path
 }
 
-// MarshalJSON emits the joined inline form on `host` and suppresses the
-// internal Path field, so the wire surface is symmetric with writes:
-// callers see the same single host pattern they sent. The internal
-// split lives behind MatcherPattern() and YAML — matcher logic
-// continues to consume Host + Path directly.
 func (s Service) MarshalJSON() ([]byte, error) {
 	type alias Service // strip MarshalJSON to avoid recursion
 	a := alias(s)
@@ -359,8 +334,8 @@ func (a *Auth) Resolve(getCredential func(key string) (string, error)) (map[stri
 }
 
 // Validate checks that a broker config is well-formed. Name is required
-// and unique per vault; callers that accept input without a name must
-// run NormalizeServices first to backfill from Slugify(Host, Path).
+// and unique per vault; callers must run NormalizeServices first to
+// backfill names from Slugify when accepting input without a name.
 func Validate(cfg *Config) error {
 	if cfg.Vault == "" {
 		return fmt.Errorf("vault is required")
@@ -525,21 +500,16 @@ func (s *Service) CredentialKeys() []string {
 // CredentialRef matches {{ credential_name }} placeholders in header values.
 var CredentialRef = regexp.MustCompile(`\{\{\s*(\w+)\s*\}\}`)
 
-// MatchScore is the deterministic priority tuple emitted by MatchService.
-// Returned alongside the matched service so callers (e.g. the debug log
-// line in brokercore.Inject) can audit which rule won and why without
-// recomputing the comparison.
+// MatchScore is the deterministic priority tuple emitted by MatchService,
+// returned alongside the match so callers can log which rule won.
 type MatchScore struct {
 	HostTier       int // 2 = exact host, 1 = "*.x.y" wildcard, 0 = no match
 	PathLiteralLen int // characters in Path before the first '*'; empty Path scores 0
 	DeclOrder      int // index of the matched service in the input slice
 }
 
-// Better reports whether s outranks other under MatchService's
-// prioritization rules: HostTier first, then PathLiteralLen.
-// DeclOrder is intentionally not compared — MatchService relies on
-// declaration-order iteration to keep first-match-wins as the implicit
-// final tiebreak.
+// Better compares HostTier then PathLiteralLen; DeclOrder is excluded so
+// MatchService's iteration order provides the final tiebreak.
 func (s MatchScore) Better(other MatchScore) bool {
 	if s.HostTier != other.HostTier {
 		return s.HostTier > other.HostTier
@@ -547,9 +517,6 @@ func (s MatchScore) Better(other MatchScore) bool {
 	return s.PathLiteralLen > other.PathLiteralLen
 }
 
-// HostTierName returns "exact" or "wildcard" for the matched service's
-// host tier, or "" when no match was made. Used as a log-friendly
-// alternative to the raw int.
 func (s MatchScore) HostTierName() string {
 	switch s.HostTier {
 	case HostTierExact:
@@ -561,29 +528,17 @@ func (s MatchScore) HostTierName() string {
 	}
 }
 
-// HostTierExact and HostTierWildcard are the only positive HostTier
-// values — exposed as named constants for matcher tests and log lines.
 const (
 	HostTierWildcard = 1
 	HostTierExact    = 2
 )
 
-// MatchService returns the most specific service matching (host, path),
-// or nil when nothing matches. Selection is deterministic:
-//
-//  1. Host tier first. An exact-host rule always beats a wildcard
-//     ("*.x.y") rule, even when the wildcard rule has a longer path.
-//  2. Path specificity within a host tier. The longest literal path
-//     prefix (characters before the first '*') wins. An empty Path
-//     scores 0 (catch-all).
-//  3. Declaration order is the final tiebreak — the rule appearing
-//     first in services wins on otherwise-equal scores.
-//
-// host should already be port-stripped by the caller; service Host
-// patterns are also compared port-stripped to handle legacy entries.
-// path is the request URL path (always begins with "/" — caller
-// normalizes). The returned MatchScore is meaningful only when the
-// returned *Service is non-nil.
+// MatchService returns the most specific service matching (host, path).
+// Selection: (1) exact host beats wildcard, even if wildcard has a
+// longer path; (2) longest literal path prefix wins within a host tier;
+// (3) earlier declaration order breaks ties. host and service Host
+// patterns are both port-stripped. The MatchScore is meaningful only
+// when the returned *Service is non-nil.
 func MatchService(host, path string, services []Service) (*Service, MatchScore) {
 	var best *Service
 	var bestScore MatchScore
@@ -605,11 +560,9 @@ func MatchService(host, path string, services []Service) (*Service, MatchScore) 
 	return best, bestScore
 }
 
-// matchHostPattern reports whether pattern matches host and which tier
-// the match falls into (HostTierExact > HostTierWildcard). Patterns
-// starting with "*." match exactly one subdomain level (e.g.
-// "*.github.com" matches "api.github.com" but not "a.b.github.com" or
-// the bare "github.com").
+// matchHostPattern reports the tier and whether pattern matches host.
+// "*." matches exactly one subdomain level (e.g. "*.github.com" matches
+// "api.github.com" but not "a.b.github.com" or the bare "github.com").
 func matchHostPattern(pattern, host string) (tier int, ok bool) {
 	if h, _, err := net.SplitHostPort(pattern); err == nil {
 		pattern = h
@@ -630,11 +583,8 @@ func matchHostPattern(pattern, host string) (tier int, ok bool) {
 }
 
 // matchPathGlob reports whether pattern matches path and returns the
-// literal-prefix length (characters before the first '*'). An empty
-// pattern is a catch-all and scores 0. The glob splits on '*' — the
-// first segment must prefix path, each interior segment must appear
-// in order, and the last segment must suffix what remains. '*' is
-// greedy across '/'; see ValidatePath for accepted syntax.
+// literal-prefix length. Empty pattern is a catch-all. '*' is greedy
+// across '/'.
 func matchPathGlob(pattern, path string) (literalLen int, ok bool) {
 	if pattern == "" {
 		return 0, true
@@ -664,12 +614,9 @@ func matchPathGlob(pattern, path string) (literalLen int, ok bool) {
 	return literalLen, true
 }
 
-// ValidateSlug enforces the per-vault identifier rule shared by vault
-// names, agent names, and service names: 3–64 chars, lowercase ASCII
-// alphanumeric and hyphens only, no leading/trailing hyphen, no
-// consecutive hyphens. Slugify enforces the same shape internally via
-// trim+collapse, but user/agent-supplied names bypass Slugify and would
-// otherwise smuggle in malformed slugs that fail downstream lookups.
+// ValidateSlug enforces the per-vault identifier rule shared by vault,
+// agent, and service names: 3–64 chars, lowercase ASCII alphanumeric
+// and hyphens, no leading/trailing or consecutive hyphens.
 func ValidateSlug(name string) error {
 	if name == "" {
 		return fmt.Errorf("name is required")
@@ -694,11 +641,9 @@ func ValidateSlug(name string) error {
 	return nil
 }
 
-// ValidatePath enforces the path-glob format. An empty path is a
-// catch-all (legacy host-only behavior). Non-empty paths must begin
-// with "/", be at most 256 characters, contain no "**", "?", control
-// characters, whitespace, or other tokens that suggest regex/HTML
-// semantics that the matcher does not implement.
+// ValidatePath enforces the path-glob format. Empty is a catch-all;
+// non-empty paths must start with "/", be ≤256 chars, and contain no
+// "**", "?", control characters, whitespace, or regex/HTML tokens.
 func ValidatePath(p string) error {
 	if p == "" {
 		return nil
@@ -727,11 +672,9 @@ func ValidatePath(p string) error {
 // hostLabelPattern matches a valid hostname (RFC 952 / RFC 1123 style).
 var hostLabelPattern = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
 
-// internalHosts are names blocked unless AGENT_VAULT_DEV_MODE=true.
-// Both the proposal flow (less-trusted agents) and the direct upsert
-// path (vault admins) honor this list — admins can opt out via dev mode
-// for legitimate localhost development, but the default fails closed
-// to avoid SSRF against cloud-metadata and Kubernetes-internal services.
+// internalHosts are blocked by default to dodge SSRF against
+// cloud-metadata and Kubernetes-internal endpoints; AGENT_VAULT_DEV_MODE
+// opens them for localhost development.
 var internalHosts = []string{
 	"localhost", "localhost.localdomain", "internal",
 	"kubernetes", "kubernetes.default",
@@ -739,12 +682,9 @@ var internalHosts = []string{
 	"instance-data",
 }
 
-// ValidateHost checks that a host string is safe and well-formed.
-// Accepts bare hostnames (`api.stripe.com`) and one-level wildcards
-// (`*.github.com`). Rejects IPs, internal/loopback names (unless
-// AGENT_VAULT_DEV_MODE=true), bare wildcards, and characters that
-// would break URL parsing. Shared by every ingest path (broker.Validate,
-// proposal.Validate) so the SSRF surface is uniform.
+// ValidateHost accepts bare hostnames and one-level wildcards
+// (`*.github.com`). Rejects IPs, internal names (see internalHosts),
+// bare wildcards, and characters that would break URL parsing.
 func ValidateHost(host string) error {
 	h := strings.TrimSpace(host)
 	if h == "" {
@@ -797,11 +737,9 @@ func ValidateHost(host string) error {
 	return nil
 }
 
-// SplitInlineHost splits a user-friendly inline form like
-// `slack.com/api/*` into bare host + path. Returns the inputs unchanged
-// when host has no `/` or when path is already populated. Shared by
-// every ingest path (CLI flags, YAML loader, HTTP API, proposal flow)
-// so writes always normalize to the same (host, path) shape.
+// SplitInlineHost splits `slack.com/api/*` into bare host + path.
+// Returns the inputs unchanged when host has no `/` or path is already
+// populated, so callers can pipeline split-form and inline-form alike.
 func SplitInlineHost(host, path string) (string, string) {
 	if path != "" {
 		return host, path
@@ -812,16 +750,11 @@ func SplitInlineHost(host, path string) (string, string) {
 	return host, path
 }
 
-// Slugify produces a deterministic candidate name from (host, path)
-// that satisfies ValidateSlug. Used for auto-naming when a service is
-// created without an explicit name and for backfilling legacy services.
-// Collision resolution (suffixing -2, -3, ...) is the caller's job —
-// see NormalizeServices.
-//
-// A non-empty path always produces a slug distinct from the empty-path
-// (catch-all) slug for the same host: when the path's literal portion
-// has no alphanumeric content (e.g. "/" or "/*"), the marker "root" is
-// appended so root-literal services don't collide with catch-alls.
+// Slugify produces a deterministic ValidateSlug-shaped candidate name
+// from (host, path). Collision resolution is the caller's job (see
+// NormalizeServices). A non-empty path always yields a slug distinct
+// from the catch-all slug for the same host — paths with no alnum
+// content (e.g. "/" or "/*") get a "root" marker appended.
 func Slugify(host, path string) string {
 	h := strings.ToLower(strings.TrimPrefix(host, "*."))
 
@@ -885,16 +818,10 @@ func Slugify(host, path string) string {
 	return s
 }
 
-// NormalizeServices returns services with empty Name fields backfilled
-// from Slugify(Host, Path), with collision suffixing applied so the
-// result has unique names. Idempotent: services that already have a
-// name are left untouched (and reserve their name first so
-// auto-generated slugs can't collide with user-chosen ones). Pure;
-// callers persist the result only when they were already going to write.
-//
-// Returns the input slice unchanged when every service already has a
-// name — the common steady-state path through Inject. Allocates a copy
-// only when at least one Name is empty.
+// NormalizeServices backfills empty Name fields via Slugify, bumping on
+// collisions with explicit names. Returns the input slice unchanged
+// when every service already has a name (the steady-state path);
+// allocates a copy only when backfill is needed.
 func NormalizeServices(services []Service) []Service {
 	if services == nil {
 		return nil
@@ -929,14 +856,9 @@ func NormalizeServices(services []Service) []Service {
 	return out
 }
 
-// EnsureUniqueName appends -2, -3, ... to candidate until the result is
-// not present in used, preserving the 64-char ValidateSlug ceiling.
-// Caller-owned mutation: this does not insert into used; the caller
-// records the chosen name so subsequent calls observe it.
-//
-// Bounded at n=10000 — beyond that we return candidate-overflow rather
-// than spinning, since the caller's downstream Validate will catch the
-// duplicate cleanly.
+// EnsureUniqueName appends -2, -3, ... to candidate until it's not in
+// used, preserving the 64-char ValidateSlug ceiling. Does not mutate
+// used. Bounded at n=10000; downstream Validate catches any overflow.
 func EnsureUniqueName(candidate string, used map[string]bool) string {
 	if !used[candidate] {
 		return candidate

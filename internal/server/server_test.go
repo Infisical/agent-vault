@@ -6249,6 +6249,50 @@ func TestProposalCreateActionDeleteUnknownHostReturnsNotFound(t *testing.T) {
 	}
 }
 
+// TestProposalCreateActionDeleteInlineFormNarrowsByPath pins that an
+// unnamed delete with an inline-form host (`slack.com/api/*`) resolves
+// to the exact (Host, Path) match instead of 409'ing against unrelated
+// path siblings on the same host. Without this narrowing the user would
+// be forced to fall back to the canonical Name even though the inline
+// form already uniquely identifies the target.
+func TestProposalCreateActionDeleteInlineFormNarrowsByPath(t *testing.T) {
+	srv, ms, token := setupProposalTest(t)
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		ID: "bc-1", VaultID: "root-ns-id",
+		ServicesJSON: `[
+			{"name":"slack-bot","host":"slack.com","path":"/api/*","auth":{"type":"bearer","token":"SLACK_BOT_TOKEN"}},
+			{"name":"slack-conn","host":"slack.com","path":"/api/apps.connections.*","auth":{"type":"bearer","token":"SLACK_CONNECTION_TOKEN"}}
+		]`,
+	}
+
+	body := `{
+		"services": [{"action":"delete","host":"slack.com/api/apps.connections.*"}],
+		"message": "drop socket-mode token"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/proposals", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 (inline form unambiguously targets slack-conn), got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Confirm the proposal was stored with Name=slack-conn adopted from
+	// the unique (Host, Path) match, not slack-bot.
+	props := ms.proposals["root-ns-id"]
+	if len(props) != 1 {
+		t.Fatalf("expected 1 proposal, got %d", len(props))
+	}
+	var stored []map[string]interface{}
+	if err := json.Unmarshal([]byte(props[0].ServicesJSON), &stored); err != nil {
+		t.Fatalf("unmarshal stored proposal services: %v", err)
+	}
+	if len(stored) != 1 || stored[0]["name"] != "slack-conn" {
+		t.Fatalf("expected stored proposal to adopt Name=slack-conn, got %v", stored)
+	}
+}
+
 // TestServicesGetReturnsJoinedHostNoPathField pins the wire shape on
 // the read surface: GET /v1/vaults/{name}/services emits Host in joined
 // inline form (`slack.com/api/*`) and never includes the legacy `path`

@@ -26,9 +26,9 @@ type Record struct {
 	Method         string
 	Host           string
 	Path           string
-	MatchedService string // canonical service name (slug); persisted to the matched_service column.
-	MatchedHost    string // host pattern of the matched service. In-memory only — non-SQLite sinks may consume it; the SQLite sink does not persist it (no schema change).
-	MatchedPath    string // path pattern of the matched service, or empty for catch-all. In-memory only — see MatchedHost.
+	MatchedService string // canonical service name (slug); persisted.
+	MatchedHost    string // host pattern; not persisted by the SQLite sink (no schema change).
+	MatchedPath    string // path pattern, or empty for catch-all; not persisted by the SQLite sink.
 	CredentialKeys []string
 	Status         int
 	LatencyMs      int64

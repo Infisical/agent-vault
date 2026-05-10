@@ -52,11 +52,9 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		proxyError(w, http.StatusInternalServerError, "internal", "Failed to parse broker services")
 		return
 	}
-	// Backfill empty Names so agents see canonical identifiers even
-	// against legacy vaults that haven't been written since the upgrade.
-	// Defensive split: persisted JSON may contain joined-form Host
-	// (after MarshalJSON joins Host+Path), and we want MatcherPattern
-	// below to produce the same form regardless of storage shape.
+	// MarshalJSON persists Host in joined form; re-split so
+	// MatcherPattern emits the same shape regardless of storage form,
+	// and backfill Name so legacy vaults expose canonical identifiers.
 	for i := range svcList {
 		svcList[i].Host, svcList[i].Path = broker.SplitInlineHost(svcList[i].Host, svcList[i].Path)
 	}
