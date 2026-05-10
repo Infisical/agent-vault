@@ -57,8 +57,6 @@ func TestFindDuplicateMatchers(t *testing.T) {
 	}
 }
 
-// Path-scoped siblings on the same bare host are NOT duplicates — the
-// matcher pattern (Host + Path) is what defines identity for tiebreaks.
 func TestFindDuplicateMatchersIgnoresPathScopedSiblings(t *testing.T) {
 	services := []broker.Service{
 		{Host: "slack.com", Path: "/api/*", Auth: broker.Auth{Type: "bearer", Token: "BOT"}},

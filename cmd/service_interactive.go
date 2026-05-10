@@ -236,9 +236,6 @@ func serviceBuilderLoop(client *session.ClientSession, nsName string, cmd *cobra
 		}
 		services = append(services, *service)
 
-		// Warn on duplicate (host, path) matchers — distinct paths on
-		// the same bare host are legitimate (the path-scoped Slack split)
-		// and must not trip this warning.
 		for _, dup := range findDuplicateMatchers(services) {
 			fmt.Fprintf(cmd.ErrOrStderr(), "%s multiple services for matcher %q — the first declared wins on tie\n", warningText("Warning:"), dup)
 		}
@@ -717,10 +714,7 @@ func hostWarnings(host string) []string {
 	return warnings
 }
 
-// findDuplicateMatchers returns matcher patterns (joined inline form,
-// e.g. `slack.com/api/*`) that appear more than once. Path-scoped
-// siblings on the same bare host carry distinct matcher patterns and
-// are intentionally not flagged.
+// findDuplicateMatchers returns matcher patterns that appear more than once.
 func findDuplicateMatchers(services []broker.Service) []string {
 	seen := make(map[string]int)
 	for _, s := range services {
