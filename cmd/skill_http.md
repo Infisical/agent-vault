@@ -97,7 +97,7 @@ X-Vault: {vault_name}
 
 **Note:** Instance-level agent tokens (persistent agents) must include the `X-Vault: {vault_name}` header on every control-plane call (`/discover`, `/v1/proposals`). The server only reads vault scope from this header — `AGENT_VAULT_VAULT` is a client-side env var; it is your responsibility to copy its value into the `X-Vault` header on each request. Vault-scoped session tokens carry the vault on the session row, so the header is ignored for those (passing it unconditionally is safe).
 
-Response includes `vault`, `services` (host + description), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots.
+Response includes `vault`, `services` (each with `name` and `host`), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots. `host` is the single matcher field on every surface (read and write): it returns the joined inline form, so a path-scoped service shows up as e.g. `slack.com/api/*`. When two services share the same bare host but scope to different paths (e.g. Slack with separate Bot and Connection rules), distinguish them by `name` in subsequent operations like `PATCH/DELETE /v1/vaults/{vault}/services/{name}`.
 
 **Browse service templates:**
 
@@ -186,6 +186,7 @@ Content-Type: application/json
 {
   "services": [{
     "action": "set",
+    "name": "twilio",
     "host": "api.twilio.com",
     "auth": {"type": "basic", "username": "TWILIO_ACCOUNT_SID", "password": "TWILIO_AUTH_TOKEN"},
     "substitutions": [
@@ -212,7 +213,7 @@ Authorization: Bearer {AGENT_VAULT_TOKEN}
 Content-Type: application/json
 
 {
-  "services": [{"action": "set", "host": "api.stripe.com", "description": "Stripe API", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
+  "services": [{"action": "set", "name": "stripe", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
   "credentials": [{"action": "set", "key": "STRIPE_KEY", "description": "Stripe API key", "obtain": "https://dashboard.stripe.com/apikeys", "obtain_instructions": "Developers -> API Keys -> Reveal test key"}],
   "message": "Need Stripe API key for billing feature",
   "user_message": "I need access to your Stripe account to build the checkout page."
@@ -220,7 +221,9 @@ Content-Type: application/json
 ```
 
 Key fields:
-- `services[].action` -- `"set"` (upsert, needs `host` + `auth` **or** an `enabled` change) or `"delete"` (needs `host` only)
+- `services[].action` -- `"set"` (upsert, needs `host` + `auth` **or** an `enabled` change) or `"delete"`
+- `services[].name` -- canonical identifier (slug, 3–64 lowercase alphanumeric/hyphen chars). **Required for `"set"`** — pick a deliberate name; the server does not derive one from `host`. `"delete"` may omit `name` to fall back to host-based resolution: when the host is shared by multiple services the server returns 409 with the candidate names so the caller can retry by `name`.
+- `services[].host` -- single matcher field. Accepts a bare hostname (e.g. `api.stripe.com`), a one-level wildcard (e.g. `*.github.com`), or an inline path-scoped form (e.g. `slack.com/api/*`). The server splits the path off the host on ingest. Path globs use `*` as a greedy glob (cross-`/`); `**`, `?`, regex, and bare `*` are rejected.
 - `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates), `passthrough` (no credential fields)
 - `services[].substitutions` -- optional list of URL/header rewrites. Each entry has `key` (UPPER_SNAKE_CASE credential reference), `placeholder` (the exact wire string the broker matches case-sensitively, e.g. `__account_sid__`), and optional `in` (subset of `["path", "query", "header"]`; defaults to `["path", "query"]`). Surfaces not in `in` are not scanned. Must be paired with an `auth` change in the same proposal — substitutions cannot be added on an enable/disable-only update. See the URL Substitutions section above.
 - `services[].enabled` -- optional boolean. Omitted means "enabled" for new services. A `"set"` proposal may supply `enabled` alone (no `auth`) to flip an existing service's state without replacing its auth config -- useful for staged rollouts where the operator wires credentials before flipping traffic on
@@ -228,6 +231,23 @@ Key fields:
 - `credentials` -- only declare credentials not already in `available_credentials`. Every credential referenced in auth configs must resolve to a slot or existing credential (400 otherwise)
 - `message` -- developer-facing explanation; `user_message` -- shown on the browser approval page
 - `credentials[].obtain` -- URL where the human can get the credential; `obtain_instructions` -- steps to find it
+
+### Matching priority
+
+When two service `host` patterns could match a request, the winner is chosen deterministically:
+
+1. **Host tier first.** A service whose host portion is an **exact match** of the request host always beats one with a **wildcard** host (`*.example.com`) — even when the wildcard rule has a more specific path portion.
+2. **Path specificity within a host tier.** Among services in the same host tier, the rule with the **longest literal path prefix** wins (characters in the path portion of `host` before the first `*`). A bare-host pattern (no path) scores 0 (catch-all).
+3. **Declaration order on tie.** If two rules tie on host tier and literal path-prefix length, the rule appearing first in the configured service list wins.
+
+Example — Slack with two credentials at the same host:
+
+| Request | `host=slack.com/api/apps.connections.*` | `host=slack.com/api/*` | Winner |
+|---|---|---|---|
+| `slack.com/api/apps.connections.open` | matches, prefix length 22 | matches, prefix length 5 | `slack-conn` (longer prefix) |
+| `slack.com/api/chat.postMessage` | doesn't match | matches | `slack-bot` |
+
+The matcher does not run regex, does not match on method/headers/query/body, and does not bound `*` at path segments. Patterns that tie under rule 2 fall to declaration order.
 
 **After creating a proposal:**
 1. Present the `approval_url` to the user conversationally -- e.g. "I need access to your Stripe account. Click here to connect it: -> {approval_url}"
@@ -247,7 +267,9 @@ GET {AGENT_VAULT_ADDR}/v1/vaults/{vault}/logs
 Authorization: Bearer {AGENT_VAULT_TOKEN}
 ```
 
-Query params: `status_bucket` (`2xx`|`3xx`|`4xx`|`5xx`|`err`), `service`, `limit` (default 50, max 200), `before=<id>` (page back), `after=<id>` (tail forward for new rows). Response: `{ "logs": [...], "next_cursor": <id|null>, "latest_id": <id> }`.
+Query params: `status_bucket` (`2xx`|`3xx`|`4xx`|`5xx`|`err`), `service` (canonical service **name** — e.g. `slack-bot`, `stripe`), `limit` (default 50, max 200), `before=<id>` (page back), `after=<id>` (tail forward for new rows). Response: `{ "logs": [...], "next_cursor": <id|null>, "latest_id": <id> }`.
+
+> **Note**: Rows written before path-based service matching shipped store the matched **host** in the `matched_service` field. New rows store the canonical service **name**. Operators filtering on `?service=` should use service names; pre-upgrade rows can be retrieved by querying with the host string instead. The matched service's host pattern is not returned in log rows — call `GET /v1/vaults/{vault}/services` and filter the response by `name` (or read `/discover`) to recover the `host` from a name.
 
 ## Building Code That Needs Credentials
 

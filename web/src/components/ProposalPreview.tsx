@@ -24,8 +24,8 @@ export const DEFAULT_SUBSTITUTION_SURFACES: string[] = ["path", "query"];
 
 export interface Service {
   action: string;
+  name?: string;
   host: string;
-  description?: string;
   enabled?: boolean;
   auth?: Auth;
   substitutions?: Substitution[];
@@ -153,11 +153,11 @@ export default function ProposalPreview({ data }: { data: ProposalData }) {
   if (setServices.length > 0)
     titleParts.push(
       setServices.length === 1
-        ? setServices[0].description || setServices[0].host
+        ? setServices[0].name || setServices[0].host
         : `${setServices.length} services`
     );
   if (deleteServices.length > 0)
-    titleParts.push(`remove ${deleteServices.length === 1 ? deleteServices[0].host : `${deleteServices.length} services`}`);
+    titleParts.push(`remove ${deleteServices.length === 1 ? (deleteServices[0].name || deleteServices[0].host) : `${deleteServices.length} services`}`);
 
   return (
     <div>
@@ -207,17 +207,22 @@ export default function ProposalPreview({ data }: { data: ProposalData }) {
           </div>
           <div className="space-y-3">
             {setServices.map((service, i) => (
-              <div key={i} className="bg-bg border border-border rounded-lg p-3">
+              <div key={service.name || `${service.host}-${i}`} className="bg-bg border border-border rounded-lg p-3">
                 <div>
+                  {service.name && (
+                    <>
+                      <div className="text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-1.5">
+                        Name
+                      </div>
+                      <div className="text-sm text-text font-mono mb-2">
+                        {service.name}
+                      </div>
+                    </>
+                  )}
                   <div className="text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-1.5">
                     Host
                   </div>
-                  <span className="text-sm text-text font-mono">
-                    {service.host}
-                  </span>
-                  {service.description && (
-                    <p className="text-xs text-text-muted mt-1">{service.description}</p>
-                  )}
+                  <span className="text-sm text-text font-mono">{service.host}</span>
                 </div>
                 {service.enabled !== undefined && (
                   <div className="mt-2 pt-2 border-t border-border">
@@ -244,12 +249,12 @@ export default function ProposalPreview({ data }: { data: ProposalData }) {
           </div>
           <div className="space-y-1.5">
             {deleteServices.map((service, i) => (
-              <div key={i} className="flex items-center gap-2 text-sm text-text font-mono">
+              <div key={service.name || `${service.host}-${i}`} className="flex items-center gap-2 text-sm text-text font-mono">
                 <svg className="w-3.5 h-3.5 text-danger flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="18" y1="6" x2="6" y2="18" />
                   <line x1="6" y1="6" x2="18" y2="18" />
                 </svg>
-                {service.host}
+                {service.name || service.host}
               </div>
             ))}
           </div>

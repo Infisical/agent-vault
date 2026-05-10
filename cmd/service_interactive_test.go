@@ -39,21 +39,31 @@ func TestHostWarnings(t *testing.T) {
 	}
 }
 
-func TestFindDuplicateHosts(t *testing.T) {
+func TestFindDuplicateMatchers(t *testing.T) {
 	services := []broker.Service{
 		{Host: "api.stripe.com", Auth: broker.Auth{Type: "bearer", Token: "A"}},
 		{Host: "api.github.com", Auth: broker.Auth{Type: "bearer", Token: "A"}},
 		{Host: "api.stripe.com", Auth: broker.Auth{Type: "bearer", Token: "B"}},
 	}
 
-	dups := findDuplicateHosts(services)
+	dups := findDuplicateMatchers(services)
 	if len(dups) != 1 || dups[0] != "api.stripe.com" {
-		t.Errorf("findDuplicateHosts() = %v, want [api.stripe.com]", dups)
+		t.Errorf("findDuplicateMatchers() = %v, want [api.stripe.com]", dups)
 	}
 
-	noDups := findDuplicateHosts(services[:2])
+	noDups := findDuplicateMatchers(services[:2])
 	if len(noDups) != 0 {
-		t.Errorf("findDuplicateHosts() = %v, want empty", noDups)
+		t.Errorf("findDuplicateMatchers() = %v, want empty", noDups)
+	}
+}
+
+func TestFindDuplicateMatchersIgnoresPathScopedSiblings(t *testing.T) {
+	services := []broker.Service{
+		{Host: "slack.com", Path: "/api/*", Auth: broker.Auth{Type: "bearer", Token: "BOT"}},
+		{Host: "slack.com", Path: "/api/apps.connections.*", Auth: broker.Auth{Type: "bearer", Token: "CONN"}},
+	}
+	if dups := findDuplicateMatchers(services); len(dups) != 0 {
+		t.Errorf("findDuplicateMatchers() = %v, want empty (distinct paths)", dups)
 	}
 }
 
@@ -82,6 +92,43 @@ func TestFindUnresolvedCredentials(t *testing.T) {
 	unresolved2 := findUnresolvedCredentials(services, allKnown)
 	if len(unresolved2) != 0 {
 		t.Errorf("findUnresolvedCredentials() = %v, want empty", unresolved2)
+	}
+}
+
+// buildService prompts for Name explicitly, so the merged slice that
+// reaches broker.Validate carries every name the user typed and does
+// not need any client-side backfill step.
+func TestInteractiveServiceSetMergeReplaceFeedsValidate(t *testing.T) {
+	builderOutput := []broker.Service{
+		{Name: "stripe", Host: "api.stripe.com", Auth: broker.Auth{Type: "bearer", Token: "STRIPE_KEY"}},
+		{Name: "slack-bot", Host: "slack.com", Path: "/api/*", Auth: broker.Auth{Type: "bearer", Token: "SLACK_BOT_TOKEN"}},
+	}
+	var existing []broker.Service
+
+	finalServices := mergeServices(existing, builderOutput, mergeReplace)
+	cfg := broker.Config{Vault: "default", Services: finalServices}
+	if err := broker.Validate(&cfg); err != nil {
+		t.Fatalf("expected pipeline to accept user-named builder output, got: %v", err)
+	}
+}
+
+// On append, existing explicit names survive untouched alongside the
+// names the user typed for new entries.
+func TestInteractiveServiceSetMergeAppendPreservesExistingNames(t *testing.T) {
+	existing := []broker.Service{
+		{Name: "stripe-prod", Host: "api.stripe.com", Auth: broker.Auth{Type: "bearer", Token: "STRIPE_KEY"}},
+	}
+	newServices := []broker.Service{
+		{Name: "github-bot", Host: "api.github.com", Auth: broker.Auth{Type: "bearer", Token: "GH_TOKEN"}},
+	}
+
+	finalServices := mergeServices(existing, newServices, mergeAppend)
+
+	if finalServices[0].Name != "stripe-prod" {
+		t.Errorf("existing service Name was rewritten: got %q, want stripe-prod", finalServices[0].Name)
+	}
+	if finalServices[1].Name != "github-bot" {
+		t.Errorf("appended service Name = %q, want github-bot", finalServices[1].Name)
 	}
 }
 

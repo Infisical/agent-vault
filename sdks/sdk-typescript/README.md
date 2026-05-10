@@ -97,17 +97,37 @@ const av = new AgentVault({
 await av.createVault({ name: "my-project" });
 const vault = av.vault("my-project");
 
-// Store a credential
-await vault.credentials.set({ STRIPE_KEY: "sk_live_abc" });
+// Store credentials
+await vault.credentials.set({
+  STRIPE_KEY: "sk_live_abc",
+  SLACK_BOT_TOKEN: "xoxb-...",
+  SLACK_CONNECTION_TOKEN: "xapp-...",
+});
 
-// Configure a proxy rule — the token field references the credential key above
+// Configure proxy rules — the token field references a credential key above.
+// Slack needs two credentials at different paths on the same host, so we
+// embed the path glob in `host` (inline form) and give each rule a distinct
+// `name` slug.
 await vault.services!.set([
   {
+    name: "stripe",
     host: "api.stripe.com",
-    description: "Stripe API",
     auth: { type: "bearer", token: "STRIPE_KEY" },
   },
+  {
+    name: "slack-bot",
+    host: "slack.com/api/*",
+    auth: { type: "bearer", token: "SLACK_BOT_TOKEN" },
+  },
+  {
+    name: "slack-conn",
+    host: "slack.com/api/apps.connections.*",
+    auth: { type: "bearer", token: "SLACK_CONNECTION_TOKEN" },
+  },
 ]);
+
+// Remove a path-scoped service unambiguously by name:
+await vault.services!.removeByName("slack-conn");
 ```
 
 ## Error handling

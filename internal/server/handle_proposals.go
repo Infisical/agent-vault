@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/proposal"
 	"github.com/Infisical/agent-vault/internal/store"
@@ -127,11 +127,38 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	vaultID := resolvedVault.ID
 
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, "Failed to read request body")
+		return
+	}
+	var probe struct {
+		Services json.RawMessage `json:"services"`
+	}
+	if err := json.Unmarshal(body, &probe); err == nil {
+		if i := rejectDeprecatedDescription(probe.Services); i >= 0 {
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("services[%d]: %s", i, deprecatedDescriptionMsg))
+			return
+		}
+	}
 	var req proposalCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
+
+	// Resolve unnamed-delete targets against existing vault state.
+	existing, err := s.loadServices(ctx, vaultID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to load existing services")
+		return
+	}
+	normalized, err := normalizeProposalServices(req.Services, existing)
+	if err != nil {
+		writeNormalizeError(w, err, http.StatusNotFound, http.StatusBadRequest, nil)
+		return
+	}
+	req.Services = normalized
 
 	// Validate the proposal.
 	if err := proposal.Validate(req.Services, req.Credentials); err != nil {
@@ -442,16 +469,24 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		finalCredentials[slot.Key] = store.EncryptedCredential{Ciphertext: ct, Nonce: nonce}
 	}
 
-	// Merge services.
-	bc, err := s.store.GetBrokerConfig(ctx, ns.ID)
-	if err != nil {
-		// No existing config — start fresh.
-		bc = &store.BrokerConfig{ServicesJSON: "[]"}
-	}
+	// MergeServices requires non-empty Name on both sides; normalize
+	// proposed entries against current existing state using the same
+	// helper as the create path. The lock serializes load → merge →
+	// apply against concurrent direct upserts on /services.
+	defer s.lockVaultServices(ns.ID)()
 
-	var existingServices []broker.Service
-	if err := json.Unmarshal([]byte(bc.ServicesJSON), &existingServices); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to parse existing services")
+	existingServices, err := s.loadServices(ctx, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to load existing services")
+		return
+	}
+	// At apply time both error modes are state conflicts: surface
+	// not-found as 409 with a "reject manually" framing instead of 404.
+	proposedServices, err = normalizeProposalServices(proposedServices, existingServices)
+	if err != nil {
+		writeNormalizeError(w, err, http.StatusConflict, http.StatusInternalServerError, func(host string) string {
+			return fmt.Sprintf("proposal targets host %q which no longer matches any service in this vault — reject the proposal manually", host)
+		})
 		return
 	}
 

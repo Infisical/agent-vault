@@ -3,58 +3,203 @@ package broker
 import (
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"testing"
 )
 
-func TestMatchHostExact(t *testing.T) {
+func TestMatchServiceExact(t *testing.T) {
 	services := []Service{
-		{Host: "api.stripe.com", Auth: Auth{Type: "bearer", Token: "STRIPE_KEY"}},
+		{Name: "stripe", Host: "api.stripe.com", Auth: Auth{Type: "bearer", Token: "STRIPE_KEY"}},
 	}
-	r := MatchHost("api.stripe.com", services)
+	r, score := MatchService("api.stripe.com", "/v1/charges", services)
 	if r == nil {
 		t.Fatal("expected a match")
 	}
 	if r.Host != "api.stripe.com" {
 		t.Fatalf("expected api.stripe.com, got %s", r.Host)
 	}
+	if score.HostTier != HostTierExact {
+		t.Fatalf("expected exact host tier, got %d", score.HostTier)
+	}
 }
 
-func TestMatchHostWildcard(t *testing.T) {
+func TestMatchServiceWildcard(t *testing.T) {
 	services := []Service{
-		{Host: "*.github.com", Auth: Auth{Type: "bearer", Token: "GH_TOKEN"}},
+		{Name: "github", Host: "*.github.com", Auth: Auth{Type: "bearer", Token: "GH_TOKEN"}},
 	}
 	for _, host := range []string{"api.github.com", "uploads.github.com"} {
-		r := MatchHost(host, services)
+		r, score := MatchService(host, "/", services)
 		if r == nil {
 			t.Fatalf("expected match for %s", host)
 		}
+		if score.HostTier != HostTierWildcard {
+			t.Fatalf("expected wildcard tier for %s, got %d", host, score.HostTier)
+		}
 	}
 	// Should not match bare "github.com"
-	if r := MatchHost("github.com", services); r != nil {
+	if r, _ := MatchService("github.com", "/", services); r != nil {
 		t.Fatal("did not expect match for github.com")
 	}
 }
 
-func TestMatchHostNoMatch(t *testing.T) {
+func TestMatchServiceNoMatch(t *testing.T) {
 	services := []Service{
-		{Host: "api.stripe.com", Auth: Auth{Type: "bearer", Token: "STRIPE_KEY"}},
+		{Name: "stripe", Host: "api.stripe.com", Auth: Auth{Type: "bearer", Token: "STRIPE_KEY"}},
 	}
-	if r := MatchHost("evil.com", services); r != nil {
+	if r, _ := MatchService("evil.com", "/", services); r != nil {
 		t.Fatal("expected no match")
 	}
 }
 
-func TestMatchHostFirstWins(t *testing.T) {
+func TestMatchServiceSpecificityWins(t *testing.T) {
+	// The Slack two-credential case: longer literal path prefix wins
+	// within the same host tier, regardless of slice order.
 	services := []Service{
-		{Host: "*.example.com", Auth: Auth{Type: "custom", Headers: map[string]string{"X-First": "1"}}},
-		{Host: "api.example.com", Auth: Auth{Type: "custom", Headers: map[string]string{"X-Second": "2"}}},
+		{Name: "slack-bot", Host: "slack.com", Path: "/api/*", Auth: Auth{Type: "bearer", Token: "SLACK_BOT_TOKEN"}},
+		{Name: "slack-conn", Host: "slack.com", Path: "/api/apps.connections.*", Auth: Auth{Type: "bearer", Token: "SLACK_CONNECTION_TOKEN"}},
 	}
-	r := MatchHost("api.example.com", services)
+	r, _ := MatchService("slack.com", "/api/apps.connections.open", services)
+	if r == nil || r.Name != "slack-conn" {
+		t.Fatalf("expected slack-conn (longer literal prefix), got %+v", r)
+	}
+	r, _ = MatchService("slack.com", "/api/chat.postMessage", services)
+	if r == nil || r.Name != "slack-bot" {
+		t.Fatalf("expected slack-bot, got %+v", r)
+	}
+}
+
+func TestMatchServiceHostExactBeatsWildcardEvenWithShorterPath(t *testing.T) {
+	// Even when the wildcard rule has a more specific path, an exact
+	// host always wins. Mirrors nginx server_name precedence.
+	services := []Service{
+		{Name: "wildcard", Host: "*.slack.com", Path: "/api/apps.connections.*", Auth: Auth{Type: "bearer", Token: "T1"}},
+		{Name: "exact", Host: "api.slack.com", Auth: Auth{Type: "bearer", Token: "T2"}},
+	}
+	r, score := MatchService("api.slack.com", "/api/apps.connections.open", services)
+	if r == nil || r.Name != "exact" {
+		t.Fatalf("expected exact-host rule to win regardless of path, got %+v", r)
+	}
+	if score.HostTier != HostTierExact {
+		t.Fatalf("expected exact host tier, got %d", score.HostTier)
+	}
+}
+
+func TestMatchServicePathWildcardCrossSlash(t *testing.T) {
+	// '*' is greedy and matches across '/'.
+	services := []Service{
+		{Name: "slack-bot", Host: "slack.com", Path: "/api/*", Auth: Auth{Type: "bearer", Token: "T"}},
+	}
+	r, _ := MatchService("slack.com", "/api/foo/bar/baz", services)
 	if r == nil {
-		t.Fatal("expected a match")
+		t.Fatal("expected /api/* to match /api/foo/bar/baz greedily")
 	}
-	if _, ok := r.Auth.Headers["X-First"]; !ok {
-		t.Fatal("expected first service to win")
+}
+
+func TestMatchServiceDeclarationOrderTiebreak(t *testing.T) {
+	// Identical (hostTier, pathLiteralLen) → earlier in the slice wins.
+	services := []Service{
+		{Name: "first", Host: "*.example.com", Path: "/v1/*", Auth: Auth{Type: "custom", Headers: map[string]string{"X-First": "1"}}},
+		{Name: "second", Host: "*.example.com", Path: "/v1/*", Auth: Auth{Type: "custom", Headers: map[string]string{"X-Second": "2"}}},
+	}
+	r, score := MatchService("api.example.com", "/v1/users", services)
+	if r == nil || r.Name != "first" {
+		t.Fatalf("expected first service to win on tie, got %+v", r)
+	}
+	if score.DeclOrder != 0 {
+		t.Fatalf("expected DeclOrder 0, got %d", score.DeclOrder)
+	}
+}
+
+func TestMatchServiceEmptyPathIsCatchAll(t *testing.T) {
+	services := []Service{
+		{Name: "scoped", Host: "slack.com", Path: "/api/*", Auth: Auth{Type: "bearer", Token: "T1"}},
+		{Name: "catchall", Host: "slack.com", Auth: Auth{Type: "bearer", Token: "T2"}},
+	}
+	// Path matches the scoped rule → scoped wins (longer literal prefix).
+	r, _ := MatchService("slack.com", "/api/foo", services)
+	if r == nil || r.Name != "scoped" {
+		t.Fatalf("expected scoped rule to win when path matches, got %+v", r)
+	}
+	// Path does NOT match the scoped rule → catch-all wins.
+	r, _ = MatchService("slack.com", "/oauth/v2/authorize", services)
+	if r == nil || r.Name != "catchall" {
+		t.Fatalf("expected catchall rule when scoped path doesn't match, got %+v", r)
+	}
+}
+
+func TestMatchServicePortStripped(t *testing.T) {
+	// Service hosts with a port are still matched by bare hostname.
+	services := []Service{
+		{Name: "legacy", Host: "api.stripe.com:443", Auth: Auth{Type: "bearer", Token: "T"}},
+	}
+	r, _ := MatchService("api.stripe.com", "/v1/charges", services)
+	if r == nil {
+		t.Fatal("expected port-stripped service host to match")
+	}
+}
+
+// --- ValidateSlug tests ---
+
+func TestValidateSlugHappyPath(t *testing.T) {
+	for _, name := range []string{"abc", "slack-com", "slack-com-api-apps-connections", "a1-b2-c3"} {
+		if err := ValidateSlug(name); err != nil {
+			t.Errorf("ValidateSlug(%q) unexpected error: %v", name, err)
+		}
+	}
+}
+
+func TestValidateSlugRejects(t *testing.T) {
+	cases := []struct{ name, in string }{
+		{"empty", ""},
+		{"too short", "ab"},
+		{"too long", strings.Repeat("a", 65)},
+		{"uppercase", "Slack-Com"},
+		{"underscore", "slack_com"},
+		{"dot", "slack.com"},
+		{"slash", "slack/com"},
+		{"leading hyphen", "-foo"},
+		{"trailing hyphen", "foo-"},
+		{"consecutive hyphens", "foo--bar"},
+		{"only hyphens", "---"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateSlug(tc.in); err == nil {
+				t.Fatalf("expected error for %q", tc.in)
+			}
+		})
+	}
+}
+
+// --- ValidatePath tests ---
+
+func TestValidatePathHappyPath(t *testing.T) {
+	for _, p := range []string{"", "/", "/api/*", "/api/apps.connections.*", "/v1/customers/cus_*", "/repos/*/issues"} {
+		if err := ValidatePath(p); err != nil {
+			t.Errorf("ValidatePath(%q) unexpected error: %v", p, err)
+		}
+	}
+}
+
+func TestValidatePathRejects(t *testing.T) {
+	cases := []struct{ name, in string }{
+		{"missing leading slash", "api/*"},
+		{"double star", "/api/**"},
+		{"question mark", "/api/?"},
+		{"control char", "/api/\x00"},
+		{"space", "/api/ foo"},
+		{"hash", "/api#frag"},
+		{"square bracket", "/api/[a-z]"},
+		{"backslash", "/api/\\d"},
+		{"pipe", "/a|b"},
+		{"too long", "/" + strings.Repeat("a", 256)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidatePath(tc.in); err == nil {
+				t.Fatalf("expected error for %q", tc.in)
+			}
+		})
 	}
 }
 
@@ -330,8 +475,8 @@ func TestValidateConfigWithAuth(t *testing.T) {
 	cfg := &Config{
 		Vault: "default",
 		Services: []Service{
-			{Host: "api.stripe.com", Auth: Auth{Type: "bearer", Token: "STRIPE_KEY"}},
-			{Host: "api.ashby.com", Auth: Auth{Type: "basic", Username: "ASHBY_KEY"}},
+			{Name: "stripe", Host: "api.stripe.com", Auth: Auth{Type: "bearer", Token: "STRIPE_KEY"}},
+			{Name: "ashby", Host: "api.ashby.com", Auth: Auth{Type: "basic", Username: "ASHBY_KEY"}},
 		},
 	}
 	if err := Validate(cfg); err != nil {
@@ -343,11 +488,132 @@ func TestValidateConfigInvalidAuth(t *testing.T) {
 	cfg := &Config{
 		Vault: "default",
 		Services: []Service{
-			{Host: "api.stripe.com", Auth: Auth{Type: "bearer"}}, // missing token
+			{Name: "stripe", Host: "api.stripe.com", Auth: Auth{Type: "bearer"}}, // missing token
 		},
 	}
 	if err := Validate(cfg); err == nil {
 		t.Fatal("expected error for invalid auth")
+	}
+}
+
+func TestValidateConfigRejectsMissingName(t *testing.T) {
+	cfg := &Config{
+		Vault: "default",
+		Services: []Service{
+			{Host: "api.stripe.com", Auth: Auth{Type: "bearer", Token: "STRIPE_KEY"}},
+		},
+	}
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected error for missing name")
+	}
+}
+
+func TestValidateConfigRejectsDuplicateNames(t *testing.T) {
+	cfg := &Config{
+		Vault: "default",
+		Services: []Service{
+			{Name: "slack", Host: "slack.com", Path: "/api/*", Auth: Auth{Type: "bearer", Token: "T1"}},
+			{Name: "slack", Host: "slack.com", Path: "/api/apps.connections.*", Auth: Auth{Type: "bearer", Token: "T2"}},
+		},
+	}
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected error for duplicate name")
+	}
+}
+
+func TestValidateConfigRejectsHostWithSlash(t *testing.T) {
+	cfg := &Config{
+		Vault: "default",
+		Services: []Service{
+			{Name: "slack", Host: "slack.com/api/*", Auth: Auth{Type: "bearer", Token: "T"}},
+		},
+	}
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected error for host containing /")
+	}
+}
+
+func TestValidateConfigInvalidPath(t *testing.T) {
+	cfg := &Config{
+		Vault: "default",
+		Services: []Service{
+			{Name: "slack", Host: "slack.com", Path: "api/*", Auth: Auth{Type: "bearer", Token: "T"}},
+		},
+	}
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected error for path missing leading /")
+	}
+}
+
+// --- ValidateHost tests ---
+
+func TestValidateHostHappyPath(t *testing.T) {
+	for _, h := range []string{"api.stripe.com", "*.github.com", "sub.api.example.com"} {
+		if err := ValidateHost(h); err != nil {
+			t.Errorf("ValidateHost(%q) unexpected error: %v", h, err)
+		}
+	}
+}
+
+func TestValidateHostRejectsIP(t *testing.T) {
+	for _, h := range []string{"127.0.0.1", "10.0.0.1", "::1", "192.168.1.1"} {
+		if err := ValidateHost(h); err == nil {
+			t.Errorf("ValidateHost(%q) expected error", h)
+		}
+	}
+}
+
+func TestValidateHostRejectsInternalNames(t *testing.T) {
+	t.Setenv("AGENT_VAULT_DEV_MODE", "")
+	for _, h := range []string{"localhost", "kubernetes.default", "metadata.google.internal"} {
+		if err := ValidateHost(h); err == nil {
+			t.Errorf("ValidateHost(%q) expected error in non-dev mode", h)
+		}
+	}
+}
+
+func TestValidateHostAllowsInternalInDevMode(t *testing.T) {
+	// Single-label names always fail hostLabelPattern. The dev-mode
+	// override is for multi-label internal names like
+	// localhost.localdomain — which pass the format check but are
+	// blocked by default to dodge SSRF against cloud-metadata hosts.
+	t.Setenv("AGENT_VAULT_DEV_MODE", "true")
+	if err := ValidateHost("localhost.localdomain"); err != nil {
+		t.Errorf("ValidateHost(localhost.localdomain) in dev mode: %v", err)
+	}
+}
+
+func TestValidateHostRejectsBareWildcardAndShallow(t *testing.T) {
+	for _, h := range []string{"*", "*.com", "*.example"} {
+		if err := ValidateHost(h); err == nil {
+			t.Errorf("ValidateHost(%q) expected error", h)
+		}
+	}
+}
+
+// TestValidateConfigEnforcesHostSafety pins that the direct upsert path
+// (broker.Validate) now rejects IP addresses and internal hosts — the
+// proposal flow has always done this, but admins doing a direct POST
+// to /v1/vaults/{name}/services used to slip through.
+func TestValidateConfigEnforcesHostSafety(t *testing.T) {
+	t.Setenv("AGENT_VAULT_DEV_MODE", "")
+	cases := []struct{ name, host string }{
+		{"ip", "10.0.0.5"},
+		{"localhost", "localhost"},
+		{"metadata", "metadata.google.internal"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{
+				Vault: "default",
+				Services: []Service{
+					{Name: "svc", Host: tc.host, Auth: Auth{Type: "bearer", Token: "K"}},
+				},
+			}
+			if err := Validate(cfg); err == nil {
+				t.Fatalf("expected Validate to reject host %q", tc.host)
+			}
+		})
 	}
 }
 
@@ -407,7 +673,7 @@ func TestValidateConfigPassthrough(t *testing.T) {
 	cfg := &Config{
 		Vault: "default",
 		Services: []Service{
-			{Host: "api.example.com", Auth: Auth{Type: "passthrough"}},
+			{Name: "example", Host: "api.example.com", Auth: Auth{Type: "passthrough"}},
 		},
 	}
 	if err := Validate(cfg); err != nil {

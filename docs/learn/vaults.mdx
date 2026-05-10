@@ -8,7 +8,7 @@ A `Vault` is a secure logical container for credentials with services that defin
 Each vault contains:
 
 - **[Credentials](/learn/credentials)**: API keys, database credentials, and other sensitive material that cannot be extracted from the vault.
-- **[Services](/learn/services)**: Definitions of which hosts (e.g. `api.stripe.com`) can be accessed through the vault along with which and how credential(s) must be attached onto each proxy request.
+- **[Services](/learn/services)**: Definitions of which upstreams (scoped by a single `host` pattern that may carry an inline path glob, e.g. `api.stripe.com` or `slack.com/api/apps.connections.*`) can be accessed through the vault along with which and how credential(s) must be attached onto each proxy request.
 - **Members**: Users and agents that can access the vault under specific [roles](/learn/permissions#vault-roles) (`admin`, `member`, `proxy`).
 - **[Proposals](/learn/proposals)**: Requests from agents to set credential(s) and/or add service(s) that use those credentials.
 

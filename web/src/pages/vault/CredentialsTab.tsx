@@ -20,7 +20,7 @@ export default function CredentialsTab() {
 
   // Delete confirmation modal state
   const [deleteKey, setDeleteKey] = useState<string | null>(null);
-  const [deleteReferencing, setDeleteReferencing] = useState<{ host: string; description?: string }[]>([]);
+  const [deleteReferencing, setDeleteReferencing] = useState<{ host: string; name?: string }[]>([]);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
 
@@ -286,8 +286,8 @@ export default function CredentialsTab() {
             <p className="font-medium mb-1">This credential is used by the following services:</p>
             <ul className="list-disc list-inside">
               {deleteReferencing.map((svc) => (
-                <li key={svc.host}>
-                  {svc.host}{svc.description ? ` (${svc.description})` : ""}
+                <li key={svc.name ?? svc.host}>
+                  {svc.host}{svc.name ? ` (${svc.name})` : ""}
                 </li>
               ))}
             </ul>

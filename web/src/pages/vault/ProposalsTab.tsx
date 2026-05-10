@@ -393,7 +393,7 @@ function deriveProposalTitle(cs: Proposal): {
   title: string;
   description: string;
 } {
-  let services: { action: string; host: string; description?: string }[] = [];
+  let services: { action: string; host: string; name?: string }[] = [];
   try {
     if (cs.services_json) {
       const parsed = JSON.parse(cs.services_json);
@@ -407,9 +407,7 @@ function deriveProposalTitle(cs: Proposal): {
   if (setServices.length === 1) {
     const r = setServices[0];
     return {
-      title: r.description
-        ? `Connect to ${r.description}`
-        : `Connect to ${r.host}`,
+      title: `Connect to ${r.name || r.host}`,
       description: cs.user_message || cs.message || "",
     };
   }

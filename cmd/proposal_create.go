@@ -27,12 +27,18 @@ var proposalCreateCmd = &cobra.Command{
 In agent mode (AGENT_VAULT_TOKEN set), AGENT_VAULT_VAULT (or --vault) is
 required — there is no project-file or interactive-picker fallback.
 
-Flag-driven mode (common cases):
+Flag-driven mode (common cases). When --host is provided, --name is required:
 
   # Service + credential
   agent-vault vault proposal create \
-    --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY \
+    --name stripe --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY \
     --credential STRIPE_KEY="Stripe API key" --message "Need Stripe access"
+
+  # Path-scoped service (inline-form host)
+  agent-vault vault proposal create \
+    --name slack-bot --host 'slack.com/api/*' \
+    --auth-type bearer --token-key SLACK_BOT_TOKEN \
+    --credential SLACK_BOT_TOKEN="Slack Bot token" --message "Slack bot access"
 
   # Credential only (no host/service)
   agent-vault vault proposal create \
@@ -185,15 +191,20 @@ func buildFromFlags(cmd *cobra.Command, host string, credentialFlags []string) (
 			return nil, err
 		}
 
-		svc := proposal.Service{
+		name, _ := cmd.Flags().GetString("name")
+		if name == "" {
+			return nil, fmt.Errorf("--name is required when --host is specified")
+		}
+
+		host, path := broker.SplitInlineHost(host, "")
+
+		req.Services = append(req.Services, proposal.Service{
 			Action: proposal.ActionSet,
+			Name:   name,
 			Host:   host,
+			Path:   path,
 			Auth:   auth,
-		}
-		if desc, _ := cmd.Flags().GetString("description"); desc != "" {
-			svc.Description = desc
-		}
-		req.Services = append(req.Services, svc)
+		})
 	} else {
 		// No host — auth flags should not be present.
 		authType, _ := cmd.Flags().GetString("auth-type")
@@ -280,8 +291,8 @@ func init() {
 	proposalCreateCmd.Flags().StringP("file", "f", "", "path to JSON proposal file (use - for stdin)")
 
 	// Flag-driven mode.
-	proposalCreateCmd.Flags().String("host", "", "target service host (e.g. api.stripe.com)")
-	proposalCreateCmd.Flags().String("description", "", "service description")
+	proposalCreateCmd.Flags().String("name", "", "service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required with --host.")
+	proposalCreateCmd.Flags().String("host", "", "target service host. Accepts api.stripe.com, *.github.com, or inline path form like slack.com/api/*.")
 	proposalCreateCmd.Flags().String("auth-type", "", "auth type: bearer, basic, api-key, passthrough")
 	proposalCreateCmd.Flags().String("token-key", "", "credential key for bearer auth")
 	proposalCreateCmd.Flags().String("username-key", "", "credential key for basic auth username")

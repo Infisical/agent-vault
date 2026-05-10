@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
@@ -231,19 +232,6 @@ func (s *Server) canRevokeAgentInvite(ctx context.Context, actor *Actor, inv *st
 var persistentInstructionsAdmin string
 
 
-// validateSlug checks that a name is 3-64 lowercase alphanumeric + hyphens.
-func validateSlug(name string) bool {
-	if len(name) < 3 || len(name) > 64 {
-		return false
-	}
-	for _, c := range name {
-		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
-			return false
-		}
-	}
-	return true
-}
-
 // reservedVaultNames are names that conflict with /vaults/* frontend routes.
 // Keep in sync with vaultsLayoutRoute children in web/src/router.tsx.
 var reservedVaultNames = map[string]struct{}{
@@ -304,7 +292,7 @@ func (s *Server) handlePersistentInviteRedeem(w http.ResponseWriter, r *http.Req
 		proxyError(w, http.StatusBadRequest, "name_required", "Agent name is required — provide {\"name\": \"my-agent\"} in the request body")
 		return
 	}
-	if !validateSlug(agentName) {
+	if err := broker.ValidateSlug(agentName); err != nil {
 		proxyError(w, http.StatusBadRequest, "invalid_name", "Agent name must be 3-64 characters, lowercase alphanumeric and hyphens only")
 		return
 	}
@@ -688,7 +676,7 @@ func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "Request body must include {\"name\": \"new-name\"}")
 		return
 	}
-	if !validateSlug(body.Name) {
+	if err := broker.ValidateSlug(body.Name); err != nil {
 		jsonError(w, http.StatusBadRequest, "Agent name must be 3-64 characters, lowercase alphanumeric and hyphens only")
 		return
 	}
@@ -1002,7 +990,7 @@ func (s *Server) handleAgentInviteCreate(w http.ResponseWriter, r *http.Request)
 		jsonError(w, http.StatusBadRequest, "Agent name is required")
 		return
 	}
-	if !validateSlug(req.Name) {
+	if err := broker.ValidateSlug(req.Name); err != nil {
 		jsonError(w, http.StatusBadRequest, "Agent name must be 3-64 characters, lowercase alphanumeric and hyphens only")
 		return
 	}

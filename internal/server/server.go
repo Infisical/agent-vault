@@ -74,6 +74,21 @@ type Server struct {
 	// backstop. Bounded by a periodic prune (see runTouchCachePruner)
 	// that drops entries past the throttle window.
 	touchCache sync.Map // raw token (string) -> time.Time
+	// vaultServiceMu serializes the load → mutate → save cycle for
+	// /services handlers and proposal apply. SQLite's MaxOpenConns(1)
+	// only serializes individual statements; without this lock two
+	// concurrent upserts can both pass collision checks against the
+	// same pre-state.
+	vaultServiceMu sync.Map // vaultID (string) -> *sync.Mutex
+}
+
+// lockVaultServices acquires the per-vault mutation lock. Callers MUST
+// defer the returned unlock func.
+func (s *Server) lockVaultServices(vaultID string) func() {
+	v, _ := s.vaultServiceMu.LoadOrStore(vaultID, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // RateLimit returns the server's rate-limit registry. Exported so the

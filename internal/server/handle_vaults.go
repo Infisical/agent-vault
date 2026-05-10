@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/auth"
+	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/store"
 )
@@ -311,7 +312,7 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "Name is required")
 		return
 	}
-	if !validateSlug(req.Name) {
+	if err := broker.ValidateSlug(req.Name); err != nil {
 		jsonError(w, http.StatusBadRequest, "Vault name must be 3-64 characters, lowercase alphanumeric and hyphens only")
 		return
 	}
@@ -481,7 +482,7 @@ func (s *Server) handleVaultRename(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "Request body must include {\"name\": \"new-name\"}")
 		return
 	}
-	if !validateSlug(body.Name) {
+	if err := broker.ValidateSlug(body.Name); err != nil {
 		jsonError(w, http.StatusBadRequest, "Vault name must be 3-64 characters, lowercase alphanumeric and hyphens only")
 		return
 	}

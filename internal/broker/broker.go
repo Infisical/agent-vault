@@ -2,10 +2,13 @@ package broker
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Config represents a vault's broker configuration as stored in YAML files.
@@ -14,18 +17,39 @@ type Config struct {
 	Services []Service `yaml:"services" json:"services"`
 }
 
-// Service defines a host-matching service with credential attachment.
+// Service defines a credential-attachment rule. Name is the canonical
+// per-vault identifier; Host + Path are the matcher key consumed by
+// MatchService. JSON callers see a single Host field carrying the
+// joined inline form (`slack.com/api/*`); ingest splits it back into
+// Host + Path before validation. YAML retains the split form.
 //
-// Enabled is a nullable toggle. nil means "not set" and is treated as
-// enabled so existing persisted services (which predate this field) stay
-// live after upgrade. Callers should use IsEnabled() rather than
+// Enabled is nullable so persisted services from before the field
+// existed stay live after upgrade — use IsEnabled() rather than
 // dereferencing the pointer.
 type Service struct {
+	Name          string         `yaml:"name" json:"name"`
 	Host          string         `yaml:"host" json:"host"`
-	Description   *string        `yaml:"description,omitempty" json:"description"`
+	Path          string         `yaml:"path,omitempty" json:"path,omitempty"`
 	Enabled       *bool          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Auth          Auth           `yaml:"auth" json:"auth"`
 	Substitutions []Substitution `yaml:"substitutions,omitempty" json:"substitutions,omitempty"`
+}
+
+// MatcherPattern returns the joined inline form (`slack.com/api/*`),
+// or just Host when Path is empty.
+func (s Service) MatcherPattern() string {
+	if s.Path == "" {
+		return s.Host
+	}
+	return s.Host + s.Path
+}
+
+func (s Service) MarshalJSON() ([]byte, error) {
+	type alias Service // strip MarshalJSON to avoid recursion
+	a := alias(s)
+	a.Host = s.MatcherPattern()
+	a.Path = ""
+	return json.Marshal(a)
 }
 
 // Substitution declares a placeholder string the broker rewrites with a
@@ -309,14 +333,35 @@ func (a *Auth) Resolve(getCredential func(key string) (string, error)) (map[stri
 	}
 }
 
-// Validate checks that a broker config is well-formed.
+// Validate checks that a broker config is well-formed. Name is required
+// and unique per vault — callers must supply it explicitly.
 func Validate(cfg *Config) error {
 	if cfg.Vault == "" {
 		return fmt.Errorf("vault is required")
 	}
+	nameSet := make(map[string]int, len(cfg.Services))
 	for i, s := range cfg.Services {
 		if s.Host == "" {
 			return fmt.Errorf("service %d: host is required", i)
+		}
+		if strings.Contains(s.Host, "/") {
+			return fmt.Errorf("service %d: host %q must not contain %q after ingest (entry should have been split into host + path)", i, s.Host, "/")
+		}
+		if err := ValidateHost(s.Host); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
+		}
+		if s.Name == "" {
+			return fmt.Errorf("service %d: name is required", i)
+		}
+		if err := ValidateSlug(s.Name); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
+		}
+		if prev, dup := nameSet[s.Name]; dup {
+			return fmt.Errorf("service %d: duplicate name %q (also at service %d)", i, s.Name, prev)
+		}
+		nameSet[s.Name] = i
+		if err := ValidatePath(s.Path); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
 		}
 		if err := s.Auth.Validate(); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
@@ -454,35 +499,256 @@ func (s *Service) CredentialKeys() []string {
 // CredentialRef matches {{ credential_name }} placeholders in header values.
 var CredentialRef = regexp.MustCompile(`\{\{\s*(\w+)\s*\}\}`)
 
-// MatchHost returns the first service whose Host pattern matches the given host,
-// or nil if no service matches. Supports exact match and wildcard prefix (e.g.
-// "*.github.com" matches "api.github.com"). The host parameter should already
-// have its port stripped by the caller; service hosts are also compared port-stripped.
-func MatchHost(host string, services []Service) *Service {
+// MatchScore is the deterministic priority tuple emitted by MatchService,
+// returned alongside the match so callers can log which rule won.
+type MatchScore struct {
+	HostTier       int // 2 = exact host, 1 = "*.x.y" wildcard, 0 = no match
+	PathLiteralLen int // characters in Path before the first '*'; empty Path scores 0
+	DeclOrder      int // index of the matched service in the input slice
+}
+
+// Better compares HostTier then PathLiteralLen; DeclOrder is excluded so
+// MatchService's iteration order provides the final tiebreak.
+func (s MatchScore) Better(other MatchScore) bool {
+	if s.HostTier != other.HostTier {
+		return s.HostTier > other.HostTier
+	}
+	return s.PathLiteralLen > other.PathLiteralLen
+}
+
+func (s MatchScore) HostTierName() string {
+	switch s.HostTier {
+	case HostTierExact:
+		return "exact"
+	case HostTierWildcard:
+		return "wildcard"
+	default:
+		return ""
+	}
+}
+
+const (
+	HostTierWildcard = 1
+	HostTierExact    = 2
+)
+
+// MatchService returns the most specific service matching (host, path).
+// Selection: (1) exact host beats wildcard, even if wildcard has a
+// longer path; (2) longest literal path prefix wins within a host tier;
+// (3) earlier declaration order breaks ties. host and service Host
+// patterns are both port-stripped. The MatchScore is meaningful only
+// when the returned *Service is non-nil.
+func MatchService(host, path string, services []Service) (*Service, MatchScore) {
+	var best *Service
+	var bestScore MatchScore
 	for i := range services {
-		pattern := services[i].Host
-		// Strip port from service host for comparison (services should be bare
-		// hostnames, but handle legacy entries that include a port).
-		if h, _, err := net.SplitHostPort(pattern); err == nil {
-			pattern = h
+		hostTier, hostOK := matchHostPattern(services[i].Host, host)
+		if !hostOK {
+			continue
 		}
-		if pattern == host {
-			return &services[i]
+		pathLen, pathOK := matchPathGlob(services[i].Path, path)
+		if !pathOK {
+			continue
 		}
-		if strings.HasPrefix(pattern, "*.") {
-			// *.github.com → match exactly one subdomain level (e.g. api.github.com but not a.b.github.com)
-			suffix := pattern[1:] // ".github.com"
-			if strings.HasSuffix(host, suffix) {
-				// Ensure only one subdomain level: no dots in the part before the suffix.
-				prefix := strings.TrimSuffix(host, suffix)
-				if prefix != "" && !strings.Contains(prefix, ".") {
-					return &services[i]
-				}
+		score := MatchScore{HostTier: hostTier, PathLiteralLen: pathLen, DeclOrder: i}
+		if best == nil || score.Better(bestScore) {
+			best = &services[i]
+			bestScore = score
+		}
+	}
+	return best, bestScore
+}
+
+// matchHostPattern reports the tier and whether pattern matches host.
+// "*." matches exactly one subdomain level (e.g. "*.github.com" matches
+// "api.github.com" but not "a.b.github.com" or the bare "github.com").
+func matchHostPattern(pattern, host string) (tier int, ok bool) {
+	if h, _, err := net.SplitHostPort(pattern); err == nil {
+		pattern = h
+	}
+	if pattern == host {
+		return HostTierExact, true
+	}
+	if strings.HasPrefix(pattern, "*.") {
+		suffix := pattern[1:] // ".github.com"
+		if strings.HasSuffix(host, suffix) {
+			prefix := strings.TrimSuffix(host, suffix)
+			if prefix != "" && !strings.Contains(prefix, ".") {
+				return HostTierWildcard, true
 			}
+		}
+	}
+	return 0, false
+}
+
+// matchPathGlob reports whether pattern matches path and returns the
+// literal-prefix length. Empty pattern is a catch-all. '*' is greedy
+// across '/'.
+func matchPathGlob(pattern, path string) (literalLen int, ok bool) {
+	if pattern == "" {
+		return 0, true
+	}
+	parts := strings.Split(pattern, "*")
+	literalLen = len(parts[0])
+
+	if len(parts) == 1 {
+		// No glob — pattern must equal path exactly.
+		return literalLen, path == pattern
+	}
+
+	if !strings.HasPrefix(path, parts[0]) {
+		return literalLen, false
+	}
+	rest := path[len(parts[0]):]
+	for j := 1; j < len(parts)-1; j++ {
+		idx := strings.Index(rest, parts[j])
+		if idx < 0 {
+			return literalLen, false
+		}
+		rest = rest[idx+len(parts[j]):]
+	}
+	if !strings.HasSuffix(rest, parts[len(parts)-1]) {
+		return literalLen, false
+	}
+	return literalLen, true
+}
+
+// ValidateSlug enforces the per-vault identifier rule shared by vault,
+// agent, and service names: 3–64 chars, lowercase ASCII alphanumeric
+// and hyphens, no leading/trailing or consecutive hyphens.
+func ValidateSlug(name string) error {
+	if name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if len(name) < 3 {
+		return fmt.Errorf("name %q must be at least 3 characters", name)
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("name %q must be at most 64 characters", name)
+	}
+	if name[0] == '-' || name[len(name)-1] == '-' {
+		return fmt.Errorf("name %q must not start or end with a hyphen", name)
+	}
+	if strings.Contains(name, "--") {
+		return fmt.Errorf("name %q must not contain consecutive hyphens", name)
+	}
+	for _, c := range name {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return fmt.Errorf("name %q must contain only lowercase letters, digits, and hyphens", name)
 		}
 	}
 	return nil
 }
+
+// ValidatePath enforces the path-glob format. Empty is a catch-all;
+// non-empty paths must start with "/", be ≤256 chars, and contain no
+// "**", "?", control characters, whitespace, or regex/HTML tokens.
+func ValidatePath(p string) error {
+	if p == "" {
+		return nil
+	}
+	if len(p) > 256 {
+		return fmt.Errorf("path %q is too long (max 256 characters)", p)
+	}
+	if !strings.HasPrefix(p, "/") {
+		return fmt.Errorf("path %q must start with %q", p, "/")
+	}
+	if strings.Contains(p, "**") {
+		return fmt.Errorf("path %q must not contain %q (segment-bounded globs are not supported)", p, "**")
+	}
+	for _, r := range p {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("path %q must not contain control characters", p)
+		}
+		switch r {
+		case ' ', '?', '#', '[', ']', '\\', '|', '<', '>', '"':
+			return fmt.Errorf("path %q must not contain %q", p, r)
+		}
+	}
+	return nil
+}
+
+// hostLabelPattern matches a valid hostname (RFC 952 / RFC 1123 style).
+var hostLabelPattern = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
+
+// internalHosts are blocked by default to dodge SSRF against
+// cloud-metadata and Kubernetes-internal endpoints; AGENT_VAULT_DEV_MODE
+// opens them for localhost development.
+var internalHosts = []string{
+	"localhost", "localhost.localdomain", "internal",
+	"kubernetes", "kubernetes.default",
+	"metadata.google.internal", "metadata.google",
+	"instance-data",
+}
+
+// ValidateHost accepts bare hostnames and one-level wildcards
+// (`*.github.com`). Rejects IPs, internal names (see internalHosts),
+// bare wildcards, and characters that would break URL parsing.
+func ValidateHost(host string) error {
+	h := strings.TrimSpace(host)
+	if h == "" {
+		return fmt.Errorf("host is empty")
+	}
+
+	for _, ch := range h {
+		if ch == '@' || ch == '?' || ch == '#' || ch == ' ' || unicode.IsControl(ch) {
+			return fmt.Errorf("host %q contains invalid character %q", host, ch)
+		}
+	}
+
+	if net.ParseIP(h) != nil {
+		return fmt.Errorf("host %q must be a hostname, not an IP address", host)
+	}
+
+	if strings.HasPrefix(h, "*") {
+		if h == "*" {
+			return fmt.Errorf("host %q: bare wildcard is not allowed", host)
+		}
+		if !strings.HasPrefix(h, "*.") {
+			return fmt.Errorf("host %q: wildcard must be in the form *.example.com", host)
+		}
+		suffix := h[2:]
+		// Require at least one dot in the suffix so *.com / *.co.uk
+		// (which would shadow whole TLDs) are rejected.
+		if !strings.Contains(suffix, ".") {
+			return fmt.Errorf("host %q: wildcard must have at least two domain levels (e.g. *.example.com)", host)
+		}
+		if !hostLabelPattern.MatchString(suffix) {
+			return fmt.Errorf("host %q: invalid hostname in wildcard pattern", host)
+		}
+		return nil
+	}
+
+	devMode := strings.EqualFold(os.Getenv("AGENT_VAULT_DEV_MODE"), "true")
+	if !devMode {
+		lower := strings.ToLower(h)
+		for _, internal := range internalHosts {
+			if lower == internal {
+				return fmt.Errorf("host %q is a local/internal name and is not allowed (set AGENT_VAULT_DEV_MODE=true to override)", host)
+			}
+		}
+	}
+
+	if !hostLabelPattern.MatchString(h) {
+		return fmt.Errorf("host %q is not a valid hostname", host)
+	}
+
+	return nil
+}
+
+// SplitInlineHost splits `slack.com/api/*` into bare host + path.
+// Returns the inputs unchanged when host has no `/` or path is already
+// populated, so callers can pipeline split-form and inline-form alike.
+func SplitInlineHost(host, path string) (string, string) {
+	if path != "" {
+		return host, path
+	}
+	if i := strings.IndexByte(host, '/'); i > 0 {
+		return host[:i], host[i:]
+	}
+	return host, path
+}
+
 
 // resolveHeaders renders {{ credential_name }} placeholders in header values
 // by calling getCredential for each referenced name. Returns a new map with

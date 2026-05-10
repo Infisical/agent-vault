@@ -88,9 +88,28 @@ The token is either a vault-scoped session token (mint via `agent-vault vault to
 agent-vault vault discover --json
 ```
 
-Response includes `vault`, `services` (host + description), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots.
+Response includes `vault`, `services` (each with `name` and `host`), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots. `host` is the single matcher field on every surface (read and write): it returns the joined inline form, so a path-scoped service shows up as e.g. `slack.com/api/*`. When two services share the same bare host but scope to different paths (e.g. `slack.com/api/*` vs `slack.com/api/apps.connections.*`), distinguish them by `name` in subsequent operations.
 
 **Browse service templates:** `agent-vault catalog --json` lists built-in service templates with suggested credential keys and auth types. No auth needed.
+
+### Managing Services Directly (vault admin only)
+
+Most agents should raise a [proposal](#proposals----requesting-and-storing-credentials) instead — proposals get a human approval before any service or credential change lands. The CLI commands below mutate the vault directly and require an interactive vault admin login (not an agent token). Use them only when the user explicitly asks you to skip the proposal flow:
+
+```bash
+# Add a service (non-destructive upsert by name; --name and --host are both required)
+agent-vault vault service add --name stripe --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY
+agent-vault vault service add --name slack-bot --host 'slack.com/api/*' --auth-type bearer --token-key SLACK_BOT_TOKEN
+
+# Toggle enabled/disabled (accepts service name OR host)
+agent-vault vault service enable <name-or-host>
+agent-vault vault service disable <name-or-host>
+
+# Remove (accepts service name OR host)
+agent-vault vault service remove <name-or-host>
+```
+
+When two services share a host, pass the canonical `name` from `/discover` — passing the bare host returns 409 `multiple services match host …` with a `candidates` array.
 
 ## Making Requests
 
@@ -172,12 +191,12 @@ Substitutions are configured via JSON only — no flag form. Place a `substituti
 
 ### Creating a Proposal
 
-**Flag-driven mode (common cases):**
+**Flag-driven mode (common cases). When `--host` is provided, `--name` is required:**
 
 ```bash
 # Service + credential
 agent-vault vault proposal create \
-  --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY \
+  --name stripe --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY \
   --credential STRIPE_KEY="Stripe API key" \
   -m "Need Stripe API key for billing feature" --json
 
@@ -186,10 +205,25 @@ agent-vault vault proposal create \
   --credential DB_PASSWORD="Production database password" \
   -m "Need database credentials" --json
 
+# Path-scoped service: Slack needs different credentials at different paths
+agent-vault vault proposal create -f - --json <<'EOF'
+{
+  "services": [
+    {"action": "set", "name": "slack-bot", "host": "slack.com/api/*", "auth": {"type": "bearer", "token": "SLACK_BOT_TOKEN"}},
+    {"action": "set", "name": "slack-conn", "host": "slack.com/api/apps.connections.*", "auth": {"type": "bearer", "token": "SLACK_CONNECTION_TOKEN"}}
+  ],
+  "credentials": [
+    {"action": "set", "key": "SLACK_BOT_TOKEN", "description": "Slack Bot User token"},
+    {"action": "set", "key": "SLACK_CONNECTION_TOKEN", "description": "Slack Socket Mode connection token"}
+  ],
+  "message": "Slack needs two credentials: Bot token for /api/* and Socket Mode token for /api/apps.connections.*"
+}
+EOF
+
 # Complex/multi-service (JSON mode)
 agent-vault vault proposal create -f - --json <<'EOF'
 {
-  "services": [{"action": "set", "host": "api.stripe.com", "description": "Stripe API", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
+  "services": [{"action": "set", "name": "stripe", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
   "credentials": [{"action": "set", "key": "STRIPE_KEY", "description": "Stripe API key"}],
   "message": "Need Stripe access"
 }
@@ -200,6 +234,7 @@ agent-vault vault proposal create -f - --json <<'EOF'
 {
   "services": [{
     "action": "set",
+    "name": "twilio",
     "host": "api.twilio.com",
     "auth": {"type": "basic", "username": "TWILIO_ACCOUNT_SID", "password": "TWILIO_AUTH_TOKEN"},
     "substitutions": [
@@ -221,10 +256,12 @@ Flag-driven auth flags by type:
 - **api-key**: `--auth-type api-key --api-key-key KEY [--api-key-header x-api-key] [--api-key-prefix "ApiKey "]`
 - **passthrough**: `--auth-type passthrough` (no credential flags; any credential flag is rejected)
 
-Other flags: `--description` (service description), `--user-message` (shown on browser approval page), `--credential KEY=description` (repeatable).
+Other flags: `--user-message` (shown on browser approval page), `--credential KEY=description` (repeatable).
 
 Key fields (JSON mode):
-- `services[].action` -- `"set"` (upsert, needs `host` + `auth` **or** an `enabled` change) or `"delete"` (needs `host` only)
+- `services[].action` -- `"set"` (upsert, needs `host` + `auth` **or** an `enabled` change) or `"delete"`
+- `services[].name` -- canonical identifier (slug, 3–64 lowercase alphanumeric/hyphen chars). **Required for `"set"`** — pick a deliberate name; the server does not derive one from `host`. `"delete"` may omit `name` to fall back to host-based resolution: when the host is shared by multiple services the server returns 409 with the candidate names so the caller can retry by `name`.
+- `services[].host` -- single matcher field. Accepts a bare hostname (e.g. `api.stripe.com`), a one-level wildcard (e.g. `*.github.com`), or an inline path-scoped form (e.g. `slack.com/api/*`). The server splits the path off the host on ingest and resolves overlapping rules deterministically (exact-host beats wildcard, then longer literal path prefix wins, then declaration order). Path globs use `*` as a greedy glob (cross-`/`); `**`, `?`, regex, and bare `*` are rejected.
 - `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates), `passthrough` (no credential fields)
 - `services[].substitutions` -- optional list of URL/header rewrites. Each entry has `key` (UPPER_SNAKE_CASE credential reference), `placeholder` (the exact wire string the broker matches case-sensitively, e.g. `__account_sid__`), and optional `in` (subset of `["path", "query", "header"]`; defaults to `["path", "query"]`). Surfaces not in `in` are not scanned. Must be paired with an `auth` change in the same proposal — substitutions cannot be added on an enable/disable-only update.
 - `services[].enabled` -- optional boolean. Omitted means "enabled" for new services. A `"set"` proposal may supply `enabled` alone (no `auth`) to toggle an existing service's state without replacing its auth config -- useful for staged rollouts
@@ -293,7 +330,8 @@ Prints the raw value to stdout (pipe-friendly). Useful for configuration tasks w
 
 - 401: Invalid or expired token -- check `AGENT_VAULT_TOKEN`
 - 403 `forbidden`: Host not allowed (only fires under `unmatched_host_policy=deny`) -- create a proposal
-- 403 `service_disabled`: Host is configured but currently disabled by an operator. Don't create a new proposal; surface the error to the user so they can re-enable it (UI toggle, or `agent-vault vault service enable <host>`)
+- 403 `service_disabled`: Host is configured but currently disabled by an operator. Don't create a new proposal; surface the error to the user so they can re-enable it (UI toggle, or `agent-vault vault service enable <name-or-host>`). If multiple services share the host, use the canonical service name from `/discover`; passing the bare host returns 409 with a candidate list.
+- 409 `multiple services match host …`: A `vault service remove`, `enable`, or `disable` was passed a bare host that's used by more than one path-scoped service. The error body includes a `candidates` array of `{name, host}` where each `host` carries the joined inline form (e.g. `slack.com/api/*`). Retry with the specific service name shown in `/discover`.
 - 403 `Instance member role required`: Your instance role is `no-access` and you tried an instance-scoped action (create vault, create invites, list users/agents). You can still operate within vaults you've been granted -- proxy traffic, raise proposals, and read credentials at vault scope. If you genuinely need an instance-scoped action, surface this to the user; an instance owner must change your role.
 - 429: Rate limited. The response carries a `Retry-After` header (seconds) and a JSON body `{"error":"too_many_requests", ...}`. Respect `Retry-After` — wait that many seconds before retrying. Don't tight-loop. If this trips on normal work, ask the instance owner to raise the limit in **Manage Instance → Settings → Rate Limiting**.
 - 502: Missing credential or upstream unreachable, tell user a credential may need to be added

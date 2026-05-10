@@ -33,11 +33,11 @@ Authorization: Bearer {AGENT_VAULT_TOKEN}
 X-Vault: {vault_name}
 ```
 
-Response includes `vault`, `services` (host + description), and `available_credentials` (key names only — values are never exposed). Before creating a proposal, check `available_credentials` to avoid requesting credentials that already exist in the vault.
+Response includes `vault`, `services` (each entry has `name` and `host`, where `host` is the joined inline form — `slack.com/api/*` for path-scoped rules), and `available_credentials` (key names only — values are never exposed). Before creating a proposal, check `available_credentials` to avoid requesting credentials that already exist in the vault. When two services share a bare host (e.g. one service at `slack.com/api/*` and another at `slack.com/api/apps.connections.*`), distinguish them by `name` in subsequent operations.
 
 ## Route requests through the proxy
 
-For hosts returned by `/discover`, just call the real upstream URL — `agent-vault vault run` configures `HTTPS_PROXY` and the Agent Vault root CA on the child process so standard HTTP clients transparently route through the broker. Agent Vault strips broker-scoped headers, attaches the real credential, and forwards to the upstream over HTTPS.
+For services returned by `/discover`, just call the real upstream URL — `agent-vault vault run` configures `HTTPS_PROXY` and the Agent Vault root CA on the child process so standard HTTP clients transparently route through the broker. Agent Vault strips broker-scoped headers, attaches the real credential, and forwards to the upstream over HTTPS.
 
 ```
 GET https://api.stripe.com/v1/charges
@@ -48,8 +48,8 @@ GET https://api.stripe.com/v1/charges
 If you have vault admin role, you can add or remove services without proposals:
 
 ```
-POST {AGENT_VAULT_ADDR}/v1/vaults/{vault_name}/services    -- upsert services (body: {"services": [...]})
-DELETE {AGENT_VAULT_ADDR}/v1/vaults/{vault_name}/services/{host}  -- remove a service by host
+POST {AGENT_VAULT_ADDR}/v1/vaults/{vault_name}/services    -- upsert services by name (body: {"services": [...]}). Each entry must include both `name` (canonical slug) and `host` (accepts inline path form like `slack.com/api/*`).
+DELETE {AGENT_VAULT_ADDR}/v1/vaults/{vault_name}/services/{name}  -- remove a service. The slot also accepts a host as a back-compat shim, returning 409 with the candidate names when more than one service shares that host.
 ```
 
 Use these when you already have credentials stored. Use proposals when the human needs to provide new credentials.
@@ -68,8 +68,8 @@ Content-Type: application/json
 {
   "services": [{
     "action": "set",
+    "name": "stripe",
     "host": "api.stripe.com",
-    "description": "Stripe API",
     "auth": {"type": "bearer", "token": "STRIPE_KEY"}
   }],
   "credentials": [{
@@ -96,7 +96,7 @@ Content-Type: application/json
 ### After creating a proposal
 
 1. Present the `approval_url` to the user conversationally
-2. Poll `GET {AGENT_VAULT_ADDR}/v1/proposals/{id}` every 2 seconds until status is `applied`
+2. Poll `GET {AGENT_VAULT_ADDR}/v1/proposals/{id}` every 3 seconds for the first 30 seconds, then every 10 seconds, up to 10 minutes — until status is `applied`
 3. Retry your original request
 
 ## Error handling
@@ -112,5 +112,5 @@ Content-Type: application/json
 
 - **Never** extract, log, or display credential values
 - **Never** hardcode tokens — always read from `AGENT_VAULT_TOKEN`
-- **Only** request hosts returned by `/discover` — if not listed, propose a proposal
+- **Only** request services returned by `/discover` — if not listed, propose a proposal
 - Do not modify or forge the `Authorization` header beyond using your token

@@ -154,14 +154,14 @@ curl ${AGENT_VAULT_ADDR}/discover \
 {
   "vault": "default",
   "services": [
-    { "host": "api.stripe.com", "description": "Stripe API" },
-    { "host": "api.github.com", "description": "GitHub API" }
+    { "name": "stripe", "host": "api.stripe.com" },
+    { "name": "github", "host": "api.github.com" }
   ],
   "available_credentials": ["STRIPE_KEY", "GITHUB_TOKEN"]
 }
 ```
 
-- **`services`** lists the hosts configured in the vault. Requests to unlisted hosts go direct.
+- **`services`** lists the services configured in the vault. Each entry has a canonical `name` (slug) and a `host` pattern (which may carry an inline path glob like `slack.com/api/*`). Requests not matching any service go direct.
 - **`available_credentials`** lists credential key names in the vault (values are never exposed).
 
 <Tip>

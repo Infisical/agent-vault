@@ -29,12 +29,10 @@ describe("ServicesResource", () => {
           services: [
             {
               host: "api.stripe.com",
-              description: "Stripe API",
               auth: { type: "bearer", token: "STRIPE_KEY" },
             },
             {
               host: "proxy.example.com",
-              description: null,
               enabled: false,
               auth: { type: "passthrough" },
               substitutions: [
@@ -56,7 +54,6 @@ describe("ServicesResource", () => {
       expect(result.services).toHaveLength(2);
       expect(result.services[0]).toEqual({
         host: "api.stripe.com",
-        description: "Stripe API",
         auth: { type: "bearer", token: "STRIPE_KEY" },
       });
       expect(result.services[1]).toEqual({
@@ -67,7 +64,6 @@ describe("ServicesResource", () => {
           { key: "ACCOUNT_ID", placeholder: "__ACCOUNT__", in: ["path"] },
         ],
       });
-      expect(result.services[1]!.description).toBeUndefined();
     });
 
     it("includes X-Vault header when created via AgentVault.vault()", async () => {
@@ -213,6 +209,42 @@ describe("ServicesResource", () => {
         ],
       });
     });
+
+    it("sends inline-form host for path-scoped services", async () => {
+      const mockFetch = createMockFetch({
+        body: { vault: "default", upserted: ["slack-bot", "slack-conn"], services_count: 2 },
+      });
+
+      const av = new AgentVault({
+        token: "agent-token",
+        address: "http://localhost:14321",
+        fetch: mockFetch,
+      });
+      const result = await av.vault("default").services!.set([
+        {
+          name: "slack-bot",
+          host: "slack.com/api/*",
+          auth: { type: "bearer", token: "SLACK_BOT_TOKEN" },
+        },
+        {
+          name: "slack-conn",
+          host: "slack.com/api/apps.connections.*",
+          auth: { type: "bearer", token: "SLACK_CONNECTION_TOKEN" },
+        },
+      ]);
+
+      const body = JSON.parse(mockFetch.mock.calls[0]![1]?.body as string);
+      expect(body.services).toHaveLength(2);
+      expect(body.services[0]).toMatchObject({
+        name: "slack-bot",
+        host: "slack.com/api/*",
+      });
+      expect(body.services[1]).toMatchObject({
+        name: "slack-conn",
+        host: "slack.com/api/apps.connections.*",
+      });
+      expect(result.upserted).toEqual(["slack-bot", "slack-conn"]);
+    });
   });
 
   describe("remove()", () => {
@@ -285,6 +317,77 @@ describe("ServicesResource", () => {
       const init = mockFetch.mock.calls[0]![1]!;
       const headers = init.headers as Record<string, string>;
       expect(headers["X-Vault"]).toBe("production");
+    });
+
+    it("surfaces removedHost when the server returns it", async () => {
+      const mockFetch = createMockFetch({
+        body: {
+          vault: "default",
+          removed: "slack-bot",
+          removed_host: "slack.com",
+          services_count: 1,
+        },
+      });
+
+      const av = new AgentVault({
+        token: "agent-token",
+        address: "http://localhost:14321",
+        fetch: mockFetch,
+      });
+      const result = await av.vault("default").services!.remove("slack-bot");
+
+      expect(result.removed).toBe("slack-bot");
+      expect(result.removedHost).toBe("slack.com");
+    });
+  });
+
+  describe("removeByName()", () => {
+    it("sends DELETE /v1/vaults/{name}/services/{name}", async () => {
+      const mockFetch = createMockFetch({
+        body: {
+          vault: "default",
+          removed: "slack-bot",
+          removed_host: "slack.com",
+          services_count: 0,
+        },
+      });
+
+      const av = new AgentVault({
+        token: "agent-token",
+        address: "http://localhost:14321",
+        fetch: mockFetch,
+      });
+      const result = await av.vault("default").services!.removeByName("slack-bot");
+
+      expect(mockFetch).toHaveBeenCalledOnce();
+      const [url, init] = mockFetch.mock.calls[0]!;
+      expect(url).toBe(
+        "http://localhost:14321/v1/vaults/default/services/slack-bot",
+      );
+      expect(init?.method).toBe("DELETE");
+      expect(result.removed).toBe("slack-bot");
+      expect(result.removedHost).toBe("slack.com");
+    });
+
+    it("throws ApiError with status 404 when the name does not exist", async () => {
+      const mockFetch = createMockFetch({
+        ok: false,
+        status: 404,
+        body: { error: "service_not_found", message: 'Service not found for "slack-bot"' },
+      });
+
+      const av = new AgentVault({
+        token: "agent-token",
+        address: "http://localhost:14321",
+        fetch: mockFetch,
+      });
+      await expect(
+        av.vault("default").services!.removeByName("slack-bot"),
+      ).rejects.toMatchObject({
+        name: "ApiError",
+        status: 404,
+        code: "service_not_found",
+      });
     });
   });
 
@@ -410,7 +513,7 @@ describe("ServicesResource", () => {
     it("sends GET with key query param", async () => {
       const mockFetch = createMockFetch({
         body: {
-          services: [{ host: "api.stripe.com", description: "Stripe API" }],
+          services: [{ host: "api.stripe.com" }],
         },
       });
 
@@ -433,7 +536,7 @@ describe("ServicesResource", () => {
       const mockFetch = createMockFetch({
         body: {
           services: [
-            { host: "api.stripe.com", description: "Stripe API" },
+            { host: "api.stripe.com" },
             { host: "api.example.com" },
           ],
         },
@@ -451,7 +554,6 @@ describe("ServicesResource", () => {
       expect(result.services).toHaveLength(2);
       expect(result.services[0]).toEqual({
         host: "api.stripe.com",
-        description: "Stripe API",
       });
       expect(result.services[1]).toEqual({
         host: "api.example.com",

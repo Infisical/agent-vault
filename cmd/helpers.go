@@ -742,3 +742,4 @@ func validInstanceRole(s string) bool {
 	}
 	return false
 }
+

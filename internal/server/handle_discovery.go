@@ -8,8 +8,8 @@ import (
 )
 
 type discoverService struct {
-	Host        string  `json:"host"`
-	Description *string `json:"description"`
+	Name string `json:"name"`
+	Host string `json:"host"`
 }
 
 type discoverResponse struct {
@@ -52,12 +52,17 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		proxyError(w, http.StatusInternalServerError, "internal", "Failed to parse broker services")
 		return
 	}
+	// MarshalJSON persists Host in joined form; re-split so
+	// MatcherPattern emits the same shape regardless of storage form.
+	for i := range svcList {
+		svcList[i].Host, svcList[i].Path = broker.SplitInlineHost(svcList[i].Host, svcList[i].Path)
+	}
 
 	services := make([]discoverService, len(svcList))
 	for i, svc := range svcList {
 		services[i] = discoverService{
-			Host:        svc.Host,
-			Description: svc.Description,
+			Name: svc.Name,
+			Host: svc.MatcherPattern(),
 		}
 	}
 
