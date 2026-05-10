@@ -107,12 +107,8 @@ export interface WireSubstitution {
 export interface WireService {
   /** Canonical service name (slug). Server populates on read; clients may omit on write (server auto-slugs). */
   name?: string;
+  /** Host pattern (joined inline form: `slack.com/api/*`). Single matcher field on the wire. */
   host: string;
-  /** Optional URL path glob (e.g. /api/*). Empty matches any path. */
-  path?: string;
-  /** Go's `*string` with no `omitempty` serializes nil as literal `null`,
-   *  not as a missing field. Normalized to `undefined` before reaching `Service`. */
-  description?: string | null;
   enabled?: boolean;
   auth: WireServiceAuth;
   substitutions?: WireSubstitution[];
@@ -157,10 +153,8 @@ export interface ServiceRemoved {
 export interface WireCredentialUsageEntry {
   /** Canonical service name. Populated by the server even for legacy services. */
   name?: string;
+  /** Service host pattern (joined inline form). */
   host: string;
-  /** Optional URL path glob. Empty for catch-all. */
-  path?: string;
-  description?: string;
 }
 
 /** @internal Wire format for GET /v1/vaults/{name}/services/credential-usage response. */

@@ -110,19 +110,17 @@ export interface ServiceInput {
 /**
  * Read shape for a vault service.
  *
- * Mirrors {@link ServiceInput} but with `host` always bare (path
- * stripped) and `path` returned alongside, so callers can inspect the
- * matcher rule without re-parsing the inline form. Composed (not
- * extended) from `ServiceInput` so a read value can't be passed to a
- * write method without an explicit conversion.
+ * Mirrors {@link ServiceInput} symmetrically: `host` carries the joined
+ * inline form on reads (`slack.com/api/*`) just as it does on writes,
+ * so callers see the same single-field matcher pattern they sent.
+ * Composed (not extended) from `ServiceInput` so a read value can't be
+ * passed to a write method without an explicit conversion.
  */
 export interface Service {
   /** Service name (slug). Server populates this on reads. */
   name?: string;
-  /** Bare host (path stripped). Always set on reads. */
+  /** Host pattern. Joined inline form: `api.stripe.com`, `*.github.com`, or `slack.com/api/*`. */
   host: string;
-  /** URL path glob, or empty for catch-all. Server-derived from the inline-form host on write. */
-  path?: string;
   /** Whether the service is active. Omitted/undefined is treated as enabled. */
   enabled?: boolean;
   /** Authentication configuration. */
@@ -185,10 +183,8 @@ export interface RemoveServiceResult {
 export interface CredentialUsageEntry {
   /** Service name (slug). Populated by the server even for legacy services. */
   name?: string;
-  /** Service host. */
+  /** Service host pattern (joined inline form). */
   host: string;
-  /** Service path glob, or empty for catch-all. */
-  path?: string;
 }
 
 /** Result of checking credential usage across services. */

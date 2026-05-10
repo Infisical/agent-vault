@@ -56,7 +56,6 @@ required — there is no project-file or interactive-picker fallback.`,
 			Services []struct {
 				Name string `json:"name"`
 				Host string `json:"host"`
-				Path string `json:"path"`
 			} `json:"services"`
 			AvailableCredentials []string `json:"available_credentials"`
 		}
@@ -71,9 +70,9 @@ required — there is no project-file or interactive-picker fallback.`,
 			fmt.Fprintln(w)
 			fmt.Fprintf(w, "%s\n", boldText("Services"))
 			t := newTable(w)
-			t.AppendHeader(table.Row{"NAME", "HOST", "PATH"})
+			t.AppendHeader(table.Row{"NAME", "HOST"})
 			for _, svc := range resp.Services {
-				t.AppendRow(table.Row{svc.Name, svc.Host, svc.Path})
+				t.AppendRow(table.Row{svc.Name, svc.Host})
 			}
 			t.Render()
 		} else {

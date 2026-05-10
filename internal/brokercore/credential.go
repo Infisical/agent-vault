@@ -115,6 +115,12 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 			return nil, fmt.Errorf("brokercore: parsing broker services: %w", err)
 		}
 	}
+	// Defensive split: persisted JSON now stores Host in joined inline
+	// form (broker.Service.MarshalJSON) but the matcher requires Host
+	// without "/". Splits are idempotent for legacy split-form records.
+	for i := range services {
+		services[i].Host, services[i].Path = broker.SplitInlineHost(services[i].Host, services[i].Path)
+	}
 	// Backfill empty Name fields lazily so legacy services persisted
 	// before path-based matching keep working without a write.
 	services = broker.NormalizeServices(services)

@@ -161,7 +161,7 @@ curl ${AGENT_VAULT_ADDR}/discover \
 }
 ```
 
-- **`services`** lists the services configured in the vault, scoped by host and optional path. Each entry has a canonical `name` (slug). Requests not matching any service go direct.
+- **`services`** lists the services configured in the vault. Each entry has a canonical `name` (slug) and a `host` pattern (which may carry an inline path glob like `slack.com/api/*`). Requests not matching any service go direct.
 - **`available_credentials`** lists credential key names in the vault (values are never exposed).
 
 <Tip>

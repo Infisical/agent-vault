@@ -3,20 +3,20 @@ title: "Services"
 description: "Define which services your agents can access and how credentials are attached."
 ---
 
-A `Service` is a per-[vault](/learn/vaults) configuration that defines which upstream traffic [agents](/agents/overview) can reach through the proxy and how Agent Vault authenticates to each one. When an agent makes a proxied request, Agent Vault matches the request's host (and optionally URL path) against the vault's services, attaches the configured [credentials](/learn/credentials), and forwards the request. If no service matches, the request is forwarded as plain proxy traffic by default; vault admins can flip a vault into **strict deny mode** (`unmatched_host_policy=deny` in vault settings) to reject unmatched requests with `403` instead.
+A `Service` is a per-[vault](/learn/vaults) configuration that defines which upstream traffic [agents](/agents/overview) can reach through the proxy and how Agent Vault authenticates to each one. When an agent makes a proxied request, Agent Vault matches the request against the vault's services by host pattern (which may include an inline path glob like `slack.com/api/*`), attaches the configured [credentials](/learn/credentials), and forwards the request. If no service matches, the request is forwarded as plain proxy traffic by default; vault admins can flip a vault into **strict deny mode** (`unmatched_host_policy=deny` in vault settings) to reject unmatched requests with `403` instead.
 
 Each service contains:
 
 - **Name**: A canonical per-vault identifier (slug, 3–64 lowercase alphanumeric/hyphen chars, no leading/trailing hyphen, no consecutive hyphens). Auto-derived from `host` when omitted on write — the host (with any inline path's literal portion) is lower-cased and joined with hyphens, with `.` and `/` becoming `-`. Examples: `api.stripe.com` → `api-stripe-com`; `slack.com/api/*` → `slack-com-api`. When the auto-slug would collide with an existing service's name, the server appends `-2`, `-3`, … so a stale auto-slug never silently overwrites another service.
-- **Host**: The target. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). The server splits the path off the host on ingest; reads return `host` and `path` separately so the matcher rule is inspectable.
-- **Path** (read-only on writes; derived from inline `host`): The split URL path glob. Empty matches any path. Lets you attach different credentials to different paths on the same host. Returned on reads so you can see what the matcher will key on.
+- **Host**: The single matcher field. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). Reads and writes use the same shape: writes accept any of those forms; reads return the joined inline form so you see exactly what you wrote.
 - **Auth config**: How Agent Vault authenticates. Five types are supported: `bearer`, `basic`, `api-key`, `custom`, and `passthrough` (opt out of injection).
 
 <Tip>
-  The `/discover` endpoint returns each service's `name`, `host`, and `path`.
-  Agents use this to know which services are already available before raising
-  a [proposal](/learn/proposals). When two services share a host (e.g. Slack
-  with separate Bot and Connection rules), distinguish them by `name`.
+  The `/discover` endpoint returns each service's `name` and `host` (joined
+  inline form). Agents use this to know which services are already available
+  before raising a [proposal](/learn/proposals). When two services share the
+  same bare host but scope to different paths (e.g. Slack with separate Bot
+  and Connection rules), distinguish them by `name`.
 </Tip>
 
 Similar to [credentials](/learn/credentials), services can be configured in two ways:
@@ -234,26 +234,26 @@ Substitutions and auth are independent. A service can use either, both, or neith
 
 ## Matching rules
 
-Agent Vault matches incoming requests to services on two axes: **host** and (optionally) **path**.
+The `host` pattern is the single matcher knob. It can carry just a hostname (`api.stripe.com`), a wildcard host (`*.github.com`), or an inline path glob (`slack.com/api/*`).
 
-**Host** supports two modes:
+**Host portion** supports two modes:
 
 - **Exact match**: `api.stripe.com` matches only `api.stripe.com`.
 - **Wildcard**: `*.github.com` matches `api.github.com`, `uploads.github.com`, etc. The `*` replaces exactly one subdomain segment.
 
-**Path** is an optional URL glob. Empty matches any path; non-empty must start with `/` and may use `*` as a greedy glob (cross-`/`). `**`, `?`, regex, and a bare `*` are rejected.
+**Path portion** (optional, follows the host with a `/`) is a URL glob. A bare host with no path matches any path; a non-empty path must start with `/` and may use `*` as a greedy glob (cross-`/`). `**`, `?`, regex, and a bare `*` are rejected.
 
 ### Matching priority
 
-When two services could match a request, the winner is chosen deterministically:
+When two `host` patterns could match a request, the winner is chosen deterministically:
 
-1. **Host tier first.** A service whose `host` is an **exact match** of the request host always beats one whose `host` is a **wildcard** (`*.example.com`) — even when the wildcard rule has a more specific path.
-2. **Path specificity within a host tier.** Among services in the same host tier, the rule with the **longest literal path prefix** wins (characters in `path` before the first `*`). An empty `path` scores 0 (catch-all).
+1. **Host tier first.** A pattern whose host portion is an **exact match** of the request host always beats one with a **wildcard** host (`*.example.com`) — even when the wildcard rule has a more specific path portion.
+2. **Path specificity within a host tier.** Among patterns in the same host tier, the rule with the **longest literal path prefix** wins (characters in the path portion before the first `*`). A bare-host pattern (no path) scores 0 (catch-all).
 3. **Declaration order on tie.** If two rules tie on host tier and literal path-prefix length, the rule appearing first in the configured service list wins.
 
 Worked example — Slack with two credentials at the same host:
 
-| Request | `slack-bot` (`slack.com /api/*`) | `slack-conn` (`slack.com /api/apps.connections.*`) | Winner |
+| Request | `slack-bot` (`slack.com/api/*`) | `slack-conn` (`slack.com/api/apps.connections.*`) | Winner |
 |---|---|---|---|
 | `slack.com/api/apps.connections.open` | matches, prefix length 5 | matches, prefix length 22 | `slack-conn` |
 | `slack.com/api/chat.postMessage` | matches | doesn't match | `slack-bot` |
@@ -261,9 +261,9 @@ Worked example — Slack with two credentials at the same host:
 
 **What this implies for users writing rules:**
 
-- To override a wildcard-host rule for a specific subdomain, **add the exact-host rule** — it takes priority no matter what its path looks like.
-- To layer two credentials on the same host, give them **different paths**; the more specific path will win.
-- The matcher does not run regex, does not match on method/headers/query/body, and does not bound `*` at path segments. Patterns that tie under rule 2 (e.g. `/api/*/v2` and `/api/*/v3`) fall to declaration order.
+- To override a wildcard-host rule for a specific subdomain, **add the exact-host rule** — it takes priority no matter what its path portion looks like.
+- To layer two credentials on the same host, give them **different path portions**; the more specific path will win.
+- The matcher does not run regex, does not match on method/headers/query/body, and does not bound `*` at path segments. Patterns that tie under rule 2 (e.g. `slack.com/api/*/v2` and `slack.com/api/*/v3`) fall to declaration order.
 
 ## Example
 
@@ -357,7 +357,7 @@ Removes all services. Agents scoped to this [vault](/learn/vaults) will get `403
 </Tip>
 
 <Note>
-  `vault service remove`, `enable`, and `disable` accept either the canonical service `name` or the `host`. When several path-scoped services share a host (e.g. Slack with `/api/*` and `/api/apps.connections.*`), passing the bare host returns `409 multiple services match host …` with a `candidates` array of `{name, host, path}`. Retry with the specific name shown in `agent-vault vault service list`.
+  `vault service remove`, `enable`, and `disable` accept either the canonical service `name` or the bare `host`. When several path-scoped services share a host (e.g. Slack with `slack.com/api/*` and `slack.com/api/apps.connections.*`), passing the bare host returns `409 multiple services match host …` with a `candidates` array of `{name, host}` (each `host` carries the joined inline form). Retry with the specific name shown in `agent-vault vault service list`.
 </Note>
 
 <AccordionGroup>
@@ -370,13 +370,14 @@ Removes all services. Agents scoped to this [vault](/learn/vaults) will get `403
 
     - **`set`**: Idempotent upsert keyed by canonical `name` (slug). Adds the service when
       no entry has that name, or replaces it when one does. `name` is auto-derived from
-      `host` when omitted (the server splits any inline path off the host first); a host-only
-      proposal that matches an existing service's `(host, path)` adopts the existing name
-      (so legacy "rotate credentials" proposals update in place rather than create a duplicate).
+      `host` when omitted; a proposal whose `host` matches an existing service adopts that
+      service's name (so legacy "rotate credentials" proposals update in place rather than
+      create a duplicate).
     - **`delete`**: Removes the service matching the given `name`. When `name` is omitted,
-      `host` is used as a fallback — a unique host match is resolved automatically; a host
-      shared by multiple path-scoped services returns `409 multiple services match host …`
-      with a `candidates` list, and the proposal must be retried with an explicit `name`.
+      the bare host portion of `host` is used as a fallback — a unique host match is
+      resolved automatically; a host shared by multiple path-scoped services returns
+      `409 multiple services match host …` with a `candidates` list, and the proposal
+      must be retried with an explicit `name`.
 
     When you approve a proposal, Agent Vault atomically merges all service changes into
     the vault's configuration in a single transaction. Identity for both set and delete is

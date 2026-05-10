@@ -26,7 +26,6 @@ export interface Service {
   action: string;
   name?: string;
   host: string;
-  path?: string;
   enabled?: boolean;
   auth?: Auth;
   substitutions?: Substitution[];
@@ -223,12 +222,7 @@ export default function ProposalPreview({ data }: { data: ProposalData }) {
                   <div className="text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-1.5">
                     Host
                   </div>
-                  <span className="text-sm text-text font-mono">
-                    {service.host}
-                    {service.path && (
-                      <span className="text-text-muted">{service.path}</span>
-                    )}
-                  </span>
+                  <span className="text-sm text-text font-mono">{service.host}</span>
                 </div>
                 {service.enabled !== undefined && (
                   <div className="mt-2 pt-2 border-t border-border">
@@ -261,9 +255,6 @@ export default function ProposalPreview({ data }: { data: ProposalData }) {
                   <line x1="6" y1="6" x2="18" y2="18" />
                 </svg>
                 {service.name || service.host}
-                {service.path && (
-                  <span className="text-text-muted">{service.path}</span>
-                )}
               </div>
             ))}
           </div>

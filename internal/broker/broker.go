@@ -2,6 +2,7 @@ package broker
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
 	"regexp"
@@ -19,12 +20,16 @@ type Config struct {
 // (slug) used by the proposal merge index, the HTTP API, and the SDK;
 // Host + Path are the matcher key consumed by MatchService.
 //
-// At every entrypoint (HTTP API, CLI, SDK, YAML config) the matcher is
-// set via Host alone — Host accepts a bare hostname, a one-level
-// wildcard (`*.github.com`), or an inline path-scoped form
-// (`slack.com/api/*`). Ingest splits the inline form into Host + Path
-// before validation, so the stored Host never contains "/". Reads
-// expose Host and Path separately for inspection.
+// At every entrypoint and read surface (HTTP API, CLI, SDK, YAML config)
+// the matcher is exposed as a single Host field — Host accepts a bare
+// hostname, a one-level wildcard (`*.github.com`), or an inline
+// path-scoped form (`slack.com/api/*`). Ingest splits the inline form
+// into Host + Path before validation, so the stored bare Host never
+// contains "/". JSON reads emit the joined inline form via MarshalJSON
+// so the wire surface is symmetric: callers see the same single Host
+// field they wrote. The split Path field stays internal (and in YAML
+// for matcher inspection); JSON consumers should treat MatcherPattern()
+// as the canonical readable form.
 //
 // Path may contain a single greedy `*` glob (cross-`/`); see
 // ValidatePath for the format and MatchService for the prioritization
@@ -35,12 +40,39 @@ type Config struct {
 // live after upgrade. Callers should use IsEnabled() rather than
 // dereferencing the pointer.
 type Service struct {
-	Name          string         `yaml:"name" json:"name"`
-	Host          string         `yaml:"host" json:"host"`
+	Name string `yaml:"name" json:"name"`
+	Host string `yaml:"host" json:"host"`
+	// Path keeps the json tag for backwards-compatible unmarshal of
+	// pre-MarshalJSON on-disk records (which stored host + path split).
+	// MarshalJSON suppresses it on output via the omitempty path.
 	Path          string         `yaml:"path,omitempty" json:"path,omitempty"`
 	Enabled       *bool          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Auth          Auth           `yaml:"auth" json:"auth"`
 	Substitutions []Substitution `yaml:"substitutions,omitempty" json:"substitutions,omitempty"`
+}
+
+// MatcherPattern returns the joined inline form of Host and Path —
+// e.g. `slack.com` for a host-only rule and `slack.com/api/*` for a
+// path-scoped rule. This is the canonical readable form exposed on
+// every read surface (HTTP API, CLI tables, SDK).
+func (s Service) MatcherPattern() string {
+	if s.Path == "" {
+		return s.Host
+	}
+	return s.Host + s.Path
+}
+
+// MarshalJSON emits the joined inline form on `host` and suppresses the
+// internal Path field, so the wire surface is symmetric with writes:
+// callers see the same single host pattern they sent. The internal
+// split lives behind MatcherPattern() and YAML — matcher logic
+// continues to consume Host + Path directly.
+func (s Service) MarshalJSON() ([]byte, error) {
+	type alias Service // strip MarshalJSON to avoid recursion
+	a := alias(s)
+	a.Host = s.MatcherPattern()
+	a.Path = ""
+	return json.Marshal(a)
 }
 
 // Substitution declares a placeholder string the broker rewrites with a

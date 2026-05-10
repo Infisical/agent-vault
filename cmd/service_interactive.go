@@ -147,6 +147,14 @@ func fetchServices(client *session.ClientSession, nsName string) ([]broker.Servi
 	if err := json.Unmarshal(resp.Services, &services); err != nil {
 		return nil, nil
 	}
+	// The wire shape carries Host in joined inline form (e.g.
+	// `slack.com/api/*`); split it back into bare Host + Path so the
+	// matcher invariant — Host has no '/' — holds before any downstream
+	// broker.Validate (e.g. when the user appends in the interactive
+	// builder). Idempotent for legacy split-form rows.
+	for i := range services {
+		services[i].Host, services[i].Path = broker.SplitInlineHost(services[i].Host, services[i].Path)
+	}
 	return services, nil
 }
 

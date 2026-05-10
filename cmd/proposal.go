@@ -49,7 +49,7 @@ func printServices(w io.Writer, servicesJSON string) {
 	if err := json.Unmarshal([]byte(servicesJSON), &services); err == nil && len(services) > 0 {
 		fmt.Fprintf(w, "\n%s\n", sectionHeader("Proposed services:"))
 		for _, r := range services {
-			fmt.Fprintf(w, "  %s %s", actionMarker(string(r.Action)), r.Host)
+			fmt.Fprintf(w, "  %s %s", actionMarker(string(r.Action)), r.MatcherPattern())
 			_, _ = fmt.Fprintln(w)
 			if r.Action == proposal.ActionSet && r.Auth != nil {
 				fmt.Fprintf(w, "      %s: %s\n", mutedText("auth"), r.Auth.Type)

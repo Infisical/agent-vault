@@ -97,7 +97,7 @@ X-Vault: {vault_name}
 
 **Note:** Instance-level agent tokens (persistent agents) must include the `X-Vault: {vault_name}` header on every control-plane call (`/discover`, `/v1/proposals`). The server only reads vault scope from this header — `AGENT_VAULT_VAULT` is a client-side env var; it is your responsibility to copy its value into the `X-Vault` header on each request. Vault-scoped session tokens carry the vault on the session row, so the header is ignored for those (passing it unconditionally is safe).
 
-Response includes `vault`, `services` (each with `name`, `host`, `path`), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots. `host` and `path` are returned separately on reads so the matcher rule is inspectable; on writes the matcher is set via `host` alone (inline path form). When two services share a host (e.g. Slack with separate Bot and Connection rules), they have different paths — distinguish them by `name` in subsequent operations like `PATCH/DELETE /v1/vaults/{vault}/services/{name}`.
+Response includes `vault`, `services` (each with `name` and `host`), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots. `host` is the single matcher field on every surface (read and write): it returns the joined inline form, so a path-scoped service shows up as e.g. `slack.com/api/*`. When two services share the same bare host but scope to different paths (e.g. Slack with separate Bot and Connection rules), distinguish them by `name` in subsequent operations like `PATCH/DELETE /v1/vaults/{vault}/services/{name}`.
 
 **Browse service templates:**
 
@@ -229,15 +229,15 @@ Key fields:
 
 ### Matching priority
 
-When two services could match a request `(host, path)`, the winner is chosen deterministically:
+When two service `host` patterns could match a request, the winner is chosen deterministically:
 
-1. **Host tier first.** A service whose `host` is an **exact match** of the request host always beats one whose `host` is a **wildcard** (`*.example.com`) — even when the wildcard rule has a more specific path.
-2. **Path specificity within a host tier.** Among services in the same host tier, the rule with the **longest literal path prefix** wins (characters in `path` before the first `*`). An empty `path` scores 0 (catch-all).
+1. **Host tier first.** A service whose host portion is an **exact match** of the request host always beats one with a **wildcard** host (`*.example.com`) — even when the wildcard rule has a more specific path portion.
+2. **Path specificity within a host tier.** Among services in the same host tier, the rule with the **longest literal path prefix** wins (characters in the path portion of `host` before the first `*`). A bare-host pattern (no path) scores 0 (catch-all).
 3. **Declaration order on tie.** If two rules tie on host tier and literal path-prefix length, the rule appearing first in the configured service list wins.
 
 Example — Slack with two credentials at the same host:
 
-| Request | `slack.com` `path=/api/apps.connections.*` | `slack.com` `path=/api/*` | Winner |
+| Request | `host=slack.com/api/apps.connections.*` | `host=slack.com/api/*` | Winner |
 |---|---|---|---|
 | `slack.com/api/apps.connections.open` | matches, prefix length 22 | matches, prefix length 5 | `slack-conn` (longer prefix) |
 | `slack.com/api/chat.postMessage` | doesn't match | matches | `slack-bot` |
@@ -268,7 +268,7 @@ Authorization: Bearer {AGENT_VAULT_TOKEN}
 
 Query params: `status_bucket` (`2xx`|`3xx`|`4xx`|`5xx`|`err`), `service` (canonical service **name** — e.g. `slack-bot`, `stripe`), `limit` (default 50, max 200), `before=<id>` (page back), `after=<id>` (tail forward for new rows). Response: `{ "logs": [...], "next_cursor": <id|null>, "latest_id": <id> }`.
 
-> **Note**: Rows written before path-based service matching shipped store the matched **host** in the `matched_service` field. New rows store the canonical service **name**. Operators filtering on `?service=` should use service names; pre-upgrade rows can be retrieved by querying with the host string instead. The matched host and path patterns themselves are not returned in log rows — call `GET /v1/vaults/{vault}/services/{name}` (or read `/discover`) to recover the (host, path) tuple from a name.
+> **Note**: Rows written before path-based service matching shipped store the matched **host** in the `matched_service` field. New rows store the canonical service **name**. Operators filtering on `?service=` should use service names; pre-upgrade rows can be retrieved by querying with the host string instead. The matched service's host pattern is not returned in log rows — call `GET /v1/vaults/{vault}/services/{name}` (or read `/discover`) to recover the `host` from a name.
 
 ## Building Code That Needs Credentials
 

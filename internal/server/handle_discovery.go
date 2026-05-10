@@ -10,7 +10,6 @@ import (
 type discoverService struct {
 	Name string `json:"name"`
 	Host string `json:"host"`
-	Path string `json:"path,omitempty"`
 }
 
 type discoverResponse struct {
@@ -55,14 +54,19 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	}
 	// Backfill empty Names so agents see canonical identifiers even
 	// against legacy vaults that haven't been written since the upgrade.
+	// Defensive split: persisted JSON may contain joined-form Host
+	// (after MarshalJSON joins Host+Path), and we want MatcherPattern
+	// below to produce the same form regardless of storage shape.
+	for i := range svcList {
+		svcList[i].Host, svcList[i].Path = broker.SplitInlineHost(svcList[i].Host, svcList[i].Path)
+	}
 	svcList = broker.NormalizeServices(svcList)
 
 	services := make([]discoverService, len(svcList))
 	for i, svc := range svcList {
 		services[i] = discoverService{
 			Name: svc.Name,
-			Host: svc.Host,
-			Path: svc.Path,
+			Host: svc.MatcherPattern(),
 		}
 	}
 

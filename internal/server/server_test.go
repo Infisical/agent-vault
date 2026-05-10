@@ -5979,7 +5979,10 @@ func TestServicePatchByName(t *testing.T) {
 }
 
 // TestServicesUpsertSplitsInlineHost lets a client paste `slack.com/api/*`
-// into the host field and verifies the server splits it into host+path.
+// into the host field and verifies the round-trip: storage holds the
+// joined form (Service.MarshalJSON re-joins Host+Path) and `path` is
+// not exposed on the wire — but the auto-slug still derives from the
+// split (slack-com-api), proving the inline form was parsed correctly.
 func TestServicesUpsertSplitsInlineHost(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))
@@ -5994,11 +5997,14 @@ func TestServicesUpsertSplitsInlineHost(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	bc := ms.brokerConfigs["root-ns-id"]
-	if !strings.Contains(bc.ServicesJSON, `"host":"slack.com"`) {
-		t.Fatalf("expected host stored as slack.com, got %s", bc.ServicesJSON)
+	if !strings.Contains(bc.ServicesJSON, `"host":"slack.com/api/*"`) {
+		t.Fatalf("expected host stored as joined form slack.com/api/*, got %s", bc.ServicesJSON)
 	}
-	if !strings.Contains(bc.ServicesJSON, `"path":"/api/*"`) {
-		t.Fatalf("expected path stored as /api/*, got %s", bc.ServicesJSON)
+	if strings.Contains(bc.ServicesJSON, `"path":`) {
+		t.Fatalf("path field must not appear on the wire, got %s", bc.ServicesJSON)
+	}
+	if !strings.Contains(bc.ServicesJSON, `"name":"slack-com-api"`) {
+		t.Fatalf("expected auto-slug derived from split (slack-com-api), got %s", bc.ServicesJSON)
 	}
 }
 
@@ -6181,3 +6187,46 @@ func TestProposalCreateActionDeleteUnknownHostLeavesNameEmpty(t *testing.T) {
 		t.Fatalf("expected unrelated service to remain, got %s", bc.ServicesJSON)
 	}
 }
+
+// TestServicesGetReturnsJoinedHostNoPathField pins the wire shape on
+// the read surface: GET /v1/vaults/{name}/services emits Host in joined
+// inline form (`slack.com/api/*`) and never includes the legacy `path`
+// field, even when the persisted record uses split form (the legacy
+// shape from before MarshalJSON joined them). Both the joined-form
+// emission AND the defensive split-on-load are exercised.
+func TestServicesGetReturnsJoinedHostNoPathField(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	// Seed storage with the legacy split form to prove loadServices's
+	// defensive SplitInlineHost handles older records correctly. After
+	// this PR, new writes persist the joined form via MarshalJSON; this
+	// test covers the migration window.
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		VaultID: "root-ns-id",
+		ServicesJSON: `[
+			{"name":"slack-bot","host":"slack.com","path":"/api/*","auth":{"type":"bearer","token":"SLACK_BOT_TOKEN"}},
+			{"name":"stripe","host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}
+		]`,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/services", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"host":"slack.com/api/*"`) {
+		t.Fatalf("expected joined-form host slack.com/api/*, got %s", body)
+	}
+	if !strings.Contains(body, `"host":"api.stripe.com"`) {
+		t.Fatalf("expected bare-host stripe entry untouched, got %s", body)
+	}
+	if strings.Contains(body, `"path":`) {
+		t.Fatalf("path field must not appear on the read surface, got %s", body)
+	}
+}
+

@@ -219,6 +219,10 @@ func normalizeProposalServices(in []proposal.Service, existing []broker.Service)
 // loadServices reads and parses the broker config, returning a
 // name-normalized slice (legacy services missing Name get slugged on
 // the fly so callers always see populated names without a write).
+// Splits any inline-form host (`slack.com/api/*`) into bare Host +
+// Path so the matcher invariant — stored Host never contains "/" —
+// holds even after broker.Service.MarshalJSON persists the joined
+// form. Idempotent: a Host with no "/" passes through unchanged.
 // Returns nil, nil when the vault has no broker config.
 func (s *Server) loadServices(ctx context.Context, vaultID string) ([]broker.Service, error) {
 	bc, err := s.store.GetBrokerConfig(ctx, vaultID)
@@ -231,6 +235,9 @@ func (s *Server) loadServices(ctx context.Context, vaultID string) ([]broker.Ser
 	var services []broker.Service
 	if err := json.Unmarshal([]byte(bc.ServicesJSON), &services); err != nil {
 		return nil, err
+	}
+	for i := range services {
+		services[i].Host, services[i].Path = broker.SplitInlineHost(services[i].Host, services[i].Path)
 	}
 	return broker.NormalizeServices(services), nil
 }
@@ -268,16 +275,17 @@ func resolveServiceRef(services []broker.Service, ref string) (idx int, candidat
 
 // candidateRefs is the body shape returned with 409 when a host slot
 // matches multiple services. Caller picks one by Name and retries.
+// Host is the joined inline form (`slack.com/api/*`) so the field
+// matches the single-host wire shape used everywhere else.
 type candidateRef struct {
 	Name string `json:"name"`
 	Host string `json:"host"`
-	Path string `json:"path,omitempty"`
 }
 
 func toCandidateRefs(svcs []broker.Service) []candidateRef {
 	out := make([]candidateRef, len(svcs))
 	for i, s := range svcs {
-		out[i] = candidateRef{Name: s.Name, Host: s.Host, Path: s.Path}
+		out[i] = candidateRef{Name: s.Name, Host: s.MatcherPattern()}
 	}
 	return out
 }
@@ -308,11 +316,11 @@ func (s *Server) handleServicesGet(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"vault": name, "services": services})
 }
 
-// handleServicesCredentialUsage returns the {name, host, path} of
-// every service that references the given credential key. Gated at
-// proxy+ (requireVaultAccess) deliberately: this is a strict subset of
-// what /discover already exposes to the same role — /discover lists
-// every service in the vault and every available credential key, so an
+// handleServicesCredentialUsage returns the {name, host} of every
+// service that references the given credential key. Gated at proxy+
+// (requireVaultAccess) deliberately: this is a strict subset of what
+// /discover already exposes to the same role — /discover lists every
+// service in the vault and every available credential key, so an
 // agent could filter client-side and arrive at the same answer.
 // Tightening to member+ here would create asymmetry without preventing
 // access.
@@ -345,13 +353,12 @@ func (s *Server) handleServicesCredentialUsage(w http.ResponseWriter, r *http.Re
 	type serviceRef struct {
 		Name string `json:"name"`
 		Host string `json:"host"`
-		Path string `json:"path,omitempty"`
 	}
 	var refs []serviceRef
 	for _, svc := range services {
 		for _, sk := range svc.Auth.CredentialKeys() {
 			if sk == key {
-				refs = append(refs, serviceRef{Name: svc.Name, Host: svc.Host, Path: svc.Path})
+				refs = append(refs, serviceRef{Name: svc.Name, Host: svc.MatcherPattern()})
 				break
 			}
 		}
@@ -532,7 +539,7 @@ func (s *Server) handleServiceRemove(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{
 		"vault":          name,
 		"removed":        removed.Name,
-		"removed_host":   removed.Host,
+		"removed_host":   removed.MatcherPattern(),
 		"services_count": len(filtered),
 	})
 }
@@ -617,7 +624,7 @@ func (s *Server) handleServicePatch(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{
 		"vault":   name,
 		"name":    services[idx].Name,
-		"host":    services[idx].Host,
+		"host":    services[idx].MatcherPattern(),
 		"enabled": *req.Enabled,
 	})
 }

@@ -24,7 +24,6 @@ import { apiFetch, apiRequest } from "../../lib/api";
 interface Service {
   name: string;
   host: string;
-  path?: string;
   enabled?: boolean;
   auth: Auth;
   substitutions?: Substitution[];
@@ -175,10 +174,7 @@ export default function ServicesTab() {
       render: (service) => (
         <div>
           <div className="text-sm font-semibold text-text">{service.name}</div>
-          <div className="text-xs text-text-muted mt-0.5">
-            {service.host}
-            {service.path && <span className="text-text-muted">{service.path}</span>}
-          </div>
+          <div className="text-xs text-text-muted mt-0.5">{service.host}</div>
         </div>
       ),
     },
@@ -285,7 +281,7 @@ export default function ServicesTab() {
         title="Delete service"
         description={
           deleteIndex !== null && services[deleteIndex]
-            ? `Permanently delete "${services[deleteIndex].name}" (${services[deleteIndex].host}${services[deleteIndex].path ?? ""}). Agents will no longer be able to proxy requests through this service.`
+            ? `Permanently delete "${services[deleteIndex].name}" (${services[deleteIndex].host}). Agents will no longer be able to proxy requests through this service.`
             : "Permanently delete this service."
         }
         footer={
@@ -344,7 +340,7 @@ function ServiceModal({
   onSave: (service: Service) => Promise<void>;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
-  const [pattern, setPattern] = useState(`${initial?.host ?? ""}${initial?.path ?? ""}`);
+  const [pattern, setPattern] = useState(initial?.host ?? "");
   const [enabled, setEnabled] = useState(initial ? initial.enabled !== false : true);
   const [authType, setAuthType] = useState<AuthType>((initial?.auth?.type as AuthType) ?? "passthrough");
 
