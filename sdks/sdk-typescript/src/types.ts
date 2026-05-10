@@ -105,7 +105,11 @@ export interface WireSubstitution {
 
 /** @internal Wire format for a service entry. */
 export interface WireService {
+  /** Canonical service name (slug). Server populates on read; clients may omit on write (server auto-slugs). */
+  name?: string;
   host: string;
+  /** Optional URL path glob (e.g. /api/*). Empty matches any path. */
+  path?: string;
   /** Go's `*string` with no `omitempty` serializes nil as literal `null`,
    *  not as a missing field. Normalized to `undefined` before reaching `Service`. */
   description?: string | null;
@@ -139,16 +143,23 @@ export interface ServicesCleared {
   cleared: boolean;
 }
 
-/** @internal Wire format for DELETE /v1/vaults/{name}/services/{host} response. */
+/** @internal Wire format for DELETE /v1/vaults/{name}/services/{name-or-host} response. */
 export interface ServiceRemoved {
   vault: string;
+  /** Canonical name of the service that was removed. */
   removed: string;
+  /** Host of the removed service (when the server can resolve it). */
+  removed_host?: string;
   services_count: number;
 }
 
 /** @internal Wire format for credential-usage response entry. */
 export interface WireCredentialUsageEntry {
+  /** Canonical service name. Populated by the server even for legacy services. */
+  name?: string;
   host: string;
+  /** Optional URL path glob. Empty for catch-all. */
+  path?: string;
   description?: string;
 }
 

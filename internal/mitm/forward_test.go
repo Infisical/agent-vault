@@ -492,7 +492,9 @@ func TestMITMForwardEmitsRequestLogRow(t *testing.T) {
 		})
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{
+			MatchedName: "upstream-svc",
 			MatchedHost: upstreamHost,
+			MatchedPath: "/v1/*",
 			Headers:     map[string]string{"Authorization": "Bearer x"},
 		}},
 	}}
@@ -543,8 +545,14 @@ func TestMITMForwardEmitsRequestLogRow(t *testing.T) {
 	if row.Status != http.StatusOK {
 		t.Errorf("Status = %d, want 200", row.Status)
 	}
-	if row.MatchedService != upstreamHost {
-		t.Errorf("MatchedService = %q, want %q", row.MatchedService, upstreamHost)
+	if row.MatchedService != "upstream-svc" {
+		t.Errorf("MatchedService = %q, want upstream-svc (canonical name)", row.MatchedService)
+	}
+	if row.MatchedHost != upstreamHost {
+		t.Errorf("MatchedHost = %q, want %q", row.MatchedHost, upstreamHost)
+	}
+	if row.MatchedPath != "/v1/*" {
+		t.Errorf("MatchedPath = %q, want /v1/*", row.MatchedPath)
 	}
 }
 

@@ -133,6 +133,29 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-slug + inline-form normalize so legacy clients (host-only,
+	// no name) keep working. For ActionDelete with no Name, try to
+	// resolve uniquely against existing services in the vault; a
+	// host-ambiguous delete returns 409 with the candidate list.
+	existing, err := s.loadServices(ctx, vaultID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to load existing services")
+		return
+	}
+	normalized, conflict, err := normalizeProposalServices(req.Services, existing)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if conflict != nil {
+		jsonStatus(w, http.StatusConflict, map[string]interface{}{
+			"error":      conflict.Error(),
+			"candidates": toCandidateRefs(conflict.candidates),
+		})
+		return
+	}
+	req.Services = normalized
+
 	// Validate the proposal.
 	if err := proposal.Validate(req.Services, req.Credentials); err != nil {
 		jsonError(w, http.StatusBadRequest, err.Error())

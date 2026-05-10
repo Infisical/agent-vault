@@ -213,6 +213,46 @@ describe("ServicesResource", () => {
         ],
       });
     });
+
+    it("round-trips name and path for path-scoped services", async () => {
+      const mockFetch = createMockFetch({
+        body: { vault: "default", upserted: ["slack-bot", "slack-conn"], services_count: 2 },
+      });
+
+      const av = new AgentVault({
+        token: "agent-token",
+        address: "http://localhost:14321",
+        fetch: mockFetch,
+      });
+      const result = await av.vault("default").services!.set([
+        {
+          name: "slack-bot",
+          host: "slack.com",
+          path: "/api/*",
+          auth: { type: "bearer", token: "SLACK_BOT_TOKEN" },
+        },
+        {
+          name: "slack-conn",
+          host: "slack.com",
+          path: "/api/apps.connections.*",
+          auth: { type: "bearer", token: "SLACK_CONNECTION_TOKEN" },
+        },
+      ]);
+
+      const body = JSON.parse(mockFetch.mock.calls[0]![1]?.body as string);
+      expect(body.services).toHaveLength(2);
+      expect(body.services[0]).toMatchObject({
+        name: "slack-bot",
+        host: "slack.com",
+        path: "/api/*",
+      });
+      expect(body.services[1]).toMatchObject({
+        name: "slack-conn",
+        host: "slack.com",
+        path: "/api/apps.connections.*",
+      });
+      expect(result.upserted).toEqual(["slack-bot", "slack-conn"]);
+    });
   });
 
   describe("remove()", () => {
@@ -285,6 +325,56 @@ describe("ServicesResource", () => {
       const init = mockFetch.mock.calls[0]![1]!;
       const headers = init.headers as Record<string, string>;
       expect(headers["X-Vault"]).toBe("production");
+    });
+
+    it("surfaces removedHost when the server returns it", async () => {
+      const mockFetch = createMockFetch({
+        body: {
+          vault: "default",
+          removed: "slack-bot",
+          removed_host: "slack.com",
+          services_count: 1,
+        },
+      });
+
+      const av = new AgentVault({
+        token: "agent-token",
+        address: "http://localhost:14321",
+        fetch: mockFetch,
+      });
+      const result = await av.vault("default").services!.remove("slack-bot");
+
+      expect(result.removed).toBe("slack-bot");
+      expect(result.removedHost).toBe("slack.com");
+    });
+  });
+
+  describe("removeByName()", () => {
+    it("sends DELETE /v1/vaults/{name}/services/{name}", async () => {
+      const mockFetch = createMockFetch({
+        body: {
+          vault: "default",
+          removed: "slack-bot",
+          removed_host: "slack.com",
+          services_count: 0,
+        },
+      });
+
+      const av = new AgentVault({
+        token: "agent-token",
+        address: "http://localhost:14321",
+        fetch: mockFetch,
+      });
+      const result = await av.vault("default").services!.removeByName("slack-bot");
+
+      expect(mockFetch).toHaveBeenCalledOnce();
+      const [url, init] = mockFetch.mock.calls[0]!;
+      expect(url).toBe(
+        "http://localhost:14321/v1/vaults/default/services/slack-bot",
+      );
+      expect(init?.method).toBe("DELETE");
+      expect(result.removed).toBe("slack-bot");
+      expect(result.removedHost).toBe("slack.com");
     });
   });
 

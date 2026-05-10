@@ -62,14 +62,16 @@ The `X-Vault` header is required for instance-level agent tokens. Vault-scoped s
 {
   "vault": "my-vault",
   "services": [
-    { "host": "api.stripe.com", "description": "Stripe API" },
-    { "host": "*.github.com", "description": "GitHub API" }
+    { "name": "stripe", "host": "api.stripe.com", "description": "Stripe API" },
+    { "name": "github", "host": "*.github.com", "description": "GitHub API" },
+    { "name": "slack-bot", "host": "slack.com", "path": "/api/*", "description": "Slack Bot User" },
+    { "name": "slack-conn", "host": "slack.com", "path": "/api/apps.connections.*", "description": "Slack Socket Mode" }
   ],
-  "available_credentials": ["GITHUB_TOKEN", "STRIPE_KEY"]
+  "available_credentials": ["GITHUB_TOKEN", "SLACK_BOT_TOKEN", "SLACK_CONNECTION_TOKEN", "STRIPE_KEY"]
 }
 ```
 
-- **`services`** lists the hosts the agent can reach through Agent Vault (defined by the vault's [services](/learn/services)). Requests to any other host go direct.
+- **`services`** lists the services the agent can reach through Agent Vault (each entry has `name`, `host`, optional `path`, and `description`). Requests to any other host go direct. When two services share a host (e.g. Slack here), distinguish them by `name` in subsequent operations.
 - **`available_credentials`** lists [credential](/learn/credentials) key names in the vault (values are never exposed). Agents use these to avoid creating duplicate slots in [proposals](/learn/proposals).
 
 ## Route requests through HTTPS_PROXY / HTTP_PROXY
@@ -109,6 +111,7 @@ Content-Type: application/json
   "services": [
     {
       "action": "set",
+      "name": "stripe",
       "host": "api.stripe.com",
       "description": "Stripe API",
       "auth": { "type": "bearer", "token": "STRIPE_KEY" }

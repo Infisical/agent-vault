@@ -440,13 +440,15 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault service add [flags]
     ```
 
-    Add or update a single service (upsert by host). Use `-f` to upsert services from a YAML file non-destructively (unlike `set -f`, which replaces all).
+    Add or update a single service (upsert by name). Use `-f` to upsert services from a YAML file non-destructively (unlike `set -f`, which replaces all).
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
     | `-f` | | Path to a YAML services file (upsert mode) |
-    | `--host` | | Target service host (e.g. `api.stripe.com`) |
+    | `--name` | _auto_ | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Auto-derived from `--host` and `--path` when omitted. |
+    | `--host` | | Target service host (e.g. `api.stripe.com`). For convenience, a value with a `/` like `slack.com/api/*` is split into host + path. |
+    | `--path` | | Optional URL path glob (e.g. `/api/*`). Empty matches any path. |
     | `--description` | | Service description |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, `custom`, `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
@@ -459,17 +461,19 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     The `passthrough` auth type accepts no credential flags; Agent Vault allowlists the host but does not store or inject a credential. See [Header forwarding](/learn/services#header-forwarding) for the rules that apply across every auth type — passthrough simply has no auth slot to override.
 
-    New services are **enabled by default**. Pass `--disabled` to create the service in a disabled state, or use `agent-vault vault service disable <host>` after creation.
+    New services are **enabled by default**. Pass `--disabled` to create the service in a disabled state, or use `agent-vault vault service disable <name-or-host>` after creation.
+
+    To layer two credentials on the same host, give them different `--path` globs (e.g. Slack with `/api/*` for the Bot token and `/api/apps.connections.*` for Socket Mode). The matcher resolves overlapping rules deterministically — see [Matching priority](/learn/services#matching-priority).
 
     URL [substitutions](/learn/services#substitutions) are file-only — there are no flags. Configure them under the `substitutions:` block of a service entry in a YAML file passed via `-f`.
   </Accordion>
 
   <Accordion title="agent-vault vault service enable">
     ```bash
-    agent-vault vault service enable <host> [flags]
+    agent-vault vault service enable <name-or-host> [flags]
     ```
 
-    Enable a service so proxy traffic to the host resumes. Idempotent — no error if the service is already enabled.
+    Enable a service so proxy traffic resumes. The argument is matched against service names first, then host. When more than one service shares the host, the server returns 409 with the candidate names — retry with the specific name. Idempotent.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -478,10 +482,10 @@ description: "Complete reference for all Agent Vault CLI commands."
 
   <Accordion title="agent-vault vault service disable">
     ```bash
-    agent-vault vault service disable <host> [flags]
+    agent-vault vault service disable <name-or-host> [flags]
     ```
 
-    Disable a service while preserving its configuration. Agents proxying to the host receive `403` with error code `service_disabled` until the service is re-enabled. Idempotent.
+    Disable a service while preserving its configuration. Agents proxying to it receive `403` with error code `service_disabled` until re-enabled. The argument is matched against service names first, then host (with the same 409-on-ambiguity behavior as `enable`). Idempotent.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -490,10 +494,10 @@ description: "Complete reference for all Agent Vault CLI commands."
 
   <Accordion title="agent-vault vault service remove">
     ```bash
-    agent-vault vault service remove <host> [flags]
+    agent-vault vault service remove <name-or-host> [flags]
     ```
 
-    Remove a specific service by host. Prompts for confirmation unless `--yes` is passed.
+    Remove a specific service. The argument is matched against service names first, then host (409 on ambiguity). Prompts for confirmation unless `--yes` is passed.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -607,7 +611,9 @@ description: "Complete reference for all Agent Vault CLI commands."
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
     | `-f`, `--file` | | Path to JSON proposal file (use `-` for stdin) |
-    | `--host` | | Target service host (e.g. `api.stripe.com`) |
+    | `--name` | _auto_ | Service name (slug). Auto-derived from `--host` and `--path` when omitted. |
+    | `--host` | | Target service host (e.g. `api.stripe.com`). Inline form `slack.com/api/*` is split into host + path. |
+    | `--path` | | Optional URL path glob (e.g. `/api/*`). Empty matches any path. |
     | `--description` | | Service description |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, or `passthrough` |
     | `--token-key` | | Credential key for bearer auth |

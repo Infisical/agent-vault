@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 
 	"github.com/Infisical/agent-vault/internal/broker"
@@ -27,8 +28,8 @@ func IsValidUnmatchedHostPolicy(p UnmatchedHostPolicy) bool {
 	return p == PolicyPassthrough || p == PolicyDeny
 }
 
-// InjectResult is the outcome of matching a target host and resolving
-// credentials to ready-to-attach HTTP headers.
+// InjectResult is the outcome of matching a target (host, path) and
+// resolving credentials to ready-to-attach HTTP headers.
 type InjectResult struct {
 	// Headers is the map of header name → value to overlay on the outbound
 	// request. Caller must Set (not Add) to ensure injected values win over
@@ -36,10 +37,18 @@ type InjectResult struct {
 	// Nil for passthrough services.
 	Headers map[string]string
 
-	// MatchedHost is the broker service host pattern that matched the
-	// target (e.g. "api.github.com"). Safe to log. Empty when the request
-	// is forwarded under the unmatched-host passthrough policy.
+	// MatchedName is the canonical service identifier (slug) that matched
+	// the request. Safe to log. Empty when the request is forwarded
+	// under the unmatched-host passthrough policy.
+	MatchedName string
+
+	// MatchedHost is the broker service host pattern that matched
+	// (e.g. "api.github.com" or "*.github.com"). Safe to log.
 	MatchedHost string
+
+	// MatchedPath is the broker service path pattern that matched, or
+	// empty for a host-only (catch-all) service. Safe to log.
+	MatchedPath string
 
 	// CredentialKeys are the credential key names referenced by the
 	// matched service (auth + substitutions). Names only — safe to log.
@@ -57,10 +66,12 @@ type InjectResult struct {
 	Passthrough bool
 }
 
-// CredentialProvider resolves a broker service for targetHost inside vaultID
-// and returns the HTTP headers required to authenticate the outbound request.
+// CredentialProvider resolves a broker service for (targetHost, targetPath)
+// inside vaultID and returns the HTTP headers required to authenticate
+// the outbound request. targetPath should be the URL path only (no query,
+// no fragment) — see MatchService for the prioritization rules.
 type CredentialProvider interface {
-	Inject(ctx context.Context, vaultID, targetHost string) (*InjectResult, error)
+	Inject(ctx context.Context, vaultID, targetHost, targetPath string) (*InjectResult, error)
 }
 
 // CredentialStore is the minimal store surface used by StoreCredentialProvider.
@@ -82,12 +93,14 @@ func NewStoreCredentialProvider(s CredentialStore, encKey []byte) *StoreCredenti
 	return &StoreCredentialProvider{Store: s, EncKey: encKey}
 }
 
-// Inject matches targetHost against the vault's broker services, resolves
-// the matched service's auth config into HTTP headers, and returns them.
+// Inject matches (targetHost, targetPath) against the vault's broker
+// services, resolves the matched service's auth config into HTTP
+// headers, and returns them.
 //
 // targetHost may include a port; the port is stripped before matching so
 // services configured as bare hostnames match `api.github.com:443`.
-func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHost string) (*InjectResult, error) {
+// targetPath is the request URL path; pass "/" when no path is meaningful.
+func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHost, targetPath string) (*InjectResult, error) {
 	// A missing row is equivalent to an empty services list — fall
 	// through to the unmatched-host policy. Any other error fails closed
 	// so a transient store failure can't silently strip enforcement.
@@ -102,12 +115,18 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 			return nil, fmt.Errorf("brokercore: parsing broker services: %w", err)
 		}
 	}
+	// Backfill empty Name fields lazily so legacy services persisted
+	// before path-based matching keep working without a write.
+	services = broker.NormalizeServices(services)
 
 	matchHost := targetHost
 	if h, _, err := net.SplitHostPort(targetHost); err == nil {
 		matchHost = h
 	}
-	matched := broker.MatchHost(matchHost, services)
+	if targetPath == "" {
+		targetPath = "/"
+	}
+	matched, score := broker.MatchService(matchHost, targetPath, services)
 	if matched == nil {
 		// Fail closed on policy lookup errors so a transient store
 		// failure can't silently strip enforcement.
@@ -120,6 +139,15 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	if !matched.IsEnabled() {
 		return nil, ErrServiceDisabled
 	}
+	slog.Default().Debug("broker matched",
+		slog.String("vault", vaultID),
+		slog.String("service", matched.Name),
+		slog.String("host", matched.Host),
+		slog.String("path", matched.Path),
+		slog.String("host_tier", score.HostTierName()),
+		slog.Int("path_prefix_len", score.PathLiteralLen),
+		slog.Int("decl_order", score.DeclOrder),
+	)
 
 	// Memoize per-key lookups so a credential shared by auth and a
 	// substitution decrypts only once.
@@ -144,7 +172,9 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	// Capture non-secret metadata up front so a downstream credential-missing
 	// error still carries it for diagnostic logging.
 	result := &InjectResult{
+		MatchedName:    matched.Name,
 		MatchedHost:    matched.Host,
+		MatchedPath:    matched.Path,
 		CredentialKeys: matched.CredentialKeys(),
 	}
 

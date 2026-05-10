@@ -124,6 +124,7 @@ POST /v1/proposals
   "services": [
     {
       "action": "set",
+      "name": "stripe",
       "host": "api.stripe.com",
       "description": "Stripe API",
       "auth": { "type": "bearer", "token": "STRIPE_KEY" }
@@ -149,8 +150,8 @@ The response includes an `approval_url` that the agent presents to the user in c
 
 Each service and credential slot carries an `action` field:
 
-- `set`: idempotent upsert (add or replace). Services require `host` + `auth`; credential slots require `key`.
-- `delete`: remove an existing entry. Services only need `host`; credential slots only need `key`.
+- `set`: idempotent upsert (add or replace). Services require `host` + `auth`; the server auto-derives `name` (slug) from `host` and `path` when omitted, and credential slots require `key`. To layer two credentials on the same host, give them different `path` globs (e.g. `/api/*` vs `/api/apps.connections.*`).
+- `delete`: remove an existing entry. Services delete by `name` (canonical); when `name` is omitted, the server resolves uniquely against `host` — and returns 409 with the candidate names if multiple services share that host. Credential slots only need `key`.
 
 ### Credential slots
 

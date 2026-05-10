@@ -185,10 +185,17 @@ func buildFromFlags(cmd *cobra.Command, host string, credentialFlags []string) (
 			return nil, err
 		}
 
+		path, _ := cmd.Flags().GetString("path")
+		host, path = splitHostPath(host, path)
+
 		svc := proposal.Service{
 			Action: proposal.ActionSet,
 			Host:   host,
+			Path:   path,
 			Auth:   auth,
+		}
+		if name, _ := cmd.Flags().GetString("name"); name != "" {
+			svc.Name = name
 		}
 		if desc, _ := cmd.Flags().GetString("description"); desc != "" {
 			svc.Description = desc
@@ -280,7 +287,9 @@ func init() {
 	proposalCreateCmd.Flags().StringP("file", "f", "", "path to JSON proposal file (use - for stdin)")
 
 	// Flag-driven mode.
+	proposalCreateCmd.Flags().String("name", "", "service name (slug). Auto-derived from --host and --path when omitted.")
 	proposalCreateCmd.Flags().String("host", "", "target service host (e.g. api.stripe.com)")
+	proposalCreateCmd.Flags().String("path", "", "URL path glob (e.g. /api/*). Optional; empty matches any path.")
 	proposalCreateCmd.Flags().String("description", "", "service description")
 	proposalCreateCmd.Flags().String("auth-type", "", "auth type: bearer, basic, api-key, passthrough")
 	proposalCreateCmd.Flags().String("token-key", "", "credential key for bearer auth")

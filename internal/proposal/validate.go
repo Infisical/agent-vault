@@ -119,6 +119,7 @@ func Validate(services []Service, credentials []CredentialSlot) error {
 		return fmt.Errorf("too many credential slots (max %d)", MaxCredentials)
 	}
 
+	nameSet := make(map[string]int, len(services))
 	for i, s := range services {
 		if s.Action != ActionSet && s.Action != ActionDelete {
 			return fmt.Errorf("service %d: invalid action %q (must be %q or %q)", i, s.Action, ActionSet, ActionDelete)
@@ -126,7 +127,23 @@ func Validate(services []Service, credentials []CredentialSlot) error {
 		if s.Host == "" {
 			return fmt.Errorf("service %d: host is required", i)
 		}
+		if strings.Contains(s.Host, "/") {
+			return fmt.Errorf("service %d: host %q must not contain %q (use the path field instead)", i, s.Host, "/")
+		}
 		if err := ValidateHost(s.Host); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
+		}
+		if s.Name == "" {
+			return fmt.Errorf("service %d: name is required", i)
+		}
+		if err := broker.ValidateSlug(s.Name); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
+		}
+		if prev, dup := nameSet[s.Name]; dup {
+			return fmt.Errorf("service %d: duplicate name %q (also at service %d)", i, s.Name, prev)
+		}
+		nameSet[s.Name] = i
+		if err := broker.ValidatePath(s.Path); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
 		if len(s.Description) > MaxDescriptionLen {
@@ -236,14 +253,18 @@ func ValidateCredentialRefs(services []Service, slots []CredentialSlot, existing
 		if svc.Action != ActionSet || svc.Auth == nil {
 			continue
 		}
+		ref := svc.Name
+		if ref == "" {
+			ref = svc.Host
+		}
 		for _, key := range svc.Auth.CredentialKeys() {
 			if !available[key] {
-				return fmt.Errorf("credential %q referenced in service for %q is not provided in this proposal and does not exist in the vault", key, svc.Host)
+				return fmt.Errorf("credential %q referenced in service %q is not provided in this proposal and does not exist in the vault", key, ref)
 			}
 		}
 		for _, sub := range svc.Substitutions {
 			if !available[sub.Key] {
-				return fmt.Errorf("credential %q referenced in substitution for %q is not provided in this proposal and does not exist in the vault", sub.Key, svc.Host)
+				return fmt.Errorf("credential %q referenced in substitution for %q is not provided in this proposal and does not exist in the vault", sub.Key, ref)
 			}
 		}
 	}

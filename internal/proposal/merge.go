@@ -6,14 +6,17 @@ import (
 	"github.com/Infisical/agent-vault/internal/broker"
 )
 
-// MergeServices applies proposed service changes to existing services.
-// Set-action services upsert (add or replace); delete-action services remove.
-// Returns the merged slice and a list of warnings for no-op operations.
+// MergeServices applies proposed service changes to existing services,
+// indexed by canonical service Name. Set-action services upsert (add or
+// replace by Name); delete-action services remove by Name. Callers must
+// have already populated Name on every existing and proposed service —
+// server handlers run broker.NormalizeServices on existing and auto-slug
+// proposals via broker.Slugify before reaching MergeServices. Returns
+// the merged slice and a list of warnings for no-op operations.
 func MergeServices(existing []broker.Service, proposed []Service) ([]broker.Service, []string) {
-	// Index existing services by host for O(1) lookup.
-	hostIndex := make(map[string]int, len(existing))
+	nameIndex := make(map[string]int, len(existing))
 	for i, s := range existing {
-		hostIndex[s.Host] = i
+		nameIndex[s.Name] = i
 	}
 
 	merged := make([]broker.Service, len(existing))
@@ -26,20 +29,21 @@ func MergeServices(existing []broker.Service, proposed []Service) ([]broker.Serv
 	for _, p := range proposed {
 		switch p.Action {
 		case ActionDelete:
-			idx, exists := hostIndex[p.Host]
+			idx, exists := nameIndex[p.Name]
 			if !exists {
-				warnings = append(warnings, fmt.Sprintf("skipped delete for %q: host not found", p.Host))
+				warnings = append(warnings, fmt.Sprintf("skipped delete for %q: service not found", p.Name))
 				continue
 			}
 			removeSet[idx] = true
-			delete(hostIndex, p.Host)
+			delete(nameIndex, p.Name)
 
 		default: // ActionSet: upsert
-			idx, exists := hostIndex[p.Host]
+			idx, exists := nameIndex[p.Name]
 			switch {
 			case exists && p.Auth == nil && p.Enabled != nil:
 				// Enable/disable-only change on an existing service:
-				// preserve Auth and Description, overlay just the flag.
+				// preserve Auth, Host, Path, and Description, overlay
+				// just the flag.
 				merged[idx].Enabled = p.Enabled
 			case exists:
 				next := toBrokerService(p)
@@ -52,7 +56,7 @@ func MergeServices(existing []broker.Service, proposed []Service) ([]broker.Serv
 				}
 				merged[idx] = next
 			default:
-				hostIndex[p.Host] = len(merged)
+				nameIndex[p.Name] = len(merged)
 				merged = append(merged, toBrokerService(p))
 			}
 		}
@@ -79,7 +83,9 @@ func toBrokerService(p Service) broker.Service {
 		desc = &d
 	}
 	svc := broker.Service{
+		Name:        p.Name,
 		Host:        p.Host,
+		Path:        p.Path,
 		Description: desc,
 		Enabled:     p.Enabled,
 	}

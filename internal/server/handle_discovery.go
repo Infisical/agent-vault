@@ -8,7 +8,9 @@ import (
 )
 
 type discoverService struct {
+	Name        string  `json:"name"`
 	Host        string  `json:"host"`
+	Path        string  `json:"path,omitempty"`
 	Description *string `json:"description"`
 }
 
@@ -52,11 +54,16 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		proxyError(w, http.StatusInternalServerError, "internal", "Failed to parse broker services")
 		return
 	}
+	// Backfill empty Names so agents see canonical identifiers even
+	// against legacy vaults that haven't been written since the upgrade.
+	svcList = broker.NormalizeServices(svcList)
 
 	services := make([]discoverService, len(svcList))
 	for i, svc := range svcList {
 		services[i] = discoverService{
+			Name:        svc.Name,
 			Host:        svc.Host,
+			Path:        svc.Path,
 			Description: svc.Description,
 		}
 	}

@@ -65,7 +65,7 @@ type fakeInjectResult struct {
 	err    error
 }
 
-func (f *fakeCredProvider) Inject(_ context.Context, _, targetHost string) (*brokercore.InjectResult, error) {
+func (f *fakeCredProvider) Inject(_ context.Context, _, targetHost, _ string) (*brokercore.InjectResult, error) {
 	// Mirror StoreCredentialProvider: accept host:port and strip internally.
 	host := targetHost
 	if h, _, err := net.SplitHostPort(targetHost); err == nil {

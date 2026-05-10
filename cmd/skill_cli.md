@@ -88,7 +88,7 @@ The token is either a vault-scoped session token (mint via `agent-vault vault to
 agent-vault vault discover --json
 ```
 
-Response includes `vault`, `services` (host + description), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots.
+Response includes `vault`, `services` (each with `name`, `host`, `path`, `description`), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots. When two services share a host, they must have different `path` values — distinguish them by `name` in subsequent operations.
 
 **Browse service templates:** `agent-vault catalog --json` lists built-in service templates with suggested credential keys and auth types. No auth needed.
 
@@ -186,6 +186,21 @@ agent-vault vault proposal create \
   --credential DB_PASSWORD="Production database password" \
   -m "Need database credentials" --json
 
+# Path-scoped service: Slack needs different credentials at different paths
+agent-vault vault proposal create -f - --json <<'EOF'
+{
+  "services": [
+    {"action": "set", "name": "slack-bot", "host": "slack.com", "path": "/api/*", "auth": {"type": "bearer", "token": "SLACK_BOT_TOKEN"}},
+    {"action": "set", "name": "slack-conn", "host": "slack.com", "path": "/api/apps.connections.*", "auth": {"type": "bearer", "token": "SLACK_CONNECTION_TOKEN"}}
+  ],
+  "credentials": [
+    {"action": "set", "key": "SLACK_BOT_TOKEN", "description": "Slack Bot User token"},
+    {"action": "set", "key": "SLACK_CONNECTION_TOKEN", "description": "Slack Socket Mode connection token"}
+  ],
+  "message": "Slack needs two credentials: Bot token for /api/* and Socket Mode token for /api/apps.connections.*"
+}
+EOF
+
 # Complex/multi-service (JSON mode)
 agent-vault vault proposal create -f - --json <<'EOF'
 {
@@ -224,7 +239,10 @@ Flag-driven auth flags by type:
 Other flags: `--description` (service description), `--user-message` (shown on browser approval page), `--credential KEY=description` (repeatable).
 
 Key fields (JSON mode):
-- `services[].action` -- `"set"` (upsert, needs `host` + `auth` **or** an `enabled` change) or `"delete"` (needs `host` only)
+- `services[].action` -- `"set"` (upsert, needs `host` + `auth` **or** an `enabled` change) or `"delete"`
+- `services[].name` -- canonical identifier (slug, 3–64 lowercase alphanumeric/hyphen chars). Optional on write; the server auto-derives from `host` and `path` when omitted. Identity for set/delete is `name` — when a delete uses `host` alone and the host is shared by multiple services, the server returns 409 with the candidate names.
+- `services[].host` -- bare hostname (e.g. `api.stripe.com`) or one-level wildcard (e.g. `*.github.com`). For convenience you can paste an inline form like `slack.com/api/*` and the server splits it into `host` + `path`.
+- `services[].path` -- optional URL path glob. Empty matches any path. Use `*` as a greedy glob (cross-`/`); `**`, `?`, regex, and bare `*` are rejected. Two services on the same host must use different paths to coexist; the server resolves overlapping rules deterministically (exact-host beats wildcard, then longer literal path prefix wins, then declaration order).
 - `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates), `passthrough` (no credential fields)
 - `services[].substitutions` -- optional list of URL/header rewrites. Each entry has `key` (UPPER_SNAKE_CASE credential reference), `placeholder` (the exact wire string the broker matches case-sensitively, e.g. `__account_sid__`), and optional `in` (subset of `["path", "query", "header"]`; defaults to `["path", "query"]`). Surfaces not in `in` are not scanned. Must be paired with an `auth` change in the same proposal — substitutions cannot be added on an enable/disable-only update.
 - `services[].enabled` -- optional boolean. Omitted means "enabled" for new services. A `"set"` proposal may supply `enabled` alone (no `auth`) to toggle an existing service's state without replacing its auth config -- useful for staged rollouts

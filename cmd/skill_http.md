@@ -97,7 +97,7 @@ X-Vault: {vault_name}
 
 **Note:** Instance-level agent tokens (persistent agents) must include the `X-Vault: {vault_name}` header on every control-plane call (`/discover`, `/v1/proposals`). The server only reads vault scope from this header — `AGENT_VAULT_VAULT` is a client-side env var; it is your responsibility to copy its value into the `X-Vault` header on each request. Vault-scoped session tokens carry the vault on the session row, so the header is ignored for those (passing it unconditionally is safe).
 
-Response includes `vault`, `services` (host + description), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots.
+Response includes `vault`, `services` (each with `name`, `host`, `path`, `description`), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots. When two services share a host (e.g. Slack with separate Bot and Connection rules), they must have different `path` values — distinguish them by `name` in subsequent operations like `PATCH/DELETE /v1/vaults/{vault}/services/{name}`.
 
 **Browse service templates:**
 
@@ -220,10 +220,30 @@ Content-Type: application/json
 ```
 
 Key fields:
-- `services[].action` -- `"set"` (upsert, needs `host` + `auth` **or** an `enabled` change) or `"delete"` (needs `host` only)
+- `services[].action` -- `"set"` (upsert, needs `host` + `auth` **or** an `enabled` change) or `"delete"`
+- `services[].name` -- canonical identifier (slug, 3–64 lowercase alphanumeric/hyphen chars). Optional on write; the server auto-derives from `host` and `path` when omitted. Identity for set/delete is `name` — when a delete uses `host` alone and the host is shared by multiple services, the server returns 409 with the candidate names.
+- `services[].host` -- bare hostname (e.g. `api.stripe.com`) or one-level wildcard (e.g. `*.github.com`). For convenience you can paste an inline form like `slack.com/api/*` and the server splits it into `host` + `path`.
+- `services[].path` -- optional URL path glob. Empty matches any path. Use `*` as a greedy glob (cross-`/`); `**`, `?`, regex, and bare `*` are rejected.
 - `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates), `passthrough` (no credential fields)
 - `services[].substitutions` -- optional list of URL/header rewrites. Each entry has `key` (UPPER_SNAKE_CASE credential reference), `placeholder` (the exact wire string the broker matches case-sensitively, e.g. `__account_sid__`), and optional `in` (subset of `["path", "query", "header"]`; defaults to `["path", "query"]`). Surfaces not in `in` are not scanned. Must be paired with an `auth` change in the same proposal — substitutions cannot be added on an enable/disable-only update. See the URL Substitutions section above.
 - `services[].enabled` -- optional boolean. Omitted means "enabled" for new services. A `"set"` proposal may supply `enabled` alone (no `auth`) to flip an existing service's state without replacing its auth config -- useful for staged rollouts where the operator wires credentials before flipping traffic on
+
+### Matching priority
+
+When two services could match a request `(host, path)`, the winner is chosen deterministically:
+
+1. **Host tier first.** A service whose `host` is an **exact match** of the request host always beats one whose `host` is a **wildcard** (`*.example.com`) — even when the wildcard rule has a more specific path.
+2. **Path specificity within a host tier.** Among services in the same host tier, the rule with the **longest literal path prefix** wins (characters in `path` before the first `*`). An empty `path` scores 0 (catch-all).
+3. **Declaration order on tie.** If two rules tie on host tier and literal path-prefix length, the rule appearing first in the configured service list wins.
+
+Example — Slack with two credentials at the same host:
+
+| Request | `slack.com` `path=/api/apps.connections.*` | `slack.com` `path=/api/*` | Winner |
+|---|---|---|---|
+| `slack.com/api/apps.connections.open` | matches, prefix length 22 | matches, prefix length 5 | `slack-conn` (longer prefix) |
+| `slack.com/api/chat.postMessage` | doesn't match | matches | `slack-bot` |
+
+The matcher does not run regex, does not match on method/headers/query/body, and does not bound `*` at path segments. Patterns that tie under rule 2 fall to declaration order.
 - `credentials[].action` -- `"set"` (omit `value` for human to supply; include `value` to store back) or `"delete"`
 - `credentials` -- only declare credentials not already in `available_credentials`. Every credential referenced in auth configs must resolve to a slot or existing credential (400 otherwise)
 - `message` -- developer-facing explanation; `user_message` -- shown on the browser approval page
@@ -247,7 +267,9 @@ GET {AGENT_VAULT_ADDR}/v1/vaults/{vault}/logs
 Authorization: Bearer {AGENT_VAULT_TOKEN}
 ```
 
-Query params: `status_bucket` (`2xx`|`3xx`|`4xx`|`5xx`|`err`), `service`, `limit` (default 50, max 200), `before=<id>` (page back), `after=<id>` (tail forward for new rows). Response: `{ "logs": [...], "next_cursor": <id|null>, "latest_id": <id> }`.
+Query params: `status_bucket` (`2xx`|`3xx`|`4xx`|`5xx`|`err`), `service` (canonical service **name** — e.g. `slack-bot`, `stripe`), `limit` (default 50, max 200), `before=<id>` (page back), `after=<id>` (tail forward for new rows). Response: `{ "logs": [...], "next_cursor": <id|null>, "latest_id": <id> }`.
+
+> **Note**: Rows written before path-based service matching shipped store the matched **host** in the `matched_service` field. New rows store the canonical service **name**. Operators filtering on `?service=` should use service names; pre-upgrade rows can be retrieved by querying with the host string instead.
 
 ## Building Code That Needs Credentials
 

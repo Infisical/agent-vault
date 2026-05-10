@@ -12,10 +12,10 @@ func mergeBearer(token string) *broker.Auth {
 
 func TestMergeServicesSetAppend(t *testing.T) {
 	existing := []broker.Service{
-		{Host: "api.github.com", Auth: broker.Auth{Type: "bearer", Token: "GH"}},
+		{Name: "api-github-com", Host: "api.github.com", Auth: broker.Auth{Type: "bearer", Token: "GH"}},
 	}
 	proposed := []Service{
-		{Action: ActionSet, Host: "api.stripe.com", Description: "Stripe", Auth: mergeBearer("SK")},
+		{Action: ActionSet, Name: "api-stripe-com", Host: "api.stripe.com", Description: "Stripe", Auth: mergeBearer("SK")},
 	}
 
 	merged, warnings := MergeServices(existing, proposed)
@@ -36,10 +36,10 @@ func TestMergeServicesSetAppend(t *testing.T) {
 func TestMergeServicesSetEnabledOnlyPreservesAuth(t *testing.T) {
 	disabled := false
 	existing := []broker.Service{
-		{Host: "api.stripe.com", Auth: broker.Auth{Type: "bearer", Token: "OLD"}},
+		{Name: "api-stripe-com", Host: "api.stripe.com", Auth: broker.Auth{Type: "bearer", Token: "OLD"}},
 	}
 	proposed := []Service{
-		{Action: ActionSet, Host: "api.stripe.com", Enabled: &disabled},
+		{Action: ActionSet, Name: "api-stripe-com", Host: "api.stripe.com", Enabled: &disabled},
 	}
 
 	merged, warnings := MergeServices(existing, proposed)
@@ -59,10 +59,10 @@ func TestMergeServicesSetEnabledOnlyPreservesAuth(t *testing.T) {
 
 func TestMergeServicesSetReplacesExisting(t *testing.T) {
 	existing := []broker.Service{
-		{Host: "api.stripe.com", Auth: broker.Auth{Type: "bearer", Token: "OLD"}},
+		{Name: "api-stripe-com", Host: "api.stripe.com", Auth: broker.Auth{Type: "bearer", Token: "OLD"}},
 	}
 	proposed := []Service{
-		{Action: ActionSet, Host: "api.stripe.com", Auth: mergeBearer("NEW")},
+		{Action: ActionSet, Name: "api-stripe-com", Host: "api.stripe.com", Auth: mergeBearer("NEW")},
 	}
 
 	merged, warnings := MergeServices(existing, proposed)
@@ -79,11 +79,11 @@ func TestMergeServicesSetReplacesExisting(t *testing.T) {
 
 func TestMergeServicesDelete(t *testing.T) {
 	existing := []broker.Service{
-		{Host: "api.github.com", Auth: broker.Auth{Type: "bearer", Token: "GH"}},
-		{Host: "api.stripe.com", Auth: broker.Auth{Type: "bearer", Token: "SK"}},
+		{Name: "api-github-com", Host: "api.github.com", Auth: broker.Auth{Type: "bearer", Token: "GH"}},
+		{Name: "api-stripe-com", Host: "api.stripe.com", Auth: broker.Auth{Type: "bearer", Token: "SK"}},
 	}
 	proposed := []Service{
-		{Action: ActionDelete, Host: "api.stripe.com"},
+		{Action: ActionDelete, Name: "api-stripe-com", Host: "api.stripe.com"},
 	}
 
 	merged, warnings := MergeServices(existing, proposed)
@@ -100,10 +100,10 @@ func TestMergeServicesDelete(t *testing.T) {
 
 func TestMergeServicesDeleteNonExistent(t *testing.T) {
 	existing := []broker.Service{
-		{Host: "api.github.com", Auth: broker.Auth{Type: "bearer", Token: "GH"}},
+		{Name: "api-github-com", Host: "api.github.com", Auth: broker.Auth{Type: "bearer", Token: "GH"}},
 	}
 	proposed := []Service{
-		{Action: ActionDelete, Host: "api.stripe.com"},
+		{Action: ActionDelete, Name: "api-stripe-com", Host: "api.stripe.com"},
 	}
 
 	merged, warnings := MergeServices(existing, proposed)
@@ -117,13 +117,13 @@ func TestMergeServicesDeleteNonExistent(t *testing.T) {
 
 func TestMergeServicesMixed(t *testing.T) {
 	existing := []broker.Service{
-		{Host: "api.github.com", Auth: broker.Auth{Type: "bearer", Token: "GH"}},
-		{Host: "api.slack.com", Auth: broker.Auth{Type: "bearer", Token: "SLACK"}},
+		{Name: "api-github-com", Host: "api.github.com", Auth: broker.Auth{Type: "bearer", Token: "GH"}},
+		{Name: "api-slack-com", Host: "api.slack.com", Auth: broker.Auth{Type: "bearer", Token: "SLACK"}},
 	}
 	proposed := []Service{
-		{Action: ActionSet, Host: "api.stripe.com", Auth: mergeBearer("SK")},
-		{Action: ActionDelete, Host: "api.slack.com"},
-		{Action: ActionSet, Host: "api.github.com", Auth: mergeBearer("GH_NEW")},
+		{Action: ActionSet, Name: "api-stripe-com", Host: "api.stripe.com", Auth: mergeBearer("SK")},
+		{Action: ActionDelete, Name: "api-slack-com", Host: "api.slack.com"},
+		{Action: ActionSet, Name: "api-github-com", Host: "api.github.com", Auth: mergeBearer("GH_NEW")},
 	}
 
 	merged, warnings := MergeServices(existing, proposed)
@@ -143,7 +143,7 @@ func TestMergeServicesMixed(t *testing.T) {
 
 func TestMergeServicesEmpty(t *testing.T) {
 	merged, warnings := MergeServices(nil, []Service{
-		{Action: ActionSet, Host: "example.com", Auth: mergeBearer("KEY")},
+		{Action: ActionSet, Name: "example-com", Host: "example.com", Auth: mergeBearer("KEY")},
 	})
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings, got %v", warnings)
@@ -155,7 +155,7 @@ func TestMergeServicesEmpty(t *testing.T) {
 
 func TestMergeServicesNoDescription(t *testing.T) {
 	merged, _ := MergeServices(nil, []Service{
-		{Action: ActionSet, Host: "example.com", Auth: mergeBearer("KEY")},
+		{Action: ActionSet, Name: "example-com", Host: "example.com", Auth: mergeBearer("KEY")},
 	})
 	if merged[0].Description != nil {
 		t.Fatalf("expected nil description, got %v", merged[0].Description)
@@ -164,10 +164,10 @@ func TestMergeServicesNoDescription(t *testing.T) {
 
 func TestMergeServicesBasicAuth(t *testing.T) {
 	existing := []broker.Service{
-		{Host: "api.ashby.com", Auth: broker.Auth{Type: "bearer", Token: "OLD"}},
+		{Name: "api-ashby-com", Host: "api.ashby.com", Auth: broker.Auth{Type: "bearer", Token: "OLD"}},
 	}
 	proposed := []Service{
-		{Action: ActionSet, Host: "api.ashby.com", Auth: &broker.Auth{Type: "basic", Username: "ASHBY_KEY"}},
+		{Action: ActionSet, Name: "api-ashby-com", Host: "api.ashby.com", Auth: &broker.Auth{Type: "basic", Username: "ASHBY_KEY"}},
 	}
 	merged, _ := MergeServices(existing, proposed)
 	if merged[0].Auth.Type != "basic" {
@@ -181,6 +181,7 @@ func TestMergeServicesBasicAuth(t *testing.T) {
 func TestMergeServicesCopiesSubstitutions(t *testing.T) {
 	proposed := []Service{{
 		Action: ActionSet,
+		Name:   "api-twilio-com",
 		Host:   "api.twilio.com",
 		Auth:   &broker.Auth{Type: "basic", Username: "TWILIO_ACCOUNT_SID", Password: "TWILIO_AUTH_TOKEN"},
 		Substitutions: []broker.Substitution{
@@ -204,13 +205,14 @@ func TestMergeServicesCopiesSubstitutions(t *testing.T) {
 func TestMergeServicesEnableOnlyPreservesSubstitutions(t *testing.T) {
 	on := false
 	existing := []broker.Service{{
+		Name: "api-twilio-com",
 		Host: "api.twilio.com",
 		Auth: broker.Auth{Type: "basic", Username: "TWILIO_ACCOUNT_SID", Password: "TWILIO_AUTH_TOKEN"},
 		Substitutions: []broker.Substitution{
 			{Key: "TWILIO_ACCOUNT_SID", Placeholder: "__account_sid__", In: []string{"path"}},
 		},
 	}}
-	proposed := []Service{{Action: ActionSet, Host: "api.twilio.com", Enabled: &on}}
+	proposed := []Service{{Action: ActionSet, Name: "api-twilio-com", Host: "api.twilio.com", Enabled: &on}}
 	merged, _ := MergeServices(existing, proposed)
 	if len(merged[0].Substitutions) != 1 || merged[0].Substitutions[0].Placeholder != "__account_sid__" {
 		t.Fatalf("expected substitutions preserved on enable-only update, got %+v", merged[0])
@@ -224,6 +226,7 @@ func TestMergeServicesAuthOnlyUpdatePreservesSubstitutions(t *testing.T) {
 	// Operators rotating credentials shouldn't lose URL rewriting as a
 	// side effect.
 	existing := []broker.Service{{
+		Name: "api-twilio-com",
 		Host: "api.twilio.com",
 		Auth: broker.Auth{Type: "basic", Username: "TWILIO_ACCOUNT_SID", Password: "TWILIO_AUTH_TOKEN"},
 		Substitutions: []broker.Substitution{
@@ -232,6 +235,7 @@ func TestMergeServicesAuthOnlyUpdatePreservesSubstitutions(t *testing.T) {
 	}}
 	proposed := []Service{{
 		Action: ActionSet,
+		Name:   "api-twilio-com",
 		Host:   "api.twilio.com",
 		Auth:   &broker.Auth{Type: "bearer", Token: "TWILIO_AUTH_TOKEN"},
 	}}
@@ -246,6 +250,7 @@ func TestMergeServicesAuthOnlyUpdatePreservesSubstitutions(t *testing.T) {
 
 func TestMergeServicesAuthAndSubsReplacesSubstitutions(t *testing.T) {
 	existing := []broker.Service{{
+		Name: "api-twilio-com",
 		Host: "api.twilio.com",
 		Auth: broker.Auth{Type: "passthrough"},
 		Substitutions: []broker.Substitution{
@@ -254,6 +259,7 @@ func TestMergeServicesAuthAndSubsReplacesSubstitutions(t *testing.T) {
 	}}
 	proposed := []Service{{
 		Action: ActionSet,
+		Name:   "api-twilio-com",
 		Host:   "api.twilio.com",
 		Auth:   &broker.Auth{Type: "passthrough"},
 		Substitutions: []broker.Substitution{
@@ -263,5 +269,61 @@ func TestMergeServicesAuthAndSubsReplacesSubstitutions(t *testing.T) {
 	merged, _ := MergeServices(existing, proposed)
 	if len(merged[0].Substitutions) != 1 || merged[0].Substitutions[0].Placeholder != "__new__" {
 		t.Fatalf("expected substitutions replaced, got %+v", merged[0].Substitutions)
+	}
+}
+
+// --- Path-based identity tests ---
+
+func TestMergeServicesPathDistinguishesIdentity(t *testing.T) {
+	// Two Slack rules at the same host but different paths must coexist
+	// because identity is now Name, not Host.
+	merged, warnings := MergeServices(nil, []Service{
+		{Action: ActionSet, Name: "slack-bot", Host: "slack.com", Path: "/api/*", Auth: mergeBearer("SLACK_BOT")},
+		{Action: ActionSet, Name: "slack-conn", Host: "slack.com", Path: "/api/apps.connections.*", Auth: mergeBearer("SLACK_CONN")},
+	})
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	if len(merged) != 2 {
+		t.Fatalf("expected 2 services, got %d", len(merged))
+	}
+	if merged[0].Path != "/api/*" || merged[1].Path != "/api/apps.connections.*" {
+		t.Fatalf("paths not preserved: %+v", merged)
+	}
+}
+
+func TestMergeServicesUpsertByName(t *testing.T) {
+	existing := []broker.Service{
+		{Name: "slack-bot", Host: "slack.com", Path: "/api/*", Auth: broker.Auth{Type: "bearer", Token: "OLD"}},
+	}
+	proposed := []Service{
+		{Action: ActionSet, Name: "slack-bot", Host: "slack.com", Path: "/api/v2/*", Auth: mergeBearer("NEW")},
+	}
+	merged, _ := MergeServices(existing, proposed)
+	if len(merged) != 1 {
+		t.Fatalf("expected 1 service after upsert, got %d", len(merged))
+	}
+	if merged[0].Path != "/api/v2/*" {
+		t.Fatalf("expected path replaced, got %q", merged[0].Path)
+	}
+	if merged[0].Auth.Token != "NEW" {
+		t.Fatalf("expected auth replaced, got %q", merged[0].Auth.Token)
+	}
+}
+
+func TestMergeServicesDeleteByName(t *testing.T) {
+	existing := []broker.Service{
+		{Name: "slack-bot", Host: "slack.com", Path: "/api/*", Auth: broker.Auth{Type: "bearer", Token: "T1"}},
+		{Name: "slack-conn", Host: "slack.com", Path: "/api/apps.connections.*", Auth: broker.Auth{Type: "bearer", Token: "T2"}},
+	}
+	proposed := []Service{
+		{Action: ActionDelete, Name: "slack-conn", Host: "slack.com"},
+	}
+	merged, warnings := MergeServices(existing, proposed)
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	if len(merged) != 1 || merged[0].Name != "slack-bot" {
+		t.Fatalf("expected only slack-bot to remain, got %+v", merged)
 	}
 }

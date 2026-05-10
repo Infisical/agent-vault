@@ -22,7 +22,9 @@ import {
 import { apiFetch, apiRequest } from "../../lib/api";
 
 interface Service {
+  name: string;
   host: string;
+  path?: string;
   description?: string;
   enabled?: boolean;
   auth: Auth;
@@ -125,11 +127,11 @@ export default function ServicesTab() {
     const service = services[index];
     if (!service) return;
     const applyEnabled = (want: boolean) => (list: Service[]) =>
-      list.map((s) => (s.host === service.host ? { ...s, enabled: want } : s));
+      list.map((s) => (s.name === service.name ? { ...s, enabled: want } : s));
     setServices(applyEnabled(next));
     try {
       const resp = await apiFetch(
-        `/v1/vaults/${encodeURIComponent(vaultName)}/services/${encodeURIComponent(service.host)}`,
+        `/v1/vaults/${encodeURIComponent(vaultName)}/services/${encodeURIComponent(service.name)}`,
         {
           method: "PATCH",
           body: JSON.stringify({ enabled: next }),
@@ -164,11 +166,15 @@ export default function ServicesTab() {
 
   const columns: Column<Service>[] = [
     {
-      key: "host",
-      header: "Host",
+      key: "name",
+      header: "Service",
       render: (service) => (
         <div>
-          <div className="text-sm font-semibold text-text">{service.host}</div>
+          <div className="text-sm font-semibold text-text">{service.name}</div>
+          <div className="text-xs text-text-muted mt-0.5">
+            {service.host}
+            {service.path && <span className="text-text-muted">{service.path}</span>}
+          </div>
           {service.description && (
             <div className="text-xs text-text-muted mt-0.5">
               {service.description}
@@ -203,7 +209,7 @@ export default function ServicesTab() {
           checked={isEnabled(service)}
           disabled={!isAdmin}
           onChange={(next) => toggleEnabled(index, next)}
-          ariaLabel={`Toggle ${service.host}`}
+          ariaLabel={`Toggle ${service.name}`}
         />
       ),
     },
@@ -264,7 +270,7 @@ export default function ServicesTab() {
         <DataTable
           columns={columns}
           data={services}
-          rowKey={(_, i) => i}
+          rowKey={(s) => s.name}
           emptyTitle="No services configured"
           emptyDescription="Add a service to allow agents to proxy requests through this vault."
         />
@@ -280,7 +286,7 @@ export default function ServicesTab() {
         title="Delete service"
         description={
           deleteIndex !== null && services[deleteIndex]
-            ? `Permanently delete the service for "${services[deleteIndex].host}". Agents will no longer be able to proxy requests to this host.`
+            ? `Permanently delete "${services[deleteIndex].name}" (${services[deleteIndex].host}${services[deleteIndex].path ?? ""}). Agents will no longer be able to proxy requests through this service.`
             : "Permanently delete this service."
         }
         footer={
@@ -338,7 +344,9 @@ function ServiceModal({
   onClose: () => void;
   onSave: (service: Service) => Promise<void>;
 }) {
+  const [name, setName] = useState(initial?.name ?? "");
   const [host, setHost] = useState(initial?.host ?? "");
+  const [path, setPath] = useState(initial?.path ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [enabled, setEnabled] = useState(initial ? initial.enabled !== false : true);
   const [authType, setAuthType] = useState<AuthType>((initial?.auth?.type as AuthType) ?? "bearer");
@@ -382,7 +390,9 @@ function ServiceModal({
   const showPresets = !initial && catalogSnapshot.length > 0;
 
   function resetFields() {
+    setName("");
     setHost("");
+    setPath("");
     setDescription("");
     setAuthType("bearer");
     setToken("");
@@ -480,8 +490,24 @@ function ServiceModal({
     setSaving(true);
     setError("");
     try {
+      // Inline-form support: if user typed `slack.com/api/*` into the
+      // Host field without populating Path, split before posting. The
+      // server applies the same split, but this keeps the UI's
+      // round-tripped state matching what the server will store.
+      let h = host.trim();
+      let p = path.trim();
+      if (p === "") {
+        const slash = h.indexOf("/");
+        if (slash > 0) {
+          p = h.slice(slash);
+          h = h.slice(0, slash);
+        }
+      }
       const service: Service = {
-        host: host.trim(),
+        // Empty name → server auto-slugs from (host, path).
+        name: name.trim(),
+        host: h,
+        ...(p && { path: p }),
         ...(description.trim() && { description: description.trim() }),
         ...(enabled ? {} : { enabled: false }),
         auth: buildAuth(),
@@ -527,12 +553,44 @@ function ServiceModal({
     >
       <div className="space-y-6">
         <Section title="Basics">
-          <FormField label="Host Pattern">
+          <FormField
+            label="Name"
+            helperText="Slug-style identifier (3–64 chars, lowercase, hyphens). Auto-derived from host when blank."
+          >
+            <Input
+              placeholder="e.g. slack-bot (auto if blank)"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </FormField>
+          <FormField
+            label="Host Pattern"
+            helperText="Bare hostname (e.g. api.stripe.com) or one-level wildcard (e.g. *.github.com). You can also paste slack.com/api/* to set host + path together."
+          >
             <Input
               placeholder="e.g. api.stripe.com"
               value={host}
               onChange={(e) => setHost(e.target.value)}
+              onBlur={() => {
+                // Inline-form split on blur: slack.com/api/* → host + path.
+                if (path.trim() !== "") return;
+                const slash = host.indexOf("/");
+                if (slash > 0) {
+                  setPath(host.slice(slash));
+                  setHost(host.slice(0, slash));
+                }
+              }}
               autoFocus
+            />
+          </FormField>
+          <FormField
+            label="Path Glob"
+            helperText="Optional. Empty matches any path. Use * as a greedy glob (e.g. /api/*)."
+          >
+            <Input
+              placeholder="e.g. /api/*"
+              value={path}
+              onChange={(e) => setPath(e.target.value)}
             />
           </FormField>
           <FormField label="Description">

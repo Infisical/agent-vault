@@ -26,7 +26,9 @@ type Record struct {
 	Method         string
 	Host           string
 	Path           string
-	MatchedService string
+	MatchedService string // canonical service name (slug); persisted to the matched_service column.
+	MatchedHost    string // host pattern of the matched service. In-memory only — non-SQLite sinks may consume it; the SQLite sink does not persist it (no schema change).
+	MatchedPath    string // path pattern of the matched service, or empty for catch-all. In-memory only — see MatchedHost.
 	CredentialKeys []string
 	Status         int
 	LatencyMs      int64
@@ -76,6 +78,8 @@ func FromEvent(ev brokercore.ProxyEvent, vaultID, actorType, actorID string) Rec
 		Host:           ev.Host,
 		Path:           ev.Path,
 		MatchedService: ev.MatchedService,
+		MatchedHost:    ev.MatchedHost,
+		MatchedPath:    ev.MatchedPath,
 		CredentialKeys: ev.CredentialKeys,
 		Status:         ev.Status,
 		LatencyMs:      ev.TotalMs,

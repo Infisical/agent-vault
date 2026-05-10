@@ -33,7 +33,9 @@ type ProxyEvent struct {
 	Method         string   // HTTP method from the agent request
 	Host           string   // target host (with port if present)
 	Path           string   // r.URL.Path only — no query, no fragment
-	MatchedService string   // broker service host that matched, or "" if none
+	MatchedService string   // canonical service name (slug) that matched, or "" if none
+	MatchedHost    string   // host pattern of the matched service (e.g. "*.github.com"), or "" if none
+	MatchedPath    string   // path pattern of the matched service, or "" if catch-all / none
 	CredentialKeys []string // upper-snake credential key names only
 	Status         int      // upstream status; 0 if never dispatched
 	TotalMs        int64    // handler entry → emit, in milliseconds
@@ -63,6 +65,8 @@ func LogProxyEvent(logger *slog.Logger, e ProxyEvent) {
 		slog.String("host", e.Host),
 		slog.String("path", e.Path),
 		slog.String("matched_service", e.MatchedService),
+		slog.String("matched_host", e.MatchedHost),
+		slog.String("matched_path", e.MatchedPath),
 		slog.Any("credential_keys", e.CredentialKeys),
 		slog.Int("status", e.Status),
 		slog.Int64("total_ms", e.TotalMs),

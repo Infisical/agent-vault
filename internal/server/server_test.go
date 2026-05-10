@@ -5153,8 +5153,8 @@ func TestServicesUpsertAddNew(t *testing.T) {
 		t.Fatalf("expected vault=default, got %v", resp["vault"])
 	}
 	upserted := resp["upserted"].([]interface{})
-	if len(upserted) != 1 || upserted[0] != "api.stripe.com" {
-		t.Fatalf("expected upserted=[api.stripe.com], got %v", upserted)
+	if len(upserted) != 1 || upserted[0] != "api-stripe-com" {
+		t.Fatalf("expected upserted=[api-stripe-com] (auto-slug from host), got %v", upserted)
 	}
 	if resp["services_count"].(float64) != 1 {
 		t.Fatalf("expected services_count=1, got %v", resp["services_count"])
@@ -5295,8 +5295,11 @@ func TestServiceRemoveSuccess(t *testing.T) {
 
 	var resp map[string]interface{}
 	json.NewDecoder(rec.Body).Decode(&resp)
-	if resp["removed"] != "api.stripe.com" {
-		t.Fatalf("expected removed=api.stripe.com, got %v", resp["removed"])
+	if resp["removed"] != "api-stripe-com" {
+		t.Fatalf("expected removed=api-stripe-com (canonical name), got %v", resp["removed"])
+	}
+	if resp["removed_host"] != "api.stripe.com" {
+		t.Fatalf("expected removed_host=api.stripe.com, got %v", resp["removed_host"])
 	}
 	if resp["services_count"].(float64) != 1 {
 		t.Fatalf("expected services_count=1, got %v", resp["services_count"])
@@ -5605,5 +5608,137 @@ func TestUserInviteWithNoAccessRoleAccepted(t *testing.T) {
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- Path-scoped service / route disambiguation tests ---
+
+// TestServiceRemoveByHostAmbiguity exercises the 409-with-candidates
+// fallback: when two services share a host, DELETE/PATCH on the host
+// slot must not silently target one of them — the server returns 409
+// with the candidate names so the caller can pick.
+func TestServiceRemoveByHostAmbiguity(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		ID: "bc-1", VaultID: "root-ns-id",
+		ServicesJSON: `[
+			{"name":"slack-bot","host":"slack.com","path":"/api/*","auth":{"type":"bearer","token":"SLACK_BOT_TOKEN"}},
+			{"name":"slack-conn","host":"slack.com","path":"/api/apps.connections.*","auth":{"type":"bearer","token":"SLACK_CONNECTION_TOKEN"}}
+		]`,
+	}
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/vaults/default/services/slack.com", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	candidates, ok := resp["candidates"].([]interface{})
+	if !ok || len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %v", resp["candidates"])
+	}
+	names := map[string]bool{}
+	for _, c := range candidates {
+		entry := c.(map[string]interface{})
+		names[entry["name"].(string)] = true
+	}
+	if !names["slack-bot"] || !names["slack-conn"] {
+		t.Fatalf("expected both slack-bot and slack-conn in candidates, got %v", names)
+	}
+
+	// Ensure neither service was deleted.
+	bc := ms.brokerConfigs["root-ns-id"]
+	if !strings.Contains(bc.ServicesJSON, "slack-bot") || !strings.Contains(bc.ServicesJSON, "slack-conn") {
+		t.Fatalf("expected both services to remain after 409, got %s", bc.ServicesJSON)
+	}
+}
+
+// TestServiceRemoveByName resolves unambiguously when the slot value
+// matches an existing service name. The host shim doesn't fire.
+func TestServiceRemoveByName(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		ID: "bc-1", VaultID: "root-ns-id",
+		ServicesJSON: `[
+			{"name":"slack-bot","host":"slack.com","path":"/api/*","auth":{"type":"bearer","token":"SLACK_BOT_TOKEN"}},
+			{"name":"slack-conn","host":"slack.com","path":"/api/apps.connections.*","auth":{"type":"bearer","token":"SLACK_CONNECTION_TOKEN"}}
+		]`,
+	}
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/vaults/default/services/slack-conn", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["removed"] != "slack-conn" {
+		t.Fatalf("expected removed=slack-conn, got %v", resp["removed"])
+	}
+
+	// Verify the right service was removed and slack-bot remains.
+	bc := ms.brokerConfigs["root-ns-id"]
+	if strings.Contains(bc.ServicesJSON, "slack-conn") {
+		t.Fatalf("expected slack-conn to be removed, got %s", bc.ServicesJSON)
+	}
+	if !strings.Contains(bc.ServicesJSON, "slack-bot") {
+		t.Fatalf("expected slack-bot to remain, got %s", bc.ServicesJSON)
+	}
+}
+
+// TestServicePatchByHostAmbiguity mirrors the DELETE 409 path for PATCH.
+func TestServicePatchByHostAmbiguity(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		ID: "bc-1", VaultID: "root-ns-id",
+		ServicesJSON: `[
+			{"name":"slack-bot","host":"slack.com","path":"/api/*","auth":{"type":"bearer","token":"SLACK_BOT_TOKEN"}},
+			{"name":"slack-conn","host":"slack.com","path":"/api/apps.connections.*","auth":{"type":"bearer","token":"SLACK_CONNECTION_TOKEN"}}
+		]`,
+	}
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/services/slack.com", strings.NewReader(`{"enabled":false}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestServicesUpsertSplitsInlineHost lets a client paste `slack.com/api/*`
+// into the host field and verifies the server splits it into host+path.
+func TestServicesUpsertSplitsInlineHost(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"services":[{"host":"slack.com/api/*","auth":{"type":"bearer","token":"SLACK_BOT_TOKEN"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/services", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	bc := ms.brokerConfigs["root-ns-id"]
+	if !strings.Contains(bc.ServicesJSON, `"host":"slack.com"`) {
+		t.Fatalf("expected host stored as slack.com, got %s", bc.ServicesJSON)
+	}
+	if !strings.Contains(bc.ServicesJSON, `"path":"/api/*"`) {
+		t.Fatalf("expected path stored as /api/*, got %s", bc.ServicesJSON)
 	}
 }

@@ -22,17 +22,24 @@ const (
 	ActionDelete Action = "delete" // remove existing
 )
 
-// Service is a proposed broker service change.
+// Service is a proposed broker service change. Identity for both "set"
+// (upsert) and "delete" is Name — the canonical per-vault slug. Server
+// handlers ingesting proposals from older clients auto-fill Name from
+// broker.Slugify(Host, Path) before merging; ActionDelete with no Name
+// resolves uniquely against Host (with 409 on multi-match).
 //
 // For "set" actions, at least one of Auth or Enabled must be specified.
-// When Enabled is provided without Auth and the host already exists,
-// the merge preserves the existing service's Auth/Description and
-// overlays only the Enabled flag — this is the enable/disable flow.
-// Substitutions must accompany Auth (Validate rejects set+Substitutions
-// without Auth) since the merge only carries them on full replacements.
+// When Enabled is provided without Auth and a service with that Name
+// already exists, the merge preserves the existing service's
+// Auth/Description and overlays only the Enabled flag — this is the
+// enable/disable flow. Substitutions must accompany Auth (Validate
+// rejects set+Substitutions without Auth) since the merge only carries
+// them on full replacements.
 type Service struct {
 	Action        Action                `json:"action"`
+	Name          string                `json:"name,omitempty"`
 	Host          string                `json:"host"`
+	Path          string                `json:"path,omitempty"`
 	Description   string                `json:"description,omitempty"`
 	Enabled       *bool                 `json:"enabled,omitempty"`
 	Auth          *broker.Auth          `json:"auth,omitempty"`

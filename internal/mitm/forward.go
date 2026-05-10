@@ -205,9 +205,11 @@ func (p *Proxy) forwardRequest(
 	outReq.Host = target
 	outReq.ContentLength = contentLength
 
-	inject, err := p.creds.Inject(r.Context(), scope.VaultID, host)
+	inject, err := p.creds.Inject(r.Context(), scope.VaultID, host, r.URL.Path)
 	if inject != nil {
-		event.MatchedService = inject.MatchedHost
+		event.MatchedService = inject.MatchedName
+		event.MatchedHost = inject.MatchedHost
+		event.MatchedPath = inject.MatchedPath
 		event.CredentialKeys = inject.CredentialKeys
 		event.Passthrough = inject.Passthrough
 	}

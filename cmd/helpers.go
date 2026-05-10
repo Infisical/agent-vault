@@ -742,3 +742,17 @@ func validInstanceRole(s string) bool {
 	}
 	return false
 }
+
+// splitHostPath splits a user-friendly inline form like "slack.com/api/*"
+// into bare host + path. Returns the inputs unchanged when host has no
+// "/" or when path is already populated. Mirrors the server-side
+// splitInlineFormHost so flag-driven CLI ingress matches HTTP ingest.
+func splitHostPath(host, path string) (string, string) {
+	if path != "" {
+		return host, path
+	}
+	if i := strings.IndexByte(host, '/'); i > 0 {
+		return host[:i], host[i:]
+	}
+	return host, path
+}

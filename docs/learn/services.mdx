@@ -3,18 +3,21 @@ title: "Services"
 description: "Define which services your agents can access and how credentials are attached."
 ---
 
-A `Service` is a per-[vault](/learn/vaults) configuration that defines which hosts [agents](/agents/overview) can reach through the proxy and how Agent Vault authenticates to each one. When an agent makes a proxied request, Agent Vault matches the target host against the vault's services, attaches the configured [credentials](/learn/credentials), and forwards the request. If no service matches, the request is forwarded as plain proxy traffic by default; vault admins can flip a vault into **strict deny mode** (`unmatched_host_policy=deny` in vault settings) to reject unmatched hosts with `403` instead.
+A `Service` is a per-[vault](/learn/vaults) configuration that defines which upstream traffic [agents](/agents/overview) can reach through the proxy and how Agent Vault authenticates to each one. When an agent makes a proxied request, Agent Vault matches the request's host (and optionally URL path) against the vault's services, attaches the configured [credentials](/learn/credentials), and forwards the request. If no service matches, the request is forwarded as plain proxy traffic by default; vault admins can flip a vault into **strict deny mode** (`unmatched_host_policy=deny` in vault settings) to reject unmatched requests with `403` instead.
 
 Each service contains:
 
-- **Host**: The target hostname. Supports exact match (e.g. `api.stripe.com`) or wildcard patterns (e.g. `*.github.com`).
-- **Auth config**: How Agent Vault authenticates to the host. Five types are supported: `bearer`, `basic`, `api-key`, `custom`, and `passthrough` (opt out of injection).
+- **Name**: A canonical per-vault identifier (slug, 3–64 lowercase alphanumeric/hyphen chars). Auto-derived from `host` and `path` when omitted on write.
+- **Host**: The target hostname. Supports exact match (e.g. `api.stripe.com`) or one-level wildcard (e.g. `*.github.com`).
+- **Path** (optional): A URL path glob (e.g. `/api/*`). Empty matches any path. Lets you attach different credentials to different paths on the same host.
+- **Auth config**: How Agent Vault authenticates. Five types are supported: `bearer`, `basic`, `api-key`, `custom`, and `passthrough` (opt out of injection).
 - **Description**: An optional human-readable label shown in `/discover` responses.
 
 <Tip>
-  The `/discover` endpoint returns the list of hosts and descriptions from the
-  vault's services. Agents use this to know which services are already available
-  before raising a [proposal](/learn/proposals).
+  The `/discover` endpoint returns each service's `name`, `host`, `path`, and
+  `description`. Agents use this to know which services are already available
+  before raising a [proposal](/learn/proposals). When two services share a host
+  (e.g. Slack with separate Bot and Connection rules), distinguish them by `name`.
 </Tip>
 
 Similar to [credentials](/learn/credentials), services can be configured in two ways:
@@ -28,7 +31,8 @@ Services are defined in a YAML file. Here's what a single service looks like:
 
 ```yaml stripe-services.yaml
 services:
-  - host: api.stripe.com
+  - name: stripe
+    host: api.stripe.com
     description: Stripe API
     auth:
       type: bearer
@@ -51,7 +55,8 @@ Attaches an `Authorization: Bearer <token>` header. The `token` field references
 
 ```yaml
 services:
-  - host: api.stripe.com
+  - name: api-stripe-com
+    host: api.stripe.com
     description: Stripe API
     auth:
       type: bearer
@@ -66,7 +71,8 @@ Attaches an `Authorization: Basic <base64>` header using HTTP Basic authenticati
 
 ```yaml
 services:
-  - host: api.ashbyhq.com
+  - name: api-ashbyhq-com
+    host: api.ashbyhq.com
     description: Ashby ATS API
     auth:
       type: basic
@@ -77,7 +83,8 @@ With a password:
 
 ```yaml
 services:
-  - host: yoursite.atlassian.net
+  - name: yoursite-atlassian-net
+    host: yoursite.atlassian.net
     description: Jira API
     auth:
       type: basic
@@ -91,7 +98,8 @@ Attaches a credential value to a named header with an optional prefix. The `head
 
 ```yaml
 services:
-  - host: api.anthropic.com
+  - name: api-anthropic-com
+    host: api.anthropic.com
     description: Anthropic API
     auth:
       type: api-key
@@ -103,7 +111,8 @@ With a prefix:
 
 ```yaml
 services:
-  - host: api.example.com
+  - name: api-example-com
+    host: api.example.com
     auth:
       type: api-key
       key: EXAMPLE_KEY
@@ -117,7 +126,8 @@ Freeform header templates with `{{ SECRET }}` placeholders. Each placeholder is 
 
 ```yaml
 services:
-  - host: api.acme.internal
+  - name: api-acme-internal
+    host: api.acme.internal
     description: Internal ACME service
     auth:
       type: custom
@@ -132,7 +142,8 @@ Allowlists the host without injecting a credential. No credential is stored, rea
 
 ```yaml
 services:
-  - host: api.example.com
+  - name: api-example-com
+    host: api.example.com
     description: Client already holds the credential
     auth:
       type: passthrough
@@ -172,7 +183,8 @@ Auth types only inject HTTP headers. Some upstream APIs want a credential value 
 
 ```yaml
 services:
-  - host: api.twilio.com
+  - name: api-twilio-com
+    host: api.twilio.com
     description: Twilio Messaging API
     auth:
       type: basic
@@ -229,44 +241,91 @@ Substitutions and auth are independent. A service can use either, both, or neith
   substitutions; to clear them, delete and recreate the service.
 </Warning>
 
-## Host matching
+## Matching rules
 
-Agent Vault supports two host matching modes:
+Agent Vault matches incoming requests to services on two axes: **host** and (optionally) **path**.
+
+**Host** supports two modes:
 
 - **Exact match**: `api.stripe.com` matches only `api.stripe.com`.
 - **Wildcard**: `*.github.com` matches `api.github.com`, `uploads.github.com`, etc. The `*` replaces exactly one subdomain segment.
 
+**Path** is an optional URL glob. Empty matches any path; non-empty must start with `/` and may use `*` as a greedy glob (cross-`/`). `**`, `?`, regex, and a bare `*` are rejected.
+
+### Matching priority
+
+When two services could match a request, the winner is chosen deterministically:
+
+1. **Host tier first.** A service whose `host` is an **exact match** of the request host always beats one whose `host` is a **wildcard** (`*.example.com`) — even when the wildcard rule has a more specific path.
+2. **Path specificity within a host tier.** Among services in the same host tier, the rule with the **longest literal path prefix** wins (characters in `path` before the first `*`). An empty `path` scores 0 (catch-all).
+3. **Declaration order on tie.** If two rules tie on host tier and literal path-prefix length, the rule appearing first in the configured service list wins.
+
+Worked example — Slack with two credentials at the same host:
+
+| Request | `slack-bot` (`slack.com /api/*`) | `slack-conn` (`slack.com /api/apps.connections.*`) | Winner |
+|---|---|---|---|
+| `slack.com/api/apps.connections.open` | matches, prefix length 5 | matches, prefix length 22 | `slack-conn` |
+| `slack.com/api/chat.postMessage` | matches | doesn't match | `slack-bot` |
+| `slack.com/oauth/v2/authorize` | doesn't match | doesn't match | none |
+
+**What this implies for users writing rules:**
+
+- To override a wildcard-host rule for a specific subdomain, **add the exact-host rule** — it takes priority no matter what its path looks like.
+- To layer two credentials on the same host, give them **different paths**; the more specific path will win.
+- The matcher does not run regex, does not match on method/headers/query/body, and does not bound `*` at path segments. Patterns that tie under rule 2 (e.g. `/api/*/v2` and `/api/*/v3`) fall to declaration order.
+
 ## Example
 
-A vault can define multiple services with different auth types:
+A vault can define multiple services with different auth types and path scopes:
 
 ```yaml services.yaml
 services:
-  - host: api.stripe.com
+  - name: stripe
+    host: api.stripe.com
     description: Stripe API
     auth:
       type: bearer
       token: STRIPE_KEY
 
-  - host: "*.github.com"
+  - name: github
+    host: "*.github.com"
     description: GitHub API
     auth:
       type: bearer
       token: GITHUB_TOKEN
 
-  - host: api.anthropic.com
+  - name: anthropic
+    host: api.anthropic.com
     description: Anthropic API
     auth:
       type: api-key
       key: ANTHROPIC_KEY
       header: x-api-key
 
-  - host: yoursite.atlassian.net
+  - name: jira
+    host: yoursite.atlassian.net
     description: Jira API
     auth:
       type: basic
       username: JIRA_EMAIL
       password: JIRA_API_TOKEN
+
+  # Slack uses two credentials at the same host — distinguish by path.
+  - name: slack-bot
+    host: slack.com
+    path: /api/*
+    description: Slack Bot User
+    auth:
+      type: bearer
+      token: SLACK_BOT_TOKEN
+
+  - name: slack-conn
+    host: slack.com
+    path: /api/apps.connections.*
+    description: Slack Socket Mode connections
+    auth:
+      type: bearer
+      token: SLACK_CONNECTION_TOKEN
 ```
 
 ```bash

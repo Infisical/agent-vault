@@ -14,14 +14,23 @@ type Config struct {
 	Services []Service `yaml:"services" json:"services"`
 }
 
-// Service defines a host-matching service with credential attachment.
+// Service defines a credential-attachment rule scoped by host and an
+// optional URL path glob. Name is the canonical per-vault identifier
+// (slug) used by the proposal merge index, the HTTP API, and the SDK;
+// Host + Path are the matcher key consumed by MatchService.
+//
+// Path may contain a single greedy `*` glob (cross-`/`); see
+// ValidatePath for the format and MatchService for the prioritization
+// rules. An empty Path is a catch-all on the host.
 //
 // Enabled is a nullable toggle. nil means "not set" and is treated as
 // enabled so existing persisted services (which predate this field) stay
 // live after upgrade. Callers should use IsEnabled() rather than
 // dereferencing the pointer.
 type Service struct {
+	Name          string         `yaml:"name" json:"name"`
 	Host          string         `yaml:"host" json:"host"`
+	Path          string         `yaml:"path,omitempty" json:"path,omitempty"`
 	Description   *string        `yaml:"description,omitempty" json:"description"`
 	Enabled       *bool          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Auth          Auth           `yaml:"auth" json:"auth"`
@@ -309,14 +318,33 @@ func (a *Auth) Resolve(getCredential func(key string) (string, error)) (map[stri
 	}
 }
 
-// Validate checks that a broker config is well-formed.
+// Validate checks that a broker config is well-formed. Name is required
+// and unique per vault; callers that accept input without a name must
+// run NormalizeServices first to backfill from Slugify(Host, Path).
 func Validate(cfg *Config) error {
 	if cfg.Vault == "" {
 		return fmt.Errorf("vault is required")
 	}
+	nameSet := make(map[string]int, len(cfg.Services))
 	for i, s := range cfg.Services {
 		if s.Host == "" {
 			return fmt.Errorf("service %d: host is required", i)
+		}
+		if strings.Contains(s.Host, "/") {
+			return fmt.Errorf("service %d: host %q must not contain %q (use the path field instead)", i, s.Host, "/")
+		}
+		if s.Name == "" {
+			return fmt.Errorf("service %d: name is required", i)
+		}
+		if err := ValidateSlug(s.Name); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
+		}
+		if prev, dup := nameSet[s.Name]; dup {
+			return fmt.Errorf("service %d: duplicate name %q (also at service %d)", i, s.Name, prev)
+		}
+		nameSet[s.Name] = i
+		if err := ValidatePath(s.Path); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
 		}
 		if err := s.Auth.Validate(); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
@@ -454,34 +482,320 @@ func (s *Service) CredentialKeys() []string {
 // CredentialRef matches {{ credential_name }} placeholders in header values.
 var CredentialRef = regexp.MustCompile(`\{\{\s*(\w+)\s*\}\}`)
 
-// MatchHost returns the first service whose Host pattern matches the given host,
-// or nil if no service matches. Supports exact match and wildcard prefix (e.g.
-// "*.github.com" matches "api.github.com"). The host parameter should already
-// have its port stripped by the caller; service hosts are also compared port-stripped.
-func MatchHost(host string, services []Service) *Service {
+// MatchScore is the deterministic priority tuple emitted by MatchService.
+// Returned alongside the matched service so callers (e.g. the debug log
+// line in brokercore.Inject) can audit which rule won and why without
+// recomputing the comparison.
+type MatchScore struct {
+	HostTier       int // 2 = exact host, 1 = "*.x.y" wildcard, 0 = no match
+	PathLiteralLen int // characters in Path before the first '*'; empty Path scores 0
+	DeclOrder      int // index of the matched service in the input slice
+}
+
+// Better reports whether s outranks other under MatchService's
+// prioritization rules: HostTier first, then PathLiteralLen.
+// DeclOrder is intentionally not compared — MatchService relies on
+// declaration-order iteration to keep first-match-wins as the implicit
+// final tiebreak.
+func (s MatchScore) Better(other MatchScore) bool {
+	if s.HostTier != other.HostTier {
+		return s.HostTier > other.HostTier
+	}
+	return s.PathLiteralLen > other.PathLiteralLen
+}
+
+// HostTierName returns "exact" or "wildcard" for the matched service's
+// host tier, or "" when no match was made. Used as a log-friendly
+// alternative to the raw int.
+func (s MatchScore) HostTierName() string {
+	switch s.HostTier {
+	case HostTierExact:
+		return "exact"
+	case HostTierWildcard:
+		return "wildcard"
+	default:
+		return ""
+	}
+}
+
+// HostTierExact and HostTierWildcard are the only positive HostTier
+// values — exposed as named constants for matcher tests and log lines.
+const (
+	HostTierWildcard = 1
+	HostTierExact    = 2
+)
+
+// MatchService returns the most specific service matching (host, path),
+// or nil when nothing matches. Selection is deterministic:
+//
+//  1. Host tier first. An exact-host rule always beats a wildcard
+//     ("*.x.y") rule, even when the wildcard rule has a longer path.
+//  2. Path specificity within a host tier. The longest literal path
+//     prefix (characters before the first '*') wins. An empty Path
+//     scores 0 (catch-all).
+//  3. Declaration order is the final tiebreak — the rule appearing
+//     first in services wins on otherwise-equal scores.
+//
+// host should already be port-stripped by the caller; service Host
+// patterns are also compared port-stripped to handle legacy entries.
+// path is the request URL path (always begins with "/" — caller
+// normalizes). The returned MatchScore is meaningful only when the
+// returned *Service is non-nil.
+func MatchService(host, path string, services []Service) (*Service, MatchScore) {
+	var best *Service
+	var bestScore MatchScore
 	for i := range services {
-		pattern := services[i].Host
-		// Strip port from service host for comparison (services should be bare
-		// hostnames, but handle legacy entries that include a port).
-		if h, _, err := net.SplitHostPort(pattern); err == nil {
-			pattern = h
+		hostTier, hostOK := matchHostPattern(services[i].Host, host)
+		if !hostOK {
+			continue
 		}
-		if pattern == host {
-			return &services[i]
+		pathLen, pathOK := matchPathGlob(services[i].Path, path)
+		if !pathOK {
+			continue
 		}
-		if strings.HasPrefix(pattern, "*.") {
-			// *.github.com → match exactly one subdomain level (e.g. api.github.com but not a.b.github.com)
-			suffix := pattern[1:] // ".github.com"
-			if strings.HasSuffix(host, suffix) {
-				// Ensure only one subdomain level: no dots in the part before the suffix.
-				prefix := strings.TrimSuffix(host, suffix)
-				if prefix != "" && !strings.Contains(prefix, ".") {
-					return &services[i]
-				}
+		score := MatchScore{HostTier: hostTier, PathLiteralLen: pathLen, DeclOrder: i}
+		if best == nil || score.Better(bestScore) {
+			best = &services[i]
+			bestScore = score
+		}
+	}
+	return best, bestScore
+}
+
+// matchHostPattern reports whether pattern matches host and which tier
+// the match falls into (HostTierExact > HostTierWildcard). Patterns
+// starting with "*." match exactly one subdomain level (e.g.
+// "*.github.com" matches "api.github.com" but not "a.b.github.com" or
+// the bare "github.com").
+func matchHostPattern(pattern, host string) (tier int, ok bool) {
+	if h, _, err := net.SplitHostPort(pattern); err == nil {
+		pattern = h
+	}
+	if pattern == host {
+		return HostTierExact, true
+	}
+	if strings.HasPrefix(pattern, "*.") {
+		suffix := pattern[1:] // ".github.com"
+		if strings.HasSuffix(host, suffix) {
+			prefix := strings.TrimSuffix(host, suffix)
+			if prefix != "" && !strings.Contains(prefix, ".") {
+				return HostTierWildcard, true
 			}
 		}
 	}
+	return 0, false
+}
+
+// matchPathGlob reports whether pattern matches path and returns the
+// literal-prefix length (characters before the first '*'). An empty
+// pattern is a catch-all and scores 0. The glob splits on '*' — the
+// first segment must prefix path, each interior segment must appear
+// in order, and the last segment must suffix what remains. '*' is
+// greedy across '/'; see ValidatePath for accepted syntax.
+func matchPathGlob(pattern, path string) (literalLen int, ok bool) {
+	if pattern == "" {
+		return 0, true
+	}
+	parts := strings.Split(pattern, "*")
+	literalLen = len(parts[0])
+
+	if len(parts) == 1 {
+		// No glob — pattern must equal path exactly.
+		return literalLen, path == pattern
+	}
+
+	if !strings.HasPrefix(path, parts[0]) {
+		return literalLen, false
+	}
+	rest := path[len(parts[0]):]
+	for j := 1; j < len(parts)-1; j++ {
+		idx := strings.Index(rest, parts[j])
+		if idx < 0 {
+			return literalLen, false
+		}
+		rest = rest[idx+len(parts[j]):]
+	}
+	if !strings.HasSuffix(rest, parts[len(parts)-1]) {
+		return literalLen, false
+	}
+	return literalLen, true
+}
+
+// ValidateSlug enforces the per-vault identifier rule shared by vault
+// names, agent names, and service names: 3–64 chars, lowercase ASCII
+// alphanumeric and hyphens only.
+func ValidateSlug(name string) error {
+	if name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if len(name) < 3 {
+		return fmt.Errorf("name %q must be at least 3 characters", name)
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("name %q must be at most 64 characters", name)
+	}
+	for _, c := range name {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return fmt.Errorf("name %q must contain only lowercase letters, digits, and hyphens", name)
+		}
+	}
 	return nil
+}
+
+// ValidatePath enforces the path-glob format. An empty path is a
+// catch-all (legacy host-only behavior). Non-empty paths must begin
+// with "/", be at most 256 characters, contain no "**", "?", control
+// characters, whitespace, or other tokens that suggest regex/HTML
+// semantics that the matcher does not implement.
+func ValidatePath(p string) error {
+	if p == "" {
+		return nil
+	}
+	if len(p) > 256 {
+		return fmt.Errorf("path %q is too long (max 256 characters)", p)
+	}
+	if !strings.HasPrefix(p, "/") {
+		return fmt.Errorf("path %q must start with %q", p, "/")
+	}
+	if strings.Contains(p, "**") {
+		return fmt.Errorf("path %q must not contain %q (segment-bounded globs are not supported)", p, "**")
+	}
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("path %q must not contain control characters", p)
+		}
+		switch r {
+		case ' ', '?', '#', '[', ']', '\\', '|', '<', '>', '"':
+			return fmt.Errorf("path %q must not contain %q", p, r)
+		}
+	}
+	return nil
+}
+
+// Slugify produces a deterministic candidate name from (host, path)
+// that satisfies ValidateSlug. Used for auto-naming when a service is
+// created without an explicit name and for backfilling legacy services.
+// Collision resolution (suffixing -2, -3, ...) is the caller's job —
+// see NormalizeServices.
+func Slugify(host, path string) string {
+	h := strings.ToLower(strings.TrimPrefix(host, "*."))
+
+	literal := path
+	if star := strings.IndexByte(path, '*'); star >= 0 {
+		literal = path[:star]
+	}
+	combined := h + literal
+
+	var raw strings.Builder
+	raw.Grow(len(combined))
+	for i := 0; i < len(combined); i++ {
+		c := combined[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			raw.WriteByte(c)
+		} else if c >= 'A' && c <= 'Z' {
+			raw.WriteByte(c + ('a' - 'A'))
+		} else {
+			raw.WriteByte('-')
+		}
+	}
+
+	// Collapse runs of '-'.
+	var collapsed strings.Builder
+	collapsed.Grow(raw.Len())
+	prevHyphen := false
+	for _, c := range raw.String() {
+		if c == '-' {
+			if !prevHyphen {
+				collapsed.WriteRune(c)
+			}
+			prevHyphen = true
+		} else {
+			collapsed.WriteRune(c)
+			prevHyphen = false
+		}
+	}
+
+	s := strings.Trim(collapsed.String(), "-")
+	if len(s) < 3 {
+		s = strings.Trim(s+"-svc", "-")
+	}
+	if len(s) > 64 {
+		s = strings.TrimRight(s[:64], "-")
+	}
+	if s == "" {
+		return "service"
+	}
+	return s
+}
+
+// NormalizeServices returns services with empty Name fields backfilled
+// from Slugify(Host, Path), with collision suffixing applied so the
+// result has unique names. Idempotent: services that already have a
+// name are left untouched (and reserve their name first so
+// auto-generated slugs can't collide with user-chosen ones). Pure;
+// callers persist the result only when they were already going to write.
+//
+// Returns the input slice unchanged when every service already has a
+// name — the common steady-state path through Inject. Allocates a copy
+// only when at least one Name is empty.
+func NormalizeServices(services []Service) []Service {
+	if services == nil {
+		return nil
+	}
+	needs := false
+	for i := range services {
+		if services[i].Name == "" {
+			needs = true
+			break
+		}
+	}
+	if !needs {
+		return services
+	}
+
+	out := make([]Service, len(services))
+	copy(out, services)
+
+	used := make(map[string]bool, len(out))
+	for i := range out {
+		if out[i].Name != "" {
+			used[out[i].Name] = true
+		}
+	}
+	for i := range out {
+		if out[i].Name != "" {
+			continue
+		}
+		out[i].Name = EnsureUniqueName(Slugify(out[i].Host, out[i].Path), used)
+		used[out[i].Name] = true
+	}
+	return out
+}
+
+// EnsureUniqueName appends -2, -3, ... to candidate until the result is
+// not present in used, preserving the 64-char ValidateSlug ceiling.
+// Caller-owned mutation: this does not insert into used; the caller
+// records the chosen name so subsequent calls observe it.
+//
+// Bounded at n=10000 — beyond that we return candidate-overflow rather
+// than spinning, since the caller's downstream Validate will catch the
+// duplicate cleanly.
+func EnsureUniqueName(candidate string, used map[string]bool) string {
+	if !used[candidate] {
+		return candidate
+	}
+	for n := 2; n <= 10000; n++ {
+		suffix := fmt.Sprintf("-%d", n)
+		base := candidate
+		if len(base)+len(suffix) > 64 {
+			base = strings.TrimRight(base[:64-len(suffix)], "-")
+		}
+		next := base + suffix
+		if !used[next] {
+			return next
+		}
+	}
+	return candidate
 }
 
 // resolveHeaders renders {{ credential_name }} placeholders in header values

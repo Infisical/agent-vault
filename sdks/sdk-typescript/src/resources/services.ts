@@ -80,10 +80,26 @@ export interface Substitution {
 // Service type
 // ---------------------------------------------------------------------------
 
-/** A vault service (proxy rule). */
+/**
+ * A vault service (proxy rule).
+ *
+ * Identity is `name` — a unique-per-vault slug. The server auto-derives
+ * the name from `host` and `path` when omitted on write, so callers
+ * upgrading from v0.1.0 don't need to supply it. Server reads always
+ * include `name` (legacy services are slugged on the fly).
+ *
+ * `path` scopes the rule to a URL path glob (e.g. `/api/*`); leave it
+ * empty to match any path on the host. The server resolves overlapping
+ * rules deterministically: exact-host beats wildcard-host, then longer
+ * literal path prefix wins, with declaration order as the final tiebreak.
+ */
 export interface Service {
+  /** Service name (slug, 3–64 chars, lowercase alphanumeric and hyphens). Server auto-derives from host/path when omitted on write. */
+  name?: string;
   /** Host pattern (exact match or wildcard like "*.github.com"). */
   host: string;
+  /** Optional URL path glob. Empty matches any path. Use * as a greedy glob (e.g. /api/*). */
+  path?: string;
   /** Optional description. */
   description?: string;
   /** Whether the service is active. Omitted/undefined is treated as enabled. */
@@ -110,7 +126,7 @@ export interface ListServicesResult {
 export interface SetServicesResult {
   /** Vault name. */
   vault: string;
-  /** Hosts that were upserted. */
+  /** Service names (slugs) that were upserted. */
   upserted: string[];
   /** Total services count after upsert. */
   servicesCount: number;
@@ -132,20 +148,26 @@ export interface ClearServicesResult {
   cleared: boolean;
 }
 
-/** Result of removing a service by host. */
+/** Result of removing a service. */
 export interface RemoveServiceResult {
   /** Vault name. */
   vault: string;
-  /** Host that was removed. */
+  /** Canonical name (slug) of the service that was removed. */
   removed: string;
+  /** Host of the removed service. */
+  removedHost?: string;
   /** Total services count after removal. */
   servicesCount: number;
 }
 
 /** A service that references a given credential key. */
 export interface CredentialUsageEntry {
+  /** Service name (slug). Populated by the server even for legacy services. */
+  name?: string;
   /** Service host. */
   host: string;
+  /** Service path glob, or empty for catch-all. */
+  path?: string;
   /** Service description, if set. */
   description?: string;
 }
@@ -218,11 +240,18 @@ export class ServicesResource {
   /**
    * Remove a specific service by host.
    *
+   * Convenience wrapper that targets `DELETE /services/{host}`. The server
+   * tries to match by canonical name first; if no name matches, it falls
+   * back to host. When more than one service shares the host, the server
+   * returns 409 with the candidate list — surfaced here as an `ApiError`.
+   * For path-scoped services, prefer {@link removeByName}.
+   *
    * Requires vault admin role.
    *
    * @param host - Exact host pattern to remove.
    * @throws {ApiError} 403 if the caller is not a vault admin.
    * @throws {ApiError} 404 if the vault or service is not found.
+   * @throws {ApiError} 409 if multiple services share the host (use {@link removeByName}).
    */
   async remove(host: string): Promise<RemoveServiceResult> {
     const res = await this.httpClient.del<ServiceRemoved>(
@@ -231,6 +260,29 @@ export class ServicesResource {
     return {
       vault: res.vault,
       removed: res.removed,
+      removedHost: res.removed_host,
+      servicesCount: res.services_count,
+    };
+  }
+
+  /**
+   * Remove a specific service by canonical name (slug).
+   *
+   * Recommended for path-scoped services: a name is unambiguous and
+   * never returns 409. Requires vault admin role.
+   *
+   * @param name - The service's canonical name.
+   * @throws {ApiError} 403 if the caller is not a vault admin.
+   * @throws {ApiError} 404 if the vault or service is not found.
+   */
+  async removeByName(name: string): Promise<RemoveServiceResult> {
+    const res = await this.httpClient.del<ServiceRemoved>(
+      `${this.basePath}/${encodeURIComponent(name)}`,
+    );
+    return {
+      vault: res.vault,
+      removed: res.removed,
+      removedHost: res.removed_host,
       servicesCount: res.services_count,
     };
   }
