@@ -13,8 +13,7 @@ var tokenCmd = &cobra.Command{
 
 This is useful when you need a scoped token without wrapping a child process
 via "vault run". The token can be used with AGENT_VAULT_TOKEN and
-AGENT_VAULT_ADDR environment variables. (AGENT_VAULT_SESSION_TOKEN is the
-deprecated alias and still works.)
+AGENT_VAULT_ADDR environment variables.
 
 Example:
   export AGENT_VAULT_TOKEN=$(agent-vault vault token)

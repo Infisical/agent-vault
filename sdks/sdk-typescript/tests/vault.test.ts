@@ -9,7 +9,6 @@ describe("VaultClient", () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     delete process.env.AGENT_VAULT_TOKEN;
-    delete process.env.AGENT_VAULT_SESSION_TOKEN;
     delete process.env.AGENT_VAULT_ADDR;
   });
 
@@ -30,12 +29,6 @@ describe("VaultClient", () => {
 
     it("reads token from AGENT_VAULT_TOKEN env var", () => {
       process.env.AGENT_VAULT_TOKEN = "env-token";
-      const vault = new VaultClient();
-      expect(vault).toBeInstanceOf(VaultClient);
-    });
-
-    it("falls back to deprecated AGENT_VAULT_SESSION_TOKEN env var", () => {
-      process.env.AGENT_VAULT_SESSION_TOKEN = "legacy-token";
       const vault = new VaultClient();
       expect(vault).toBeInstanceOf(VaultClient);
     });

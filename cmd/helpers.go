@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -492,14 +491,10 @@ func resolveVault(cmd *cobra.Command) string {
 	return store.DefaultVault
 }
 
-// envVarToken is the canonical env var name for an Agent Vault bearer token
-// (vault-scoped session or long-lived agent token). envVarTokenLegacy is the
-// pre-rename alias kept for backward compatibility; reads still honor it but
-// emit a one-time deprecation warning. Drop the legacy name in a future
-// major version.
+// envVarToken is the env var name for an Agent Vault bearer token
+// (vault-scoped session or long-lived agent token).
 const (
-	envVarToken       = "AGENT_VAULT_TOKEN"
-	envVarTokenLegacy = "AGENT_VAULT_SESSION_TOKEN"
+	envVarToken = "AGENT_VAULT_TOKEN"
 
 	// discoverRespMaxBytes caps JSON parsing of the /discover response so
 	// a hostile or misbehaving server can't make `vault run` hang on a
@@ -508,38 +503,23 @@ const (
 	discoverRespMaxBytes = 1 << 20
 )
 
-var legacyTokenWarnOnce sync.Once
-
 // resolveSession returns a client session from env vars (agent mode) or falls
 // back to ensureSession (human mode). When the session came from env, the
-// returned string names the env var the token was read from (envVarToken or
-// the deprecated envVarTokenLegacy); callers thread it through to downstream
-// error messages so users see the variable they actually set. "" when the
-// session came from ensureSession — callers treat that as "not from env" and
-// branch on `tokenSource != ""` instead of a separate bool.
+// returned string is envVarToken; "" when the session came from ensureSession.
+// Callers branch on `tokenSource != ""` to distinguish agent mode from admin
+// mode.
 //
 // If a token is set but AGENT_VAULT_ADDR is missing, returns a clear error
 // rather than silently falling through to interactive login — masking that
 // misconfig produces "why don't my creds work" tickets.
 func resolveSession() (*session.ClientSession, string, error) {
-	tokenSource := envVarToken
 	token := os.Getenv(envVarToken)
-	if token == "" {
-		if legacy := os.Getenv(envVarTokenLegacy); legacy != "" {
-			legacyTokenWarnOnce.Do(func() {
-				fmt.Fprintf(os.Stderr, "%s %s is deprecated; use %s instead.\n",
-					mutedText("agent-vault:"), envVarTokenLegacy, envVarToken)
-			})
-			token = legacy
-			tokenSource = envVarTokenLegacy
-		}
-	}
 	addr := os.Getenv("AGENT_VAULT_ADDR")
 	if token != "" && addr == "" {
-		return nil, "", fmt.Errorf("%s is set but AGENT_VAULT_ADDR is empty — both are required for agent mode", tokenSource)
+		return nil, "", fmt.Errorf("%s is set but AGENT_VAULT_ADDR is empty — both are required for agent mode", envVarToken)
 	}
 	if token != "" {
-		return &session.ClientSession{Token: token, Address: strings.TrimRight(addr, "/")}, tokenSource, nil
+		return &session.ClientSession{Token: token, Address: strings.TrimRight(addr, "/")}, envVarToken, nil
 	}
 	sess, err := ensureSession()
 	return sess, "", err

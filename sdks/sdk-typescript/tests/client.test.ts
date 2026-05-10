@@ -9,7 +9,6 @@ describe("AgentVault", () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     delete process.env.AGENT_VAULT_TOKEN;
-    delete process.env.AGENT_VAULT_SESSION_TOKEN;
     delete process.env.AGENT_VAULT_ADDR;
   });
 
@@ -30,20 +29,6 @@ describe("AgentVault", () => {
 
     it("reads token from AGENT_VAULT_TOKEN env var", () => {
       process.env.AGENT_VAULT_TOKEN = "env-token";
-      const av = new AgentVault();
-      expect(av).toBeInstanceOf(AgentVault);
-    });
-
-    it("falls back to deprecated AGENT_VAULT_SESSION_TOKEN env var", () => {
-      process.env.AGENT_VAULT_SESSION_TOKEN = "legacy-token";
-      const av = new AgentVault();
-      expect(av).toBeInstanceOf(AgentVault);
-    });
-
-    it("prefers AGENT_VAULT_TOKEN over the deprecated alias", () => {
-      process.env.AGENT_VAULT_TOKEN = "new-token";
-      process.env.AGENT_VAULT_SESSION_TOKEN = "legacy-token";
-      // Doesn't throw — new var wins; this just exercises the precedence path.
       const av = new AgentVault();
       expect(av).toBeInstanceOf(AgentVault);
     });

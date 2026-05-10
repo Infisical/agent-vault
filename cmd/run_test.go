@@ -395,7 +395,6 @@ func TestResolveVaultForAgentMode(t *testing.T) {
 func TestStripEnvKeys_AgentVaultInjectedKeys(t *testing.T) {
 	parent := []string{
 		"AGENT_VAULT_TOKEN=stale-tok",
-		"AGENT_VAULT_SESSION_TOKEN=stale-legacy",
 		"AGENT_VAULT_ADDR=https://stale.example/",
 		"AGENT_VAULT_VAULT=stale-vault",
 		"UNRELATED=keep-me",

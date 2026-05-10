@@ -72,7 +72,6 @@ For **unattended / containerized deployments** (no human to `auth login`), set t
 |----------|-------------|
 | `AGENT_VAULT_ADDR` | Server base URL (e.g., `http://127.0.0.1:14321`) |
 | `AGENT_VAULT_TOKEN` | Bearer token for authenticating with Agent Vault (control-plane: `/discover`, proposals, credentials). Either a vault-scoped session token or a long-lived agent token. |
-| `AGENT_VAULT_SESSION_TOKEN` | Deprecated alias of `AGENT_VAULT_TOKEN`. Still honored with a one-time stderr warning; will be removed in a future major version. |
 | `AGENT_VAULT_VAULT` | Name of the vault the session is scoped to |
 
 ### Transparent proxy

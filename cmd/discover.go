@@ -15,9 +15,8 @@ var discoverCmd = &cobra.Command{
 
 Requires a vault-scoped session token or long-lived agent token (e.g. via
 agent-vault vault run or AGENT_VAULT_TOKEN + AGENT_VAULT_ADDR environment
-variables; AGENT_VAULT_SESSION_TOKEN is the deprecated alias and still works).
-In agent mode (AGENT_VAULT_TOKEN set), AGENT_VAULT_VAULT (or --vault) is
-required — there is no project-file or interactive-picker fallback.`,
+variables). In agent mode (AGENT_VAULT_TOKEN set), AGENT_VAULT_VAULT (or
+--vault) is required — there is no project-file or interactive-picker fallback.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		sess, tokenSource, err := resolveSession()

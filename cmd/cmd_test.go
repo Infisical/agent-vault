@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/Infisical/agent-vault/internal/pidfile"
@@ -673,38 +672,6 @@ func TestResolveSessionFromEnvVars(t *testing.T) {
 		}
 	})
 
-	t.Run("legacy env var name still works (deprecation path)", func(t *testing.T) {
-		legacyTokenWarnOnce = sync.Once{} // reset gate so the warn-once path is exercisable
-		t.Setenv("AGENT_VAULT_TOKEN", "")
-		t.Setenv("AGENT_VAULT_SESSION_TOKEN", "legacy-token")
-		t.Setenv("AGENT_VAULT_ADDR", "http://localhost:9999")
-
-		sess, tokenSource, err := resolveSession()
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if tokenSource != "AGENT_VAULT_SESSION_TOKEN" {
-			t.Errorf("expected tokenSource=AGENT_VAULT_SESSION_TOKEN (legacy), got %q", tokenSource)
-		}
-		if sess.Token != "legacy-token" {
-			t.Errorf("expected legacy token to be honored; got %q", sess.Token)
-		}
-	})
-
-	t.Run("new env var preferred over legacy when both set", func(t *testing.T) {
-		t.Setenv("AGENT_VAULT_TOKEN", "new-token")
-		t.Setenv("AGENT_VAULT_SESSION_TOKEN", "legacy-token")
-		t.Setenv("AGENT_VAULT_ADDR", "http://localhost:9999")
-
-		sess, _, err := resolveSession()
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if sess.Token != "new-token" {
-			t.Errorf("expected new token to win; got %q", sess.Token)
-		}
-	})
-
 	t.Run("token without addr is a clear error", func(t *testing.T) {
 		t.Setenv("AGENT_VAULT_TOKEN", "test-token")
 		t.Setenv("AGENT_VAULT_ADDR", "")
@@ -754,24 +721,21 @@ func TestValidateEnvToken(t *testing.T) {
 		}
 	})
 
-	t.Run("401 produces friendly error naming the user-supplied env var", func(t *testing.T) {
+	t.Run("401 produces friendly error naming the env var", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusUnauthorized)
 		}))
 		defer srv.Close()
 
-		// Pass the legacy alias as tokenSource — the rejection error must
-		// name it back, not the canonical-name constant, so users see the
-		// variable they actually set.
-		err := validateEnvToken(srv.URL, "bad", "v", "AGENT_VAULT_SESSION_TOKEN")
+		err := validateEnvToken(srv.URL, "bad", "v", "AGENT_VAULT_TOKEN")
 		if err == nil {
 			t.Fatal("expected error on 401")
 		}
 		if !strings.Contains(err.Error(), "rejected by broker") {
 			t.Errorf("expected friendly 'rejected by broker' message; got: %v", err)
 		}
-		if !strings.Contains(err.Error(), "AGENT_VAULT_SESSION_TOKEN") {
-			t.Errorf("expected error to name the legacy env var the caller used; got: %v", err)
+		if !strings.Contains(err.Error(), "AGENT_VAULT_TOKEN") {
+			t.Errorf("expected error to name the env var; got: %v", err)
 		}
 	})
 

@@ -52,10 +52,9 @@ Two modes:
     is fixed at mint time).
 
 Environment variables set on the child:
-  AGENT_VAULT_TOKEN          — bearer token for the Agent Vault server
-  AGENT_VAULT_SESSION_TOKEN  — alias of AGENT_VAULT_TOKEN (deprecated; will be removed in a future major version)
-  AGENT_VAULT_ADDR           — base URL of the Agent Vault HTTP control server
-  AGENT_VAULT_VAULT          — vault the session is scoped to
+  AGENT_VAULT_TOKEN  — bearer token for the Agent Vault server
+  AGENT_VAULT_ADDR   — base URL of the Agent Vault HTTP control server
+  AGENT_VAULT_VAULT  — vault the session is scoped to
 
 The child also inherits HTTPS_PROXY / HTTP_PROXY / NO_PROXY /
 NODE_USE_ENV_PROXY plus the root CA trust variables (SSL_CERT_FILE,
@@ -117,9 +116,7 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	// 1. Resolve session: env-supplied token (agent mode) or on-disk admin
 	//    session (human mode). Agent mode is the path used by containerized
 	//    deployments where there's no TTY and no on-disk session.
-	//    tokenSource is "" in human mode; in agent mode it names the env var
-	//    the token was read from (envVarToken or the deprecated alias) so
-	//    downstream errors can reference the variable the user actually set.
+	//    tokenSource is "" in human mode; in agent mode it's envVarToken.
 	sess, tokenSource, err := resolveSession()
 	if err != nil {
 		return err
@@ -186,7 +183,6 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	env = stripEnvKeys(env, agentVaultInjectedKeys)
 	env = append(env,
 		"AGENT_VAULT_TOKEN="+token,
-		"AGENT_VAULT_SESSION_TOKEN="+token, // deprecated alias
 		"AGENT_VAULT_ADDR="+addr,
 		"AGENT_VAULT_VAULT="+vault,
 	)
@@ -442,10 +438,9 @@ var mitmInjectedKeys = func() map[string]struct{} {
 // AGENT_VAULT_VAULT from the parent shell would silently override the value
 // we just resolved from --vault.
 var agentVaultInjectedKeys = map[string]struct{}{
-	"AGENT_VAULT_TOKEN":         {},
-	"AGENT_VAULT_SESSION_TOKEN": {},
-	"AGENT_VAULT_ADDR":          {},
-	"AGENT_VAULT_VAULT":         {},
+	"AGENT_VAULT_TOKEN": {},
+	"AGENT_VAULT_ADDR":  {},
+	"AGENT_VAULT_VAULT": {},
 }
 
 // stripEnvKeys returns env with every entry whose key (the part before

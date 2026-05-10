@@ -40,8 +40,6 @@ By default each vault forwards unmatched hosts as plain proxy traffic (no creden
 | `AGENT_VAULT_TOKEN` | Bearer token for authenticating with Agent Vault's control-plane endpoints (`/discover`, proposals, etc.). Either a vault-scoped session token or a long-lived agent token. |
 | `AGENT_VAULT_VAULT` | Vault name. Set automatically by `agent-vault run` in admin mode; supplied by the operator in agent mode. |
 
-> `AGENT_VAULT_SESSION_TOKEN` is the deprecated alias of `AGENT_VAULT_TOKEN` and is still honored with a one-time stderr warning. It will be removed in a future major version.
-
 `vault run` also pre-configures `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `NODE_USE_ENV_PROXY`, and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) so HTTP and HTTPS calls from your process both route through the broker transparently. You don't manage these yourself.
 
 Under `--isolation=container`, the same env shape is injected inside a Docker container, but the proxy URL host is `host.docker.internal` instead of `127.0.0.1` and egress to any other destination is blocked by iptables. From your perspective nothing changes — standard HTTP clients pick up the envvars as normal.

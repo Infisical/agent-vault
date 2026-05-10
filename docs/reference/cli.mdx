@@ -246,7 +246,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault discover [flags]
     ```
 
-    Show available services and credentials for the current vault. Requires a vault-scoped session token or long-lived agent token (via `agent-vault run` or `AGENT_VAULT_TOKEN` + `AGENT_VAULT_ADDR` env vars; `AGENT_VAULT_SESSION_TOKEN` is the deprecated alias and still works). In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
+    Show available services and credentials for the current vault. Requires a vault-scoped session token or long-lived agent token (via `agent-vault run` or `AGENT_VAULT_TOKEN` + `AGENT_VAULT_ADDR` env vars). In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -262,7 +262,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     Wrap a process with Agent Vault environment variables. `agent-vault run` is the shorthand; `agent-vault vault run` is the long form. Both are identical in behavior and flags.
 
-    The child process receives `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN` (and the deprecated alias `AGENT_VAULT_SESSION_TOKEN`), and `AGENT_VAULT_VAULT`, plus `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` / `NODE_USE_ENV_PROXY` and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) pointing at `~/.agent-vault/mitm-ca.pem`, so standard HTTP and HTTPS clients transparently route through the broker. `HTTPS_PROXY` and `HTTP_PROXY` both point at the same TLS-wrapped proxy URL — the listener handles CONNECT for `https://` upstreams and absolute-form forward-proxy requests for `http://` upstreams on the same port. If the server's MITM proxy is unreachable, `vault run` aborts.
+    The child process receives `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN`, and `AGENT_VAULT_VAULT`, plus `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` / `NODE_USE_ENV_PROXY` and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) pointing at `~/.agent-vault/mitm-ca.pem`, so standard HTTP and HTTPS clients transparently route through the broker. `HTTPS_PROXY` and `HTTP_PROXY` both point at the same TLS-wrapped proxy URL — the listener handles CONNECT for `https://` upstreams and absolute-form forward-proxy requests for `http://` upstreams on the same port. If the server's MITM proxy is unreachable, `vault run` aborts.
 
     **Agent mode (containerized / unattended deployments).** When `AGENT_VAULT_TOKEN` and `AGENT_VAULT_ADDR` are pre-set on the environment, `vault run` skips the admin-session login and uses the env-supplied token as the credential — `--ttl` is rejected in this mode since the token's lifetime is fixed at mint time. The token is validated against the broker once at startup so bad/expired tokens fail fast with a clear error rather than producing 401s on every proxied call. See [Deploy your agent in a container](/guides/deploy-agent-container).
 

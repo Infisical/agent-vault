@@ -7,8 +7,7 @@
 export interface ClientConfig {
   /**
    * Authentication token.
-   * Falls back to `AGENT_VAULT_TOKEN` environment variable
-   * (or the deprecated `AGENT_VAULT_SESSION_TOKEN` with a one-time warning).
+   * Falls back to `AGENT_VAULT_TOKEN` environment variable.
    */
   token?: string;
 
