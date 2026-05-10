@@ -20,7 +20,7 @@ export default function CredentialsTab() {
 
   // Delete confirmation modal state
   const [deleteKey, setDeleteKey] = useState<string | null>(null);
-  const [deleteReferencing, setDeleteReferencing] = useState<{ host: string; description?: string }[]>([]);
+  const [deleteReferencing, setDeleteReferencing] = useState<{ host: string; name?: string }[]>([]);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
 
@@ -287,7 +287,7 @@ export default function CredentialsTab() {
             <ul className="list-disc list-inside">
               {deleteReferencing.map((svc) => (
                 <li key={svc.host}>
-                  {svc.host}{svc.description ? ` (${svc.description})` : ""}
+                  {svc.host}{svc.name ? ` (${svc.name})` : ""}
                 </li>
               ))}
             </ul>

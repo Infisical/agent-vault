@@ -128,7 +128,7 @@ func Validate(services []Service, credentials []CredentialSlot) error {
 			return fmt.Errorf("service %d: host is required", i)
 		}
 		if strings.Contains(s.Host, "/") {
-			return fmt.Errorf("service %d: host %q must not contain %q (use the path field instead)", i, s.Host, "/")
+			return fmt.Errorf("service %d: host %q must not contain %q after ingest (entry should have been split into host + path)", i, s.Host, "/")
 		}
 		if err := ValidateHost(s.Host); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
@@ -145,9 +145,6 @@ func Validate(services []Service, credentials []CredentialSlot) error {
 		nameSet[s.Name] = i
 		if err := broker.ValidatePath(s.Path); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
-		}
-		if len(s.Description) > MaxDescriptionLen {
-			return fmt.Errorf("service %d: description too long (max %d characters)", i, MaxDescriptionLen)
 		}
 		if s.Action == ActionSet {
 			if s.Auth == nil && s.Enabled == nil {

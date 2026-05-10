@@ -19,6 +19,13 @@ type Config struct {
 // (slug) used by the proposal merge index, the HTTP API, and the SDK;
 // Host + Path are the matcher key consumed by MatchService.
 //
+// At every entrypoint (HTTP API, CLI, SDK, YAML config) the matcher is
+// set via Host alone — Host accepts a bare hostname, a one-level
+// wildcard (`*.github.com`), or an inline path-scoped form
+// (`slack.com/api/*`). Ingest splits the inline form into Host + Path
+// before validation, so the stored Host never contains "/". Reads
+// expose Host and Path separately for inspection.
+//
 // Path may contain a single greedy `*` glob (cross-`/`); see
 // ValidatePath for the format and MatchService for the prioritization
 // rules. An empty Path is a catch-all on the host.
@@ -31,7 +38,6 @@ type Service struct {
 	Name          string         `yaml:"name" json:"name"`
 	Host          string         `yaml:"host" json:"host"`
 	Path          string         `yaml:"path,omitempty" json:"path,omitempty"`
-	Description   *string        `yaml:"description,omitempty" json:"description"`
 	Enabled       *bool          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Auth          Auth           `yaml:"auth" json:"auth"`
 	Substitutions []Substitution `yaml:"substitutions,omitempty" json:"substitutions,omitempty"`
@@ -331,7 +337,7 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("service %d: host is required", i)
 		}
 		if strings.Contains(s.Host, "/") {
-			return fmt.Errorf("service %d: host %q must not contain %q (use the path field instead)", i, s.Host, "/")
+			return fmt.Errorf("service %d: host %q must not contain %q after ingest (entry should have been split into host + path)", i, s.Host, "/")
 		}
 		if s.Name == "" {
 			return fmt.Errorf("service %d: name is required", i)
@@ -623,7 +629,10 @@ func matchPathGlob(pattern, path string) (literalLen int, ok bool) {
 
 // ValidateSlug enforces the per-vault identifier rule shared by vault
 // names, agent names, and service names: 3–64 chars, lowercase ASCII
-// alphanumeric and hyphens only.
+// alphanumeric and hyphens only, no leading/trailing hyphen, no
+// consecutive hyphens. Slugify enforces the same shape internally via
+// trim+collapse, but user/agent-supplied names bypass Slugify and would
+// otherwise smuggle in malformed slugs that fail downstream lookups.
 func ValidateSlug(name string) error {
 	if name == "" {
 		return fmt.Errorf("name is required")
@@ -633,6 +642,12 @@ func ValidateSlug(name string) error {
 	}
 	if len(name) > 64 {
 		return fmt.Errorf("name %q must be at most 64 characters", name)
+	}
+	if name[0] == '-' || name[len(name)-1] == '-' {
+		return fmt.Errorf("name %q must not start or end with a hyphen", name)
+	}
+	if strings.Contains(name, "--") {
+		return fmt.Errorf("name %q must not contain consecutive hyphens", name)
 	}
 	for _, c := range name {
 		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
@@ -672,11 +687,31 @@ func ValidatePath(p string) error {
 	return nil
 }
 
+// SplitInlineHost splits a user-friendly inline form like
+// `slack.com/api/*` into bare host + path. Returns the inputs unchanged
+// when host has no `/` or when path is already populated. Shared by
+// every ingest path (CLI flags, YAML loader, HTTP API, proposal flow)
+// so writes always normalize to the same (host, path) shape.
+func SplitInlineHost(host, path string) (string, string) {
+	if path != "" {
+		return host, path
+	}
+	if i := strings.IndexByte(host, '/'); i > 0 {
+		return host[:i], host[i:]
+	}
+	return host, path
+}
+
 // Slugify produces a deterministic candidate name from (host, path)
 // that satisfies ValidateSlug. Used for auto-naming when a service is
 // created without an explicit name and for backfilling legacy services.
 // Collision resolution (suffixing -2, -3, ...) is the caller's job —
 // see NormalizeServices.
+//
+// A non-empty path always produces a slug distinct from the empty-path
+// (catch-all) slug for the same host: when the path's literal portion
+// has no alphanumeric content (e.g. "/" or "/*"), the marker "root" is
+// appended so root-literal services don't collide with catch-alls.
 func Slugify(host, path string) string {
 	h := strings.ToLower(strings.TrimPrefix(host, "*."))
 
@@ -684,7 +719,18 @@ func Slugify(host, path string) string {
 	if star := strings.IndexByte(path, '*'); star >= 0 {
 		literal = path[:star]
 	}
+	hasPathContent := false
+	for i := 0; i < len(literal); i++ {
+		c := literal[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			hasPathContent = true
+			break
+		}
+	}
 	combined := h + literal
+	if path != "" && !hasPathContent {
+		combined += "root"
+	}
 
 	var raw strings.Builder
 	raw.Grow(len(combined))

@@ -261,20 +261,14 @@ func buildService(client *session.ClientSession, nsName string, cmd *cobra.Comma
 		return nil, err
 	}
 
-	desc, err := promptDescription()
-	if err != nil {
-		return nil, err
-	}
-
 	auth, err := promptAuth(client, nsName)
 	if err != nil {
 		return nil, err
 	}
 
 	return &broker.Service{
-		Host:        host,
-		Description: desc,
-		Auth:        auth,
+		Host: host,
+		Auth: auth,
 	}, nil
 }
 
@@ -433,24 +427,6 @@ func promptHost(cmd *cobra.Command) (string, error) {
 	}
 
 	return host, nil
-}
-
-// promptDescription asks for an optional description.
-func promptDescription() (*string, error) {
-	var desc string
-	err := huh.NewInput().
-		Title("Description (optional):").
-		Value(&desc).
-		Run()
-	if err != nil {
-		return nil, err
-	}
-
-	desc = strings.TrimSpace(desc)
-	if desc == "" {
-		return nil, nil
-	}
-	return &desc, nil
 }
 
 // headerBuilderLoop collects at least one header per service.

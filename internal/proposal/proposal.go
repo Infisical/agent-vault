@@ -30,17 +30,15 @@ const (
 //
 // For "set" actions, at least one of Auth or Enabled must be specified.
 // When Enabled is provided without Auth and a service with that Name
-// already exists, the merge preserves the existing service's
-// Auth/Description and overlays only the Enabled flag — this is the
-// enable/disable flow. Substitutions must accompany Auth (Validate
-// rejects set+Substitutions without Auth) since the merge only carries
-// them on full replacements.
+// already exists, the merge preserves the existing service's Auth and
+// overlays only the Enabled flag — this is the enable/disable flow.
+// Substitutions must accompany Auth (Validate rejects set+Substitutions
+// without Auth) since the merge only carries them on full replacements.
 type Service struct {
 	Action        Action                `json:"action"`
 	Name          string                `json:"name,omitempty"`
 	Host          string                `json:"host"`
 	Path          string                `json:"path,omitempty"`
-	Description   string                `json:"description,omitempty"`
 	Enabled       *bool                 `json:"enabled,omitempty"`
 	Auth          *broker.Auth          `json:"auth,omitempty"`
 	Substitutions []broker.Substitution `json:"substitutions,omitempty"`

@@ -8,10 +8,9 @@ import (
 )
 
 type discoverService struct {
-	Name        string  `json:"name"`
-	Host        string  `json:"host"`
-	Path        string  `json:"path,omitempty"`
-	Description *string `json:"description"`
+	Name string `json:"name"`
+	Host string `json:"host"`
+	Path string `json:"path,omitempty"`
 }
 
 type discoverResponse struct {
@@ -61,10 +60,9 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	services := make([]discoverService, len(svcList))
 	for i, svc := range svcList {
 		services[i] = discoverService{
-			Name:        svc.Name,
-			Host:        svc.Host,
-			Path:        svc.Path,
-			Description: svc.Description,
+			Name: svc.Name,
+			Host: svc.Host,
+			Path: svc.Path,
 		}
 	}
 

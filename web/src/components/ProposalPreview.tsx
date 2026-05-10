@@ -27,7 +27,6 @@ export interface Service {
   name?: string;
   host: string;
   path?: string;
-  description?: string;
   enabled?: boolean;
   auth?: Auth;
   substitutions?: Substitution[];
@@ -155,7 +154,7 @@ export default function ProposalPreview({ data }: { data: ProposalData }) {
   if (setServices.length > 0)
     titleParts.push(
       setServices.length === 1
-        ? setServices[0].description || setServices[0].name || setServices[0].host
+        ? setServices[0].name || setServices[0].host
         : `${setServices.length} services`
     );
   if (deleteServices.length > 0)
@@ -230,9 +229,6 @@ export default function ProposalPreview({ data }: { data: ProposalData }) {
                       <span className="text-text-muted">{service.path}</span>
                     )}
                   </span>
-                  {service.description && (
-                    <p className="text-xs text-text-muted mt-1">{service.description}</p>
-                  )}
                 </div>
                 {service.enabled !== undefined && (
                   <div className="mt-2 pt-2 border-t border-border">

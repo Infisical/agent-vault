@@ -34,6 +34,12 @@ Flag-driven mode (common cases):
     --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY \
     --credential STRIPE_KEY="Stripe API key" --message "Need Stripe access"
 
+  # Path-scoped service (inline-form host; auto-derives name)
+  agent-vault vault proposal create \
+    --host 'slack.com/api/*' \
+    --auth-type bearer --token-key SLACK_BOT_TOKEN \
+    --credential SLACK_BOT_TOKEN="Slack Bot token" --message "Slack bot access"
+
   # Credential only (no host/service)
   agent-vault vault proposal create \
     --credential DB_PASSWORD="Database password" --message "Need DB access"
@@ -185,8 +191,7 @@ func buildFromFlags(cmd *cobra.Command, host string, credentialFlags []string) (
 			return nil, err
 		}
 
-		path, _ := cmd.Flags().GetString("path")
-		host, path = splitHostPath(host, path)
+		host, path := broker.SplitInlineHost(host, "")
 
 		svc := proposal.Service{
 			Action: proposal.ActionSet,
@@ -196,9 +201,6 @@ func buildFromFlags(cmd *cobra.Command, host string, credentialFlags []string) (
 		}
 		if name, _ := cmd.Flags().GetString("name"); name != "" {
 			svc.Name = name
-		}
-		if desc, _ := cmd.Flags().GetString("description"); desc != "" {
-			svc.Description = desc
 		}
 		req.Services = append(req.Services, svc)
 	} else {
@@ -287,10 +289,8 @@ func init() {
 	proposalCreateCmd.Flags().StringP("file", "f", "", "path to JSON proposal file (use - for stdin)")
 
 	// Flag-driven mode.
-	proposalCreateCmd.Flags().String("name", "", "service name (slug). Auto-derived from --host and --path when omitted.")
-	proposalCreateCmd.Flags().String("host", "", "target service host (e.g. api.stripe.com)")
-	proposalCreateCmd.Flags().String("path", "", "URL path glob (e.g. /api/*). Optional; empty matches any path.")
-	proposalCreateCmd.Flags().String("description", "", "service description")
+	proposalCreateCmd.Flags().String("name", "", "service name (slug). Auto-derived from --host when omitted.")
+	proposalCreateCmd.Flags().String("host", "", "target service host. Accepts api.stripe.com, *.github.com, or inline path form like slack.com/api/*.")
 	proposalCreateCmd.Flags().String("auth-type", "", "auth type: bearer, basic, api-key, passthrough")
 	proposalCreateCmd.Flags().String("token-key", "", "credential key for bearer auth")
 	proposalCreateCmd.Flags().String("username-key", "", "credential key for basic auth username")

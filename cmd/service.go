@@ -147,11 +147,15 @@ var serviceAddCmd = &cobra.Command{
 	Short: "Add or update services (upsert by name)",
 	Long: `Add one or more services to the vault (upsert by name).
 If a service with the same name already exists, it is replaced.
-When --name is omitted the server auto-slugs from --host and --path.
+When --name is omitted the server auto-slugs from --host.
+
+--host accepts a bare hostname (api.stripe.com), a one-level wildcard
+(*.github.com), or an inline path-scoped form (slack.com/api/*) — the
+broker splits the path off the host on ingest.
 
 Flag-driven mode:
   agent-vault vault service add --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY
-  agent-vault vault service add --name slack-bot --host slack.com --path /api/* --auth-type bearer --token-key SLACK_BOT_TOKEN
+  agent-vault vault service add --name slack-bot --host slack.com/api/* --auth-type bearer --token-key SLACK_BOT_TOKEN
 
 File mode (upsert, not replace-all):
   agent-vault vault service add -f services.yaml`,
@@ -185,15 +189,11 @@ File mode (upsert, not replace-all):
 				return err
 			}
 
-			path, _ := cmd.Flags().GetString("path")
-			host, path = splitHostPath(host, path)
+			host, path := broker.SplitInlineHost(host, "")
 
 			svc := broker.Service{Host: host, Path: path, Auth: *auth}
 			if name, _ := cmd.Flags().GetString("name"); name != "" {
 				svc.Name = name
-			}
-			if desc, _ := cmd.Flags().GetString("description"); desc != "" {
-				svc.Description = &desc
 			}
 			if disabled, _ := cmd.Flags().GetBool("disabled"); disabled {
 				f := false
@@ -377,6 +377,9 @@ func loadServicesFromFile(filePath, vault string) ([]broker.Service, error) {
 		return nil, fmt.Errorf("parsing yaml: %w", err)
 	}
 	cfg.Vault = vault
+	for i := range cfg.Services {
+		cfg.Services[i].Host, cfg.Services[i].Path = broker.SplitInlineHost(cfg.Services[i].Host, cfg.Services[i].Path)
+	}
 	cfg.Services = broker.NormalizeServices(cfg.Services)
 	if err := broker.Validate(&cfg); err != nil {
 		return nil, fmt.Errorf("invalid services: %w", err)
@@ -403,10 +406,8 @@ func init() {
 
 	// service add flags
 	serviceAddCmd.Flags().StringP("file", "f", "", "Path to services YAML file (upsert mode)")
-	serviceAddCmd.Flags().String("name", "", "Service name (slug). Auto-derived from --host and --path when omitted.")
-	serviceAddCmd.Flags().String("host", "", "Target service host (e.g. api.stripe.com)")
-	serviceAddCmd.Flags().String("path", "", "URL path glob (e.g. /api/*). Optional; empty matches any path.")
-	serviceAddCmd.Flags().String("description", "", "Service description")
+	serviceAddCmd.Flags().String("name", "", "Service name (slug). Auto-derived from --host when omitted.")
+	serviceAddCmd.Flags().String("host", "", "Target service host. Accepts api.stripe.com, *.github.com, or inline path form like slack.com/api/*.")
 	serviceAddCmd.Flags().String("auth-type", "", "Auth type: bearer, basic, api-key, custom, passthrough")
 	serviceAddCmd.Flags().String("token-key", "", "Credential key for bearer auth")
 	serviceAddCmd.Flags().String("username-key", "", "Credential key for basic auth username")

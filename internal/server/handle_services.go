@@ -5,30 +5,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/catalog"
 	"github.com/Infisical/agent-vault/internal/proposal"
 )
 
-// splitInlineFormHost splits a user-friendly inline form like
-// `slack.com/api/*` into bare host + path. Returns the inputs unchanged
-// when host doesn't contain a `/` or when path is already populated.
-// Shared by every server-side ingest path (broker.Service upserts and
-// proposal.Service ingest); CLI-side splits are kept in cmd/ since the
-// CLI cannot import server packages.
-func splitInlineFormHost(host, path string) (string, string) {
-	if path != "" {
-		return host, path
+// rejectDeprecatedDescription scans a raw JSON services array for the
+// now-removed `description` field. Returns the zero-based index of the
+// first offending entry, or -1 if none. Best-effort: malformed JSON
+// returns -1 so the typed decoder downstream produces a structured
+// error instead of two layered ones.
+func rejectDeprecatedDescription(servicesRaw json.RawMessage) int {
+	var probes []map[string]json.RawMessage
+	if err := json.Unmarshal(servicesRaw, &probes); err != nil {
+		return -1
 	}
-	if i := strings.IndexByte(host, '/'); i > 0 {
-		return host[:i], host[i:]
+	for i, p := range probes {
+		if _, ok := p["description"]; ok {
+			return i
+		}
 	}
-	return host, path
+	return -1
 }
 
-// normalizeIncoming applies splitInlineFormHost to every service then
+const deprecatedDescriptionMsg = "description is no longer supported; rename via the service name field instead"
+
+// normalizeIncoming applies broker.SplitInlineHost to every service then
 // backfills missing Names via broker.NormalizeServices. Suitable for
 // replace-all flows (handleServicesSet) where existing state is about
 // to be overwritten — for partial upserts use normalizeIncomingAgainstExisting
@@ -36,7 +39,7 @@ func splitInlineFormHost(host, path string) (string, string) {
 func normalizeIncoming(in []broker.Service) []broker.Service {
 	out := make([]broker.Service, len(in))
 	for i, svc := range in {
-		svc.Host, svc.Path = splitInlineFormHost(svc.Host, svc.Path)
+		svc.Host, svc.Path = broker.SplitInlineHost(svc.Host, svc.Path)
 		out[i] = svc
 	}
 	return broker.NormalizeServices(out)
@@ -64,7 +67,7 @@ func normalizeIncomingAgainstExisting(in []broker.Service, existing []broker.Ser
 	out := make([]broker.Service, len(in))
 	autoSlugged := make([]bool, len(in))
 	for i, svc := range in {
-		svc.Host, svc.Path = splitInlineFormHost(svc.Host, svc.Path)
+		svc.Host, svc.Path = broker.SplitInlineHost(svc.Host, svc.Path)
 		if svc.Name == "" {
 			if matched := findByHostPath(existing, svc.Host, svc.Path); matched != nil {
 				svc.Name = matched.Name
@@ -128,17 +131,23 @@ func (e *hostAmbiguityError) Error() string {
 // for every entry. Mirrors the bulk-upsert ingest semantics so the
 // proposal flow accepts the same legacy and inline-form payloads.
 //
-// For ActionSet entries, Name is auto-slugged via broker.Slugify(host,
-// path) when blank. For ActionDelete entries, Name is resolved against
-// the vault's existing services: a unique host match fills Name, a
-// 2+ match returns *hostAmbiguityError so the caller can surface the
-// candidate list as a 409, and a 0-hit leaves Name blank so the merge
-// step warns "service not found" downstream.
+// For ActionSet entries with no Name, the (Host, Path) pair is matched
+// against existing services first — if found, the existing Name is
+// adopted so a legacy "rotate-credentials" proposal (host-only, no
+// name) updates the stored service rather than creating a duplicate.
+// Only when no host+path match exists does the entry fall through to
+// broker.Slugify with collision bumping. For ActionDelete entries, Name
+// is resolved against the vault's existing services: a unique host
+// match fills Name, a 2+ match returns *hostAmbiguityError so the
+// caller can surface the candidate list as a 409, and a 0-hit leaves
+// Name blank so proposal.Validate rejects the no-op delete cleanly
+// (rather than fabricating a slug that might collide with an unrelated
+// service's explicit Name).
 func normalizeProposalServices(in []proposal.Service, existing []broker.Service) ([]proposal.Service, *hostAmbiguityError, error) {
 	out := make([]proposal.Service, len(in))
 	autoSlugged := make([]bool, len(in))
 	for i, svc := range in {
-		svc.Host, svc.Path = splitInlineFormHost(svc.Host, svc.Path)
+		svc.Host, svc.Path = broker.SplitInlineHost(svc.Host, svc.Path)
 
 		switch svc.Action {
 		case proposal.ActionDelete:
@@ -154,16 +163,19 @@ func normalizeProposalServices(in []proposal.Service, existing []broker.Service)
 					svc.Name = matches[0].Name
 				case len(matches) > 1:
 					return nil, &hostAmbiguityError{host: svc.Host, candidates: matches}, nil
-				default:
-					// 0 hits: still need a Name to satisfy Validate.
-					// The merge step will warn "service not found".
-					svc.Name = broker.Slugify(svc.Host, svc.Path)
+					// 0 hits: leave Name empty — Validate will reject
+					// with "name required" rather than letting a
+					// fabricated slug collide with an unrelated service.
 				}
 			}
 		default: // ActionSet (and any unknown — Validate will reject)
 			if svc.Name == "" {
-				svc.Name = broker.Slugify(svc.Host, svc.Path)
-				autoSlugged[i] = true
+				if matched := findByHostPath(existing, svc.Host, svc.Path); matched != nil {
+					svc.Name = matched.Name
+				} else {
+					svc.Name = broker.Slugify(svc.Host, svc.Path)
+					autoSlugged[i] = true
+				}
 			}
 		}
 		out[i] = svc
@@ -235,7 +247,7 @@ func resolveServiceRef(services []broker.Service, ref string) (idx int, candidat
 			return i, nil, true
 		}
 	}
-	matches := []int{}
+	var matches []int
 	for i, svc := range services {
 		if svc.Host == ref {
 			matches = append(matches, i)
@@ -296,6 +308,14 @@ func (s *Server) handleServicesGet(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"vault": name, "services": services})
 }
 
+// handleServicesCredentialUsage returns the {name, host, path} of
+// every service that references the given credential key. Gated at
+// proxy+ (requireVaultAccess) deliberately: this is a strict subset of
+// what /discover already exposes to the same role — /discover lists
+// every service in the vault and every available credential key, so an
+// agent could filter client-side and arrive at the same answer.
+// Tightening to member+ here would create asymmetry without preventing
+// access.
 func (s *Server) handleServicesCredentialUsage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")
@@ -323,20 +343,15 @@ func (s *Server) handleServicesCredentialUsage(w http.ResponseWriter, r *http.Re
 	}
 
 	type serviceRef struct {
-		Name        string `json:"name"`
-		Host        string `json:"host"`
-		Path        string `json:"path,omitempty"`
-		Description string `json:"description,omitempty"`
+		Name string `json:"name"`
+		Host string `json:"host"`
+		Path string `json:"path,omitempty"`
 	}
 	var refs []serviceRef
 	for _, svc := range services {
 		for _, sk := range svc.Auth.CredentialKeys() {
 			if sk == key {
-				ref := serviceRef{Name: svc.Name, Host: svc.Host, Path: svc.Path}
-				if svc.Description != nil {
-					ref.Description = *svc.Description
-				}
-				refs = append(refs, ref)
+				refs = append(refs, serviceRef{Name: svc.Name, Host: svc.Host, Path: svc.Path})
 				break
 			}
 		}
@@ -362,18 +377,38 @@ func (s *Server) handleServicesUpsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Services []broker.Service `json:"services"`
+	var raw struct {
+		Services json.RawMessage `json:"services"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
+	}
+	if i := rejectDeprecatedDescription(raw.Services); i >= 0 {
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("services[%d]: %s", i, deprecatedDescriptionMsg))
+		return
+	}
+
+	var req struct {
+		Services []broker.Service
+	}
+	if len(raw.Services) > 0 {
+		if err := json.Unmarshal(raw.Services, &req.Services); err != nil {
+			jsonError(w, http.StatusBadRequest, "Invalid request body")
+			return
+		}
 	}
 
 	if len(req.Services) == 0 {
 		jsonError(w, http.StatusBadRequest, "At least one service is required")
 		return
 	}
+
+	// Serialize the load → normalize → save cycle. SQLite serializes
+	// individual statements but not the sequence; without this, two
+	// concurrent upserts can both pass the auto-slug collision check
+	// against the same pre-state and the second writer wins.
+	defer s.lockVaultServices(ns.ID)()
 
 	// Load existing first so the incoming-batch normalization can seed
 	// its collision map with names already taken in the vault.
@@ -451,6 +486,8 @@ func (s *Server) handleServiceRemove(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "Service name or host is required")
 		return
 	}
+
+	defer s.lockVaultServices(ns.ID)()
 
 	// Load existing services (auto-normalized: legacy names backfilled).
 	services, err := s.loadServices(ctx, ns.ID)
@@ -539,6 +576,8 @@ func (s *Server) handleServicePatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer s.lockVaultServices(ns.ID)()
+
 	services, err := s.loadServices(ctx, ns.ID)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to parse services")
@@ -605,6 +644,10 @@ func (s *Server) handleServicesSet(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
+	if i := rejectDeprecatedDescription(req.Services); i >= 0 {
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("services[%d]: %s", i, deprecatedDescriptionMsg))
+		return
+	}
 
 	// Validate services by unmarshalling into broker.Service slice and running broker.Validate.
 	var services []broker.Service
@@ -624,6 +667,8 @@ func (s *Server) handleServicesSet(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusInternalServerError, "Failed to marshal services")
 		return
 	}
+
+	defer s.lockVaultServices(ns.ID)()
 
 	if _, err := s.store.SetBrokerConfig(ctx, ns.ID, string(servicesJSON)); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to set services")

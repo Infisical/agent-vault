@@ -54,8 +54,9 @@ required — there is no project-file or interactive-picker fallback.`,
 		var resp struct {
 			Vault    string `json:"vault"`
 			Services []struct {
-				Host        string `json:"host"`
-				Description string `json:"description"`
+				Name string `json:"name"`
+				Host string `json:"host"`
+				Path string `json:"path"`
 			} `json:"services"`
 			AvailableCredentials []string `json:"available_credentials"`
 		}
@@ -70,9 +71,9 @@ required — there is no project-file or interactive-picker fallback.`,
 			fmt.Fprintln(w)
 			fmt.Fprintf(w, "%s\n", boldText("Services"))
 			t := newTable(w)
-			t.AppendHeader(table.Row{"HOST", "DESCRIPTION"})
+			t.AppendHeader(table.Row{"NAME", "HOST", "PATH"})
 			for _, svc := range resp.Services {
-				t.AppendRow(table.Row{svc.Host, svc.Description})
+				t.AppendRow(table.Row{svc.Name, svc.Host, svc.Path})
 			}
 			t.Render()
 		} else {

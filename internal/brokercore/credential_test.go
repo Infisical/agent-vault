@@ -212,6 +212,63 @@ func TestInject_WildcardMatch(t *testing.T) {
 	}
 }
 
+// TestInject_PathBasedDisambiguation pins that two services on the same
+// host with different path globs both work end-to-end through the
+// Inject path: the more specific path wins, the right credential is
+// injected, and MatchedName/Host/Path on the result reflect the
+// matched service. The motivating case is the Slack split where /api/*
+// uses a Bot token and /api/apps.connections.* uses a Socket Mode
+// token.
+func TestInject_PathBasedDisambiguation(t *testing.T) {
+	key32 := make32(0x88)
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{
+		{
+			Name: "slack-bot",
+			Host: "slack.com",
+			Path: "/api/*",
+			Auth: broker.Auth{Type: "bearer", Token: "SLACK_BOT_TOKEN"},
+		},
+		{
+			Name: "slack-conn",
+			Host: "slack.com",
+			Path: "/api/apps.connections.*",
+			Auth: broker.Auth{Type: "bearer", Token: "SLACK_CONN_TOKEN"},
+		},
+	})
+	f.setCred(t, key32, "v1", "SLACK_BOT_TOKEN", "xoxb-bot")
+	f.setCred(t, key32, "v1", "SLACK_CONN_TOKEN", "xapp-conn")
+	p := NewStoreCredentialProvider(f, key32)
+
+	cases := []struct {
+		path     string
+		wantAuth string
+		wantName string
+		wantPath string
+	}{
+		{"/api/chat.postMessage", "Bearer xoxb-bot", "slack-bot", "/api/*"},
+		{"/api/apps.connections.open", "Bearer xapp-conn", "slack-conn", "/api/apps.connections.*"},
+	}
+	for _, tc := range cases {
+		res, err := p.Inject(context.Background(), "v1", "slack.com", tc.path)
+		if err != nil {
+			t.Fatalf("path %q: unexpected err: %v", tc.path, err)
+		}
+		if res.Headers["Authorization"] != tc.wantAuth {
+			t.Fatalf("path %q: got Authorization=%q want %q", tc.path, res.Headers["Authorization"], tc.wantAuth)
+		}
+		if res.MatchedName != tc.wantName {
+			t.Fatalf("path %q: got MatchedName=%q want %q", tc.path, res.MatchedName, tc.wantName)
+		}
+		if res.MatchedHost != "slack.com" {
+			t.Fatalf("path %q: got MatchedHost=%q want slack.com", tc.path, res.MatchedHost)
+		}
+		if res.MatchedPath != tc.wantPath {
+			t.Fatalf("path %q: got MatchedPath=%q want %q", tc.path, res.MatchedPath, tc.wantPath)
+		}
+	}
+}
+
 func TestInject_UnmatchedHost_DefaultPassthrough(t *testing.T) {
 	// With the default unmatched-host policy (passthrough), a host with
 	// no matching service forwards without injection.

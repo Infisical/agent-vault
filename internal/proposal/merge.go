@@ -13,7 +13,23 @@ import (
 // server handlers run broker.NormalizeServices on existing and auto-slug
 // proposals via broker.Slugify before reaching MergeServices. Returns
 // the merged slice and a list of warnings for no-op operations.
+//
+// Panics if any input has an empty Name. The Name-keyed index would
+// otherwise collapse every empty-name entry onto the "" key and the
+// last writer would silently overwrite the rest — a class of data-loss
+// bug worth crashing on rather than papering over, since the contract
+// is a programming-error invariant.
 func MergeServices(existing []broker.Service, proposed []Service) ([]broker.Service, []string) {
+	for i, s := range existing {
+		if s.Name == "" {
+			panic(fmt.Sprintf("proposal.MergeServices: existing[%d] has empty Name (host=%q) — caller must normalize first", i, s.Host))
+		}
+	}
+	for i, p := range proposed {
+		if p.Name == "" {
+			panic(fmt.Sprintf("proposal.MergeServices: proposed[%d] has empty Name (host=%q, action=%q) — caller must normalize first", i, p.Host, p.Action))
+		}
+	}
 	nameIndex := make(map[string]int, len(existing))
 	for i, s := range existing {
 		nameIndex[s.Name] = i
@@ -42,8 +58,7 @@ func MergeServices(existing []broker.Service, proposed []Service) ([]broker.Serv
 			switch {
 			case exists && p.Auth == nil && p.Enabled != nil:
 				// Enable/disable-only change on an existing service:
-				// preserve Auth, Host, Path, and Description, overlay
-				// just the flag.
+				// preserve Auth, Host, and Path, overlay just the flag.
 				merged[idx].Enabled = p.Enabled
 			case exists:
 				next := toBrokerService(p)
@@ -77,17 +92,11 @@ func MergeServices(existing []broker.Service, proposed []Service) ([]broker.Serv
 }
 
 func toBrokerService(p Service) broker.Service {
-	var desc *string
-	if p.Description != "" {
-		d := p.Description
-		desc = &d
-	}
 	svc := broker.Service{
-		Name:        p.Name,
-		Host:        p.Host,
-		Path:        p.Path,
-		Description: desc,
-		Enabled:     p.Enabled,
+		Name:    p.Name,
+		Host:    p.Host,
+		Path:    p.Path,
+		Enabled: p.Enabled,
 	}
 	if p.Auth != nil {
 		svc.Auth = *p.Auth

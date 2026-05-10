@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -127,8 +128,22 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	vaultID := resolvedVault.ID
 
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, "Failed to read request body")
+		return
+	}
+	var probe struct {
+		Services json.RawMessage `json:"services"`
+	}
+	if err := json.Unmarshal(body, &probe); err == nil {
+		if i := rejectDeprecatedDescription(probe.Services); i >= 0 {
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("services[%d]: %s", i, deprecatedDescriptionMsg))
+			return
+		}
+	}
 	var req proposalCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
@@ -465,27 +480,68 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		finalCredentials[slot.Key] = store.EncryptedCredential{Ciphertext: ct, Nonce: nonce}
 	}
 
-	// Merge services. Both sides need every entry to carry a canonical
-	// Name before MergeServices indexes by Name — otherwise legacy
-	// entries with Name="" collapse onto the "" key and an unrelated
-	// upsert silently overwrites the wrong service.
+	// MergeServices indexes by Name, so every entry on both sides must
+	// carry a canonical Name — otherwise Name="" entries collide on the
+	// "" key and a stray upsert overwrites the wrong service.
+	// loadServices normalizes existing; the loop below normalizes
+	// proposed entries that predate the create-path normalization
+	// (Name-less, possibly inline-form Host).
 	//
-	// loadServices runs broker.NormalizeServices on existing. For
-	// proposedServices, post-PR proposals already have Names (the create
-	// path runs normalizeProposalServices); this slug-backfill closes
-	// the in-flight pre-PR proposal hole. Inline-form host split is also
-	// applied so a pre-PR proposal that stored "slack.com/api/*" in
-	// Host gets the canonical (Host, Path) split here too.
+	// Set-action ordering mirrors normalizeIncomingAgainstExisting:
+	// adopt an existing service's Name when (Host, Path) already
+	// matches (rotate semantics), else slugify and bump (`-2`) on
+	// collision with any unrelated existing or explicit-name entry so a
+	// stale auto-slug can't clobber an unrelated stored service.
+	//
+	// Delete entries are slugified without bumping: an unmatched slug
+	// surfaces as a MergeServices "service not found" warning rather
+	// than picking arbitrarily across multiple services on the host.
+	//
+	// The lock serializes this whole load → merge → apply sequence
+	// against concurrent direct upserts on /services so a mid-apply
+	// upsert can't see partial state.
+	defer s.lockVaultServices(ns.ID)()
+
 	existingServices, err := s.loadServices(ctx, ns.ID)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to load existing services")
 		return
 	}
+	autoSlugged := make([]bool, len(proposedServices))
 	for i := range proposedServices {
-		proposedServices[i].Host, proposedServices[i].Path = splitInlineFormHost(proposedServices[i].Host, proposedServices[i].Path)
-		if proposedServices[i].Name == "" {
-			proposedServices[i].Name = broker.Slugify(proposedServices[i].Host, proposedServices[i].Path)
+		proposedServices[i].Host, proposedServices[i].Path = broker.SplitInlineHost(proposedServices[i].Host, proposedServices[i].Path)
+		if proposedServices[i].Name != "" {
+			continue
 		}
+		if proposedServices[i].Action == proposal.ActionSet {
+			if matched := findByHostPath(existingServices, proposedServices[i].Host, proposedServices[i].Path); matched != nil {
+				proposedServices[i].Name = matched.Name
+				continue
+			}
+		}
+		proposedServices[i].Name = broker.Slugify(proposedServices[i].Host, proposedServices[i].Path)
+		autoSlugged[i] = proposedServices[i].Action == proposal.ActionSet
+	}
+	used := make(map[string]bool, len(existingServices)+len(proposedServices))
+	for _, e := range existingServices {
+		used[e.Name] = true
+	}
+	for i := range proposedServices {
+		if autoSlugged[i] {
+			continue
+		}
+		used[proposedServices[i].Name] = true
+	}
+	for i := range proposedServices {
+		if !autoSlugged[i] {
+			continue
+		}
+		if !used[proposedServices[i].Name] {
+			used[proposedServices[i].Name] = true
+			continue
+		}
+		proposedServices[i].Name = broker.EnsureUniqueName(proposedServices[i].Name, used)
+		used[proposedServices[i].Name] = true
 	}
 
 	merged, _ := proposal.MergeServices(existingServices, proposedServices)

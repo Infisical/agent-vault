@@ -2458,8 +2458,7 @@ func setupVaultWithCredential(t *testing.T, servicesJSON string) (*mockStore, st
 }
 
 func TestDiscoverSuccess(t *testing.T) {
-	desc := "GitHub API"
-	servicesJSON := `[{"host":"*.github.com","description":"GitHub API","auth":{"type":"bearer","token":"GITHUB_TOKEN"}},{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
+	servicesJSON := `[{"host":"*.github.com","auth":{"type":"bearer","token":"GITHUB_TOKEN"}},{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
 	ms, token, _ := setupVaultWithCredential(t, servicesJSON)
 	srv := newTestServer(withStore(ms))
 
@@ -2487,15 +2486,8 @@ func TestDiscoverSuccess(t *testing.T) {
 	if resp.Services[0].Host != "*.github.com" {
 		t.Fatalf("expected host '*.github.com', got %q", resp.Services[0].Host)
 	}
-	if resp.Services[0].Description == nil || *resp.Services[0].Description != desc {
-		t.Fatalf("expected description %q, got %v", desc, resp.Services[0].Description)
-	}
-	// Second service has no description — should be null.
 	if resp.Services[1].Host != "api.stripe.com" {
 		t.Fatalf("expected host 'api.stripe.com', got %q", resp.Services[1].Host)
-	}
-	if resp.Services[1].Description != nil {
-		t.Fatalf("expected nil description, got %q", *resp.Services[1].Description)
 	}
 	// setupVaultWithCredential seeds "STRIPE_KEY" — verify it appears in available_credentials.
 	if len(resp.AvailableCredentials) != 1 || resp.AvailableCredentials[0] != "STRIPE_KEY" {
@@ -2829,7 +2821,16 @@ func TestProposalCreateRefFromExistingCredential(t *testing.T) {
 }
 
 func TestProposalCreateWithDeleteAction(t *testing.T) {
-	srv, _, token := setupProposalTest(t)
+	srv, ms, token := setupProposalTest(t)
+	// Seed the vault with the service we're about to propose deleting,
+	// so the host-only delete resolves uniquely to its canonical Name.
+	// (A delete for a host with no matching service is now rejected at
+	// create time with "name is required" rather than fabricating a
+	// slug that could collide with an unrelated service.)
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		ID: "bc-1", VaultID: "root-ns-id",
+		ServicesJSON: `[{"name":"slack","host":"api.slack.com","auth":{"type":"bearer","token":"SLACK_TOKEN"}}]`,
+	}
 
 	body := `{
 		"services": [{"action": "delete", "host": "api.slack.com"}],
@@ -2848,7 +2849,12 @@ func TestProposalCreateWithDeleteAction(t *testing.T) {
 }
 
 func TestProposalCreateMixedActions(t *testing.T) {
-	srv, _, token := setupProposalTest(t)
+	srv, ms, token := setupProposalTest(t)
+	// Seed the slack service so the host-only delete resolves uniquely.
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		ID: "bc-1", VaultID: "root-ns-id",
+		ServicesJSON: `[{"name":"slack","host":"api.slack.com","auth":{"type":"bearer","token":"SLACK_TOKEN"}}]`,
+	}
 
 	body := `{
 		"services": [
@@ -2879,7 +2885,7 @@ func setupInviteTest(t *testing.T) (*Server, *mockStore) {
 	ms := setupMockStoreWithPassword(t, "test-pass")
 	ms.vaults["default"] = &store.Vault{ID: "root-ns-id", Name: "default"}
 	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
-		ServicesJSON: `[{"host":"api.stripe.com","description":"Stripe API","auth":{"type":"bearer","token":"SK"}}]`,
+		ServicesJSON: `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"SK"}}]`,
 	}
 	encKey := make([]byte, 32)
 	srv := newTestServer(withStore(ms), withEncKey(encKey))
@@ -2966,7 +2972,6 @@ func TestAdminProposalApproveSuccess(t *testing.T) {
 // existing via loadServices (NormalizeServices auto-slugs Names) and
 // slug-backfills proposedServices Names before merge.
 func TestAdminProposalApprovePreservesLegacyServices(t *testing.T) {
-	t.Helper()
 	ms := newMockStore()
 
 	ms.users["owner@test.com"] = &store.User{
@@ -3024,6 +3029,73 @@ func TestAdminProposalApprovePreservesLegacyServices(t *testing.T) {
 	}
 	if strings.Contains(merged, `"token":"GH_OLD"`) {
 		t.Fatalf("api.github.com still has old token; merged=%s", merged)
+	}
+}
+
+// TestAdminProposalApproveBumpsAutoSlugAroundExistingName guards the
+// apply path against a narrow but data-loss-class hazard: a pre-PR
+// proposal (Name="") whose auto-slug happens to match an unrelated
+// existing service's explicit Name. Without bump-on-collision in the
+// apply-time backfill, MergeServices's nameIndex collapses both
+// entries onto the same key and the proposal silently overwrites the
+// unrelated service's auth. The bulk-upsert path (handle_services.go)
+// and the proposal-create path (normalizeProposalServices) already
+// guard this; this test pins the same behavior at apply time.
+func TestAdminProposalApproveBumpsAutoSlugAroundExistingName(t *testing.T) {
+	ms := newMockStore()
+
+	ms.users["owner@test.com"] = &store.User{
+		ID: "owner-user-id", Email: "owner@test.com", Role: "owner", IsActive: true,
+	}
+	ms.GrantVaultRole(context.Background(), "owner-user-id", "user", "root-ns-id", "admin")
+	adminSess := &store.Session{
+		ID: "admin-session", UserID: "owner-user-id",
+		ExpiresAt: tp(time.Now().Add(time.Hour)), CreatedAt: time.Now(),
+	}
+	ms.sessions[adminSess.ID] = adminSess
+	srv := newTestServer(withStore(ms), withEncKey(make([]byte, 32)))
+
+	// Existing: an unrelated service whose explicit Name is exactly the
+	// slug that "slack.com" + "/api/*" will produce ("slack-com-api").
+	// The pre-PR proposal below has no Name and would collide.
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		VaultID: "root-ns-id",
+		ServicesJSON: `[
+			{"name":"slack-com-api","host":"other.example.com","auth":{"type":"bearer","token":"OTHER_KEEP"}}
+		]`,
+	}
+	// Pre-PR proposal: ActionSet on slack.com /api/* with no Name.
+	ms.proposals = make(map[string][]store.Proposal)
+	ms.proposals["root-ns-id"] = []store.Proposal{{
+		ID: 1, VaultID: "root-ns-id", Status: "pending",
+		ServicesJSON:    `[{"action":"set","host":"slack.com","path":"/api/*","auth":{"type":"bearer","token":"SLACK_NEW"}}]`,
+		CredentialsJSON: `[{"action":"set","key":"SLACK_NEW","description":"Slack token"}]`,
+		Message:         "Add Slack",
+		CreatedAt:       time.Now(),
+	}}
+
+	body := `{"vault":"default","credentials":{"SLACK_NEW":"xoxb_new_value"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/proposals/1/approve", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminSess.ID)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	merged := ms.brokerConfigs["root-ns-id"].ServicesJSON
+	// The unrelated existing service must survive untouched. Without
+	// the bump, its auth would have been overwritten by SLACK_NEW.
+	if !strings.Contains(merged, `"token":"OTHER_KEEP"`) {
+		t.Fatalf("unrelated service was clobbered by colliding auto-slug; merged=%s", merged)
+	}
+	// The new Slack service must have landed under a bumped name.
+	if !strings.Contains(merged, `"token":"SLACK_NEW"`) {
+		t.Fatalf("new Slack service was dropped; merged=%s", merged)
+	}
+	if !strings.Contains(merged, `"name":"slack-com-api-2"`) {
+		t.Fatalf("expected new Slack service to be stored under bumped name slack-com-api-2; merged=%s", merged)
 	}
 }
 
@@ -5201,6 +5273,47 @@ func TestResendVerificationTooManyPending(t *testing.T) {
 
 // --- Services Upsert Tests ---
 
+func TestServicesUpsertRejectsDeprecatedDescription(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"services":[{"host":"api.stripe.com","description":"Stripe API","auth":{"type":"bearer","token":"STRIPE_KEY"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/services", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for deprecated description, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "description is no longer supported") {
+		t.Fatalf("expected deprecation error, got %s", rec.Body.String())
+	}
+}
+
+func TestProposalCreateRejectsDeprecatedDescription(t *testing.T) {
+	srv, _, token := setupProposalTest(t)
+
+	body := `{
+		"services": [{"action": "set", "host": "api.stripe.com", "description": "Stripe API", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
+		"credentials": [{"action": "set", "key": "STRIPE_KEY"}],
+		"message": "need stripe"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/proposals", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for deprecated description, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "description is no longer supported") {
+		t.Fatalf("expected deprecation error, got %s", rec.Body.String())
+	}
+}
+
 func TestServicesUpsertAddNew(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))
@@ -5768,8 +5881,54 @@ func TestServiceRemoveByName(t *testing.T) {
 	}
 }
 
-// TestServicePatchByHostAmbiguity mirrors the DELETE 409 path for PATCH.
+// TestServicePatchByHostAmbiguity mirrors the DELETE 409 path for PATCH:
+// the candidate list shape and the no-mutation invariant must both hold.
 func TestServicePatchByHostAmbiguity(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		ID: "bc-1", VaultID: "root-ns-id",
+		ServicesJSON: `[
+			{"name":"slack-bot","host":"slack.com","path":"/api/*","auth":{"type":"bearer","token":"SLACK_BOT_TOKEN"}},
+			{"name":"slack-conn","host":"slack.com","path":"/api/apps.connections.*","auth":{"type":"bearer","token":"SLACK_CONNECTION_TOKEN"}}
+		]`,
+	}
+	pre := ms.brokerConfigs["root-ns-id"].ServicesJSON
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/services/slack.com", strings.NewReader(`{"enabled":false}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	candidates, ok := resp["candidates"].([]interface{})
+	if !ok || len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %v", resp["candidates"])
+	}
+	names := map[string]bool{}
+	for _, c := range candidates {
+		entry := c.(map[string]interface{})
+		names[entry["name"].(string)] = true
+	}
+	if !names["slack-bot"] || !names["slack-conn"] {
+		t.Fatalf("expected slack-bot and slack-conn in candidates, got %v", names)
+	}
+	if ms.brokerConfigs["root-ns-id"].ServicesJSON != pre {
+		t.Fatalf("expected services unchanged after 409, got mutation:\nbefore: %s\nafter:  %s", pre, ms.brokerConfigs["root-ns-id"].ServicesJSON)
+	}
+}
+
+// TestServicePatchByName resolves unambiguously when the slot value
+// matches a canonical service name. Verifies the right service is
+// patched (not the other one sharing the host) and the response echoes
+// the targeted service.
+func TestServicePatchByName(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
 		ID: "bc-1", VaultID: "root-ns-id",
@@ -5780,13 +5939,42 @@ func TestServicePatchByHostAmbiguity(t *testing.T) {
 	}
 	srv := newTestServer(withStore(ms))
 
-	req := httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/services/slack.com", strings.NewReader(`{"enabled":false}`))
+	req := httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/services/slack-conn", strings.NewReader(`{"enabled":false}`))
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["name"] != "slack-conn" {
+		t.Fatalf("expected name=slack-conn in response, got %v", resp["name"])
+	}
+	if resp["enabled"] != false {
+		t.Fatalf("expected enabled=false in response, got %v", resp["enabled"])
+	}
+
+	// Verify only slack-conn flipped; slack-bot is untouched.
+	bc := ms.brokerConfigs["root-ns-id"]
+	var stored []map[string]interface{}
+	if err := json.Unmarshal([]byte(bc.ServicesJSON), &stored); err != nil {
+		t.Fatalf("unmarshal stored: %v", err)
+	}
+	for _, s := range stored {
+		switch s["name"] {
+		case "slack-conn":
+			if s["enabled"] != false {
+				t.Fatalf("expected slack-conn enabled=false, got %v", s["enabled"])
+			}
+		case "slack-bot":
+			if v, present := s["enabled"]; present && v == false {
+				t.Fatalf("expected slack-bot untouched, got enabled=%v", v)
+			}
+		}
 	}
 }
 
@@ -5902,5 +6090,94 @@ func TestServicesUpsertExplicitNameMatchingExistingReplaces(t *testing.T) {
 	bc := ms.brokerConfigs["root-ns-id"]
 	if !strings.Contains(bc.ServicesJSON, `"token":"NEW_TOKEN"`) || strings.Contains(bc.ServicesJSON, `"token":"OLD_TOKEN"`) {
 		t.Fatalf("expected explicit-name upsert to replace OLD_TOKEN with NEW_TOKEN, got %s", bc.ServicesJSON)
+	}
+}
+
+// TestProposalCreateLegacyActionSetAdoptsExistingName pins the fix for
+// the duplicate-service bug from PR #164 review: a legacy
+// rotate-credentials proposal (host-only, no name) on an existing
+// (host, path) must adopt the existing service's canonical Name at
+// create time so the apply-time merge updates in place rather than
+// inserting a second service. Without the fix, normalizeProposalServices
+// would slugify+bump to a fresh name, store it on the proposal, and the
+// apply-path adopt step (gated on Name == "") would then be skipped.
+func TestProposalCreateLegacyActionSetAdoptsExistingName(t *testing.T) {
+	srv, ms, token := setupProposalTest(t)
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		ID: "bc-1", VaultID: "root-ns-id",
+		ServicesJSON: `[
+			{"name":"my-stripe","host":"api.stripe.com","auth":{"type":"bearer","token":"OLD_STRIPE_KEY"}}
+		]`,
+	}
+
+	// Legacy client posts a host-only proposal (no name).
+	body := `{
+		"services": [{"action":"set","host":"api.stripe.com","auth":{"type":"bearer","token":"NEW_STRIPE_KEY"}}],
+		"credentials": [{"action":"set","key":"NEW_STRIPE_KEY","description":"Rotated Stripe key"}],
+		"message": "rotate stripe"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/proposals", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Read back the stored proposal services and confirm Name was
+	// adopted from the existing service rather than slugified+bumped.
+	props := ms.proposals["root-ns-id"]
+	if len(props) != 1 {
+		t.Fatalf("expected 1 proposal, got %d", len(props))
+	}
+	var stored []map[string]interface{}
+	if err := json.Unmarshal([]byte(props[0].ServicesJSON), &stored); err != nil {
+		t.Fatalf("unmarshal stored proposal services: %v", err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("expected 1 stored service, got %d", len(stored))
+	}
+	if stored[0]["name"] != "my-stripe" {
+		t.Fatalf("expected stored proposal to adopt Name=my-stripe, got %v (would create duplicate at apply time)", stored[0]["name"])
+	}
+}
+
+// TestProposalCreateActionDeleteUnknownHostLeavesNameEmpty pins that a
+// delete-action with no Name and 0 host matches no longer fabricates a
+// slug — the proposal is rejected at validation with "name is required"
+// rather than letting Slugify(host, path) collide with an unrelated
+// existing service's explicit Name and silently delete the wrong service.
+func TestProposalCreateActionDeleteUnknownHostLeavesNameEmpty(t *testing.T) {
+	srv, ms, token := setupProposalTest(t)
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		ID: "bc-1", VaultID: "root-ns-id",
+		// Pre-existing service whose Name happens to be the slug
+		// Slugify("ghost.example.com", "") would produce. Without the
+		// fix this would be silently deleted by the proposal below.
+		ServicesJSON: `[
+			{"name":"ghost-example-com","host":"unrelated.example","auth":{"type":"bearer","token":"K"}}
+		]`,
+	}
+
+	body := `{
+		"services": [{"action":"delete","host":"ghost.example.com"}],
+		"message": "tidy"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/proposals", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 (no fabricated slug), got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "name is required") {
+		t.Fatalf("expected validation error mentioning required name, got %s", rec.Body.String())
+	}
+
+	// Ensure the unrelated service was not touched.
+	bc := ms.brokerConfigs["root-ns-id"]
+	if !strings.Contains(bc.ServicesJSON, `"name":"ghost-example-com"`) {
+		t.Fatalf("expected unrelated service to remain, got %s", bc.ServicesJSON)
 	}
 }

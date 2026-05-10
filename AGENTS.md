@@ -33,7 +33,7 @@ Authorization: Bearer {AGENT_VAULT_TOKEN}
 X-Vault: {vault_name}
 ```
 
-Response includes `vault`, `services` (each entry has `name`, `host`, `path`, and `description`), and `available_credentials` (key names only — values are never exposed). Before creating a proposal, check `available_credentials` to avoid requesting credentials that already exist in the vault. When two services share a host (e.g. one service at `slack.com /api/*` and another at `slack.com /api/apps.connections.*`), distinguish them by `name` in subsequent operations.
+Response includes `vault`, `services` (each entry has `name`, `host`, and `path`), and `available_credentials` (key names only — values are never exposed). Before creating a proposal, check `available_credentials` to avoid requesting credentials that already exist in the vault. When two services share a host (e.g. one service at `slack.com /api/*` and another at `slack.com /api/apps.connections.*`), distinguish them by `name` in subsequent operations.
 
 ## Route requests through the proxy
 
@@ -48,7 +48,7 @@ GET https://api.stripe.com/v1/charges
 If you have vault admin role, you can add or remove services without proposals:
 
 ```
-POST {AGENT_VAULT_ADDR}/v1/vaults/{vault_name}/services    -- upsert services by name (body: {"services": [...]}). The server auto-derives `name` from `host` and `path` when omitted.
+POST {AGENT_VAULT_ADDR}/v1/vaults/{vault_name}/services    -- upsert services by name (body: {"services": [...]}). The server auto-derives `name` from `host` (which accepts inline path form like `slack.com/api/*`) when omitted.
 DELETE {AGENT_VAULT_ADDR}/v1/vaults/{vault_name}/services/{name}  -- remove a service. The slot also accepts a host as a back-compat shim, returning 409 with the candidate names when more than one service shares that host.
 ```
 
@@ -70,7 +70,6 @@ Content-Type: application/json
     "action": "set",
     "name": "stripe",
     "host": "api.stripe.com",
-    "description": "Stripe API",
     "auth": {"type": "bearer", "token": "STRIPE_KEY"}
   }],
   "credentials": [{
@@ -97,7 +96,7 @@ Content-Type: application/json
 ### After creating a proposal
 
 1. Present the `approval_url` to the user conversationally
-2. Poll `GET {AGENT_VAULT_ADDR}/v1/proposals/{id}` every 2 seconds until status is `applied`
+2. Poll `GET {AGENT_VAULT_ADDR}/v1/proposals/{id}` every 3 seconds for the first 30 seconds, then every 10 seconds, up to 10 minutes — until status is `applied`
 3. Retry your original request
 
 ## Error handling

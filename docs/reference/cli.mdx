@@ -446,10 +446,8 @@ description: "Complete reference for all Agent Vault CLI commands."
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
     | `-f` | | Path to a YAML services file (upsert mode) |
-    | `--name` | _auto_ | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Auto-derived from `--host` and `--path` when omitted. |
-    | `--host` | | Target service host (e.g. `api.stripe.com`). For convenience, a value with a `/` like `slack.com/api/*` is split into host + path. |
-    | `--path` | | Optional URL path glob (e.g. `/api/*`). Empty matches any path. |
-    | `--description` | | Service description |
+    | `--name` | _auto_ | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Auto-derived from `--host` when omitted. |
+    | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). The server splits the path off the host on ingest. |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, `custom`, `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
     | `--username-key` | | Credential key for basic auth username |
@@ -463,7 +461,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     New services are **enabled by default**. Pass `--disabled` to create the service in a disabled state, or use `agent-vault vault service disable <name-or-host>` after creation.
 
-    To layer two credentials on the same host, give them different `--path` globs (e.g. Slack with `/api/*` for the Bot token and `/api/apps.connections.*` for Socket Mode). The matcher resolves overlapping rules deterministically — see [Matching priority](/learn/services#matching-priority).
+    To layer two credentials on the same host, give them different inline paths in `--host` (e.g. Slack with `slack.com/api/*` for the Bot token and `slack.com/api/apps.connections.*` for Socket Mode). The matcher resolves overlapping rules deterministically — see [Matching priority](/learn/services#matching-priority).
 
     URL [substitutions](/learn/services#substitutions) are file-only — there are no flags. Configure them under the `substitutions:` block of a service entry in a YAML file passed via `-f`.
   </Accordion>
@@ -611,10 +609,8 @@ description: "Complete reference for all Agent Vault CLI commands."
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
     | `-f`, `--file` | | Path to JSON proposal file (use `-` for stdin) |
-    | `--name` | _auto_ | Service name (slug). Auto-derived from `--host` and `--path` when omitted. |
-    | `--host` | | Target service host (e.g. `api.stripe.com`). Inline form `slack.com/api/*` is split into host + path. |
-    | `--path` | | Optional URL path glob (e.g. `/api/*`). Empty matches any path. |
-    | `--description` | | Service description |
+    | `--name` | _auto_ | Service name (slug). Auto-derived from `--host` when omitted. |
+    | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, or `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
     | `--username-key` | | Credential key for basic auth username |

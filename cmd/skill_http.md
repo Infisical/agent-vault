@@ -97,7 +97,7 @@ X-Vault: {vault_name}
 
 **Note:** Instance-level agent tokens (persistent agents) must include the `X-Vault: {vault_name}` header on every control-plane call (`/discover`, `/v1/proposals`). The server only reads vault scope from this header — `AGENT_VAULT_VAULT` is a client-side env var; it is your responsibility to copy its value into the `X-Vault` header on each request. Vault-scoped session tokens carry the vault on the session row, so the header is ignored for those (passing it unconditionally is safe).
 
-Response includes `vault`, `services` (each with `name`, `host`, `path`, `description`), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots. When two services share a host (e.g. Slack with separate Bot and Connection rules), they must have different `path` values — distinguish them by `name` in subsequent operations like `PATCH/DELETE /v1/vaults/{vault}/services/{name}`.
+Response includes `vault`, `services` (each with `name`, `host`, `path`), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots. `host` and `path` are returned separately on reads so the matcher rule is inspectable; on writes the matcher is set via `host` alone (inline path form). When two services share a host (e.g. Slack with separate Bot and Connection rules), they have different paths — distinguish them by `name` in subsequent operations like `PATCH/DELETE /v1/vaults/{vault}/services/{name}`.
 
 **Browse service templates:**
 
@@ -212,7 +212,7 @@ Authorization: Bearer {AGENT_VAULT_TOKEN}
 Content-Type: application/json
 
 {
-  "services": [{"action": "set", "host": "api.stripe.com", "description": "Stripe API", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
+  "services": [{"action": "set", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
   "credentials": [{"action": "set", "key": "STRIPE_KEY", "description": "Stripe API key", "obtain": "https://dashboard.stripe.com/apikeys", "obtain_instructions": "Developers -> API Keys -> Reveal test key"}],
   "message": "Need Stripe API key for billing feature",
   "user_message": "I need access to your Stripe account to build the checkout page."
@@ -221,9 +221,8 @@ Content-Type: application/json
 
 Key fields:
 - `services[].action` -- `"set"` (upsert, needs `host` + `auth` **or** an `enabled` change) or `"delete"`
-- `services[].name` -- canonical identifier (slug, 3–64 lowercase alphanumeric/hyphen chars). Optional on write; the server auto-derives from `host` and `path` when omitted. Identity for set/delete is `name` — when a delete uses `host` alone and the host is shared by multiple services, the server returns 409 with the candidate names.
-- `services[].host` -- bare hostname (e.g. `api.stripe.com`) or one-level wildcard (e.g. `*.github.com`). For convenience you can paste an inline form like `slack.com/api/*` and the server splits it into `host` + `path`.
-- `services[].path` -- optional URL path glob. Empty matches any path. Use `*` as a greedy glob (cross-`/`); `**`, `?`, regex, and bare `*` are rejected.
+- `services[].name` -- canonical identifier (slug, 3–64 lowercase alphanumeric/hyphen chars). Optional on write; the server auto-derives from `host` when omitted. Identity for set/delete is `name` — when a delete uses `host` alone and the host is shared by multiple services, the server returns 409 with the candidate names.
+- `services[].host` -- single matcher field. Accepts a bare hostname (e.g. `api.stripe.com`), a one-level wildcard (e.g. `*.github.com`), or an inline path-scoped form (e.g. `slack.com/api/*`). The server splits the path off the host on ingest. Path globs use `*` as a greedy glob (cross-`/`); `**`, `?`, regex, and bare `*` are rejected.
 - `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates), `passthrough` (no credential fields)
 - `services[].substitutions` -- optional list of URL/header rewrites. Each entry has `key` (UPPER_SNAKE_CASE credential reference), `placeholder` (the exact wire string the broker matches case-sensitively, e.g. `__account_sid__`), and optional `in` (subset of `["path", "query", "header"]`; defaults to `["path", "query"]`). Surfaces not in `in` are not scanned. Must be paired with an `auth` change in the same proposal — substitutions cannot be added on an enable/disable-only update. See the URL Substitutions section above.
 - `services[].enabled` -- optional boolean. Omitted means "enabled" for new services. A `"set"` proposal may supply `enabled` alone (no `auth`) to flip an existing service's state without replacing its auth config -- useful for staged rollouts where the operator wires credentials before flipping traffic on
@@ -269,7 +268,7 @@ Authorization: Bearer {AGENT_VAULT_TOKEN}
 
 Query params: `status_bucket` (`2xx`|`3xx`|`4xx`|`5xx`|`err`), `service` (canonical service **name** — e.g. `slack-bot`, `stripe`), `limit` (default 50, max 200), `before=<id>` (page back), `after=<id>` (tail forward for new rows). Response: `{ "logs": [...], "next_cursor": <id|null>, "latest_id": <id> }`.
 
-> **Note**: Rows written before path-based service matching shipped store the matched **host** in the `matched_service` field. New rows store the canonical service **name**. Operators filtering on `?service=` should use service names; pre-upgrade rows can be retrieved by querying with the host string instead.
+> **Note**: Rows written before path-based service matching shipped store the matched **host** in the `matched_service` field. New rows store the canonical service **name**. Operators filtering on `?service=` should use service names; pre-upgrade rows can be retrieved by querying with the host string instead. The matched host and path patterns themselves are not returned in log rows — call `GET /v1/vaults/{vault}/services/{name}` (or read `/discover`) to recover the (host, path) tuple from a name.
 
 ## Building Code That Needs Credentials
 

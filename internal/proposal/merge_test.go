@@ -15,7 +15,7 @@ func TestMergeServicesSetAppend(t *testing.T) {
 		{Name: "api-github-com", Host: "api.github.com", Auth: broker.Auth{Type: "bearer", Token: "GH"}},
 	}
 	proposed := []Service{
-		{Action: ActionSet, Name: "api-stripe-com", Host: "api.stripe.com", Description: "Stripe", Auth: mergeBearer("SK")},
+		{Action: ActionSet, Name: "api-stripe-com", Host: "api.stripe.com", Auth: mergeBearer("SK")},
 	}
 
 	merged, warnings := MergeServices(existing, proposed)
@@ -27,9 +27,6 @@ func TestMergeServicesSetAppend(t *testing.T) {
 	}
 	if merged[1].Host != "api.stripe.com" {
 		t.Fatalf("expected appended host api.stripe.com, got %s", merged[1].Host)
-	}
-	if merged[1].Description == nil || *merged[1].Description != "Stripe" {
-		t.Fatalf("expected description 'Stripe'")
 	}
 }
 
@@ -150,15 +147,6 @@ func TestMergeServicesEmpty(t *testing.T) {
 	}
 	if len(merged) != 1 {
 		t.Fatalf("expected 1 service, got %d", len(merged))
-	}
-}
-
-func TestMergeServicesNoDescription(t *testing.T) {
-	merged, _ := MergeServices(nil, []Service{
-		{Action: ActionSet, Name: "example-com", Host: "example.com", Auth: mergeBearer("KEY")},
-	})
-	if merged[0].Description != nil {
-		t.Fatalf("expected nil description, got %v", merged[0].Description)
 	}
 }
 

@@ -81,27 +81,48 @@ export interface Substitution {
 // ---------------------------------------------------------------------------
 
 /**
- * A vault service (proxy rule).
+ * Write shape for a vault service (proxy rule).
  *
  * Identity is `name` — a unique-per-vault slug. The server auto-derives
- * the name from `host` and `path` when omitted on write, so callers
- * upgrading from v0.1.0 don't need to supply it. Server reads always
- * include `name` (legacy services are slugged on the fly).
+ * the name from `host` when omitted, so callers upgrading from v0.1.0
+ * don't need to supply it.
  *
- * `path` scopes the rule to a URL path glob (e.g. `/api/*`); leave it
- * empty to match any path on the host. The server resolves overlapping
- * rules deterministically: exact-host beats wildcard-host, then longer
+ * `host` is the single matcher field on the wire. Accepts a bare
+ * hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`),
+ * or an inline path-scoped form (`slack.com/api/*`). The server splits
+ * the path off the host on ingest and resolves overlapping rules
+ * deterministically: exact-host beats wildcard-host, then longer
  * literal path prefix wins, with declaration order as the final tiebreak.
  */
-export interface Service {
-  /** Service name (slug, 3–64 chars, lowercase alphanumeric and hyphens). Server auto-derives from host/path when omitted on write. */
+export interface ServiceInput {
+  /** Service name (slug, 3–64 chars, lowercase alphanumeric and hyphens). Server auto-derives from host when omitted. */
   name?: string;
-  /** Host pattern (exact match or wildcard like "*.github.com"). */
+  /** Host pattern. Accepts `api.stripe.com`, `*.github.com`, or an inline path form like `slack.com/api/*`. */
   host: string;
-  /** Optional URL path glob. Empty matches any path. Use * as a greedy glob (e.g. /api/*). */
+  /** Whether the service is active. Omitted/undefined is treated as enabled. */
+  enabled?: boolean;
+  /** Authentication configuration. */
+  auth: ServiceAuth;
+  /** Optional placeholder→credential substitutions applied before forwarding. */
+  substitutions?: Substitution[];
+}
+
+/**
+ * Read shape for a vault service.
+ *
+ * Mirrors {@link ServiceInput} but with `host` always bare (path
+ * stripped) and `path` returned alongside, so callers can inspect the
+ * matcher rule without re-parsing the inline form. Composed (not
+ * extended) from `ServiceInput` so a read value can't be passed to a
+ * write method without an explicit conversion.
+ */
+export interface Service {
+  /** Service name (slug). Server populates this on reads. */
+  name?: string;
+  /** Bare host (path stripped). Always set on reads. */
+  host: string;
+  /** URL path glob, or empty for catch-all. Server-derived from the inline-form host on write. */
   path?: string;
-  /** Optional description. */
-  description?: string;
   /** Whether the service is active. Omitted/undefined is treated as enabled. */
   enabled?: boolean;
   /** Authentication configuration. */
@@ -168,8 +189,6 @@ export interface CredentialUsageEntry {
   host: string;
   /** Service path glob, or empty for catch-all. */
   path?: string;
-  /** Service description, if set. */
-  description?: string;
 }
 
 /** Result of checking credential usage across services. */
@@ -208,10 +227,7 @@ export class ServicesResource {
     const res = await this.httpClient.get<ServicesList>(this.basePath);
     return {
       vault: res.vault,
-      services: res.services.map((s) => ({
-        ...s,
-        description: s.description ?? undefined,
-      })) as Service[],
+      services: res.services as Service[],
     };
   }
 
@@ -226,7 +242,7 @@ export class ServicesResource {
    * @throws {ApiError} 403 if the caller is not a vault admin.
    * @throws {ApiError} 404 if the vault is not found.
    */
-  async set(services: Service[]): Promise<SetServicesResult> {
+  async set(services: ServiceInput[]): Promise<SetServicesResult> {
     const res = await this.httpClient.post<ServicesUpserted>(this.basePath, {
       services,
     });
@@ -254,15 +270,7 @@ export class ServicesResource {
    * @throws {ApiError} 409 if multiple services share the host (use {@link removeByName}).
    */
   async remove(host: string): Promise<RemoveServiceResult> {
-    const res = await this.httpClient.del<ServiceRemoved>(
-      `${this.basePath}/${encodeURIComponent(host)}`,
-    );
-    return {
-      vault: res.vault,
-      removed: res.removed,
-      removedHost: res.removed_host,
-      servicesCount: res.services_count,
-    };
+    return this.removeByRef(host);
   }
 
   /**
@@ -276,8 +284,12 @@ export class ServicesResource {
    * @throws {ApiError} 404 if the vault or service is not found.
    */
   async removeByName(name: string): Promise<RemoveServiceResult> {
+    return this.removeByRef(name);
+  }
+
+  private async removeByRef(ref: string): Promise<RemoveServiceResult> {
     const res = await this.httpClient.del<ServiceRemoved>(
-      `${this.basePath}/${encodeURIComponent(name)}`,
+      `${this.basePath}/${encodeURIComponent(ref)}`,
     );
     return {
       vault: res.vault,
@@ -299,7 +311,7 @@ export class ServicesResource {
    * @throws {ApiError} 403 if the caller is not a vault admin.
    * @throws {ApiError} 404 if the vault is not found.
    */
-  async replaceAll(services: Service[]): Promise<ReplaceAllServicesResult> {
+  async replaceAll(services: ServiceInput[]): Promise<ReplaceAllServicesResult> {
     const res = await this.httpClient.put<ServicesReplaced>(this.basePath, {
       services,
     });

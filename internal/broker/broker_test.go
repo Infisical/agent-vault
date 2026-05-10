@@ -157,6 +157,10 @@ func TestValidateSlugRejects(t *testing.T) {
 		{"underscore", "slack_com"},
 		{"dot", "slack.com"},
 		{"slash", "slack/com"},
+		{"leading hyphen", "-foo"},
+		{"trailing hyphen", "foo-"},
+		{"consecutive hyphens", "foo--bar"},
+		{"only hyphens", "---"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -212,6 +216,10 @@ func TestSlugifyDeterministic(t *testing.T) {
 		{"API.STRIPE.COM", "", "api-stripe-com"},
 		// Very short host pads up.
 		{"x", "", "x-svc"},
+		// Root-literal path must not collide with empty (catch-all) path:
+		// match semantics differ, so the slugs must differ too.
+		{"slack.com", "/", "slack-com-root"},
+		{"slack.com", "/*", "slack-com-root"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.host+tc.path, func(t *testing.T) {

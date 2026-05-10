@@ -7,17 +7,16 @@ A `Service` is a per-[vault](/learn/vaults) configuration that defines which ups
 
 Each service contains:
 
-- **Name**: A canonical per-vault identifier (slug, 3–64 lowercase alphanumeric/hyphen chars). Auto-derived from `host` and `path` when omitted on write.
-- **Host**: The target hostname. Supports exact match (e.g. `api.stripe.com`) or one-level wildcard (e.g. `*.github.com`).
-- **Path** (optional): A URL path glob (e.g. `/api/*`). Empty matches any path. Lets you attach different credentials to different paths on the same host.
+- **Name**: A canonical per-vault identifier (slug, 3–64 lowercase alphanumeric/hyphen chars, no leading/trailing hyphen, no consecutive hyphens). Auto-derived from `host` when omitted on write — the host (with any inline path's literal portion) is lower-cased and joined with hyphens, with `.` and `/` becoming `-`. Examples: `api.stripe.com` → `api-stripe-com`; `slack.com/api/*` → `slack-com-api`. When the auto-slug would collide with an existing service's name, the server appends `-2`, `-3`, … so a stale auto-slug never silently overwrites another service.
+- **Host**: The target. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). The server splits the path off the host on ingest; reads return `host` and `path` separately so the matcher rule is inspectable.
+- **Path** (read-only on writes; derived from inline `host`): The split URL path glob. Empty matches any path. Lets you attach different credentials to different paths on the same host. Returned on reads so you can see what the matcher will key on.
 - **Auth config**: How Agent Vault authenticates. Five types are supported: `bearer`, `basic`, `api-key`, `custom`, and `passthrough` (opt out of injection).
-- **Description**: An optional human-readable label shown in `/discover` responses.
 
 <Tip>
-  The `/discover` endpoint returns each service's `name`, `host`, `path`, and
-  `description`. Agents use this to know which services are already available
-  before raising a [proposal](/learn/proposals). When two services share a host
-  (e.g. Slack with separate Bot and Connection rules), distinguish them by `name`.
+  The `/discover` endpoint returns each service's `name`, `host`, and `path`.
+  Agents use this to know which services are already available before raising
+  a [proposal](/learn/proposals). When two services share a host (e.g. Slack
+  with separate Bot and Connection rules), distinguish them by `name`.
 </Tip>
 
 Similar to [credentials](/learn/credentials), services can be configured in two ways:
@@ -33,7 +32,6 @@ Services are defined in a YAML file. Here's what a single service looks like:
 services:
   - name: stripe
     host: api.stripe.com
-    description: Stripe API
     auth:
       type: bearer
       token: STRIPE_KEY
@@ -57,7 +55,6 @@ Attaches an `Authorization: Bearer <token>` header. The `token` field references
 services:
   - name: api-stripe-com
     host: api.stripe.com
-    description: Stripe API
     auth:
       type: bearer
       token: STRIPE_KEY
@@ -73,7 +70,6 @@ Attaches an `Authorization: Basic <base64>` header using HTTP Basic authenticati
 services:
   - name: api-ashbyhq-com
     host: api.ashbyhq.com
-    description: Ashby ATS API
     auth:
       type: basic
       username: ASHBY_API_KEY
@@ -85,7 +81,6 @@ With a password:
 services:
   - name: yoursite-atlassian-net
     host: yoursite.atlassian.net
-    description: Jira API
     auth:
       type: basic
       username: JIRA_EMAIL
@@ -100,7 +95,6 @@ Attaches a credential value to a named header with an optional prefix. The `head
 services:
   - name: api-anthropic-com
     host: api.anthropic.com
-    description: Anthropic API
     auth:
       type: api-key
       key: ANTHROPIC_KEY
@@ -128,7 +122,6 @@ Freeform header templates with `{{ SECRET }}` placeholders. Each placeholder is 
 services:
   - name: api-acme-internal
     host: api.acme.internal
-    description: Internal ACME service
     auth:
       type: custom
       headers:
@@ -144,7 +137,6 @@ Allowlists the host without injecting a credential. No credential is stored, rea
 services:
   - name: api-example-com
     host: api.example.com
-    description: Client already holds the credential
     auth:
       type: passthrough
 ```
@@ -185,7 +177,6 @@ Auth types only inject HTTP headers. Some upstream APIs want a credential value 
 services:
   - name: api-twilio-com
     host: api.twilio.com
-    description: Twilio Messaging API
     auth:
       type: basic
       username: TWILIO_ACCOUNT_SID
@@ -282,21 +273,18 @@ A vault can define multiple services with different auth types and path scopes:
 services:
   - name: stripe
     host: api.stripe.com
-    description: Stripe API
     auth:
       type: bearer
       token: STRIPE_KEY
 
   - name: github
     host: "*.github.com"
-    description: GitHub API
     auth:
       type: bearer
       token: GITHUB_TOKEN
 
   - name: anthropic
     host: api.anthropic.com
-    description: Anthropic API
     auth:
       type: api-key
       key: ANTHROPIC_KEY
@@ -304,25 +292,20 @@ services:
 
   - name: jira
     host: yoursite.atlassian.net
-    description: Jira API
     auth:
       type: basic
       username: JIRA_EMAIL
       password: JIRA_API_TOKEN
 
-  # Slack uses two credentials at the same host — distinguish by path.
+  # Slack uses two credentials at the same host — distinguish via inline-path host.
   - name: slack-bot
-    host: slack.com
-    path: /api/*
-    description: Slack Bot User
+    host: slack.com/api/*
     auth:
       type: bearer
       token: SLACK_BOT_TOKEN
 
   - name: slack-conn
-    host: slack.com
-    path: /api/apps.connections.*
-    description: Slack Socket Mode connections
+    host: slack.com/api/apps.connections.*
     auth:
       type: bearer
       token: SLACK_CONNECTION_TOKEN
@@ -373,6 +356,10 @@ Removes all services. Agents scoped to this [vault](/learn/vaults) will get `403
   to specify it when working with additional vaults.
 </Tip>
 
+<Note>
+  `vault service remove`, `enable`, and `disable` accept either the canonical service `name` or the `host`. When several path-scoped services share a host (e.g. Slack with `/api/*` and `/api/apps.connections.*`), passing the bare host returns `409 multiple services match host …` with a `candidates` array of `{name, host, path}`. Retry with the specific name shown in `agent-vault vault service list`.
+</Note>
+
 <AccordionGroup>
   <Accordion title="How proposals modify services">
     Agents don't edit service configurations directly. Instead, they propose changes
@@ -381,14 +368,20 @@ Removes all services. Agents scoped to this [vault](/learn/vaults) will get `403
 
     Each service in a proposal has an `action` field:
 
-    - **`set`**: Idempotent upsert. Adds the service if the host doesn't exist, or
-      replaces the existing service for that host. Requires `host` and `auth`.
-    - **`delete`**: Removes the service matching the given host. Only requires
-      `host`.
+    - **`set`**: Idempotent upsert keyed by canonical `name` (slug). Adds the service when
+      no entry has that name, or replaces it when one does. `name` is auto-derived from
+      `host` when omitted (the server splits any inline path off the host first); a host-only
+      proposal that matches an existing service's `(host, path)` adopts the existing name
+      (so legacy "rotate credentials" proposals update in place rather than create a duplicate).
+    - **`delete`**: Removes the service matching the given `name`. When `name` is omitted,
+      `host` is used as a fallback — a unique host match is resolved automatically; a host
+      shared by multiple path-scoped services returns `409 multiple services match host …`
+      with a `candidates` list, and the proposal must be retried with an explicit `name`.
 
     When you approve a proposal, Agent Vault atomically merges all service changes into
-    the vault's configuration in a single transaction. Set services are upserted by host,
-    delete services remove matching entries.
+    the vault's configuration in a single transaction. Identity for both set and delete is
+    `name`; auto-slug collisions with unrelated existing services are resolved by appending
+    `-2`, `-3`, … so a stale auto-slug can't silently overwrite an existing service.
 
     This means agents can request access to new services without you manually
     editing YAML files. You just review and click "Allow" in the browser

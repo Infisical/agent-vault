@@ -34,6 +34,7 @@ export type {
   ServiceAuth,
   Substitution,
   SubstitutionSurface,
+  ServiceInput,
   Service,
   ListServicesResult,
   SetServicesResult,

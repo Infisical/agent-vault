@@ -50,9 +50,6 @@ func printServices(w io.Writer, servicesJSON string) {
 		fmt.Fprintf(w, "\n%s\n", sectionHeader("Proposed services:"))
 		for _, r := range services {
 			fmt.Fprintf(w, "  %s %s", actionMarker(string(r.Action)), r.Host)
-			if r.Description != "" {
-				fmt.Fprintf(w, "  %s", mutedText(fmt.Sprintf("(%s)", r.Description)))
-			}
 			_, _ = fmt.Fprintln(w)
 			if r.Action == proposal.ActionSet && r.Auth != nil {
 				fmt.Fprintf(w, "      %s: %s\n", mutedText("auth"), r.Auth.Type)
