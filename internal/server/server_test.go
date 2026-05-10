@@ -5742,3 +5742,94 @@ func TestServicesUpsertSplitsInlineHost(t *testing.T) {
 		t.Fatalf("expected path stored as /api/*, got %s", bc.ServicesJSON)
 	}
 }
+
+// TestServicesUpsertAutoSlugBumpsAroundExistingName guards against a
+// silent destructive upsert: when an incoming service has no explicit
+// Name and Slugify(host, path) happens to match an unrelated stored
+// service's Name, the auto-slug must bump (`-2`) rather than overwrite
+// the stored service via the byName upsert. Mirrors the seeding
+// pattern in normalizeProposalServices.
+func TestServicesUpsertAutoSlugBumpsAroundExistingName(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	// Pre-existing service whose explicit Name is the slug Slugify
+	// would produce for ("slack.com", "/api/*") — i.e. "slack-com-api".
+	// The Host is unrelated, so this is a real distinct service that
+	// must survive the upsert.
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		ID: "bc-1", VaultID: "root-ns-id",
+		ServicesJSON: `[
+			{"name":"slack-com-api","host":"slack-mirror.internal","auth":{"type":"bearer","token":"CORP_MIRROR_TOKEN"}}
+		]`,
+	}
+	srv := newTestServer(withStore(ms))
+
+	body := `{"services":[{"host":"slack.com","path":"/api/*","auth":{"type":"bearer","token":"SLACK_BOT_TOKEN"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/services", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	upserted := resp["upserted"].([]interface{})
+	if len(upserted) != 1 || upserted[0] != "slack-com-api-2" {
+		t.Fatalf("expected upserted=[slack-com-api-2] (auto-slug bumped to avoid overwriting stored slack-com-api), got %v", upserted)
+	}
+	if resp["services_count"].(float64) != 2 {
+		t.Fatalf("expected services_count=2 (both stored and new survive), got %v", resp["services_count"])
+	}
+
+	bc := ms.brokerConfigs["root-ns-id"]
+	if !strings.Contains(bc.ServicesJSON, `"host":"slack-mirror.internal"`) {
+		t.Fatalf("expected stored slack-mirror.internal service to survive, got %s", bc.ServicesJSON)
+	}
+	if !strings.Contains(bc.ServicesJSON, `"token":"CORP_MIRROR_TOKEN"`) {
+		t.Fatalf("expected stored CORP_MIRROR_TOKEN auth to survive, got %s", bc.ServicesJSON)
+	}
+	if !strings.Contains(bc.ServicesJSON, `"name":"slack-com-api-2"`) {
+		t.Fatalf("expected new service stored under bumped name slack-com-api-2, got %s", bc.ServicesJSON)
+	}
+	if !strings.Contains(bc.ServicesJSON, `"token":"SLACK_BOT_TOKEN"`) {
+		t.Fatalf("expected new SLACK_BOT_TOKEN auth stored, got %s", bc.ServicesJSON)
+	}
+}
+
+// TestServicesUpsertExplicitNameMatchingExistingReplaces confirms the
+// intended upsert-by-name semantic: if the caller supplies an explicit
+// Name that matches an existing service, the upsert replaces that
+// service (no auto-slug bumping for explicit names).
+func TestServicesUpsertExplicitNameMatchingExistingReplaces(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		ID: "bc-1", VaultID: "root-ns-id",
+		ServicesJSON: `[
+			{"name":"slack-bot","host":"slack.com","path":"/api/*","auth":{"type":"bearer","token":"OLD_TOKEN"}}
+		]`,
+	}
+	srv := newTestServer(withStore(ms))
+
+	body := `{"services":[{"name":"slack-bot","host":"slack.com","path":"/api/*","auth":{"type":"bearer","token":"NEW_TOKEN"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/services", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["services_count"].(float64) != 1 {
+		t.Fatalf("expected services_count=1 (replace, not bump), got %v", resp["services_count"])
+	}
+	bc := ms.brokerConfigs["root-ns-id"]
+	if !strings.Contains(bc.ServicesJSON, `"token":"NEW_TOKEN"`) || strings.Contains(bc.ServicesJSON, `"token":"OLD_TOKEN"`) {
+		t.Fatalf("expected explicit-name upsert to replace OLD_TOKEN with NEW_TOKEN, got %s", bc.ServicesJSON)
+	}
+}
