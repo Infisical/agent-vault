@@ -152,7 +152,7 @@ If a service with the same name already exists, it is replaced.
 (*.github.com), or an inline path-scoped form (slack.com/api/*) — the
 broker splits the path off the host on ingest.
 
-Flag-driven mode (--name and --host are both required):
+Flag-driven mode. --host is required; --name is optional (server slugifies host+path when omitted):
   agent-vault vault service add --name stripe --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY
   agent-vault vault service add --name slack-bot --host 'slack.com/api/*' --auth-type bearer --token-key SLACK_BOT_TOKEN
 
@@ -401,7 +401,7 @@ func init() {
 
 	// service add flags
 	serviceAddCmd.Flags().StringP("file", "f", "", "Path to services YAML file (upsert mode)")
-	serviceAddCmd.Flags().String("name", "", "Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required with --host.")
+	serviceAddCmd.Flags().String("name", "", "Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Optional — server slugifies --host + inline path when omitted.")
 	serviceAddCmd.Flags().String("host", "", "Target service host. Accepts api.stripe.com, *.github.com, or inline path form like slack.com/api/*.")
 	serviceAddCmd.Flags().String("auth-type", "", "Auth type: bearer, basic, api-key, custom, passthrough")
 	serviceAddCmd.Flags().String("token-key", "", "Credential key for bearer auth")

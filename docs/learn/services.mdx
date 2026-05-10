@@ -7,7 +7,7 @@ A `Service` is a per-[vault](/learn/vaults) configuration that defines which ups
 
 Each service contains:
 
-- **Name**: A canonical per-vault identifier (slug, 3–64 lowercase alphanumeric/hyphen chars, no leading/trailing hyphen, no consecutive hyphens). **Required on write** — pick a deliberate name like `stripe`, `slack-bot`, or `internal-billing`; the server does not derive a name from `host`. Path-scoped services that share a bare host (e.g. `slack.com/api/*` vs `slack.com/api/apps.connections.*`) must each carry a distinct `name` so subsequent operations stay unambiguous.
+- **Name**: A canonical per-vault identifier (slug, 3–64 lowercase alphanumeric/hyphen chars, no leading/trailing hyphen, no consecutive hyphens). **Optional on write** — when omitted, the server slugifies `host` + `path` (e.g. `api.stripe.com` → `api-stripe-com`); supply an explicit name like `stripe`, `slack-bot`, or `internal-billing` for a friendlier identifier. Path-scoped services that share a bare host (e.g. `slack.com/api/*` vs `slack.com/api/apps.connections.*`) end up with distinct slugs automatically, but you can still set `name` explicitly so subsequent operations use the friendlier label.
 - **Host**: The single matcher field. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). Reads and writes use the same shape: writes accept any of those forms; reads return the joined inline form so you see exactly what you wrote.
 - **Auth config**: How Agent Vault authenticates. Five types are supported: `bearer`, `basic`, `api-key`, `custom`, and `passthrough` (opt out of injection).
 
