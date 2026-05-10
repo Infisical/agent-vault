@@ -33,7 +33,7 @@ Authorization: Bearer {AGENT_VAULT_TOKEN}
 X-Vault: {vault_name}
 ```
 
-Response includes `vault`, `services` (each entry has `name`, `host`, and `path`), and `available_credentials` (key names only — values are never exposed). Before creating a proposal, check `available_credentials` to avoid requesting credentials that already exist in the vault. When two services share a host (e.g. one service at `slack.com /api/*` and another at `slack.com /api/apps.connections.*`), distinguish them by `name` in subsequent operations.
+Response includes `vault`, `services` (each entry has `name` and `host`, where `host` is the joined inline form — `slack.com/api/*` for path-scoped rules), and `available_credentials` (key names only — values are never exposed). Before creating a proposal, check `available_credentials` to avoid requesting credentials that already exist in the vault. When two services share a bare host (e.g. one service at `slack.com/api/*` and another at `slack.com/api/apps.connections.*`), distinguish them by `name` in subsequent operations.
 
 ## Route requests through the proxy
 

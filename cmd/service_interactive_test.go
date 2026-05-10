@@ -39,21 +39,33 @@ func TestHostWarnings(t *testing.T) {
 	}
 }
 
-func TestFindDuplicateHosts(t *testing.T) {
+func TestFindDuplicateMatchers(t *testing.T) {
 	services := []broker.Service{
 		{Host: "api.stripe.com", Auth: broker.Auth{Type: "bearer", Token: "A"}},
 		{Host: "api.github.com", Auth: broker.Auth{Type: "bearer", Token: "A"}},
 		{Host: "api.stripe.com", Auth: broker.Auth{Type: "bearer", Token: "B"}},
 	}
 
-	dups := findDuplicateHosts(services)
+	dups := findDuplicateMatchers(services)
 	if len(dups) != 1 || dups[0] != "api.stripe.com" {
-		t.Errorf("findDuplicateHosts() = %v, want [api.stripe.com]", dups)
+		t.Errorf("findDuplicateMatchers() = %v, want [api.stripe.com]", dups)
 	}
 
-	noDups := findDuplicateHosts(services[:2])
+	noDups := findDuplicateMatchers(services[:2])
 	if len(noDups) != 0 {
-		t.Errorf("findDuplicateHosts() = %v, want empty", noDups)
+		t.Errorf("findDuplicateMatchers() = %v, want empty", noDups)
+	}
+}
+
+// Path-scoped siblings on the same bare host are NOT duplicates — the
+// matcher pattern (Host + Path) is what defines identity for tiebreaks.
+func TestFindDuplicateMatchersIgnoresPathScopedSiblings(t *testing.T) {
+	services := []broker.Service{
+		{Host: "slack.com", Path: "/api/*", Auth: broker.Auth{Type: "bearer", Token: "BOT"}},
+		{Host: "slack.com", Path: "/api/apps.connections.*", Auth: broker.Auth{Type: "bearer", Token: "CONN"}},
+	}
+	if dups := findDuplicateMatchers(services); len(dups) != 0 {
+		t.Errorf("findDuplicateMatchers() = %v, want empty (distinct paths)", dups)
 	}
 }
 
