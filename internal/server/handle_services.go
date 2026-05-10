@@ -88,35 +88,19 @@ func writeNormalizeError(w http.ResponseWriter, err error, notFoundStatus, defau
 }
 
 // normalizeProposalServices splits inline-form host on every entry,
-// resolves ActionDelete-by-host targets against the current vault
-// state, and auto-slugs ActionSet entries that omit Name.
-//
-// ActionDelete without Name: resolve against existing services by Host
-// (and Path when inline-form scoped). Unique match fills Name; 2+ →
-// *hostAmbiguityError; 0 → *hostNotFoundError.
-//
-// ActionSet without Name: filled via broker.Slugify(host, path), with
-// disambiguation against other ActionSet entries in the same proposal.
-// Names already present in `existing` are deliberately NOT reserved —
-// an empty-name set whose slug matches an existing service applies as
-// an in-place replace, which is the natural upsert semantics.
+// resolves ActionDelete-by-host (unique → fill Name; 2+ → ambiguity
+// error; 0 → not-found error), and heals unnamed ActionSet entries
+// through broker.AssignSlugNamesAvoiding so the upsert and proposal
+// paths share one source of truth for the adopt-then-auto-slug heal.
+// Empty-Host ActionSet entries are excluded from the heal so they
+// surface as a validation error downstream rather than be slugged
+// from an invalid Host.
 func normalizeProposalServices(in []proposal.Service, existing []broker.Service) ([]proposal.Service, error) {
 	out := make([]proposal.Service, len(in))
 
-	// Track ActionSet slugs assigned so far so two empty-name sets in
-	// the same proposal get distinct names.
-	setNames := make(map[string]bool)
-	for _, svc := range in {
-		if svc.Action == proposal.ActionSet && svc.Name != "" {
-			setNames[svc.Name] = true
-		}
-	}
-
 	for i, svc := range in {
 		svc.Host, svc.Path = broker.SplitInlineHost(svc.Host, svc.Path)
-
-		switch {
-		case svc.Action == proposal.ActionDelete && svc.Name == "":
+		if svc.Action == proposal.ActionDelete && svc.Name == "" {
 			var matches []broker.Service
 			for _, e := range existing {
 				if e.Host != svc.Host {
@@ -138,22 +122,33 @@ func normalizeProposalServices(in []proposal.Service, existing []broker.Service)
 			default:
 				return nil, &hostNotFoundError{host: svc.Host}
 			}
-		case svc.Action == proposal.ActionSet && svc.Name == "" && svc.Host != "":
-			name := broker.DisambiguateSlug(broker.Slugify(svc.Host, svc.Path), setNames)
-			svc.Name = name
-			setNames[name] = true
 		}
 		out[i] = svc
+	}
+
+	setIdx := make([]int, 0, len(out))
+	for i, svc := range out {
+		if svc.Action == proposal.ActionSet && svc.Host != "" {
+			setIdx = append(setIdx, i)
+		}
+	}
+	if len(setIdx) > 0 {
+		view := make([]broker.Service, len(setIdx))
+		for j, i := range setIdx {
+			view[j] = broker.Service{Name: out[i].Name, Host: out[i].Host, Path: out[i].Path}
+		}
+		broker.AssignSlugNamesAvoiding(view, existing)
+		for j, i := range setIdx {
+			out[i].Name = view[j].Name
+		}
 	}
 	return out, nil
 }
 
-// loadServices reads the vault's broker config and splits inline-form
-// Host on every entry so the matcher invariant holds. Missing Name
-// fields are filled via broker.AssignSlugNames so legacy services
-// persisted before Name became required heal lazily on read — the
-// backfilled name becomes durable the next time the caller writes the
-// list back. Returns nil, nil when no config exists.
+// loadServices reads the vault's broker config, splits inline-form
+// Host so the matcher invariant holds, and backfills missing Name
+// fields via AssignSlugNames (the slug becomes durable on the next
+// write). Returns nil, nil when no config exists.
 func (s *Server) loadServices(ctx context.Context, vaultID string) ([]broker.Service, error) {
 	bc, err := s.store.GetBrokerConfig(ctx, vaultID)
 	if err != nil {
@@ -345,10 +340,11 @@ func (s *Server) handleServicesUpsert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	incomingSlice := splitInlineHosts(req.Services)
-	// An empty-name upsert whose slug collides with an existing service
-	// applies as an in-place replace, so we don't reserve existing names
-	// against the auto-slug.
-	broker.AssignSlugNames(incomingSlice)
+	// An empty-Name entry adopts the existing Name on a unique host+path
+	// match (so the write replaces in place by host); otherwise auto-slug
+	// with existing Names reserved so a cross-host slug collision lands
+	// on a -2 suffix rather than silently overwriting an unrelated entry.
+	broker.AssignSlugNamesAvoiding(incomingSlice, existing)
 
 	incoming := broker.Config{Vault: name, Services: incomingSlice}
 	if err := broker.Validate(&incoming); err != nil {

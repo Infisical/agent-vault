@@ -613,15 +613,9 @@ func matchPathGlob(pattern, path string) (literalLen int, ok bool) {
 	return literalLen, true
 }
 
-// Slugify derives a deterministic ValidateSlug-conformant identifier
-// from a service's Host + Path. Used to auto-name services that omit
-// Name and to heal legacy entries persisted before Name was required.
-//
-// Output is guaranteed to satisfy ValidateSlug for any inputs that
-// already pass ValidateHost + ValidatePath. Collisions between
-// distinct (host, path) inputs are possible (e.g. `*.github.com` and
-// `github.com` both yield `github-com`); callers dedupe via
-// AssignSlugNames.
+// Slugify derives a ValidateSlug-conformant identifier from host+path.
+// Distinct inputs can collide (e.g. `*.github.com` and `github.com` both
+// yield `github-com`); callers dedupe via DisambiguateSlug.
 func Slugify(host, path string) string {
 	var b strings.Builder
 	write := func(s string) {
@@ -653,15 +647,31 @@ func Slugify(host, path string) string {
 	return raw
 }
 
-// AssignSlugNames fills empty Name fields on services by slugifying
-// Host + Path in declaration order. Each assigned slug is unique
-// against other names in the slice; on collision the next free
-// `-<n>` suffix is appended (truncating to keep the 64-char cap).
-// Non-empty names are left untouched.
+// AssignSlugNames is AssignSlugNamesAvoiding with no existing-state
+// context — intra-slice disambiguation only. Use this on read paths
+// or full-replace writes where no pre-existing services are merged
+// against.
 func AssignSlugNames(services []Service) {
-	// Fast-path: skip allocation when every service already has a
-	// name. loadServices runs this on every read, so the steady-state
-	// (post-heal) cost should be a single linear scan.
+	AssignSlugNamesAvoiding(services, nil)
+}
+
+// AssignSlugNamesAvoiding fills empty Names with awareness of an
+// existing vault state:
+//
+//  1. An empty-Name entry whose (Host, Path) uniquely matches an
+//     existing service adopts that service's Name — so a same-host
+//     empty-Name write addresses the service that already owns the
+//     host instead of creating a parallel auto-slugged ghost (which
+//     would be unreachable when MatchService scores it equal to the
+//     pre-existing entry).
+//  2. Remaining empties auto-slug via Slugify + DisambiguateSlug,
+//     reserving existing Names alongside in-slice Names. This stops a
+//     cross-host slug collision (e.g. `github.com` and `*.github.com`
+//     both slugifying to `github-com`) from unintentionally replacing
+//     an unrelated existing service via the Name-keyed upsert path.
+//
+// Pass nil existing for intra-slice disambiguation only.
+func AssignSlugNamesAvoiding(services, existing []Service) {
 	anyEmpty := false
 	for _, s := range services {
 		if s.Name == "" {
@@ -673,7 +683,33 @@ func AssignSlugNames(services []Service) {
 		return
 	}
 
-	taken := make(map[string]bool, len(services))
+	type hp struct{ host, path string }
+	hpCount := make(map[hp]int, len(existing))
+	hpName := make(map[hp]string, len(existing))
+	for _, e := range existing {
+		k := hp{e.Host, e.Path}
+		hpCount[k]++
+		if hpCount[k] == 1 {
+			hpName[k] = e.Name
+		}
+	}
+	for i := range services {
+		svc := &services[i]
+		if svc.Name != "" {
+			continue
+		}
+		k := hp{svc.Host, svc.Path}
+		if hpCount[k] == 1 {
+			svc.Name = hpName[k]
+		}
+	}
+
+	taken := make(map[string]bool, len(services)+len(existing))
+	for _, e := range existing {
+		if e.Name != "" {
+			taken[e.Name] = true
+		}
+	}
 	for _, s := range services {
 		if s.Name != "" {
 			taken[s.Name] = true
@@ -689,11 +725,8 @@ func AssignSlugNames(services []Service) {
 	}
 }
 
-// DisambiguateSlug returns the lowest-suffixed variant of base that
-// isn't in taken. Appends `-<n>` starting at 2, truncating base to
-// keep the result within the 64-char ValidateSlug cap. Shared by
-// AssignSlugNames and proposal normalization (where the input type
-// isn't []Service).
+// DisambiguateSlug returns the lowest `base-<n>` (n≥2) not in taken,
+// truncating base to stay within the 64-char ValidateSlug cap.
 func DisambiguateSlug(base string, taken map[string]bool) string {
 	name := base
 	for n := 2; taken[name]; n++ {

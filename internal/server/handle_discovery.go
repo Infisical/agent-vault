@@ -57,6 +57,10 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	for i := range svcList {
 		svcList[i].Host, svcList[i].Path = broker.SplitInlineHost(svcList[i].Host, svcList[i].Path)
 	}
+	// Heal legacy unnamed entries on the agent-facing read path too —
+	// agents identify services by Name (per skill_http.md) and a blank
+	// Name in this response makes the service un-addressable.
+	broker.AssignSlugNames(svcList)
 
 	services := make([]discoverService, len(svcList))
 	for i, svc := range svcList {

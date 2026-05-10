@@ -106,6 +106,11 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	for i := range services {
 		services[i].Host, services[i].Path = broker.SplitInlineHost(services[i].Host, services[i].Path)
 	}
+	// Heal legacy unnamed entries so MatchedName (which lands in the
+	// request log and the X-Vault-Service header) is never blank for a
+	// matched service — the documented `?service=<name>` log filter
+	// depends on it.
+	broker.AssignSlugNames(services)
 
 	matchHost := targetHost
 	if h, _, err := net.SplitHostPort(targetHost); err == nil {

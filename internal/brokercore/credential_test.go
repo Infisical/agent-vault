@@ -193,6 +193,31 @@ func TestInject_StripsPortForMatching(t *testing.T) {
 	}
 }
 
+// TestInject_HealsLegacyUnnamedServiceMatchedName pins that the proxy
+// hot path auto-slugs missing Names before matching, so MatchedName
+// (which lands in the request log and the X-Vault-Service header)
+// never persists as "" for a matched service. The documented
+// `?service=<name>` log filter depends on this.
+func TestInject_HealsLegacyUnnamedServiceMatchedName(t *testing.T) {
+	key32 := make32(0x77)
+	f := newFakeCredStore()
+	// Pre-#164 vault: persisted without `name`.
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "api.example.com",
+		Auth: broker.Auth{Type: "bearer", Token: "TOK"},
+	}})
+	f.setCred(t, key32, "v1", "TOK", "s3cret")
+
+	p := NewStoreCredentialProvider(f, key32)
+	res, err := p.Inject(context.Background(), "v1", "api.example.com", "/")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.MatchedName != "api-example-com" {
+		t.Fatalf("expected MatchedName=api-example-com (auto-slug), got %q", res.MatchedName)
+	}
+}
+
 func TestInject_WildcardMatch(t *testing.T) {
 	key32 := make32(0x66)
 	f := newFakeCredStore()

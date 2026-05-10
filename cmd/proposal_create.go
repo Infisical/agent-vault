@@ -192,9 +192,6 @@ func buildFromFlags(cmd *cobra.Command, host string, credentialFlags []string) (
 			return nil, err
 		}
 
-		// --name is optional; when empty, the server slugifies host+path
-		// before persisting the proposal so apply later sees a stable
-		// canonical identifier.
 		name, _ := cmd.Flags().GetString("name")
 
 		host, path := broker.SplitInlineHost(host, "")
