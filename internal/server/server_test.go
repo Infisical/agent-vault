@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -5263,7 +5264,12 @@ func TestServicesUpsertAddNew(t *testing.T) {
 	}
 }
 
-func TestServicesUpsertRejectsMissingName(t *testing.T) {
+// TestServicesUpsertAutoSlugsMissingName pins that an upsert payload
+// without an explicit Name is auto-slugged from host+path rather than
+// rejected. This is the lazy-heal path for legacy services persisted
+// before Name became required, and for direct API callers that omit
+// it.
+func TestServicesUpsertAutoSlugsMissingName(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))
 
@@ -5274,11 +5280,16 @@ func TestServicesUpsertRejectsMissingName(t *testing.T) {
 
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for service missing name, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 (auto-slug succeeds), got %d: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "name is required") {
-		t.Fatalf("expected 'name is required' error, got %s", rec.Body.String())
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	upserted, _ := resp["upserted"].([]interface{})
+	if len(upserted) != 1 || upserted[0] != "api-stripe-com" {
+		t.Fatalf("expected upserted=[api-stripe-com], got %v", upserted)
 	}
 }
 
@@ -5315,6 +5326,74 @@ func TestServicesUpsertReplaceExisting(t *testing.T) {
 	}
 	if strings.Contains(bc.ServicesJSON, "OLD_KEY") {
 		t.Fatalf("expected OLD_KEY to be replaced, got %s", bc.ServicesJSON)
+	}
+}
+
+// TestLegacyUnnamedServicesGetSetRoundTrip pins the UI's edit flow on
+// data persisted before Name became required: services without Name
+// fields are slug-backfilled on read, so a GET → modify-one → PUT
+// round-trip succeeds without the caller having to slug the siblings
+// manually. Regression for the "service N: name is required" error
+// reported against the Edit Service sidebar.
+func TestLegacyUnnamedServicesGetSetRoundTrip(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	// Seed two services with no Name fields, mirroring legacy data.
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		ID: "bc-1", VaultID: "root-ns-id",
+		ServicesJSON: `[
+			{"host":"api.anthropic.com","auth":{"type":"bearer","token":"ANTHROPIC_API_KEY"}},
+			{"host":"api.openai.com","auth":{"type":"bearer","token":"OPENAI_API_KEY"}}
+		]`,
+	}
+	srv := newTestServer(withStore(ms))
+
+	// GET should return both services with backfilled slugs.
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/services", nil)
+	getReq.Header.Set("Authorization", "Bearer "+token)
+	getRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET expected 200, got %d: %s", getRec.Code, getRec.Body.String())
+	}
+	var getResp struct {
+		Services []map[string]interface{} `json:"services"`
+	}
+	if err := json.NewDecoder(getRec.Body).Decode(&getResp); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	if len(getResp.Services) != 2 {
+		t.Fatalf("expected 2 services, got %d", len(getResp.Services))
+	}
+	if getResp.Services[0]["name"] != "api-anthropic-com" {
+		t.Fatalf("expected service[0].name=api-anthropic-com, got %v", getResp.Services[0]["name"])
+	}
+	if getResp.Services[1]["name"] != "api-openai-com" {
+		t.Fatalf("expected service[1].name=api-openai-com, got %v", getResp.Services[1]["name"])
+	}
+
+	// PUT the full list back with the first entry renamed — mirrors what
+	// the Edit Service sidebar submits when you set a custom name.
+	getResp.Services[0]["name"] = "anthropic-api"
+	putBody, err := json.Marshal(map[string]interface{}{"services": getResp.Services})
+	if err != nil {
+		t.Fatalf("marshal PUT body: %v", err)
+	}
+	putReq := httptest.NewRequest(http.MethodPut, "/v1/vaults/default/services", bytes.NewReader(putBody))
+	putReq.Header.Set("Authorization", "Bearer "+token)
+	putRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(putRec, putReq)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PUT expected 200, got %d: %s", putRec.Code, putRec.Body.String())
+	}
+
+	// Stored config should now carry the custom name on the first
+	// service and the backfilled slug on the second.
+	bc := ms.brokerConfigs["root-ns-id"]
+	if !strings.Contains(bc.ServicesJSON, `"name":"anthropic-api"`) {
+		t.Fatalf("expected stored services to contain anthropic-api, got %s", bc.ServicesJSON)
+	}
+	if !strings.Contains(bc.ServicesJSON, `"name":"api-openai-com"`) {
+		t.Fatalf("expected stored services to contain auto-slugged api-openai-com, got %s", bc.ServicesJSON)
 	}
 }
 
@@ -5977,11 +6056,12 @@ func TestServicesUpsertExplicitNameMatchingExistingReplaces(t *testing.T) {
 	}
 }
 
-// TestProposalCreateRejectsActionSetMissingName pins that an ActionSet
-// proposal with no Name returns 400 — name is now required at the API
-// surface and is not auto-derived from host.
-func TestProposalCreateRejectsActionSetMissingName(t *testing.T) {
-	srv, _, token := setupProposalTest(t)
+// TestProposalCreateActionSetAutoSlugsMissingName pins that an
+// ActionSet proposal without an explicit Name is auto-slugged from
+// host+path at create time. The slug is persisted on the proposal so
+// apply later sees a stable name.
+func TestProposalCreateActionSetAutoSlugsMissingName(t *testing.T) {
+	srv, ms, token := setupProposalTest(t)
 
 	body := `{
 		"services": [{"action":"set","host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}],
@@ -5993,11 +6073,25 @@ func TestProposalCreateRejectsActionSetMissingName(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for proposal missing service name, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 (auto-slug succeeds), got %d: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "name is required") {
-		t.Fatalf("expected 'name is required' error, got %s", rec.Body.String())
+	// Find the proposal we just created and confirm the slug landed in
+	// its persisted services payload.
+	var found bool
+	for _, list := range ms.proposals {
+		for _, p := range list {
+			if strings.Contains(p.ServicesJSON, `"name":"api-stripe-com"`) {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected proposal services_json to contain auto-slugged name api-stripe-com; proposals: %+v", ms.proposals)
 	}
 }
 

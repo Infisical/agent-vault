@@ -188,10 +188,9 @@ File mode (upsert, not replace-all):
 				return err
 			}
 
+			// --name is optional; when empty, the server slugifies
+			// host+path and returns the assigned name on the response.
 			name, _ := cmd.Flags().GetString("name")
-			if name == "" {
-				return fmt.Errorf("--name is required when --host is specified")
-			}
 
 			host, path := broker.SplitInlineHost(host, "")
 

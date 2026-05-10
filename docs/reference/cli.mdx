@@ -446,7 +446,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
     | `-f` | | Path to a YAML services file (upsert mode) |
-    | `--name` | | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). **Required when `--host` is provided.** |
+    | `--name` | _derived_ | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Optional — when omitted, the server slugifies `--host` + the inline path (e.g. `api.stripe.com` → `api-stripe-com`). Supply explicitly for a friendlier identifier or to in-place replace a specific existing service. |
     | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). The server splits the path off the host on ingest. |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, `custom`, `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
@@ -609,7 +609,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
     | `-f`, `--file` | | Path to JSON proposal file (use `-` for stdin) |
-    | `--name` | | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). **Required when `--host` is provided.** |
+    | `--name` | _derived_ | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Optional — when omitted, the server slugifies `--host` + the inline path (e.g. `api.stripe.com` → `api-stripe-com`). Supply explicitly for a friendlier identifier or to in-place replace a specific existing service. |
     | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, or `passthrough` |
     | `--token-key` | | Credential key for bearer auth |

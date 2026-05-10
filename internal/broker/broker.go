@@ -613,6 +613,81 @@ func matchPathGlob(pattern, path string) (literalLen int, ok bool) {
 	return literalLen, true
 }
 
+// Slugify derives a deterministic ValidateSlug-conformant identifier
+// from a service's Host + Path. Used to auto-name services that omit
+// Name and to heal legacy entries persisted before Name was required.
+//
+// Output is guaranteed to satisfy ValidateSlug for any inputs that
+// already pass ValidateHost + ValidatePath. Collisions between
+// distinct (host, path) inputs are possible (e.g. `*.github.com` and
+// `github.com` both yield `github-com`); callers dedupe via
+// AssignSlugNames.
+func Slugify(host, path string) string {
+	var b strings.Builder
+	write := func(s string) {
+		for _, r := range strings.ToLower(s) {
+			switch {
+			case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+				b.WriteRune(r)
+			default:
+				b.WriteByte('-')
+			}
+		}
+	}
+	write(host)
+	write(path)
+	raw := b.String()
+	for strings.Contains(raw, "--") {
+		raw = strings.ReplaceAll(raw, "--", "-")
+	}
+	raw = strings.Trim(raw, "-")
+	if len(raw) > 64 {
+		raw = strings.TrimRight(raw[:64], "-")
+	}
+	if len(raw) < 3 {
+		if raw == "" {
+			return "svc"
+		}
+		return raw + "-svc"
+	}
+	return raw
+}
+
+// AssignSlugNames fills empty Name fields on services by slugifying
+// Host + Path in declaration order. Each assigned slug is unique
+// against (a) names already set on `services` and (b) any names
+// supplied in `reserved`. On collision the next free `-<n>` suffix is
+// appended, truncating to keep the 64-char cap. Non-empty names are
+// left untouched.
+func AssignSlugNames(services []Service, reserved map[string]bool) {
+	taken := make(map[string]bool, len(services)+len(reserved))
+	for k := range reserved {
+		taken[k] = true
+	}
+	for _, s := range services {
+		if s.Name != "" {
+			taken[s.Name] = true
+		}
+	}
+	for i := range services {
+		if services[i].Name != "" {
+			continue
+		}
+		base := Slugify(services[i].Host, services[i].Path)
+		name := base
+		for n := 2; taken[name]; n++ {
+			suffix := fmt.Sprintf("-%d", n)
+			trunc := base
+			if len(trunc)+len(suffix) > 64 {
+				trunc = strings.TrimRight(trunc[:64-len(suffix)], "-")
+			}
+			name = trunc + suffix
+		}
+		services[i].Name = name
+		taken[name] = true
+	}
+}
+
 // ValidateSlug enforces the per-vault identifier rule shared by vault,
 // agent, and service names: 3–64 chars, lowercase ASCII alphanumeric
 // and hyphens, no leading/trailing or consecutive hyphens.

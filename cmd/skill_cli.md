@@ -97,7 +97,8 @@ Response includes `vault`, `services` (each with `name` and `host`), and `availa
 Most agents should raise a [proposal](#proposals----requesting-and-storing-credentials) instead — proposals get a human approval before any service or credential change lands. The CLI commands below mutate the vault directly and require an interactive vault admin login (not an agent token). Use them only when the user explicitly asks you to skip the proposal flow:
 
 ```bash
-# Add a service (non-destructive upsert by name; --name and --host are both required)
+# Add a service (non-destructive upsert by name; --host is required, --name optional —
+# when omitted the server slugifies host+path, e.g. api.stripe.com → api-stripe-com)
 agent-vault vault service add --name stripe --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY
 agent-vault vault service add --name slack-bot --host 'slack.com/api/*' --auth-type bearer --token-key SLACK_BOT_TOKEN
 
@@ -191,7 +192,7 @@ Substitutions are configured via JSON only — no flag form. Place a `substituti
 
 ### Creating a Proposal
 
-**Flag-driven mode (common cases). When `--host` is provided, `--name` is required:**
+**Flag-driven mode (common cases). When `--host` is provided, `--name` is optional — when omitted, the server slugifies `host`+`path` (e.g. `api.stripe.com` → `api-stripe-com`):**
 
 ```bash
 # Service + credential

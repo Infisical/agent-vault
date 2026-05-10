@@ -27,7 +27,8 @@ var proposalCreateCmd = &cobra.Command{
 In agent mode (AGENT_VAULT_TOKEN set), AGENT_VAULT_VAULT (or --vault) is
 required — there is no project-file or interactive-picker fallback.
 
-Flag-driven mode (common cases). When --host is provided, --name is required:
+Flag-driven mode (common cases). When --host is provided, --name is optional
+(the server slugifies host+path when omitted):
 
   # Service + credential
   agent-vault vault proposal create \
@@ -191,10 +192,10 @@ func buildFromFlags(cmd *cobra.Command, host string, credentialFlags []string) (
 			return nil, err
 		}
 
+		// --name is optional; when empty, the server slugifies host+path
+		// before persisting the proposal so apply later sees a stable
+		// canonical identifier.
 		name, _ := cmd.Flags().GetString("name")
-		if name == "" {
-			return nil, fmt.Errorf("--name is required when --host is specified")
-		}
 
 		host, path := broker.SplitInlineHost(host, "")
 

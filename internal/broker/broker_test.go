@@ -171,6 +171,87 @@ func TestValidateSlugRejects(t *testing.T) {
 	}
 }
 
+// --- Slugify tests ---
+
+func TestSlugify(t *testing.T) {
+	cases := []struct {
+		name, host, path, want string
+	}{
+		{"plain host", "api.anthropic.com", "", "api-anthropic-com"},
+		{"host plus path", "slack.com", "/api/*", "slack-com-api"},
+		{"host plus literal path", "slack.com", "/api/apps.connections.*", "slack-com-api-apps-connections"},
+		{"wildcard host", "*.github.com", "", "github-com"},
+		{"wildcard host with path", "*.github.com", "/repos/*", "github-com-repos"},
+		{"underscores in path", "api.example.com", "/v1/foo_bar", "api-example-com-v1-foo-bar"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Slugify(tc.host, tc.path)
+			if got != tc.want {
+				t.Fatalf("Slugify(%q, %q) = %q, want %q", tc.host, tc.path, got, tc.want)
+			}
+			if err := ValidateSlug(got); err != nil {
+				t.Fatalf("Slugify output %q failed ValidateSlug: %v", got, err)
+			}
+		})
+	}
+}
+
+func TestSlugifyTruncatesAndStaysValid(t *testing.T) {
+	// 200-char host body so the raw slug exceeds 64 chars and is trimmed.
+	long := strings.Repeat("a.", 100) + "com"
+	got := Slugify(long, "")
+	if len(got) > 64 {
+		t.Fatalf("expected truncation, got %d chars", len(got))
+	}
+	if err := ValidateSlug(got); err != nil {
+		t.Fatalf("truncated slug %q failed ValidateSlug: %v", got, err)
+	}
+}
+
+// --- AssignSlugNames tests ---
+
+func TestAssignSlugNamesFillsAndDisambiguates(t *testing.T) {
+	svcs := []Service{
+		{Host: "api.anthropic.com"},
+		{Host: "slack.com", Path: "/api/*"},
+		{Host: "slack.com", Path: "/api/apps.connections.*"},
+		{Name: "explicit", Host: "github.com"},
+		// Duplicates the first entry's host+path; should get -2 suffix.
+		{Host: "api.anthropic.com"},
+	}
+	AssignSlugNames(svcs, nil)
+
+	want := []string{
+		"api-anthropic-com",
+		"slack-com-api",
+		"slack-com-api-apps-connections",
+		"explicit",
+		"api-anthropic-com-2",
+	}
+	for i, w := range want {
+		if svcs[i].Name != w {
+			t.Errorf("svcs[%d].Name = %q, want %q", i, svcs[i].Name, w)
+		}
+	}
+}
+
+func TestAssignSlugNamesRespectsReserved(t *testing.T) {
+	svcs := []Service{{Host: "api.anthropic.com"}}
+	AssignSlugNames(svcs, map[string]bool{"api-anthropic-com": true})
+	if svcs[0].Name != "api-anthropic-com-2" {
+		t.Fatalf("expected reserved name to force suffix, got %q", svcs[0].Name)
+	}
+}
+
+func TestAssignSlugNamesLeavesExplicitUntouched(t *testing.T) {
+	svcs := []Service{{Name: "custom-name", Host: "api.anthropic.com"}}
+	AssignSlugNames(svcs, nil)
+	if svcs[0].Name != "custom-name" {
+		t.Fatalf("expected explicit name to survive, got %q", svcs[0].Name)
+	}
+}
+
 // --- ValidatePath tests ---
 
 func TestValidatePathHappyPath(t *testing.T) {

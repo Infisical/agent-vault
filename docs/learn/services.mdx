@@ -369,8 +369,10 @@ Removes all services. Agents scoped to this [vault](/learn/vaults) will get `403
     Each service in a proposal has an `action` field:
 
     - **`set`**: Idempotent upsert keyed by canonical `name` (slug). Adds the service when
-      no entry has that name, or replaces it when one does. `name` is required — pick it
-      deliberately so the canonical identifier survives renames and rotations cleanly.
+      no entry has that name, or replaces it when one does. `name` is optional — when
+      omitted, the server slugifies `host` + `path` (e.g. `api.stripe.com` →
+      `api-stripe-com`). Supply an explicit `name` when you want a friendlier identifier
+      or to in-place replace a specific existing service.
     - **`delete`**: Removes the service matching the given `name`. When `name` is omitted,
       the bare host portion of `host` is used as a fallback — a unique host match is
       resolved automatically; a host shared by multiple path-scoped services returns

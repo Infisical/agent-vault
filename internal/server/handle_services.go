@@ -87,20 +87,36 @@ func writeNormalizeError(w http.ResponseWriter, err error, notFoundStatus, defau
 	jsonError(w, defaultStatus, err.Error())
 }
 
-// normalizeProposalServices splits inline-form host on every entry and
-// resolves ActionDelete-by-host targets against the current vault state.
+// normalizeProposalServices splits inline-form host on every entry,
+// resolves ActionDelete-by-host targets against the current vault
+// state, and auto-slugs ActionSet entries that omit Name.
 //
 // ActionDelete without Name: resolve against existing services by Host
 // (and Path when inline-form scoped). Unique match fills Name; 2+ →
-// *hostAmbiguityError; 0 → *hostNotFoundError. ActionSet without Name
-// falls through unchanged — proposal.Validate rejects it with a clear
-// "name is required" error.
+// *hostAmbiguityError; 0 → *hostNotFoundError.
+//
+// ActionSet without Name: filled via broker.Slugify(host, path), with
+// disambiguation against other ActionSet entries in the same proposal.
+// Names already present in `existing` are deliberately NOT reserved —
+// an empty-name set whose slug matches an existing service applies as
+// an in-place replace, which is the natural upsert semantics.
 func normalizeProposalServices(in []proposal.Service, existing []broker.Service) ([]proposal.Service, error) {
 	out := make([]proposal.Service, len(in))
+
+	// Track ActionSet slugs assigned so far so two empty-name sets in
+	// the same proposal get distinct names.
+	setNames := make(map[string]bool)
+	for _, svc := range in {
+		if svc.Action == proposal.ActionSet && svc.Name != "" {
+			setNames[svc.Name] = true
+		}
+	}
+
 	for i, svc := range in {
 		svc.Host, svc.Path = broker.SplitInlineHost(svc.Host, svc.Path)
 
-		if svc.Action == proposal.ActionDelete && svc.Name == "" {
+		switch {
+		case svc.Action == proposal.ActionDelete && svc.Name == "":
 			var matches []broker.Service
 			for _, e := range existing {
 				if e.Host != svc.Host {
@@ -122,6 +138,22 @@ func normalizeProposalServices(in []proposal.Service, existing []broker.Service)
 			default:
 				return nil, &hostNotFoundError{host: svc.Host}
 			}
+		case svc.Action == proposal.ActionSet && svc.Name == "" && svc.Host != "":
+			base := broker.Slugify(svc.Host, svc.Path)
+			name := base
+			for n := 2; setNames[name]; n++ {
+				suffix := fmt.Sprintf("-%d", n)
+				trunc := base
+				if len(trunc)+len(suffix) > 64 {
+					trunc = trunc[:64-len(suffix)]
+					for len(trunc) > 0 && trunc[len(trunc)-1] == '-' {
+						trunc = trunc[:len(trunc)-1]
+					}
+				}
+				name = trunc + suffix
+			}
+			svc.Name = name
+			setNames[name] = true
 		}
 		out[i] = svc
 	}
@@ -129,8 +161,11 @@ func normalizeProposalServices(in []proposal.Service, existing []broker.Service)
 }
 
 // loadServices reads the vault's broker config and splits inline-form
-// Host on every entry so the matcher invariant holds. Returns nil, nil
-// when no config exists.
+// Host on every entry so the matcher invariant holds. Missing Name
+// fields are filled via broker.AssignSlugNames so legacy services
+// persisted before Name became required heal lazily on read — the
+// backfilled name becomes durable the next time the caller writes the
+// list back. Returns nil, nil when no config exists.
 func (s *Server) loadServices(ctx context.Context, vaultID string) ([]broker.Service, error) {
 	bc, err := s.store.GetBrokerConfig(ctx, vaultID)
 	if err != nil {
@@ -146,6 +181,7 @@ func (s *Server) loadServices(ctx context.Context, vaultID string) ([]broker.Ser
 	for i := range services {
 		services[i].Host, services[i].Path = broker.SplitInlineHost(services[i].Host, services[i].Path)
 	}
+	broker.AssignSlugNames(services, nil)
 	return services, nil
 }
 
@@ -322,8 +358,14 @@ func (s *Server) handleServicesUpsert(w http.ResponseWriter, r *http.Request) {
 
 	incomingSlice := splitInlineHosts(req.Services)
 
+	// Auto-slug empty Name entries from host+path. Existing names are
+	// NOT reserved so an empty-name upsert whose slug matches an
+	// existing service acts as an in-place replace — that's the natural
+	// expectation for an upsert keyed by stable identity.
+	broker.AssignSlugNames(incomingSlice, nil)
+
 	// Validate incoming services. broker.Validate enforces that Name is
-	// non-empty — the caller must supply it explicitly.
+	// non-empty; AssignSlugNames has filled any blanks above.
 	incoming := broker.Config{Vault: name, Services: incomingSlice}
 	if err := broker.Validate(&incoming); err != nil {
 		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid services: %v", err))
@@ -549,6 +591,9 @@ func (s *Server) handleServicesSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	services = splitInlineHosts(services)
+	// Auto-slug empty Name entries from host+path. The PUT replaces the
+	// full set, so there's nothing pre-existing to reserve against.
+	broker.AssignSlugNames(services, nil)
 	cfg := broker.Config{Vault: name, Services: services}
 	if err := broker.Validate(&cfg); err != nil {
 		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid services: %v", err))
