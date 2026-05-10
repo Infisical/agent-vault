@@ -655,15 +655,25 @@ func Slugify(host, path string) string {
 
 // AssignSlugNames fills empty Name fields on services by slugifying
 // Host + Path in declaration order. Each assigned slug is unique
-// against (a) names already set on `services` and (b) any names
-// supplied in `reserved`. On collision the next free `-<n>` suffix is
-// appended, truncating to keep the 64-char cap. Non-empty names are
-// left untouched.
-func AssignSlugNames(services []Service, reserved map[string]bool) {
-	taken := make(map[string]bool, len(services)+len(reserved))
-	for k := range reserved {
-		taken[k] = true
+// against other names in the slice; on collision the next free
+// `-<n>` suffix is appended (truncating to keep the 64-char cap).
+// Non-empty names are left untouched.
+func AssignSlugNames(services []Service) {
+	// Fast-path: skip allocation when every service already has a
+	// name. loadServices runs this on every read, so the steady-state
+	// (post-heal) cost should be a single linear scan.
+	anyEmpty := false
+	for _, s := range services {
+		if s.Name == "" {
+			anyEmpty = true
+			break
+		}
 	}
+	if !anyEmpty {
+		return
+	}
+
+	taken := make(map[string]bool, len(services))
 	for _, s := range services {
 		if s.Name != "" {
 			taken[s.Name] = true
@@ -673,19 +683,28 @@ func AssignSlugNames(services []Service, reserved map[string]bool) {
 		if services[i].Name != "" {
 			continue
 		}
-		base := Slugify(services[i].Host, services[i].Path)
-		name := base
-		for n := 2; taken[name]; n++ {
-			suffix := fmt.Sprintf("-%d", n)
-			trunc := base
-			if len(trunc)+len(suffix) > 64 {
-				trunc = strings.TrimRight(trunc[:64-len(suffix)], "-")
-			}
-			name = trunc + suffix
-		}
+		name := DisambiguateSlug(Slugify(services[i].Host, services[i].Path), taken)
 		services[i].Name = name
 		taken[name] = true
 	}
+}
+
+// DisambiguateSlug returns the lowest-suffixed variant of base that
+// isn't in taken. Appends `-<n>` starting at 2, truncating base to
+// keep the result within the 64-char ValidateSlug cap. Shared by
+// AssignSlugNames and proposal normalization (where the input type
+// isn't []Service).
+func DisambiguateSlug(base string, taken map[string]bool) string {
+	name := base
+	for n := 2; taken[name]; n++ {
+		suffix := fmt.Sprintf("-%d", n)
+		trunc := base
+		if len(trunc)+len(suffix) > 64 {
+			trunc = strings.TrimRight(trunc[:64-len(suffix)], "-")
+		}
+		name = trunc + suffix
+	}
+	return name
 }
 
 // ValidateSlug enforces the per-vault identifier rule shared by vault,

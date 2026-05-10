@@ -139,19 +139,7 @@ func normalizeProposalServices(in []proposal.Service, existing []broker.Service)
 				return nil, &hostNotFoundError{host: svc.Host}
 			}
 		case svc.Action == proposal.ActionSet && svc.Name == "" && svc.Host != "":
-			base := broker.Slugify(svc.Host, svc.Path)
-			name := base
-			for n := 2; setNames[name]; n++ {
-				suffix := fmt.Sprintf("-%d", n)
-				trunc := base
-				if len(trunc)+len(suffix) > 64 {
-					trunc = trunc[:64-len(suffix)]
-					for len(trunc) > 0 && trunc[len(trunc)-1] == '-' {
-						trunc = trunc[:len(trunc)-1]
-					}
-				}
-				name = trunc + suffix
-			}
+			name := broker.DisambiguateSlug(broker.Slugify(svc.Host, svc.Path), setNames)
 			svc.Name = name
 			setNames[name] = true
 		}
@@ -181,7 +169,7 @@ func (s *Server) loadServices(ctx context.Context, vaultID string) ([]broker.Ser
 	for i := range services {
 		services[i].Host, services[i].Path = broker.SplitInlineHost(services[i].Host, services[i].Path)
 	}
-	broker.AssignSlugNames(services, nil)
+	broker.AssignSlugNames(services)
 	return services, nil
 }
 
@@ -357,15 +345,11 @@ func (s *Server) handleServicesUpsert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	incomingSlice := splitInlineHosts(req.Services)
+	// An empty-name upsert whose slug collides with an existing service
+	// applies as an in-place replace, so we don't reserve existing names
+	// against the auto-slug.
+	broker.AssignSlugNames(incomingSlice)
 
-	// Auto-slug empty Name entries from host+path. Existing names are
-	// NOT reserved so an empty-name upsert whose slug matches an
-	// existing service acts as an in-place replace — that's the natural
-	// expectation for an upsert keyed by stable identity.
-	broker.AssignSlugNames(incomingSlice, nil)
-
-	// Validate incoming services. broker.Validate enforces that Name is
-	// non-empty; AssignSlugNames has filled any blanks above.
 	incoming := broker.Config{Vault: name, Services: incomingSlice}
 	if err := broker.Validate(&incoming); err != nil {
 		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid services: %v", err))
@@ -591,9 +575,7 @@ func (s *Server) handleServicesSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	services = splitInlineHosts(services)
-	// Auto-slug empty Name entries from host+path. The PUT replaces the
-	// full set, so there's nothing pre-existing to reserve against.
-	broker.AssignSlugNames(services, nil)
+	broker.AssignSlugNames(services)
 	cfg := broker.Config{Vault: name, Services: services}
 	if err := broker.Validate(&cfg); err != nil {
 		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid services: %v", err))

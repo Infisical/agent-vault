@@ -220,7 +220,7 @@ func TestAssignSlugNamesFillsAndDisambiguates(t *testing.T) {
 		// Duplicates the first entry's host+path; should get -2 suffix.
 		{Host: "api.anthropic.com"},
 	}
-	AssignSlugNames(svcs, nil)
+	AssignSlugNames(svcs)
 
 	want := []string{
 		"api-anthropic-com",
@@ -236,19 +236,21 @@ func TestAssignSlugNamesFillsAndDisambiguates(t *testing.T) {
 	}
 }
 
-func TestAssignSlugNamesRespectsReserved(t *testing.T) {
-	svcs := []Service{{Host: "api.anthropic.com"}}
-	AssignSlugNames(svcs, map[string]bool{"api-anthropic-com": true})
-	if svcs[0].Name != "api-anthropic-com-2" {
-		t.Fatalf("expected reserved name to force suffix, got %q", svcs[0].Name)
+func TestAssignSlugNamesLeavesExplicitUntouched(t *testing.T) {
+	svcs := []Service{{Name: "custom-name", Host: "api.anthropic.com"}}
+	AssignSlugNames(svcs)
+	if svcs[0].Name != "custom-name" {
+		t.Fatalf("expected explicit name to survive, got %q", svcs[0].Name)
 	}
 }
 
-func TestAssignSlugNamesLeavesExplicitUntouched(t *testing.T) {
-	svcs := []Service{{Name: "custom-name", Host: "api.anthropic.com"}}
-	AssignSlugNames(svcs, nil)
-	if svcs[0].Name != "custom-name" {
-		t.Fatalf("expected explicit name to survive, got %q", svcs[0].Name)
+func TestDisambiguateSlug(t *testing.T) {
+	taken := map[string]bool{"foo": true, "foo-2": true}
+	if got := DisambiguateSlug("foo", taken); got != "foo-3" {
+		t.Fatalf("expected foo-3, got %q", got)
+	}
+	if got := DisambiguateSlug("bar", taken); got != "bar" {
+		t.Fatalf("expected unique base to pass through, got %q", got)
 	}
 }
 
