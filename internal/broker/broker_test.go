@@ -642,6 +642,78 @@ func TestValidateConfigInvalidPath(t *testing.T) {
 	}
 }
 
+// --- ValidateHost tests ---
+
+func TestValidateHostHappyPath(t *testing.T) {
+	for _, h := range []string{"api.stripe.com", "*.github.com", "sub.api.example.com"} {
+		if err := ValidateHost(h); err != nil {
+			t.Errorf("ValidateHost(%q) unexpected error: %v", h, err)
+		}
+	}
+}
+
+func TestValidateHostRejectsIP(t *testing.T) {
+	for _, h := range []string{"127.0.0.1", "10.0.0.1", "::1", "192.168.1.1"} {
+		if err := ValidateHost(h); err == nil {
+			t.Errorf("ValidateHost(%q) expected error", h)
+		}
+	}
+}
+
+func TestValidateHostRejectsInternalNames(t *testing.T) {
+	t.Setenv("AGENT_VAULT_DEV_MODE", "")
+	for _, h := range []string{"localhost", "kubernetes.default", "metadata.google.internal"} {
+		if err := ValidateHost(h); err == nil {
+			t.Errorf("ValidateHost(%q) expected error in non-dev mode", h)
+		}
+	}
+}
+
+func TestValidateHostAllowsInternalInDevMode(t *testing.T) {
+	// Single-label names always fail hostLabelPattern. The dev-mode
+	// override is for multi-label internal names like
+	// localhost.localdomain — which pass the format check but are
+	// blocked by default to dodge SSRF against cloud-metadata hosts.
+	t.Setenv("AGENT_VAULT_DEV_MODE", "true")
+	if err := ValidateHost("localhost.localdomain"); err != nil {
+		t.Errorf("ValidateHost(localhost.localdomain) in dev mode: %v", err)
+	}
+}
+
+func TestValidateHostRejectsBareWildcardAndShallow(t *testing.T) {
+	for _, h := range []string{"*", "*.com", "*.example"} {
+		if err := ValidateHost(h); err == nil {
+			t.Errorf("ValidateHost(%q) expected error", h)
+		}
+	}
+}
+
+// TestValidateConfigEnforcesHostSafety pins that the direct upsert path
+// (broker.Validate) now rejects IP addresses and internal hosts — the
+// proposal flow has always done this, but admins doing a direct POST
+// to /v1/vaults/{name}/services used to slip through.
+func TestValidateConfigEnforcesHostSafety(t *testing.T) {
+	t.Setenv("AGENT_VAULT_DEV_MODE", "")
+	cases := []struct{ name, host string }{
+		{"ip", "10.0.0.5"},
+		{"localhost", "localhost"},
+		{"metadata", "metadata.google.internal"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{
+				Vault: "default",
+				Services: []Service{
+					{Name: "svc", Host: tc.host, Auth: Auth{Type: "bearer", Token: "K"}},
+				},
+			}
+			if err := Validate(cfg); err == nil {
+				t.Fatalf("expected Validate to reject host %q", tc.host)
+			}
+		})
+	}
+}
+
 // --- Passthrough tests ---
 
 func TestAuthValidatePassthrough(t *testing.T) {

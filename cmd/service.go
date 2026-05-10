@@ -358,9 +358,12 @@ func patchServiceEnabled(cmd *cobra.Command, ref string, enabled bool) error {
 	return nil
 }
 
-// loadServicesFromFile reads and validates a broker config from a YAML file path ("-" for stdin).
-// Legacy YAML without `name` is auto-slugged via broker.NormalizeServices
-// before validation, mirroring the server-side ingest semantics.
+// loadServicesFromFile parses a services YAML file ("-" for stdin) and
+// applies the inline-host split. Name backfill and validation are
+// deliberately left to the server: the upsert path's existing-aware
+// normalizer is the only code with enough context to adopt an existing
+// service's Name on a (Host, Path) match and to bump auto-slug
+// collisions — pre-filling Name client-side defeats both.
 func loadServicesFromFile(filePath, vault string) ([]broker.Service, error) {
 	var data []byte
 	var err error
@@ -379,10 +382,6 @@ func loadServicesFromFile(filePath, vault string) ([]broker.Service, error) {
 	cfg.Vault = vault
 	for i := range cfg.Services {
 		cfg.Services[i].Host, cfg.Services[i].Path = broker.SplitInlineHost(cfg.Services[i].Host, cfg.Services[i].Path)
-	}
-	cfg.Services = broker.NormalizeServices(cfg.Services)
-	if err := broker.Validate(&cfg); err != nil {
-		return nil, fmt.Errorf("invalid services: %w", err)
 	}
 	return cfg.Services, nil
 }

@@ -147,25 +147,15 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-slug + inline-form normalize so legacy clients (host-only,
-	// no name) keep working. For ActionDelete with no Name, try to
-	// resolve uniquely against existing services in the vault; a
-	// host-ambiguous delete returns 409 with the candidate list.
+	// Resolve auto-slug and unnamed-delete targets against existing vault state.
 	existing, err := s.loadServices(ctx, vaultID)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to load existing services")
 		return
 	}
-	normalized, conflict, err := normalizeProposalServices(req.Services, existing)
+	normalized, err := normalizeProposalServices(req.Services, existing)
 	if err != nil {
-		jsonError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if conflict != nil {
-		jsonStatus(w, http.StatusConflict, map[string]interface{}{
-			"error":      conflict.Error(),
-			"candidates": toCandidateRefs(conflict.candidates),
-		})
+		writeNormalizeError(w, err, http.StatusNotFound, http.StatusBadRequest, nil)
 		return
 	}
 	req.Services = normalized
@@ -505,30 +495,15 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		jsonError(w, http.StatusInternalServerError, "Failed to load existing services")
 		return
 	}
-	proposedServices, hostAmbig, err := normalizeProposalServices(proposedServices, existingServices)
+	// At apply time, both error modes are state conflicts — the vault
+	// changed between proposal creation and approval — so not-found
+	// surfaces as 409 with a "reject manually" framing instead of 404.
+	proposedServices, err = normalizeProposalServices(proposedServices, existingServices)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to normalize proposal services: %v", err))
-		return
-	}
-	if hostAmbig != nil {
-		jsonStatus(w, http.StatusConflict, map[string]interface{}{
-			"error":      hostAmbig.Error(),
-			"candidates": toCandidateRefs(hostAmbig.candidates),
+		writeNormalizeError(w, err, http.StatusConflict, http.StatusInternalServerError, func(host string) string {
+			return fmt.Sprintf("proposal targets host %q which no longer matches any service in this vault — reject the proposal manually", host)
 		})
 		return
-	}
-	// 0-hit ActionDelete with Name="" reaches here from a stale pre-PR
-	// proposal whose target host no longer matches any service. Bail
-	// loudly rather than letting MergeServices panic on Name="" — and
-	// rather than silently dropping the entry, since the operator just
-	// approved a delete and deserves a clear signal that it didn't apply.
-	for _, p := range proposedServices {
-		if p.Action == proposal.ActionDelete && p.Name == "" {
-			jsonStatus(w, http.StatusConflict, map[string]interface{}{
-				"error": fmt.Sprintf("proposal targets host %q which no longer matches any service in this vault — reject the proposal manually", p.Host),
-			})
-			return
-		}
 	}
 
 	merged, _ := proposal.MergeServices(existingServices, proposedServices)

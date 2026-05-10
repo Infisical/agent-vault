@@ -2,12 +2,8 @@ package proposal
 
 import (
 	"fmt"
-	"net"
 	"net/url"
-	"os"
-	"regexp"
 	"strings"
-	"unicode"
 
 	"github.com/Infisical/agent-vault/internal/broker"
 )
@@ -23,78 +19,6 @@ const (
 	MaxObtainInstructionsLen = 1000
 )
 
-// hostLabelPattern matches a valid hostname (RFC 952 / RFC 1123 style).
-var hostLabelPattern = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
-
-// internalHosts are names blocked unless AGENT_VAULT_DEV_MODE=true.
-var internalHosts = []string{
-	"localhost", "localhost.localdomain", "internal",
-	"kubernetes", "kubernetes.default",
-	"metadata.google.internal", "metadata.google",
-	"instance-data",
-}
-
-// ValidateHost checks that a host string is safe and well-formed.
-func ValidateHost(host string) error {
-	h := strings.TrimSpace(host)
-	if h == "" {
-		return fmt.Errorf("host is empty")
-	}
-
-	// Reject forbidden characters.
-	for _, ch := range h {
-		if ch == '@' || ch == '?' || ch == '#' || ch == ' ' || unicode.IsControl(ch) {
-			return fmt.Errorf("host %q contains invalid character %q", host, ch)
-		}
-	}
-
-	// Reject raw IP addresses.
-	if net.ParseIP(h) != nil {
-		return fmt.Errorf("host %q must be a hostname, not an IP address", host)
-	}
-
-	// Handle wildcard patterns.
-	if strings.HasPrefix(h, "*") {
-		if h == "*" {
-			return fmt.Errorf("host %q: bare wildcard is not allowed", host)
-		}
-		if !strings.HasPrefix(h, "*.") {
-			return fmt.Errorf("host %q: wildcard must be in the form *.example.com", host)
-		}
-		suffix := h[2:] // after "*."
-		// Must have at least 2 dots in the suffix to avoid *.com or *.co.uk style patterns.
-		// e.g. *.example.com → suffix is "example.com" which has 1 dot → OK
-		// *.com → suffix is "com" which has 0 dots → reject
-		// *.co.uk → suffix is "co.uk" which has 1 dot → reject (need 2+ labels before TLD)
-		// We require at least one dot in the suffix (i.e. suffix must be a multi-label domain).
-		if !strings.Contains(suffix, ".") {
-			return fmt.Errorf("host %q: wildcard must have at least two domain levels (e.g. *.example.com)", host)
-		}
-		// Validate the suffix as a hostname.
-		if !hostLabelPattern.MatchString(suffix) {
-			return fmt.Errorf("host %q: invalid hostname in wildcard pattern", host)
-		}
-		return nil
-	}
-
-	// Block internal hostnames unless dev mode.
-	devMode := strings.EqualFold(os.Getenv("AGENT_VAULT_DEV_MODE"), "true")
-	if !devMode {
-		lower := strings.ToLower(h)
-		for _, internal := range internalHosts {
-			if lower == internal {
-				return fmt.Errorf("host %q is a local/internal name and is not allowed (set AGENT_VAULT_DEV_MODE=true to override)", host)
-			}
-		}
-	}
-
-	// Validate as a proper hostname.
-	if !hostLabelPattern.MatchString(h) {
-		return fmt.Errorf("host %q is not a valid hostname", host)
-	}
-
-	return nil
-}
 
 // ValidateMessages checks length limits for proposal-level message fields.
 func ValidateMessages(message, userMessage string) error {
@@ -130,7 +54,7 @@ func Validate(services []Service, credentials []CredentialSlot) error {
 		if strings.Contains(s.Host, "/") {
 			return fmt.Errorf("service %d: host %q must not contain %q after ingest (entry should have been split into host + path)", i, s.Host, "/")
 		}
-		if err := ValidateHost(s.Host); err != nil {
+		if err := broker.ValidateHost(s.Host); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
 		if s.Name == "" {

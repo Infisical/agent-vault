@@ -162,7 +162,7 @@ See [Proposals](/learn/proposals) for the full proposal lifecycle, including sto
 | 502 | Missing credential or upstream unreachable | Tell the user a credential may need to be added. |
 
 <Note>
-Path-based service matching changed how request log rows are filtered. The `matched_service` field in `GET /v1/vaults/{vault}/logs` rows holds the canonical service **name** for new rows; rows written before the upgrade still carry the matched **host**. Operators querying `?service=` should use the slug for new rows and the host for old rows. The matched service's `host` pattern is not returned in log rows — recover it by calling `GET /v1/vaults/{vault}/services/{name}` or reading `/discover`.
+Path-based service matching changed how request log rows are filtered. The `matched_service` field in `GET /v1/vaults/{vault}/logs` rows holds the canonical service **name** for new rows; rows written before the upgrade still carry the matched **host**. Operators querying `?service=` should use the slug for new rows and the host for old rows. The matched service's `host` pattern is not returned in log rows — recover it by listing `GET /v1/vaults/{vault}/services` and filtering by `name`, or reading `/discover`.
 </Note>
 
 ## Security constraints

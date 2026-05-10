@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Config represents a vault's broker configuration as stored in YAML files.
@@ -371,6 +373,9 @@ func Validate(cfg *Config) error {
 		if strings.Contains(s.Host, "/") {
 			return fmt.Errorf("service %d: host %q must not contain %q after ingest (entry should have been split into host + path)", i, s.Host, "/")
 		}
+		if err := ValidateHost(s.Host); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
+		}
 		if s.Name == "" {
 			return fmt.Errorf("service %d: name is required", i)
 		}
@@ -708,7 +713,7 @@ func ValidatePath(p string) error {
 		return fmt.Errorf("path %q must not contain %q (segment-bounded globs are not supported)", p, "**")
 	}
 	for _, r := range p {
-		if r < 0x20 || r == 0x7f {
+		if unicode.IsControl(r) {
 			return fmt.Errorf("path %q must not contain control characters", p)
 		}
 		switch r {
@@ -716,6 +721,79 @@ func ValidatePath(p string) error {
 			return fmt.Errorf("path %q must not contain %q", p, r)
 		}
 	}
+	return nil
+}
+
+// hostLabelPattern matches a valid hostname (RFC 952 / RFC 1123 style).
+var hostLabelPattern = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
+
+// internalHosts are names blocked unless AGENT_VAULT_DEV_MODE=true.
+// Both the proposal flow (less-trusted agents) and the direct upsert
+// path (vault admins) honor this list — admins can opt out via dev mode
+// for legitimate localhost development, but the default fails closed
+// to avoid SSRF against cloud-metadata and Kubernetes-internal services.
+var internalHosts = []string{
+	"localhost", "localhost.localdomain", "internal",
+	"kubernetes", "kubernetes.default",
+	"metadata.google.internal", "metadata.google",
+	"instance-data",
+}
+
+// ValidateHost checks that a host string is safe and well-formed.
+// Accepts bare hostnames (`api.stripe.com`) and one-level wildcards
+// (`*.github.com`). Rejects IPs, internal/loopback names (unless
+// AGENT_VAULT_DEV_MODE=true), bare wildcards, and characters that
+// would break URL parsing. Shared by every ingest path (broker.Validate,
+// proposal.Validate) so the SSRF surface is uniform.
+func ValidateHost(host string) error {
+	h := strings.TrimSpace(host)
+	if h == "" {
+		return fmt.Errorf("host is empty")
+	}
+
+	for _, ch := range h {
+		if ch == '@' || ch == '?' || ch == '#' || ch == ' ' || unicode.IsControl(ch) {
+			return fmt.Errorf("host %q contains invalid character %q", host, ch)
+		}
+	}
+
+	if net.ParseIP(h) != nil {
+		return fmt.Errorf("host %q must be a hostname, not an IP address", host)
+	}
+
+	if strings.HasPrefix(h, "*") {
+		if h == "*" {
+			return fmt.Errorf("host %q: bare wildcard is not allowed", host)
+		}
+		if !strings.HasPrefix(h, "*.") {
+			return fmt.Errorf("host %q: wildcard must be in the form *.example.com", host)
+		}
+		suffix := h[2:]
+		// Require at least one dot in the suffix so *.com / *.co.uk
+		// (which would shadow whole TLDs) are rejected.
+		if !strings.Contains(suffix, ".") {
+			return fmt.Errorf("host %q: wildcard must have at least two domain levels (e.g. *.example.com)", host)
+		}
+		if !hostLabelPattern.MatchString(suffix) {
+			return fmt.Errorf("host %q: invalid hostname in wildcard pattern", host)
+		}
+		return nil
+	}
+
+	devMode := strings.EqualFold(os.Getenv("AGENT_VAULT_DEV_MODE"), "true")
+	if !devMode {
+		lower := strings.ToLower(h)
+		for _, internal := range internalHosts {
+			if lower == internal {
+				return fmt.Errorf("host %q is a local/internal name and is not allowed (set AGENT_VAULT_DEV_MODE=true to override)", host)
+			}
+		}
+	}
+
+	if !hostLabelPattern.MatchString(h) {
+		return fmt.Errorf("host %q is not a valid hostname", host)
+	}
+
 	return nil
 }
 

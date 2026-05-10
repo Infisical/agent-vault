@@ -85,6 +85,51 @@ func TestFindUnresolvedCredentials(t *testing.T) {
 	}
 }
 
+// buildService produces Name="" by design, so the interactive flow
+// must NormalizeServices the merged slice before broker.Validate —
+// otherwise every run aborts with "name is required".
+func TestInteractiveServiceSetNormalizesBeforeValidate(t *testing.T) {
+	builderOutput := []broker.Service{
+		{Host: "api.stripe.com", Auth: broker.Auth{Type: "bearer", Token: "STRIPE_KEY"}},
+		{Host: "slack.com", Path: "/api/*", Auth: broker.Auth{Type: "bearer", Token: "SLACK_BOT_TOKEN"}},
+	}
+	var existing []broker.Service
+
+	finalServices := mergeServices(existing, builderOutput, mergeReplace)
+	finalServices = broker.NormalizeServices(finalServices)
+	cfg := broker.Config{Vault: "default", Services: finalServices}
+	if err := broker.Validate(&cfg); err != nil {
+		t.Fatalf("expected pipeline to accept name-less builder output, got: %v", err)
+	}
+	if finalServices[0].Name != "api-stripe-com" {
+		t.Errorf("stripe name = %q, want api-stripe-com", finalServices[0].Name)
+	}
+	if finalServices[1].Name != "slack-com-api" {
+		t.Errorf("slack name = %q, want slack-com-api", finalServices[1].Name)
+	}
+}
+
+// On append, NormalizeServices must leave existing explicit names
+// untouched and only backfill the new builder output.
+func TestInteractiveServiceSetMergeAppendPreservesExistingNames(t *testing.T) {
+	existing := []broker.Service{
+		{Name: "stripe-prod", Host: "api.stripe.com", Auth: broker.Auth{Type: "bearer", Token: "STRIPE_KEY"}},
+	}
+	newServices := []broker.Service{
+		{Host: "api.github.com", Auth: broker.Auth{Type: "bearer", Token: "GH_TOKEN"}},
+	}
+
+	finalServices := mergeServices(existing, newServices, mergeAppend)
+	finalServices = broker.NormalizeServices(finalServices)
+
+	if finalServices[0].Name != "stripe-prod" {
+		t.Errorf("existing service Name was rewritten: got %q, want stripe-prod", finalServices[0].Name)
+	}
+	if finalServices[1].Name != "api-github-com" {
+		t.Errorf("appended service Name = %q, want api-github-com", finalServices[1].Name)
+	}
+}
+
 func TestMergeServices(t *testing.T) {
 	existing := []broker.Service{
 		{Host: "api.stripe.com", Auth: broker.Auth{Type: "bearer", Token: "A"}},

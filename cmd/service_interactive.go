@@ -59,8 +59,10 @@ func runInteractiveServiceSet(cmd *cobra.Command) error {
 		return handleAbort(cmd, err)
 	}
 
-	// Merge
+	// PUT is replace-all, so the merged slice fully seeds the
+	// collision map — safe to backfill Names client-side here.
 	finalServices := mergeServices(existingServices, newServices, strategy)
+	finalServices = broker.NormalizeServices(finalServices)
 
 	// Validate
 	cfg := broker.Config{
@@ -263,6 +265,7 @@ func serviceBuilderLoop(client *session.ClientSession, nsName string, cmd *cobra
 }
 
 // buildService guides the user through creating a single service.
+// Name is filled by NormalizeServices in the caller — no Name prompt.
 func buildService(client *session.ClientSession, nsName string, cmd *cobra.Command) (*broker.Service, error) {
 	host, err := promptHost(cmd)
 	if err != nil {
@@ -274,8 +277,10 @@ func buildService(client *session.ClientSession, nsName string, cmd *cobra.Comma
 		return nil, err
 	}
 
+	bareHost, path := broker.SplitInlineHost(host, "")
 	return &broker.Service{
-		Host: host,
+		Host: bareHost,
+		Path: path,
 		Auth: auth,
 	}, nil
 }

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -126,6 +127,42 @@ func (e *hostAmbiguityError) Error() string {
 	return fmt.Sprintf("multiple services match host %q — retry with a service name", e.host)
 }
 
+// hostNotFoundError signals that an ActionDelete proposal targeted a
+// host that matches no registered service and carried no Name to fall
+// back on.
+type hostNotFoundError struct{ host string }
+
+func (e *hostNotFoundError) Error() string {
+	return fmt.Sprintf("no service matches host %q — delete target must be addressable by host or service name", e.host)
+}
+
+// writeNormalizeError translates a normalizeProposalServices error into
+// an HTTP response. Ambiguity always returns 409 with the candidate
+// list. Not-found and default use call-site-supplied status codes
+// (404 at create vs 409 at apply; 400 at create vs 500 at apply); a
+// non-nil notFoundMsg overrides hostNotFoundError.Error() so the apply
+// path can frame the same condition as a state conflict.
+func writeNormalizeError(w http.ResponseWriter, err error, notFoundStatus, defaultStatus int, notFoundMsg func(host string) string) {
+	var ambig *hostAmbiguityError
+	if errors.As(err, &ambig) {
+		jsonStatus(w, http.StatusConflict, map[string]interface{}{
+			"error":      ambig.Error(),
+			"candidates": toCandidateRefs(ambig.candidates),
+		})
+		return
+	}
+	var notFound *hostNotFoundError
+	if errors.As(err, &notFound) {
+		msg := notFound.Error()
+		if notFoundMsg != nil {
+			msg = notFoundMsg(notFound.host)
+		}
+		jsonStatus(w, notFoundStatus, map[string]interface{}{"error": msg})
+		return
+	}
+	jsonError(w, defaultStatus, err.Error())
+}
+
 // normalizeProposalServices auto-fills proposal.Service.Name when
 // missing and splits inline-form host (slack.com/api/* → host + path)
 // for every entry. Mirrors the bulk-upsert ingest semantics so the
@@ -139,11 +176,11 @@ func (e *hostAmbiguityError) Error() string {
 // broker.Slugify with collision bumping. For ActionDelete entries, Name
 // is resolved against the vault's existing services: a unique host
 // match fills Name, a 2+ match returns *hostAmbiguityError so the
-// caller can surface the candidate list as a 409, and a 0-hit leaves
-// Name blank so proposal.Validate rejects the no-op delete cleanly
-// (rather than fabricating a slug that might collide with an unrelated
-// service's explicit Name).
-func normalizeProposalServices(in []proposal.Service, existing []broker.Service) ([]proposal.Service, *hostAmbiguityError, error) {
+// caller can surface the candidate list as a 409, and 0 matches
+// returns *hostNotFoundError so the caller can emit a clear
+// "host not found" response rather than letting downstream surface a
+// confusing "name is required" error (the previous behavior).
+func normalizeProposalServices(in []proposal.Service, existing []broker.Service) ([]proposal.Service, error) {
 	out := make([]proposal.Service, len(in))
 	autoSlugged := make([]bool, len(in))
 	for i, svc := range in {
@@ -162,10 +199,9 @@ func normalizeProposalServices(in []proposal.Service, existing []broker.Service)
 				case len(matches) == 1:
 					svc.Name = matches[0].Name
 				case len(matches) > 1:
-					return nil, &hostAmbiguityError{host: svc.Host, candidates: matches}, nil
-					// 0 hits: leave Name empty — Validate will reject
-					// with "name required" rather than letting a
-					// fabricated slug collide with an unrelated service.
+					return nil, &hostAmbiguityError{host: svc.Host, candidates: matches}
+				default:
+					return nil, &hostNotFoundError{host: svc.Host}
 				}
 			}
 		default: // ActionSet (and any unknown — Validate will reject)
@@ -213,7 +249,7 @@ func normalizeProposalServices(in []proposal.Service, existing []broker.Service)
 		out[i].Name = broker.EnsureUniqueName(out[i].Name, used)
 		used[out[i].Name] = true
 	}
-	return out, nil, nil
+	return out, nil
 }
 
 // loadServices reads and parses the broker config, returning a

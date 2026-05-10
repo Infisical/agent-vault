@@ -268,7 +268,7 @@ Authorization: Bearer {AGENT_VAULT_TOKEN}
 
 Query params: `status_bucket` (`2xx`|`3xx`|`4xx`|`5xx`|`err`), `service` (canonical service **name** — e.g. `slack-bot`, `stripe`), `limit` (default 50, max 200), `before=<id>` (page back), `after=<id>` (tail forward for new rows). Response: `{ "logs": [...], "next_cursor": <id|null>, "latest_id": <id> }`.
 
-> **Note**: Rows written before path-based service matching shipped store the matched **host** in the `matched_service` field. New rows store the canonical service **name**. Operators filtering on `?service=` should use service names; pre-upgrade rows can be retrieved by querying with the host string instead. The matched service's host pattern is not returned in log rows — call `GET /v1/vaults/{vault}/services/{name}` (or read `/discover`) to recover the `host` from a name.
+> **Note**: Rows written before path-based service matching shipped store the matched **host** in the `matched_service` field. New rows store the canonical service **name**. Operators filtering on `?service=` should use service names; pre-upgrade rows can be retrieved by querying with the host string instead. The matched service's host pattern is not returned in log rows — call `GET /v1/vaults/{vault}/services` and filter the response by `name` (or read `/discover`) to recover the `host` from a name.
 
 ## Building Code That Needs Credentials
 

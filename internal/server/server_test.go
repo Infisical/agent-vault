@@ -3099,16 +3099,14 @@ func TestAdminProposalApproveBumpsAutoSlugAroundExistingName(t *testing.T) {
 	}
 }
 
-// TestAdminProposalApproveRejectsStaleDeleteWithoutName pins the
-// apply-path counterpart to TestProposalCreateActionDeleteUnknownHostLeavesNameEmpty:
-// a pre-PR ActionDelete proposal (Name="") whose target Host no longer
-// matches any service in the vault must be rejected at approve time
-// rather than silently fall through to broker.Slugify(host) and delete
-// whichever existing service happens to carry that slug as its Name.
-// Without this guard, a stale delete approval could clobber an unrelated
-// service when the slug collides with an explicit name (Slugify is
-// many-to-one — `api-mycompany.com` and `api.mycompany.com` both produce
-// `api-mycompany-com`).
+// TestAdminProposalApproveRejectsStaleDeleteWithoutName pins that a
+// pre-PR ActionDelete proposal (Name="") whose target Host no longer
+// matches any service must be rejected at approve time rather than
+// silently fall through to broker.Slugify(host) and delete whichever
+// existing service happens to carry that slug as its Name. Slugify
+// is many-to-one (`api-mycompany.com` and `api.mycompany.com` both
+// produce `api-mycompany-com`), so an unguarded fallback can clobber
+// an unrelated service.
 func TestAdminProposalApproveRejectsStaleDeleteWithoutName(t *testing.T) {
 	ms := newMockStore()
 
@@ -6210,12 +6208,13 @@ func TestProposalCreateLegacyActionSetAdoptsExistingName(t *testing.T) {
 	}
 }
 
-// TestProposalCreateActionDeleteUnknownHostLeavesNameEmpty pins that a
-// delete-action with no Name and 0 host matches no longer fabricates a
-// slug — the proposal is rejected at validation with "name is required"
-// rather than letting Slugify(host, path) collide with an unrelated
-// existing service's explicit Name and silently delete the wrong service.
-func TestProposalCreateActionDeleteUnknownHostLeavesNameEmpty(t *testing.T) {
+// TestProposalCreateActionDeleteUnknownHostReturnsNotFound pins that a
+// delete-action with no Name and 0 host matches surfaces a 404 with a
+// clear "no service matches host" message, and crucially does NOT
+// fabricate a slug — without this guard, Slugify(host, path) could
+// collide with an unrelated existing service's explicit Name and the
+// merge would silently delete the wrong service.
+func TestProposalCreateActionDeleteUnknownHostReturnsNotFound(t *testing.T) {
 	srv, ms, token := setupProposalTest(t)
 	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
 		ID: "bc-1", VaultID: "root-ns-id",
@@ -6236,11 +6235,11 @@ func TestProposalCreateActionDeleteUnknownHostLeavesNameEmpty(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 (no fabricated slug), got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 (host not found), got %d: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "name is required") {
-		t.Fatalf("expected validation error mentioning required name, got %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "no service matches host") {
+		t.Fatalf("expected host-not-found error, got %s", rec.Body.String())
 	}
 
 	// Ensure the unrelated service was not touched.
