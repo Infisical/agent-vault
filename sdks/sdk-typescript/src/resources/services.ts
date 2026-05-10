@@ -228,9 +228,11 @@ export class ServicesResource {
   }
 
   /**
-   * Upsert one or more services by host.
+   * Upsert one or more services by canonical name (slug).
    *
-   * If a service with the same host already exists, it is replaced.
+   * Identity is `name`; if omitted the server slugifies from `host` and
+   * bumps (`-2`) when the slug collides with an unrelated stored service.
+   * Resubmitting the same explicit name replaces the stored entry.
    * Requires vault admin role.
    *
    * @param services - Services to add or update.

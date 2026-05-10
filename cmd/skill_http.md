@@ -226,6 +226,10 @@ Key fields:
 - `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates), `passthrough` (no credential fields)
 - `services[].substitutions` -- optional list of URL/header rewrites. Each entry has `key` (UPPER_SNAKE_CASE credential reference), `placeholder` (the exact wire string the broker matches case-sensitively, e.g. `__account_sid__`), and optional `in` (subset of `["path", "query", "header"]`; defaults to `["path", "query"]`). Surfaces not in `in` are not scanned. Must be paired with an `auth` change in the same proposal — substitutions cannot be added on an enable/disable-only update. See the URL Substitutions section above.
 - `services[].enabled` -- optional boolean. Omitted means "enabled" for new services. A `"set"` proposal may supply `enabled` alone (no `auth`) to flip an existing service's state without replacing its auth config -- useful for staged rollouts where the operator wires credentials before flipping traffic on
+- `credentials[].action` -- `"set"` (omit `value` for human to supply; include `value` to store back) or `"delete"`
+- `credentials` -- only declare credentials not already in `available_credentials`. Every credential referenced in auth configs must resolve to a slot or existing credential (400 otherwise)
+- `message` -- developer-facing explanation; `user_message` -- shown on the browser approval page
+- `credentials[].obtain` -- URL where the human can get the credential; `obtain_instructions` -- steps to find it
 
 ### Matching priority
 
@@ -243,10 +247,6 @@ Example — Slack with two credentials at the same host:
 | `slack.com/api/chat.postMessage` | doesn't match | matches | `slack-bot` |
 
 The matcher does not run regex, does not match on method/headers/query/body, and does not bound `*` at path segments. Patterns that tie under rule 2 fall to declaration order.
-- `credentials[].action` -- `"set"` (omit `value` for human to supply; include `value` to store back) or `"delete"`
-- `credentials` -- only declare credentials not already in `available_credentials`. Every credential referenced in auth configs must resolve to a slot or existing credential (400 otherwise)
-- `message` -- developer-facing explanation; `user_message` -- shown on the browser approval page
-- `credentials[].obtain` -- URL where the human can get the credential; `obtain_instructions` -- steps to find it
 
 **After creating a proposal:**
 1. Present the `approval_url` to the user conversationally -- e.g. "I need access to your Stripe account. Click here to connect it: -> {approval_url}"

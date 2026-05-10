@@ -155,7 +155,7 @@ broker splits the path off the host on ingest.
 
 Flag-driven mode:
   agent-vault vault service add --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY
-  agent-vault vault service add --name slack-bot --host slack.com/api/* --auth-type bearer --token-key SLACK_BOT_TOKEN
+  agent-vault vault service add --name slack-bot --host 'slack.com/api/*' --auth-type bearer --token-key SLACK_BOT_TOKEN
 
 File mode (upsert, not replace-all):
   agent-vault vault service add -f services.yaml`,

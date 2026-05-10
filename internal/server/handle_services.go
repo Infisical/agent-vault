@@ -685,6 +685,8 @@ func (s *Server) handleServicesClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer s.lockVaultServices(ns.ID)()
+
 	if _, err := s.store.SetBrokerConfig(ctx, ns.ID, "[]"); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to clear services")
 		return
