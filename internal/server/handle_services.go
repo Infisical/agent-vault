@@ -402,7 +402,9 @@ func (s *Server) handleServiceRemove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	removed := services[idx]
-	filtered := append(services[:idx:idx], services[idx+1:]...)
+	filtered := make([]broker.Service, 0, len(services)-1)
+	filtered = append(filtered, services[:idx]...)
+	filtered = append(filtered, services[idx+1:]...)
 
 	servicesJSON, err := json.Marshal(filtered)
 	if err != nil {

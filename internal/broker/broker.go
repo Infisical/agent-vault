@@ -690,11 +690,12 @@ func Slugify(host, path string) string {
 	raw.Grow(len(combined))
 	for i := 0; i < len(combined); i++ {
 		c := combined[i]
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+		switch {
+		case (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'):
 			raw.WriteByte(c)
-		} else if c >= 'A' && c <= 'Z' {
+		case c >= 'A' && c <= 'Z':
 			raw.WriteByte(c + ('a' - 'A'))
-		} else {
+		default:
 			raw.WriteByte('-')
 		}
 	}
