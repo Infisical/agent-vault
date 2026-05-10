@@ -446,7 +446,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
     | `-f` | | Path to a YAML services file (upsert mode) |
-    | `--name` | _auto_ | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Auto-derived from `--host` when omitted. |
+    | `--name` | | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). **Required when `--host` is provided.** |
     | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). The server splits the path off the host on ingest. |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, `custom`, `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
@@ -609,7 +609,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
     | `-f`, `--file` | | Path to JSON proposal file (use `-` for stdin) |
-    | `--name` | _auto_ | Service name (slug). Auto-derived from `--host` when omitted. |
+    | `--name` | | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). **Required when `--host` is provided.** |
     | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, or `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
@@ -626,6 +626,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     ```bash
     # Flag-driven: request a bearer-auth service with a credential
     agent-vault vault proposal create \
+      --name stripe \
       --host api.stripe.com \
       --auth-type bearer \
       --token-key STRIPE_KEY \

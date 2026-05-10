@@ -7,7 +7,7 @@ A `Service` is a per-[vault](/learn/vaults) configuration that defines which ups
 
 Each service contains:
 
-- **Name**: A canonical per-vault identifier (slug, 3–64 lowercase alphanumeric/hyphen chars, no leading/trailing hyphen, no consecutive hyphens). Auto-derived from `host` when omitted on write — the host (with any inline path's literal portion) is lower-cased and joined with hyphens, with `.` and `/` becoming `-`. Examples: `api.stripe.com` → `api-stripe-com`; `slack.com/api/*` → `slack-com-api`. When the auto-slug would collide with an existing service's name, the server appends `-2`, `-3`, … so a stale auto-slug never silently overwrites another service.
+- **Name**: A canonical per-vault identifier (slug, 3–64 lowercase alphanumeric/hyphen chars, no leading/trailing hyphen, no consecutive hyphens). **Required on write** — pick a deliberate name like `stripe`, `slack-bot`, or `internal-billing`; the server does not derive a name from `host`. Path-scoped services that share a bare host (e.g. `slack.com/api/*` vs `slack.com/api/apps.connections.*`) must each carry a distinct `name` so subsequent operations stay unambiguous.
 - **Host**: The single matcher field. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). Reads and writes use the same shape: writes accept any of those forms; reads return the joined inline form so you see exactly what you wrote.
 - **Auth config**: How Agent Vault authenticates. Five types are supported: `bearer`, `basic`, `api-key`, `custom`, and `passthrough` (opt out of injection).
 
@@ -369,10 +369,8 @@ Removes all services. Agents scoped to this [vault](/learn/vaults) will get `403
     Each service in a proposal has an `action` field:
 
     - **`set`**: Idempotent upsert keyed by canonical `name` (slug). Adds the service when
-      no entry has that name, or replaces it when one does. `name` is auto-derived from
-      `host` when omitted; a proposal whose `host` matches an existing service adopts that
-      service's name (so legacy "rotate credentials" proposals update in place rather than
-      create a duplicate).
+      no entry has that name, or replaces it when one does. `name` is required — pick it
+      deliberately so the canonical identifier survives renames and rotations cleanly.
     - **`delete`**: Removes the service matching the given `name`. When `name` is omitted,
       the bare host portion of `host` is used as a fallback — a unique host match is
       resolved automatically; a host shared by multiple path-scoped services returns
@@ -381,8 +379,7 @@ Removes all services. Agents scoped to this [vault](/learn/vaults) will get `403
 
     When you approve a proposal, Agent Vault atomically merges all service changes into
     the vault's configuration in a single transaction. Identity for both set and delete is
-    `name`; auto-slug collisions with unrelated existing services are resolved by appending
-    `-2`, `-3`, … so a stale auto-slug can't silently overwrite an existing service.
+    `name`.
 
     This means agents can request access to new services without you manually
     editing YAML files. You just review and click "Allow" in the browser

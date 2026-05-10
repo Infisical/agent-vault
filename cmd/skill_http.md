@@ -186,6 +186,7 @@ Content-Type: application/json
 {
   "services": [{
     "action": "set",
+    "name": "twilio",
     "host": "api.twilio.com",
     "auth": {"type": "basic", "username": "TWILIO_ACCOUNT_SID", "password": "TWILIO_AUTH_TOKEN"},
     "substitutions": [
@@ -212,7 +213,7 @@ Authorization: Bearer {AGENT_VAULT_TOKEN}
 Content-Type: application/json
 
 {
-  "services": [{"action": "set", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
+  "services": [{"action": "set", "name": "stripe", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
   "credentials": [{"action": "set", "key": "STRIPE_KEY", "description": "Stripe API key", "obtain": "https://dashboard.stripe.com/apikeys", "obtain_instructions": "Developers -> API Keys -> Reveal test key"}],
   "message": "Need Stripe API key for billing feature",
   "user_message": "I need access to your Stripe account to build the checkout page."
@@ -221,7 +222,7 @@ Content-Type: application/json
 
 Key fields:
 - `services[].action` -- `"set"` (upsert, needs `host` + `auth` **or** an `enabled` change) or `"delete"`
-- `services[].name` -- canonical identifier (slug, 3–64 lowercase alphanumeric/hyphen chars). Optional on write; the server auto-derives from `host` when omitted. Identity for set/delete is `name` — when a delete uses `host` alone and the host is shared by multiple services, the server returns 409 with the candidate names.
+- `services[].name` -- canonical identifier (slug, 3–64 lowercase alphanumeric/hyphen chars). **Required for `"set"`** — pick a deliberate name; the server does not derive one from `host`. `"delete"` may omit `name` to fall back to host-based resolution: when the host is shared by multiple services the server returns 409 with the candidate names so the caller can retry by `name`.
 - `services[].host` -- single matcher field. Accepts a bare hostname (e.g. `api.stripe.com`), a one-level wildcard (e.g. `*.github.com`), or an inline path-scoped form (e.g. `slack.com/api/*`). The server splits the path off the host on ingest. Path globs use `*` as a greedy glob (cross-`/`); `**`, `?`, regex, and bare `*` are rejected.
 - `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates), `passthrough` (no credential fields)
 - `services[].substitutions` -- optional list of URL/header rewrites. Each entry has `key` (UPPER_SNAKE_CASE credential reference), `placeholder` (the exact wire string the broker matches case-sensitively, e.g. `__account_sid__`), and optional `in` (subset of `["path", "query", "header"]`; defaults to `["path", "query"]`). Surfaces not in `in` are not scanned. Must be paired with an `auth` change in the same proposal — substitutions cannot be added on an enable/disable-only update. See the URL Substitutions section above.

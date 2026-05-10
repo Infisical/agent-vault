@@ -97,8 +97,8 @@ Response includes `vault`, `services` (each with `name` and `host`), and `availa
 Most agents should raise a [proposal](#proposals----requesting-and-storing-credentials) instead — proposals get a human approval before any service or credential change lands. The CLI commands below mutate the vault directly and require an interactive vault admin login (not an agent token). Use them only when the user explicitly asks you to skip the proposal flow:
 
 ```bash
-# Add a service (non-destructive upsert by name; auto-derives name from host)
-agent-vault vault service add --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY
+# Add a service (non-destructive upsert by name; --name and --host are both required)
+agent-vault vault service add --name stripe --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY
 agent-vault vault service add --name slack-bot --host 'slack.com/api/*' --auth-type bearer --token-key SLACK_BOT_TOKEN
 
 # Toggle enabled/disabled (accepts service name OR host)
@@ -191,12 +191,12 @@ Substitutions are configured via JSON only — no flag form. Place a `substituti
 
 ### Creating a Proposal
 
-**Flag-driven mode (common cases):**
+**Flag-driven mode (common cases). When `--host` is provided, `--name` is required:**
 
 ```bash
 # Service + credential
 agent-vault vault proposal create \
-  --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY \
+  --name stripe --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY \
   --credential STRIPE_KEY="Stripe API key" \
   -m "Need Stripe API key for billing feature" --json
 
@@ -223,7 +223,7 @@ EOF
 # Complex/multi-service (JSON mode)
 agent-vault vault proposal create -f - --json <<'EOF'
 {
-  "services": [{"action": "set", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
+  "services": [{"action": "set", "name": "stripe", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
   "credentials": [{"action": "set", "key": "STRIPE_KEY", "description": "Stripe API key"}],
   "message": "Need Stripe access"
 }
@@ -234,6 +234,7 @@ agent-vault vault proposal create -f - --json <<'EOF'
 {
   "services": [{
     "action": "set",
+    "name": "twilio",
     "host": "api.twilio.com",
     "auth": {"type": "basic", "username": "TWILIO_ACCOUNT_SID", "password": "TWILIO_AUTH_TOKEN"},
     "substitutions": [
@@ -259,7 +260,7 @@ Other flags: `--user-message` (shown on browser approval page), `--credential KE
 
 Key fields (JSON mode):
 - `services[].action` -- `"set"` (upsert, needs `host` + `auth` **or** an `enabled` change) or `"delete"`
-- `services[].name` -- canonical identifier (slug, 3–64 lowercase alphanumeric/hyphen chars). Optional on write; the server auto-derives from `host` when omitted. Identity for set/delete is `name` — when a delete uses `host` alone and the host is shared by multiple services, the server returns 409 with the candidate names.
+- `services[].name` -- canonical identifier (slug, 3–64 lowercase alphanumeric/hyphen chars). **Required for `"set"`** — pick a deliberate name; the server does not derive one from `host`. `"delete"` may omit `name` to fall back to host-based resolution: when the host is shared by multiple services the server returns 409 with the candidate names so the caller can retry by `name`.
 - `services[].host` -- single matcher field. Accepts a bare hostname (e.g. `api.stripe.com`), a one-level wildcard (e.g. `*.github.com`), or an inline path-scoped form (e.g. `slack.com/api/*`). The server splits the path off the host on ingest and resolves overlapping rules deterministically (exact-host beats wildcard, then longer literal path prefix wins, then declaration order). Path globs use `*` as a greedy glob (cross-`/`); `**`, `?`, regex, and bare `*` are rejected.
 - `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates), `passthrough` (no credential fields)
 - `services[].substitutions` -- optional list of URL/header rewrites. Each entry has `key` (UPPER_SNAKE_CASE credential reference), `placeholder` (the exact wire string the broker matches case-sensitively, e.g. `__account_sid__`), and optional `in` (subset of `["path", "query", "header"]`; defaults to `["path", "query"]`). Surfaces not in `in` are not scanned. Must be paired with an `auth` change in the same proposal — substitutions cannot be added on an enable/disable-only update.

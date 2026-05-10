@@ -105,7 +105,7 @@ export interface WireSubstitution {
 
 /** @internal Wire format for a service entry. */
 export interface WireService {
-  /** Canonical service name (slug). Server populates on read; clients may omit on write (server auto-slugs). */
+  /** Canonical service name (slug). Required on write — pick deliberately; the server does not derive it from `host`. */
   name?: string;
   /** Host pattern (joined inline form: `slack.com/api/*`). Single matcher field on the wire. */
   host: string;

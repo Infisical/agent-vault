@@ -24,16 +24,12 @@ const (
 	ActionDelete Action = "delete" // remove existing
 )
 
-// Service is a proposed broker service change. Identity for both set
-// and delete is Name. Server handlers auto-fill Name for legacy clients
-// before merging:
-//   - ActionSet without Name adopts the Name of an existing service
-//     matching (Host, Path), else falls through to broker.Slugify with
-//     collision bumping.
-//   - ActionDelete without Name resolves against existing services by
-//     Host (and Path, when scoped via inline form): unique match fills
-//     Name; 2+ matches return 409 with a candidate list; 0 matches
-//     return 404 (or 409 at apply time).
+// Service is a proposed broker service change. Identity is Name; it is
+// required for ActionSet and validated upstream. ActionDelete may omit
+// Name to fall back to host-based resolution: server resolves against
+// existing services by Host (and Path, when scoped via inline form) —
+// unique match fills Name; 2+ matches return 409 with a candidate list;
+// 0 matches return 404 (or 409 at apply time).
 //
 // Host accepts bare, wildcard, or inline path-scoped (`slack.com/api/*`)
 // forms; ingest splits the inline form before validation and MarshalJSON

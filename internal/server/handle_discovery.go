@@ -53,12 +53,10 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// MarshalJSON persists Host in joined form; re-split so
-	// MatcherPattern emits the same shape regardless of storage form,
-	// and backfill Name so legacy vaults expose canonical identifiers.
+	// MatcherPattern emits the same shape regardless of storage form.
 	for i := range svcList {
 		svcList[i].Host, svcList[i].Path = broker.SplitInlineHost(svcList[i].Host, svcList[i].Path)
 	}
-	svcList = broker.NormalizeServices(svcList)
 
 	services := make([]discoverService, len(svcList))
 	for i, svc := range svcList {

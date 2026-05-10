@@ -334,8 +334,7 @@ func (a *Auth) Resolve(getCredential func(key string) (string, error)) (map[stri
 }
 
 // Validate checks that a broker config is well-formed. Name is required
-// and unique per vault; callers must run NormalizeServices first to
-// backfill names from Slugify when accepting input without a name.
+// and unique per vault — callers must supply it explicitly.
 func Validate(cfg *Config) error {
 	if cfg.Vault == "" {
 		return fmt.Errorf("vault is required")
@@ -750,132 +749,6 @@ func SplitInlineHost(host, path string) (string, string) {
 	return host, path
 }
 
-// Slugify produces a deterministic ValidateSlug-shaped candidate name
-// from (host, path). Collision resolution is the caller's job (see
-// NormalizeServices). A non-empty path always yields a slug distinct
-// from the catch-all slug for the same host — paths with no alnum
-// content (e.g. "/" or "/*") get a "root" marker appended.
-func Slugify(host, path string) string {
-	h := strings.ToLower(strings.TrimPrefix(host, "*."))
-
-	literal := path
-	if star := strings.IndexByte(path, '*'); star >= 0 {
-		literal = path[:star]
-	}
-	hasPathContent := false
-	for i := 0; i < len(literal); i++ {
-		c := literal[i]
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
-			hasPathContent = true
-			break
-		}
-	}
-	combined := h + literal
-	if path != "" && !hasPathContent {
-		combined += "root"
-	}
-
-	var raw strings.Builder
-	raw.Grow(len(combined))
-	for i := 0; i < len(combined); i++ {
-		c := combined[i]
-		switch {
-		case (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'):
-			raw.WriteByte(c)
-		case c >= 'A' && c <= 'Z':
-			raw.WriteByte(c + ('a' - 'A'))
-		default:
-			raw.WriteByte('-')
-		}
-	}
-
-	// Collapse runs of '-'.
-	var collapsed strings.Builder
-	collapsed.Grow(raw.Len())
-	prevHyphen := false
-	for _, c := range raw.String() {
-		if c == '-' {
-			if !prevHyphen {
-				collapsed.WriteRune(c)
-			}
-			prevHyphen = true
-		} else {
-			collapsed.WriteRune(c)
-			prevHyphen = false
-		}
-	}
-
-	s := strings.Trim(collapsed.String(), "-")
-	if len(s) < 3 {
-		s = strings.Trim(s+"-svc", "-")
-	}
-	if len(s) > 64 {
-		s = strings.TrimRight(s[:64], "-")
-	}
-	if s == "" {
-		return "service"
-	}
-	return s
-}
-
-// NormalizeServices backfills empty Name fields via Slugify, bumping on
-// collisions with explicit names. Returns the input slice unchanged
-// when every service already has a name (the steady-state path);
-// allocates a copy only when backfill is needed.
-func NormalizeServices(services []Service) []Service {
-	if services == nil {
-		return nil
-	}
-	needs := false
-	for i := range services {
-		if services[i].Name == "" {
-			needs = true
-			break
-		}
-	}
-	if !needs {
-		return services
-	}
-
-	out := make([]Service, len(services))
-	copy(out, services)
-
-	used := make(map[string]bool, len(out))
-	for i := range out {
-		if out[i].Name != "" {
-			used[out[i].Name] = true
-		}
-	}
-	for i := range out {
-		if out[i].Name != "" {
-			continue
-		}
-		out[i].Name = EnsureUniqueName(Slugify(out[i].Host, out[i].Path), used)
-		used[out[i].Name] = true
-	}
-	return out
-}
-
-// EnsureUniqueName appends -2, -3, ... to candidate until it's not in
-// used, preserving the 64-char ValidateSlug ceiling. Does not mutate
-// used. Bounded at n=10000; downstream Validate catches any overflow.
-func EnsureUniqueName(candidate string, used map[string]bool) string {
-	if !used[candidate] {
-		return candidate
-	}
-	for n := 2; n <= 10000; n++ {
-		suffix := fmt.Sprintf("-%d", n)
-		base := candidate
-		if len(base)+len(suffix) > 64 {
-			base = strings.TrimRight(base[:64-len(suffix)], "-")
-		}
-		next := base + suffix
-		if !used[next] {
-			return next
-		}
-	}
-	return candidate
-}
 
 // resolveHeaders renders {{ credential_name }} placeholders in header values
 // by calling getCredential for each referenced name. Returns a new map with

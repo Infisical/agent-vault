@@ -149,7 +149,7 @@ The response includes an `approval_url` that the agent presents to the user in c
 
 Each service and credential slot carries an `action` field:
 
-- `set`: idempotent upsert (add or replace). Services require `host` + `auth`; the server auto-derives `name` (slug) from `host` when omitted, and credential slots require `key`. To layer two credentials on the same host, embed different inline path globs in `host` (e.g. `slack.com/api/*` vs `slack.com/api/apps.connections.*`).
+- `set`: idempotent upsert (add or replace). Services require `name` + `host` + `auth` — pick the `name` deliberately, the server does not derive one from `host` — and credential slots require `key`. To layer two credentials on the same host, give each entry its own `name` and embed different inline path globs in `host` (e.g. `slack.com/api/*` vs `slack.com/api/apps.connections.*`).
 - `delete`: remove an existing entry. Services delete by `name` (canonical); when `name` is omitted, the server resolves uniquely against `host` — and returns 409 with the candidate names if multiple services share that host. Credential slots only need `key`.
 
 ### Credential slots

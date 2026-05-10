@@ -118,11 +118,8 @@ export default function ServicesTab() {
       const data = await resp.json();
       throw new Error(data.error || "Failed to save services.");
     }
-    // Re-fetch rather than trusting the local copy: the server
-    // normalizes names (auto-slugs blank `name` from host+path, bumps
-    // on collision), so the canonical state can differ from what we
-    // sent. Skipping this leaves empty names in local state and breaks
-    // subsequent PATCH/DELETE that key by service.name.
+    // Re-fetch so the local copy always reflects exactly what the
+    // server stored (e.g. inline-host re-joining for the read surface).
     await fetchServices();
   }
 
@@ -430,6 +427,7 @@ function ServiceModal({
   const [subsExpanded, setSubsExpanded] = useState(subs.length > 0);
 
   const canSubmit = (() => {
+    if (!name.trim()) return false;
     if (!pattern.trim()) return false;
     switch (authType) {
       case "bearer":
@@ -493,7 +491,6 @@ function ServiceModal({
       // Send only `host` (inline-form accepted). Server splits into
       // host + path on ingest — the UI never names a separate path field.
       const service: Service = {
-        // Empty name → server auto-slugs from host.
         name: name.trim(),
         host: pattern.trim(),
         ...(enabled ? {} : { enabled: false }),
@@ -542,12 +539,14 @@ function ServiceModal({
         <Section title="Basics">
           <FormField
             label="Name"
-            tooltip="Slug-style identifier (3–64 chars, lowercase, hyphens). Auto-derived from host when blank."
+            tooltip="Slug-style identifier (3–64 chars, lowercase, hyphens). The canonical per-vault key for this service."
+            required
           >
             <Input
-              placeholder="e.g. slack-bot (auto if blank)"
+              placeholder="e.g. stripe, slack-bot, internal-billing"
               value={name}
               onChange={(e) => setName(e.target.value)}
+              autoFocus
             />
           </FormField>
           <FormField
@@ -559,7 +558,6 @@ function ServiceModal({
               placeholder="e.g. api.stripe.com or slack.com/api/*"
               value={pattern}
               onChange={(e) => setPattern(e.target.value)}
-              autoFocus
             />
           </FormField>
           <div className="flex items-start justify-between gap-4 pt-1">

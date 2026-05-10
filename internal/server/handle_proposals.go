@@ -147,7 +147,7 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve auto-slug and unnamed-delete targets against existing vault state.
+	// Resolve unnamed-delete targets against existing vault state.
 	existing, err := s.loadServices(ctx, vaultID)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to load existing services")

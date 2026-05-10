@@ -59,10 +59,7 @@ func runInteractiveServiceSet(cmd *cobra.Command) error {
 		return handleAbort(cmd, err)
 	}
 
-	// PUT is replace-all, so the merged slice fully seeds the
-	// collision map — safe to backfill Names client-side here.
 	finalServices := mergeServices(existingServices, newServices, strategy)
-	finalServices = broker.NormalizeServices(finalServices)
 
 	// Validate
 	cfg := broker.Config{
@@ -153,7 +150,7 @@ func fetchServices(client *session.ClientSession, nsName string) ([]broker.Servi
 	// `slack.com/api/*`); split it back into bare Host + Path so the
 	// matcher invariant — Host has no '/' — holds before any downstream
 	// broker.Validate (e.g. when the user appends in the interactive
-	// builder). Idempotent for legacy split-form rows.
+	// builder).
 	for i := range services {
 		services[i].Host, services[i].Path = broker.SplitInlineHost(services[i].Host, services[i].Path)
 	}
@@ -265,8 +262,12 @@ func serviceBuilderLoop(client *session.ClientSession, nsName string, cmd *cobra
 }
 
 // buildService guides the user through creating a single service.
-// Name is filled by NormalizeServices in the caller — no Name prompt.
 func buildService(client *session.ClientSession, nsName string, cmd *cobra.Command) (*broker.Service, error) {
+	name, err := promptServiceName()
+	if err != nil {
+		return nil, err
+	}
+
 	host, err := promptHost(cmd)
 	if err != nil {
 		return nil, err
@@ -279,10 +280,29 @@ func buildService(client *session.ClientSession, nsName string, cmd *cobra.Comma
 
 	bareHost, path := broker.SplitInlineHost(host, "")
 	return &broker.Service{
+		Name: name,
 		Host: bareHost,
 		Path: path,
 		Auth: auth,
 	}, nil
+}
+
+// promptServiceName collects a slug-shaped service name and validates it
+// against ValidateSlug so the user sees the constraint at prompt time
+// rather than via a server-side 400.
+func promptServiceName() (string, error) {
+	var name string
+	err := huh.NewInput().
+		Title("Service name (slug, e.g. stripe, slack-bot):").
+		Value(&name).
+		Validate(func(s string) error {
+			return broker.ValidateSlug(strings.TrimSpace(s))
+		}).
+		Run()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(name), nil
 }
 
 // promptAuth asks the user to select an auth method and configure it.

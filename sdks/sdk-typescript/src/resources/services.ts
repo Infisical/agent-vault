@@ -83,9 +83,9 @@ export interface Substitution {
 /**
  * Write shape for a vault service (proxy rule).
  *
- * Identity is `name` — a unique-per-vault slug. The server auto-derives
- * the name from `host` when omitted, so callers upgrading from v0.1.0
- * don't need to supply it.
+ * Identity is `name` — a unique-per-vault slug. Required on write; pick
+ * a deliberate identifier (e.g. `stripe`, `slack-bot`). The server does
+ * not derive a name from `host`.
  *
  * `host` is the single matcher field on the wire. Accepts a bare
  * hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`),
@@ -95,7 +95,7 @@ export interface Substitution {
  * literal path prefix wins, with declaration order as the final tiebreak.
  */
 export interface ServiceInput {
-  /** Service name (slug, 3–64 chars, lowercase alphanumeric and hyphens). Server auto-derives from host when omitted. */
+  /** Service name (slug, 3–64 chars, lowercase alphanumeric and hyphens). Required on write. */
   name?: string;
   /** Host pattern. Accepts `api.stripe.com`, `*.github.com`, or an inline path form like `slack.com/api/*`. */
   host: string;
@@ -230,10 +230,8 @@ export class ServicesResource {
   /**
    * Upsert one or more services by canonical name (slug).
    *
-   * Identity is `name`; if omitted the server slugifies from `host` and
-   * bumps (`-2`) when the slug collides with an unrelated stored service.
-   * Resubmitting the same explicit name replaces the stored entry.
-   * Requires vault admin role.
+   * Identity is `name` and is required on every entry. Resubmitting the
+   * same name replaces the stored entry. Requires vault admin role.
    *
    * @param services - Services to add or update.
    * @throws {ApiError} 400 if services are empty or fail validation.

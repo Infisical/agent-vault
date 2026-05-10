@@ -31,72 +31,16 @@ func rejectDeprecatedDescription(servicesRaw json.RawMessage) int {
 
 const deprecatedDescriptionMsg = "description is no longer supported; rename via the service name field instead"
 
-// normalizeIncoming splits inline-form host and backfills missing
-// Names. For replace-all flows only; partial upserts must use
-// normalizeIncomingAgainstExisting so auto-slugs don't collide with
-// unrelated stored services.
-func normalizeIncoming(in []broker.Service) []broker.Service {
+// splitInlineHosts copies the input slice and applies SplitInlineHost
+// to each entry so the matcher invariant (Host has no '/') holds before
+// validation. Name is required and validated downstream.
+func splitInlineHosts(in []broker.Service) []broker.Service {
 	out := make([]broker.Service, len(in))
 	for i, svc := range in {
 		svc.Host, svc.Path = broker.SplitInlineHost(svc.Host, svc.Path)
 		out[i] = svc
-	}
-	return broker.NormalizeServices(out)
-}
-
-// normalizeIncomingAgainstExisting is the upsert-aware counterpart to
-// normalizeIncoming. For each incoming service with no Name: adopt the
-// Name of any existing service with matching (Host, Path) — preserving
-// the legacy "upsert by host" pattern — else auto-slug and bump on
-// collision so byName upsert can't silently overwrite an unrelated
-// stored service. Explicit-name collisions are left alone since
-// resubmitting the same Name is the intended upsert-by-name semantic.
-func normalizeIncomingAgainstExisting(in []broker.Service, existing []broker.Service) []broker.Service {
-	out := make([]broker.Service, len(in))
-	autoSlugged := make([]bool, len(in))
-	for i, svc := range in {
-		svc.Host, svc.Path = broker.SplitInlineHost(svc.Host, svc.Path)
-		if svc.Name == "" {
-			if matched := findByHostPath(existing, svc.Host, svc.Path); matched != nil {
-				svc.Name = matched.Name
-			} else {
-				svc.Name = broker.Slugify(svc.Host, svc.Path)
-				autoSlugged[i] = true
-			}
-		}
-		out[i] = svc
-	}
-
-	used := make(map[string]bool, len(existing)+len(out))
-	for _, e := range existing {
-		used[e.Name] = true
-	}
-	for i := range out {
-		if !autoSlugged[i] {
-			used[out[i].Name] = true
-		}
-	}
-	for i := range out {
-		if !autoSlugged[i] {
-			continue
-		}
-		if !used[out[i].Name] {
-			used[out[i].Name] = true
-			continue
-		}
-		out[i].Name = broker.EnsureUniqueName(out[i].Name, used)
-		used[out[i].Name] = true
 	}
 	return out
-}
-
-func findByHostPath(existing []broker.Service, host, path string) *broker.Service {
-	for i := range existing {
-		if existing[i].Host == host && existing[i].Path == path {
-			return &existing[i]
-		}
-	}
-	return nil
 }
 
 // hostAmbiguityError is returned when an unnamed ActionDelete targets a
@@ -143,92 +87,50 @@ func writeNormalizeError(w http.ResponseWriter, err error, notFoundStatus, defau
 	jsonError(w, defaultStatus, err.Error())
 }
 
-// normalizeProposalServices auto-fills proposal.Service.Name and splits
-// inline-form host for every entry. Proposal-flow counterpart to
-// normalizeIncomingAgainstExisting.
-//
-// ActionSet without Name: adopt the Name of any existing (Host, Path)
-// match, else slugify and bump on collision.
+// normalizeProposalServices splits inline-form host on every entry and
+// resolves ActionDelete-by-host targets against the current vault state.
 //
 // ActionDelete without Name: resolve against existing services by Host
 // (and Path when inline-form scoped). Unique match fills Name; 2+ →
-// *hostAmbiguityError; 0 → *hostNotFoundError. Fabricating a slug here
-// would risk deleting an unrelated service whose explicit Name happens
-// to collide with Slugify(host).
+// *hostAmbiguityError; 0 → *hostNotFoundError. ActionSet without Name
+// falls through unchanged — proposal.Validate rejects it with a clear
+// "name is required" error.
 func normalizeProposalServices(in []proposal.Service, existing []broker.Service) ([]proposal.Service, error) {
 	out := make([]proposal.Service, len(in))
-	autoSlugged := make([]bool, len(in))
 	for i, svc := range in {
 		svc.Host, svc.Path = broker.SplitInlineHost(svc.Host, svc.Path)
 
-		switch svc.Action {
-		case proposal.ActionDelete:
-			if svc.Name == "" {
-				var matches []broker.Service
-				for _, e := range existing {
-					if e.Host != svc.Host {
-						continue
-					}
-					// Narrow by Path when the caller scoped via inline
-					// form; empty Path stays a host-level delete that
-					// intentionally surfaces multi-service ambiguity.
-					if svc.Path != "" && e.Path != svc.Path {
-						continue
-					}
-					matches = append(matches, e)
+		if svc.Action == proposal.ActionDelete && svc.Name == "" {
+			var matches []broker.Service
+			for _, e := range existing {
+				if e.Host != svc.Host {
+					continue
 				}
-				switch {
-				case len(matches) == 1:
-					svc.Name = matches[0].Name
-				case len(matches) > 1:
-					return nil, &hostAmbiguityError{host: svc.Host, candidates: matches}
-				default:
-					return nil, &hostNotFoundError{host: svc.Host}
+				// Narrow by Path when the caller scoped via inline form;
+				// empty Path stays a host-level delete that intentionally
+				// surfaces multi-service ambiguity.
+				if svc.Path != "" && e.Path != svc.Path {
+					continue
 				}
+				matches = append(matches, e)
 			}
-		default: // ActionSet (and any unknown — Validate will reject)
-			if svc.Name == "" {
-				if matched := findByHostPath(existing, svc.Host, svc.Path); matched != nil {
-					svc.Name = matched.Name
-				} else {
-					svc.Name = broker.Slugify(svc.Host, svc.Path)
-					autoSlugged[i] = true
-				}
+			switch {
+			case len(matches) == 1:
+				svc.Name = matches[0].Name
+			case len(matches) > 1:
+				return nil, &hostAmbiguityError{host: svc.Host, candidates: matches}
+			default:
+				return nil, &hostNotFoundError{host: svc.Host}
 			}
 		}
 		out[i] = svc
 	}
-
-	// Seed `used` with existing names + explicit batch names so
-	// auto-slugs bump rather than silently replace an unrelated service.
-	// Explicit-name collisions are left alone (upsert-by-name semantic);
-	// intra-batch dup explicit names fall through to Validate.
-	used := make(map[string]bool, len(existing)+len(out))
-	for _, e := range existing {
-		used[e.Name] = true
-	}
-	for i := range out {
-		if out[i].Action != proposal.ActionSet || autoSlugged[i] {
-			continue
-		}
-		used[out[i].Name] = true
-	}
-	for i := range out {
-		if out[i].Action != proposal.ActionSet || !autoSlugged[i] {
-			continue
-		}
-		if !used[out[i].Name] {
-			used[out[i].Name] = true
-			continue
-		}
-		out[i].Name = broker.EnsureUniqueName(out[i].Name, used)
-		used[out[i].Name] = true
-	}
 	return out, nil
 }
 
-// loadServices reads, splits inline-form Host, and name-normalizes
-// the vault's broker config. Returns nil, nil when no config exists.
+// loadServices reads the vault's broker config and splits inline-form
+// Host on every entry so the matcher invariant holds. Returns nil, nil
+// when no config exists.
 func (s *Server) loadServices(ctx context.Context, vaultID string) ([]broker.Service, error) {
 	bc, err := s.store.GetBrokerConfig(ctx, vaultID)
 	if err != nil {
@@ -244,7 +146,7 @@ func (s *Server) loadServices(ctx context.Context, vaultID string) ([]broker.Ser
 	for i := range services {
 		services[i].Host, services[i].Path = broker.SplitInlineHost(services[i].Host, services[i].Path)
 	}
-	return broker.NormalizeServices(services), nil
+	return services, nil
 }
 
 // resolveServiceRef looks up a service by name first, then by host.
@@ -407,9 +309,9 @@ func (s *Server) handleServicesUpsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// SQLite serializes statements but not the load → normalize → save
+	// SQLite serializes statements but not the load → validate → save
 	// sequence; without this lock concurrent upserts can both pass the
-	// collision check against the same pre-state.
+	// duplicate-name check against the same pre-state.
 	defer s.lockVaultServices(ns.ID)()
 
 	existing, err := s.loadServices(ctx, ns.ID)
@@ -418,11 +320,10 @@ func (s *Server) handleServicesUpsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Inline-form split + auto-slug missing names; auto-slugs that
-	// collide with `existing` bump (`-2`) rather than overwrite.
-	incomingSlice := normalizeIncomingAgainstExisting(req.Services, existing)
+	incomingSlice := splitInlineHosts(req.Services)
 
-	// Validate incoming services.
+	// Validate incoming services. broker.Validate enforces that Name is
+	// non-empty — the caller must supply it explicitly.
 	incoming := broker.Config{Vault: name, Services: incomingSlice}
 	if err := broker.Validate(&incoming); err != nil {
 		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid services: %v", err))
@@ -647,7 +548,7 @@ func (s *Server) handleServicesSet(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid services: %v", err))
 		return
 	}
-	services = normalizeIncoming(services)
+	services = splitInlineHosts(services)
 	cfg := broker.Config{Vault: name, Services: services}
 	if err := broker.Validate(&cfg); err != nil {
 		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid services: %v", err))

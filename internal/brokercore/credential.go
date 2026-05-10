@@ -102,11 +102,10 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 		}
 	}
 	// MarshalJSON persists Host in joined-inline form; the matcher
-	// requires Host without "/". Idempotent for legacy split-form rows.
+	// requires Host without "/", so split before matching.
 	for i := range services {
 		services[i].Host, services[i].Path = broker.SplitInlineHost(services[i].Host, services[i].Path)
 	}
-	services = broker.NormalizeServices(services)
 
 	matchHost := targetHost
 	if h, _, err := net.SplitHostPort(targetHost); err == nil {

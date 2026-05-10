@@ -147,14 +147,13 @@ var serviceAddCmd = &cobra.Command{
 	Short: "Add or update services (upsert by name)",
 	Long: `Add one or more services to the vault (upsert by name).
 If a service with the same name already exists, it is replaced.
-When --name is omitted the server auto-slugs from --host.
 
 --host accepts a bare hostname (api.stripe.com), a one-level wildcard
 (*.github.com), or an inline path-scoped form (slack.com/api/*) — the
 broker splits the path off the host on ingest.
 
-Flag-driven mode:
-  agent-vault vault service add --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY
+Flag-driven mode (--name and --host are both required):
+  agent-vault vault service add --name stripe --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY
   agent-vault vault service add --name slack-bot --host 'slack.com/api/*' --auth-type bearer --token-key SLACK_BOT_TOKEN
 
 File mode (upsert, not replace-all):
@@ -189,12 +188,14 @@ File mode (upsert, not replace-all):
 				return err
 			}
 
+			name, _ := cmd.Flags().GetString("name")
+			if name == "" {
+				return fmt.Errorf("--name is required when --host is specified")
+			}
+
 			host, path := broker.SplitInlineHost(host, "")
 
-			svc := broker.Service{Host: host, Path: path, Auth: *auth}
-			if name, _ := cmd.Flags().GetString("name"); name != "" {
-				svc.Name = name
-			}
+			svc := broker.Service{Name: name, Host: host, Path: path, Auth: *auth}
 			if disabled, _ := cmd.Flags().GetBool("disabled"); disabled {
 				f := false
 				svc.Enabled = &f
@@ -359,11 +360,7 @@ func patchServiceEnabled(cmd *cobra.Command, ref string, enabled bool) error {
 }
 
 // loadServicesFromFile parses a services YAML file ("-" for stdin) and
-// applies the inline-host split. Name backfill and validation are
-// deliberately left to the server: the upsert path's existing-aware
-// normalizer is the only code with enough context to adopt an existing
-// service's Name on a (Host, Path) match and to bump auto-slug
-// collisions — pre-filling Name client-side defeats both.
+// applies the inline-host split. Validation runs server-side.
 func loadServicesFromFile(filePath, vault string) ([]broker.Service, error) {
 	var data []byte
 	var err error
@@ -405,7 +402,7 @@ func init() {
 
 	// service add flags
 	serviceAddCmd.Flags().StringP("file", "f", "", "Path to services YAML file (upsert mode)")
-	serviceAddCmd.Flags().String("name", "", "Service name (slug). Auto-derived from --host when omitted.")
+	serviceAddCmd.Flags().String("name", "", "Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required with --host.")
 	serviceAddCmd.Flags().String("host", "", "Target service host. Accepts api.stripe.com, *.github.com, or inline path form like slack.com/api/*.")
 	serviceAddCmd.Flags().String("auth-type", "", "Auth type: bearer, basic, api-key, custom, passthrough")
 	serviceAddCmd.Flags().String("token-key", "", "Credential key for bearer auth")
