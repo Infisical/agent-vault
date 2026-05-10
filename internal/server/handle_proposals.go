@@ -465,17 +465,27 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		finalCredentials[slot.Key] = store.EncryptedCredential{Ciphertext: ct, Nonce: nonce}
 	}
 
-	// Merge services.
-	bc, err := s.store.GetBrokerConfig(ctx, ns.ID)
+	// Merge services. Both sides need every entry to carry a canonical
+	// Name before MergeServices indexes by Name — otherwise legacy
+	// entries with Name="" collapse onto the "" key and an unrelated
+	// upsert silently overwrites the wrong service.
+	//
+	// loadServices runs broker.NormalizeServices on existing. For
+	// proposedServices, post-PR proposals already have Names (the create
+	// path runs normalizeProposalServices); this slug-backfill closes
+	// the in-flight pre-PR proposal hole. Inline-form host split is also
+	// applied so a pre-PR proposal that stored "slack.com/api/*" in
+	// Host gets the canonical (Host, Path) split here too.
+	existingServices, err := s.loadServices(ctx, ns.ID)
 	if err != nil {
-		// No existing config — start fresh.
-		bc = &store.BrokerConfig{ServicesJSON: "[]"}
-	}
-
-	var existingServices []broker.Service
-	if err := json.Unmarshal([]byte(bc.ServicesJSON), &existingServices); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to parse existing services")
+		jsonError(w, http.StatusInternalServerError, "Failed to load existing services")
 		return
+	}
+	for i := range proposedServices {
+		proposedServices[i].Host, proposedServices[i].Path = splitInlineFormHost(proposedServices[i].Host, proposedServices[i].Path)
+		if proposedServices[i].Name == "" {
+			proposedServices[i].Name = broker.Slugify(proposedServices[i].Host, proposedServices[i].Path)
+		}
 	}
 
 	merged, _ := proposal.MergeServices(existingServices, proposedServices)

@@ -2956,6 +2956,77 @@ func TestAdminProposalApproveSuccess(t *testing.T) {
 	}
 }
 
+// TestAdminProposalApprovePreservesLegacyServices guards the apply path
+// against the failure mode where an existing broker config has services
+// stored before the name-as-identifier PR (Name="") AND the proposal
+// itself was created pre-PR (proposed services also Name=""). Without
+// normalization on both sides, MergeServices's nameIndex collapses every
+// legacy entry onto the "" key and the proposed ActionSet silently
+// overwrites the wrong entry (whichever indexed last). The fix loads
+// existing via loadServices (NormalizeServices auto-slugs Names) and
+// slug-backfills proposedServices Names before merge.
+func TestAdminProposalApprovePreservesLegacyServices(t *testing.T) {
+	t.Helper()
+	ms := newMockStore()
+
+	ms.users["owner@test.com"] = &store.User{
+		ID: "owner-user-id", Email: "owner@test.com", Role: "owner", IsActive: true,
+	}
+	ms.GrantVaultRole(context.Background(), "owner-user-id", "user", "root-ns-id", "admin")
+	adminSess := &store.Session{
+		ID: "admin-session", UserID: "owner-user-id",
+		ExpiresAt: tp(time.Now().Add(time.Hour)), CreatedAt: time.Now(),
+	}
+	ms.sessions[adminSess.ID] = adminSess
+	srv := newTestServer(withStore(ms), withEncKey(make([]byte, 32)))
+
+	// Pre-PR existing services: no Name field. github first, stripe
+	// second so nameIndex[""] resolves to stripe (last-wins on map
+	// overwrite). The pre-PR proposal targets api.github.com — a naive
+	// merge by Name="" would overwrite stripe instead.
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		VaultID: "root-ns-id",
+		ServicesJSON: `[
+			{"host":"api.github.com","auth":{"type":"bearer","token":"GH_OLD"}},
+			{"host":"api.stripe.com","auth":{"type":"bearer","token":"SK_KEEP"}}
+		]`,
+	}
+	// Pre-PR proposal: ActionSet on api.github.com with no Name field.
+	ms.proposals = make(map[string][]store.Proposal)
+	ms.proposals["root-ns-id"] = []store.Proposal{{
+		ID: 1, VaultID: "root-ns-id", Status: "pending",
+		ServicesJSON:    `[{"action":"set","host":"api.github.com","auth":{"type":"bearer","token":"GH_NEW"}}]`,
+		CredentialsJSON: `[{"action":"set","key":"GH_NEW","description":"GitHub token"}]`,
+		Message:         "Rotate GitHub token",
+		CreatedAt:       time.Now(),
+	}}
+
+	body := `{"vault":"default","credentials":{"GH_NEW":"ghp_new_value"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/proposals/1/approve", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminSess.ID)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	merged := ms.brokerConfigs["root-ns-id"].ServicesJSON
+	// stripe must survive untouched — its credential reference must
+	// still be SK_KEEP (the pre-merge silent-overwrite bug would have
+	// replaced api.stripe.com's auth with GH_NEW's payload).
+	if !strings.Contains(merged, `"token":"SK_KEEP"`) {
+		t.Fatalf("api.stripe.com auth was clobbered (pre-merge legacy collision); merged=%s", merged)
+	}
+	// github should have been replaced with the new token.
+	if !strings.Contains(merged, `"token":"GH_NEW"`) {
+		t.Fatalf("api.github.com auth was not updated; merged=%s", merged)
+	}
+	if strings.Contains(merged, `"token":"GH_OLD"`) {
+		t.Fatalf("api.github.com still has old token; merged=%s", merged)
+	}
+}
+
 func TestAdminProposalApproveRequiresAdminSession(t *testing.T) {
 	srv, ms, _ := setupAdminProposalTest(t)
 
