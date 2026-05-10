@@ -680,12 +680,12 @@ func AssignSlugNames(services []Service) {
 		}
 	}
 	for i := range services {
-		if services[i].Name != "" {
+		svc := &services[i]
+		if svc.Name != "" {
 			continue
 		}
-		name := DisambiguateSlug(Slugify(services[i].Host, services[i].Path), taken)
-		services[i].Name = name
-		taken[name] = true
+		svc.Name = DisambiguateSlug(Slugify(svc.Host, svc.Path), taken)
+		taken[svc.Name] = true
 	}
 }
 
