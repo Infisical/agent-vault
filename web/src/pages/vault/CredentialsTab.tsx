@@ -286,7 +286,7 @@ export default function CredentialsTab() {
             <p className="font-medium mb-1">This credential is used by the following services:</p>
             <ul className="list-disc list-inside">
               {deleteReferencing.map((svc) => (
-                <li key={svc.host}>
+                <li key={svc.name ?? svc.host}>
                   {svc.host}{svc.name ? ` (${svc.name})` : ""}
                 </li>
               ))}

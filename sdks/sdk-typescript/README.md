@@ -106,24 +106,22 @@ await vault.credentials.set({
 
 // Configure proxy rules — the token field references a credential key above.
 // Slack needs two credentials at different paths on the same host, so we
-// scope each rule with `path` and give them distinct `name` slugs.
+// embed the path glob in `host` (inline form) and give each rule a distinct
+// `name` slug.
 await vault.services!.set([
   {
     name: "stripe",
     host: "api.stripe.com",
-    description: "Stripe API",
     auth: { type: "bearer", token: "STRIPE_KEY" },
   },
   {
     name: "slack-bot",
-    host: "slack.com",
-    path: "/api/*",
+    host: "slack.com/api/*",
     auth: { type: "bearer", token: "SLACK_BOT_TOKEN" },
   },
   {
     name: "slack-conn",
-    host: "slack.com",
-    path: "/api/apps.connections.*",
+    host: "slack.com/api/apps.connections.*",
     auth: { type: "bearer", token: "SLACK_CONNECTION_TOKEN" },
   },
 ]);

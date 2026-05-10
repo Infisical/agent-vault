@@ -3099,6 +3099,68 @@ func TestAdminProposalApproveBumpsAutoSlugAroundExistingName(t *testing.T) {
 	}
 }
 
+// TestAdminProposalApproveRejectsStaleDeleteWithoutName pins the
+// apply-path counterpart to TestProposalCreateActionDeleteUnknownHostLeavesNameEmpty:
+// a pre-PR ActionDelete proposal (Name="") whose target Host no longer
+// matches any service in the vault must be rejected at approve time
+// rather than silently fall through to broker.Slugify(host) and delete
+// whichever existing service happens to carry that slug as its Name.
+// Without this guard, a stale delete approval could clobber an unrelated
+// service when the slug collides with an explicit name (Slugify is
+// many-to-one — `api-mycompany.com` and `api.mycompany.com` both produce
+// `api-mycompany-com`).
+func TestAdminProposalApproveRejectsStaleDeleteWithoutName(t *testing.T) {
+	ms := newMockStore()
+
+	ms.users["owner@test.com"] = &store.User{
+		ID: "owner-user-id", Email: "owner@test.com", Role: "owner", IsActive: true,
+	}
+	ms.GrantVaultRole(context.Background(), "owner-user-id", "user", "root-ns-id", "admin")
+	adminSess := &store.Session{
+		ID: "admin-session", UserID: "owner-user-id",
+		ExpiresAt: tp(time.Now().Add(time.Hour)), CreatedAt: time.Now(),
+	}
+	ms.sessions[adminSess.ID] = adminSess
+	srv := newTestServer(withStore(ms), withEncKey(make([]byte, 32)))
+
+	// Vault holds an unrelated service whose explicit Name is exactly
+	// the slug Slugify("ghost.example.com", "") would produce.
+	// Pre-fix, the stale delete proposal below would silently remove it.
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		VaultID: "root-ns-id",
+		ServicesJSON: `[
+			{"name":"ghost-example-com","host":"unrelated.internal","auth":{"type":"bearer","token":"UNRELATED_KEEP"}}
+		]`,
+	}
+	// Stale pre-PR delete proposal: targets ghost.example.com which is
+	// no longer in the vault, no Name field.
+	ms.proposals = make(map[string][]store.Proposal)
+	ms.proposals["root-ns-id"] = []store.Proposal{{
+		ID: 1, VaultID: "root-ns-id", Status: "pending",
+		ServicesJSON:    `[{"action":"delete","host":"ghost.example.com"}]`,
+		CredentialsJSON: `[]`,
+		Message:         "Remove ghost service",
+		CreatedAt:       time.Now(),
+	}}
+
+	body := `{"vault":"default","credentials":{}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/proposals/1/approve", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminSess.ID)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 (stale delete with no host match), got %d: %s", rec.Code, rec.Body.String())
+	}
+	// The unrelated service must survive untouched. Pre-fix, it would
+	// have been deleted because Slugify("ghost.example.com") collides
+	// with its explicit Name.
+	merged := ms.brokerConfigs["root-ns-id"].ServicesJSON
+	if !strings.Contains(merged, `"token":"UNRELATED_KEEP"`) {
+		t.Fatalf("unrelated service was clobbered by stale delete; merged=%s", merged)
+	}
+}
+
 func TestAdminProposalApproveRequiresAdminSession(t *testing.T) {
 	srv, ms, _ := setupAdminProposalTest(t)
 
@@ -6230,3 +6292,61 @@ func TestServicesGetReturnsJoinedHostNoPathField(t *testing.T) {
 	}
 }
 
+// TestAdminProposalApproveRejects409OnAmbiguousDelete pins the
+// apply-time counterpart of normalizeProposalServices's host-ambiguity
+// check: a stale ActionDelete proposal with no Name whose host matches
+// 2+ existing services must surface 409 + candidates rather than
+// silently picking one. The create path tests this; this is the
+// apply-path twin so a pre-PR proposal stored with no Name can't slip
+// through and cause arbitrary deletion at approval time.
+func TestAdminProposalApproveRejects409OnAmbiguousDelete(t *testing.T) {
+	ms := newMockStore()
+
+	ms.users["owner@test.com"] = &store.User{
+		ID: "owner-user-id", Email: "owner@test.com", Role: "owner", IsActive: true,
+	}
+	ms.GrantVaultRole(context.Background(), "owner-user-id", "user", "root-ns-id", "admin")
+	adminSess := &store.Session{
+		ID: "admin-session", UserID: "owner-user-id",
+		ExpiresAt: tp(time.Now().Add(time.Hour)), CreatedAt: time.Now(),
+	}
+	ms.sessions[adminSess.ID] = adminSess
+	srv := newTestServer(withStore(ms), withEncKey(make([]byte, 32)))
+
+	// Two services share host=slack.com but scope to different paths.
+	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+		VaultID: "root-ns-id",
+		ServicesJSON: `[
+			{"name":"slack-bot","host":"slack.com","path":"/api/*","auth":{"type":"bearer","token":"SLACK_BOT"}},
+			{"name":"slack-conn","host":"slack.com","path":"/api/apps.connections.*","auth":{"type":"bearer","token":"SLACK_CONN"}}
+		]`,
+	}
+	// Stale pre-PR delete proposal: targets slack.com with no Name.
+	ms.proposals = make(map[string][]store.Proposal)
+	ms.proposals["root-ns-id"] = []store.Proposal{{
+		ID: 1, VaultID: "root-ns-id", Status: "pending",
+		ServicesJSON:    `[{"action":"delete","host":"slack.com"}]`,
+		CredentialsJSON: `[]`,
+		Message:         "remove slack",
+		CreatedAt:       time.Now(),
+	}}
+
+	body := `{"vault":"default","credentials":{}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/proposals/1/approve", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminSess.ID)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 (ambiguous delete), got %d: %s", rec.Code, rec.Body.String())
+	}
+	respBody := rec.Body.String()
+	if !strings.Contains(respBody, "candidates") {
+		t.Fatalf("expected candidates array in 409 body, got %s", respBody)
+	}
+	// Both services must survive untouched.
+	merged := ms.brokerConfigs["root-ns-id"].ServicesJSON
+	if !strings.Contains(merged, `"token":"SLACK_BOT"`) || !strings.Contains(merged, `"token":"SLACK_CONN"`) {
+		t.Fatalf("expected both Slack services to survive ambiguous delete, got %s", merged)
+	}
+}

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/proposal"
 	"github.com/Infisical/agent-vault/internal/store"
@@ -483,19 +482,18 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 	// MergeServices indexes by Name, so every entry on both sides must
 	// carry a canonical Name — otherwise Name="" entries collide on the
 	// "" key and a stray upsert overwrites the wrong service.
-	// loadServices normalizes existing; the loop below normalizes
-	// proposed entries that predate the create-path normalization
-	// (Name-less, possibly inline-form Host).
+	// loadServices normalizes existing; the call below normalizes proposed
+	// entries that predate the create-path normalization (Name-less,
+	// possibly inline-form Host) using the exact same helper used at
+	// create time, so apply-time semantics stay symmetric:
 	//
-	// Set-action ordering mirrors normalizeIncomingAgainstExisting:
-	// adopt an existing service's Name when (Host, Path) already
-	// matches (rotate semantics), else slugify and bump (`-2`) on
-	// collision with any unrelated existing or explicit-name entry so a
-	// stale auto-slug can't clobber an unrelated stored service.
-	//
-	// Delete entries are slugified without bumping: an unmatched slug
-	// surfaces as a MergeServices "service not found" warning rather
-	// than picking arbitrarily across multiple services on the host.
+	//   - ActionSet with Name="": adopt an existing (Host, Path) match
+	//     (rotate semantics), else slugify and bump (`-2`) on collision.
+	//   - ActionDelete with Name="": adopt the unique host match, return
+	//     409 on 2+ matches, leave Name empty on 0 matches so the
+	//     downstream guard rejects rather than letting Slugify(host) pick
+	//     an arbitrary existing service whose Name happens to share that
+	//     slug — the silent-data-loss path that motivated this guard.
 	//
 	// The lock serializes this whole load → merge → apply sequence
 	// against concurrent direct upserts on /services so a mid-apply
@@ -507,41 +505,30 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		jsonError(w, http.StatusInternalServerError, "Failed to load existing services")
 		return
 	}
-	autoSlugged := make([]bool, len(proposedServices))
-	for i := range proposedServices {
-		proposedServices[i].Host, proposedServices[i].Path = broker.SplitInlineHost(proposedServices[i].Host, proposedServices[i].Path)
-		if proposedServices[i].Name != "" {
-			continue
-		}
-		if proposedServices[i].Action == proposal.ActionSet {
-			if matched := findByHostPath(existingServices, proposedServices[i].Host, proposedServices[i].Path); matched != nil {
-				proposedServices[i].Name = matched.Name
-				continue
-			}
-		}
-		proposedServices[i].Name = broker.Slugify(proposedServices[i].Host, proposedServices[i].Path)
-		autoSlugged[i] = proposedServices[i].Action == proposal.ActionSet
+	proposedServices, hostAmbig, err := normalizeProposalServices(proposedServices, existingServices)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to normalize proposal services: %v", err))
+		return
 	}
-	used := make(map[string]bool, len(existingServices)+len(proposedServices))
-	for _, e := range existingServices {
-		used[e.Name] = true
+	if hostAmbig != nil {
+		jsonStatus(w, http.StatusConflict, map[string]interface{}{
+			"error":      hostAmbig.Error(),
+			"candidates": toCandidateRefs(hostAmbig.candidates),
+		})
+		return
 	}
-	for i := range proposedServices {
-		if autoSlugged[i] {
-			continue
+	// 0-hit ActionDelete with Name="" reaches here from a stale pre-PR
+	// proposal whose target host no longer matches any service. Bail
+	// loudly rather than letting MergeServices panic on Name="" — and
+	// rather than silently dropping the entry, since the operator just
+	// approved a delete and deserves a clear signal that it didn't apply.
+	for _, p := range proposedServices {
+		if p.Action == proposal.ActionDelete && p.Name == "" {
+			jsonStatus(w, http.StatusConflict, map[string]interface{}{
+				"error": fmt.Sprintf("proposal targets host %q which no longer matches any service in this vault — reject the proposal manually", p.Host),
+			})
+			return
 		}
-		used[proposedServices[i].Name] = true
-	}
-	for i := range proposedServices {
-		if !autoSlugged[i] {
-			continue
-		}
-		if !used[proposedServices[i].Name] {
-			used[proposedServices[i].Name] = true
-			continue
-		}
-		proposedServices[i].Name = broker.EnsureUniqueName(proposedServices[i].Name, used)
-		used[proposedServices[i].Name] = true
 	}
 
 	merged, _ := proposal.MergeServices(existingServices, proposedServices)

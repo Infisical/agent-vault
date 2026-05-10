@@ -67,7 +67,7 @@ JSON
 curl_net -fsS -X POST http://agent-vault-example:14321/v1/vaults/default/services \
   -H "authorization: Bearer $OWNER_TOKEN" \
   -H 'content-type: application/json' \
-  -d '{"services":[{"name":"openai","host":"api.openai.com","description":"OpenAI Realtime","auth":{"type":"bearer","token":"OPENAI_API_KEY"}}]}' >/dev/null
+  -d '{"services":[{"name":"openai","host":"api.openai.com","auth":{"type":"bearer","token":"OPENAI_API_KEY"}}]}' >/dev/null
 
 session_json=$(curl_net -fsS -X POST http://agent-vault-example:14321/v1/sessions \
   -H "authorization: Bearer $OWNER_TOKEN" \
