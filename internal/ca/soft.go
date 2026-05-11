@@ -47,7 +47,8 @@ type Options struct {
 	// Typically populated with the server's own externally-reachable
 	// hostname so clients that verify the proxy-hop cert against that
 	// name (rather than the upstream SNI) succeed without a shim.
-	// Malformed entries are silently dropped.
+	// Empty entries are skipped; non-IP entries are added as DNS names
+	// without further validation.
 	ExtraSANs []string
 }
 
