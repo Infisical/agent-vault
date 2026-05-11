@@ -277,6 +277,35 @@ func TestMintLeaf_IncludesExtraIPSans(t *testing.T) {
 	}
 }
 
+func TestMintLeaf_DropsMalformedExtraSANs(t *testing.T) {
+	ca := newTestCA(t, Options{ExtraSANs: []string{
+		"",                // empty
+		"my_host",         // underscore — illegal DNS label
+		"-leading.hyphen", // leading hyphen
+		"label with space",
+		"agent-vault-hnh0", // valid — should survive
+	}})
+	cert, err := ca.MintLeaf("api.linear.app")
+	if err != nil {
+		t.Fatalf("MintLeaf: %v", err)
+	}
+	want := []string{"api.linear.app", "agent-vault-hnh0"}
+	if !slices.Equal(cert.Leaf.DNSNames, want) {
+		t.Errorf("DNSNames = %v, want %v", cert.Leaf.DNSNames, want)
+	}
+}
+
+func TestMintLeaf_DedupExtraDNSCaseInsensitive(t *testing.T) {
+	ca := newTestCA(t, Options{ExtraSANs: []string{"Agent-Vault-HNH0"}})
+	cert, err := ca.MintLeaf("agent-vault-hnh0")
+	if err != nil {
+		t.Fatalf("MintLeaf: %v", err)
+	}
+	if len(cert.Leaf.DNSNames) != 1 || cert.Leaf.DNSNames[0] != "agent-vault-hnh0" {
+		t.Errorf("DNSNames = %v, want [agent-vault-hnh0] (case-insensitive dedup)", cert.Leaf.DNSNames)
+	}
+}
+
 func TestRootPEM_IsValidCACert(t *testing.T) {
 	ca := newTestCA(t, Options{})
 	block, _ := pem.Decode(ca.RootPEM())
