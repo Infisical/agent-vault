@@ -31,7 +31,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `PORT` | Server listen port (default `14321`). The `--port` flag takes precedence. |
     | `AGENT_VAULT_MASTER_PASSWORD` | Derives a KEK that wraps the data encryption key. Omit for passwordless mode. |
     | `AGENT_VAULT_LOG_LEVEL` | Fallback for `--log-level` when the flag is not set. Accepts `info` or `debug`. |
-    | `AGENT_VAULT_ADDR` | Externally-reachable base URL (e.g. `https://agent-vault.example.com`). Used for links in emails, invites, and discovery. Falls back to `https://<FLY_APP_NAME>.fly.dev` on Fly.io, then `http://{host}:{port}`. |
+    | `AGENT_VAULT_ADDR` | Externally-reachable base URL (e.g. `https://agent-vault.example.com`). Used for links in emails, invites, and discovery, and the hostname is added as a SubjectAltName on every MITM leaf cert so clients that TLS-verify against the proxy's own hostname succeed without a shim. Falls back to `https://<FLY_APP_NAME>.fly.dev` on Fly.io, then `http://{host}:{port}`. |
     | `FLY_APP_NAME` | Auto-detected on Fly.io. When `AGENT_VAULT_ADDR` is unset, derives the base URL as `https://<FLY_APP_NAME>.fly.dev`. |
     | `AGENT_VAULT_SMTP_HOST` | SMTP server host. If unset, email notifications are silently disabled. |
     | `AGENT_VAULT_SMTP_PORT` | SMTP server port (default `587`) |

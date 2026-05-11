@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -174,7 +175,13 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 	if mitmPort <= 0 {
 		return nil
 	}
-	caProv, err := ca.New(masterKey, ca.Options{})
+	var extraSANs []string
+	if u, err := url.Parse(srv.BaseURL()); err == nil {
+		if h := u.Hostname(); h != "" {
+			extraSANs = []string{h}
+		}
+	}
+	caProv, err := ca.New(masterKey, ca.Options{ExtraSANs: extraSANs})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: transparent proxy disabled (CA init failed: %v); pass --mitm-port 0 to suppress\n", err)
 		return nil

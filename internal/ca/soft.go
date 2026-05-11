@@ -42,6 +42,13 @@ type Options struct {
 	LeafTTL   time.Duration    // default: 24h
 	CacheSize int              // default: 1024
 	Clock     func() time.Time // default: time.Now
+	// ExtraSANs are additional hostnames or IP literals added as
+	// SubjectAltNames to every minted leaf, alongside the per-request SNI.
+	// Typically populated with the server's own externally-reachable
+	// hostname so clients that verify the proxy-hop cert against that
+	// name (rather than the upstream SNI) succeed without a shim.
+	// Malformed entries are silently dropped.
+	ExtraSANs []string
 }
 
 // SoftCA is a software-backed CA that persists its root to disk (with the
@@ -56,6 +63,8 @@ type SoftCA struct {
 	rootKey  *ecdsa.PrivateKey
 	rootPEM  []byte
 	cache    *lru
+	extraDNS []string
+	extraIPs []net.IP
 }
 
 type encryptedKeyFile struct {
@@ -96,11 +105,26 @@ func New(masterKey []byte, opts Options) (*SoftCA, error) {
 		clock = time.Now
 	}
 
+	var extraDNS []string
+	var extraIPs []net.IP
+	for _, s := range opts.ExtraSANs {
+		if s == "" {
+			continue
+		}
+		if ip := net.ParseIP(s); ip != nil {
+			extraIPs = append(extraIPs, ip)
+		} else {
+			extraDNS = append(extraDNS, s)
+		}
+	}
+
 	ca := &SoftCA{
-		dir:     dir,
-		leafTTL: leafTTL,
-		clock:   clock,
-		cache:   newLRU(cacheSize),
+		dir:      dir,
+		leafTTL:  leafTTL,
+		clock:    clock,
+		cache:    newLRU(cacheSize),
+		extraDNS: extraDNS,
+		extraIPs: extraIPs,
 	}
 
 	certPath := filepath.Join(dir, rootCertFile)
@@ -269,10 +293,24 @@ func (c *SoftCA) MintLeaf(sni string) (*tls.Certificate, error) {
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
+	var sniIP net.IP
 	if isIP {
-		tmpl.IPAddresses = []net.IP{net.ParseIP(sni)}
+		sniIP = net.ParseIP(sni)
+		tmpl.IPAddresses = []net.IP{sniIP}
 	} else {
 		tmpl.DNSNames = []string{sni}
+	}
+	for _, name := range c.extraDNS {
+		if !isIP && name == sni {
+			continue
+		}
+		tmpl.DNSNames = append(tmpl.DNSNames, name)
+	}
+	for _, ip := range c.extraIPs {
+		if isIP && ip.Equal(sniIP) {
+			continue
+		}
+		tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, c.rootCert, &leafKey.PublicKey, c.rootKey)
 	if err != nil {
