@@ -47,8 +47,8 @@ type Options struct {
 	// Typically populated with the server's own externally-reachable
 	// hostname so clients that verify the proxy-hop cert against that
 	// name (rather than the upstream SNI) succeed without a shim.
-	// Empty entries are skipped; non-IP entries are added as DNS names
-	// without further validation.
+	// Empty and malformed entries are silently dropped — non-IP entries
+	// must satisfy the same label rules enforced on the per-request SNI.
 	ExtraSANs []string
 }
 
@@ -112,8 +112,12 @@ func New(masterKey []byte, opts Options) (*SoftCA, error) {
 		if s == "" {
 			continue
 		}
-		if ip := net.ParseIP(s); ip != nil {
-			extraIPs = append(extraIPs, ip)
+		isIP, err := validateSNI(s)
+		if err != nil {
+			continue
+		}
+		if isIP {
+			extraIPs = append(extraIPs, net.ParseIP(s))
 		} else {
 			extraDNS = append(extraDNS, s)
 		}
@@ -302,7 +306,7 @@ func (c *SoftCA) MintLeaf(sni string) (*tls.Certificate, error) {
 		tmpl.DNSNames = []string{sni}
 	}
 	for _, name := range c.extraDNS {
-		if !isIP && name == sni {
+		if !isIP && strings.EqualFold(name, sni) {
 			continue
 		}
 		tmpl.DNSNames = append(tmpl.DNSNames, name)
