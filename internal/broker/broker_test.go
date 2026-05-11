@@ -275,10 +275,11 @@ func TestAssignSlugNamesAvoidingReservesExistingForCrossHostCollision(t *testing
 }
 
 // TestAssignSlugNamesAvoidingAmbiguousHostPathFallsThrough pins that an
-// ambiguous (Host, Path) — 2+ existing matches — skips the adoption
-// branch and the entry takes the auto-slug path instead. Ambiguous
-// states should not exist post-Validate, but defensive behavior costs
-// nothing.
+// ambiguous (Host, Path) — 2+ existing matches with distinct Names —
+// skips the adoption branch and the entry takes the auto-slug path
+// instead. broker.Validate's duplicate-Name check does not catch this
+// shape (different Names, same Host), so the helper's hpCount>1 guard
+// is the load-bearing defense.
 func TestAssignSlugNamesAvoidingAmbiguousHostPathFallsThrough(t *testing.T) {
 	existing := []Service{
 		{Name: "stripe-a", Host: "api.stripe.com"},

@@ -659,18 +659,20 @@ func AssignSlugNames(services []Service) {
 // existing vault state:
 //
 //  1. An empty-Name entry whose (Host, Path) uniquely matches an
-//     existing service adopts that service's Name — so a same-host
-//     empty-Name write addresses the service that already owns the
-//     host instead of creating a parallel auto-slugged ghost (which
-//     would be unreachable when MatchService scores it equal to the
-//     pre-existing entry).
+//     existing service adopts that service's Name.
 //  2. Remaining empties auto-slug via Slugify + DisambiguateSlug,
-//     reserving existing Names alongside in-slice Names. This stops a
-//     cross-host slug collision (e.g. `github.com` and `*.github.com`
-//     both slugifying to `github-com`) from unintentionally replacing
-//     an unrelated existing service via the Name-keyed upsert path.
+//     reserving existing Names alongside in-slice Names so a cross-
+//     host slug collision lands on a -2 suffix.
 //
 // Pass nil existing for intra-slice disambiguation only.
+//
+// Server write paths route through handle_services.adoptByHost
+// instead — that helper rejects empty Names with no unique host
+// match rather than auto-slugging. The (2) reservation branch here
+// is therefore defensive: production callers (read-path heals via
+// AssignSlugNames(svcs)) pass nil existing, so it isn't reached.
+// Kept for documentation + the broker-level unit tests that pin the
+// semantics if a future caller wants the full adopt-then-slug heal.
 func AssignSlugNamesAvoiding(services, existing []Service) {
 	anyEmpty := false
 	for _, s := range services {
