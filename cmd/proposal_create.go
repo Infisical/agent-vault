@@ -27,8 +27,9 @@ var proposalCreateCmd = &cobra.Command{
 In agent mode (AGENT_VAULT_TOKEN set), AGENT_VAULT_VAULT (or --vault) is
 required — there is no project-file or interactive-picker fallback.
 
-Flag-driven mode (common cases). When --host is provided, --name is optional
-(the server slugifies host+path when omitted):
+Flag-driven mode (common cases). When --host is provided, --name is required
+for new services (the server adopts the existing name when --host uniquely
+matches an entry already in the vault — the same pattern as host-based delete):
 
   # Service + credential
   agent-vault vault proposal create \
@@ -289,7 +290,7 @@ func init() {
 	proposalCreateCmd.Flags().StringP("file", "f", "", "path to JSON proposal file (use - for stdin)")
 
 	// Flag-driven mode.
-	proposalCreateCmd.Flags().String("name", "", "service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Optional — server slugifies --host + inline path when omitted.")
+	proposalCreateCmd.Flags().String("name", "", "service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required for new services; may be omitted when --host uniquely matches an existing service (the server adopts that name).")
 	proposalCreateCmd.Flags().String("host", "", "target service host. Accepts api.stripe.com, *.github.com, or inline path form like slack.com/api/*.")
 	proposalCreateCmd.Flags().String("auth-type", "", "auth type: bearer, basic, api-key, passthrough")
 	proposalCreateCmd.Flags().String("token-key", "", "credential key for bearer auth")

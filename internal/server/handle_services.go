@@ -87,14 +87,56 @@ func writeNormalizeError(w http.ResponseWriter, err error, notFoundStatus, defau
 	jsonError(w, defaultStatus, err.Error())
 }
 
+// adoptByHost fills empty Name on `services` by adopting from an
+// existing service whose (Host, Path) uniquely matches. When
+// `rebindStale` is true, non-empty Names that miss the existing
+// nameset are also rebound by (Host, Path) — used by the proposal
+// path to close the create→rename→apply race where the existing
+// service was renamed after the proposal was persisted. Direct
+// admin upserts pass false so a caller-supplied Name is never
+// silently rewritten. Empty Names without a unique host match are
+// left empty so downstream validation surfaces "name is required".
+func adoptByHost(services []broker.Service, existing []broker.Service, rebindStale bool) {
+	type hp struct{ host, path string }
+	hpCount := make(map[hp]int, len(existing))
+	hpName := make(map[hp]string, len(existing))
+	var nameSet map[string]bool
+	if rebindStale {
+		nameSet = make(map[string]bool, len(existing))
+	}
+	for _, e := range existing {
+		if nameSet != nil {
+			nameSet[e.Name] = true
+		}
+		k := hp{e.Host, e.Path}
+		hpCount[k]++
+		if hpCount[k] == 1 {
+			hpName[k] = e.Name
+		}
+	}
+	for i := range services {
+		svc := &services[i]
+		if svc.Name != "" {
+			if !rebindStale || nameSet[svc.Name] {
+				continue
+			}
+		}
+		k := hp{svc.Host, svc.Path}
+		if hpCount[k] == 1 {
+			svc.Name = hpName[k]
+		}
+	}
+}
+
 // normalizeProposalServices splits inline-form host on every entry,
 // resolves ActionDelete-by-host (unique → fill Name; 2+ → ambiguity
-// error; 0 → not-found error), and heals unnamed ActionSet entries
-// through broker.AssignSlugNamesAvoiding so the upsert and proposal
-// paths share one source of truth for the adopt-then-auto-slug heal.
-// Empty-Host ActionSet entries are excluded from the heal so they
-// surface as a validation error downstream rather than be slugged
-// from an invalid Host.
+// error; 0 → not-found error), and routes ActionSet entries through
+// adoptByHost so empty Names adopt a unique (Host, Path) match and
+// stale Names rebind across the create→rename→apply race. Empty-Host
+// ActionSet entries are excluded from adoption so an invalid Host
+// surfaces at validation rather than resolving from garbage. Empty
+// Names without a unique host match fall through to proposal.Validate
+// which rejects with "name is required".
 func normalizeProposalServices(in []proposal.Service, existing []broker.Service) ([]proposal.Service, error) {
 	out := make([]proposal.Service, len(in))
 
@@ -137,7 +179,7 @@ func normalizeProposalServices(in []proposal.Service, existing []broker.Service)
 		for j, i := range setIdx {
 			view[j] = broker.Service{Name: out[i].Name, Host: out[i].Host, Path: out[i].Path}
 		}
-		broker.AssignSlugNamesAvoiding(view, existing)
+		adoptByHost(view, existing, true)
 		for j, i := range setIdx {
 			out[i].Name = view[j].Name
 		}
@@ -340,11 +382,9 @@ func (s *Server) handleServicesUpsert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	incomingSlice := splitInlineHosts(req.Services)
-	// An empty-Name entry adopts the existing Name on a unique host+path
-	// match (so the write replaces in place by host); otherwise auto-slug
-	// with existing Names reserved so a cross-host slug collision lands
-	// on a -2 suffix rather than silently overwriting an unrelated entry.
-	broker.AssignSlugNamesAvoiding(incomingSlice, existing)
+	// rebindStale=false: direct admin upsert must not silently rewrite a
+	// caller-supplied Name onto a different existing entry.
+	adoptByHost(incomingSlice, existing, false)
 
 	incoming := broker.Config{Vault: name, Services: incomingSlice}
 	if err := broker.Validate(&incoming); err != nil {
@@ -571,7 +611,6 @@ func (s *Server) handleServicesSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	services = splitInlineHosts(services)
-	broker.AssignSlugNames(services)
 	cfg := broker.Config{Vault: name, Services: services}
 	if err := broker.Validate(&cfg); err != nil {
 		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid services: %v", err))

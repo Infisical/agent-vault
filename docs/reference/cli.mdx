@@ -446,7 +446,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
     | `-f` | | Path to a YAML services file (upsert mode) |
-    | `--name` | _derived_ | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Optional — when omitted, the server slugifies `--host` + the inline path (e.g. `api.stripe.com` → `api-stripe-com`). Supply explicitly for a friendlier identifier or to in-place replace a specific existing service. |
+    | `--name` | | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required for new services. May be omitted when `--host` uniquely matches an existing service — the server adopts that service's name (same pattern as `service remove` by host). |
     | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). The server splits the path off the host on ingest. |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, `custom`, `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
@@ -609,7 +609,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
     | `-f`, `--file` | | Path to JSON proposal file (use `-` for stdin) |
-    | `--name` | _derived_ | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Optional — when omitted, the server slugifies `--host` + the inline path (e.g. `api.stripe.com` → `api-stripe-com`). Supply explicitly for a friendlier identifier or to in-place replace a specific existing service. |
+    | `--name` | | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required for new services. May be omitted when `--host` uniquely matches an existing service — the server adopts that service's name (same pattern as host-based delete). |
     | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, or `passthrough` |
     | `--token-key` | | Credential key for bearer auth |

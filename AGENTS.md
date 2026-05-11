@@ -46,7 +46,7 @@ GET https://api.stripe.com/v1/charges
 If you have vault admin role, you can add or remove services without proposals:
 
 ```
-POST {AGENT_VAULT_ADDR}/v1/vaults/{vault_name}/services    -- upsert services by name (body: {"services": [...]}). Each entry must include both `name` (canonical slug) and `host` (accepts inline path form like `slack.com/api/*`).
+POST {AGENT_VAULT_ADDR}/v1/vaults/{vault_name}/services    -- upsert services by name (body: {"services": [...]}). Each entry must include `host` (accepts inline path form like `slack.com/api/*`) and `name` (canonical slug) — `name` may be omitted only when `host` uniquely matches an existing service in the vault, in which case the server adopts that entry's name.
 DELETE {AGENT_VAULT_ADDR}/v1/vaults/{vault_name}/services/{name}  -- remove a service. The slot also accepts a host as a back-compat shim, returning 409 with the candidate names when more than one service shares that host.
 ```
 
