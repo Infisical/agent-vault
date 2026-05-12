@@ -11,12 +11,9 @@ Agent Vault ships as a single binary that acts as both a server and CLI client.
 
 <Tabs>
   <Tab title="Script">
-    Auto-detects your OS and architecture, downloads the latest release, and installs.
-    Works for both fresh installs and upgrades (backs up your database before upgrading).
+    Auto-detects your OS and architecture (macOS on Intel or Apple Silicon, Linux on x86\_64 or ARM64), downloads the latest release, and installs.
 
     <InstallCommand />
-
-    Supports macOS (Intel + Apple Silicon) and Linux (x86\_64 + ARM64).
 
   </Tab>
   <Tab title="Docker">
@@ -53,15 +50,15 @@ agent-vault --help
 Every release includes SHA-256 checksums and a [cosign](https://github.com/sigstore/cosign) signature for supply-chain security. No keys to manage - verification uses GitHub's OIDC identity.
 
 ```bash
-# Download the checksums and signature bundle from the release page, then:
+# Download checksums.txt and checksums.txt.sig from the release page, then:
 
-# 1. Verify the binary hasn't been tampered with
-sha256sum --check checksums.txt
+# 1. Verify the binary hasn't been tampered with (portable across macOS and Linux)
+shasum -a 256 --ignore-missing -c checksums.txt
 
 # 2. Verify the checksums were signed by the Infisical/agent-vault GitHub Actions workflow
 cosign verify-blob \
-  --bundle checksums.txt.bundle \
-  --certificate-identity-regexp "github.com/Infisical/agent-vault" \
+  --bundle checksums.txt.sig \
+  --certificate-identity-regexp "^https://github\.com/Infisical/agent-vault/\.github/workflows/release\.yml@refs/tags/" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
   checksums.txt
 ```
