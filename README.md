@@ -52,6 +52,34 @@ Agent Vault works with all kinds of AI Agent use-cases including secure remote c
 
 Agent Vault is both a vault and proxy service and ships as a single binary that acts as both a server and CLI client. It stores credentials and brokers them to your AI agents using a MITM proxy architecture. By design, Agent Vault is meant to be deployed on a separate machine from your AI agents to provide the security guarantee needed so your AI agents cannot directly access the credentials within Agent Vault.
 
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Public internet                                                 │
+│                                                                 │
+│   api.anthropic.com    api.github.com    api.stripe.com   ...   │
+│          ▲                   ▲                  ▲               │
+└──────────┼───────────────────┼──────────────────┼───────────────┘
+           │                   │                  │
+           └───────────────────┼──────────────────┘
+                               │ outbound HTTPS, Agent Vault
+                               │ injects credentials on the way out
+┌──────────────────────────────┼──────────────────────────────────┐
+│ Private network              │                                  │
+│                              │                                  │
+│  ┌───────────────────────────┴────┐     ┌────────────────────┐  │
+│  │ Agent Vault                    │     │ AI agent           │  │
+│  │ :14321  management UI / API    │◀────│ HTTPS_PROXY=       │  │
+│  │ :14322  MITM proxy             │     │ agent-vault:14322  │  │
+│  └────────────────▲───────────────┘     └────────────────────┘  │
+│                   │                                             │
+└───────────────────┼─────────────────────────────────────────────┘
+                    │ operator access: keep private, or front
+                    │ with TLS + auth (SSO reverse proxy, IP
+                    │ allowlist, or VPN) if you need remote admin
+                    │
+                Operator
+```
+
 You can configure Agent Vault to broker credentials for an AI agents in just a few steps:
 
 1. [Install](https://docs.agent-vault.dev/installation) and start an Agent Vault server. You can run the script below to Install Agent Vault, supporting macOS (Intel + Apple Silicon) and Linux (x86_64 + ARM64):
@@ -117,7 +145,7 @@ COPY --from=infisical/agent-vault:latest /usr/local/bin/agent-vault /usr/local/b
 ENTRYPOINT ["agent-vault", "run", "--", "claude"]
 ```
 
-There are many ways to deploying Agent Vault and integrating your AI agents with it. We recommend consulting the fuller [documentation](https://docs.agent-vault.dev/installation).
+There are many ways to deploy Agent Vault and integrate your AI agents with it. We recommend consulting the fuller [documentation](https://docs.agent-vault.dev/installation).
 
 ## Best Practices
 
