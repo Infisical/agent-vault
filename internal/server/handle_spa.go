@@ -23,7 +23,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// so it is the only URL agents can use without TLS-verification
 	// failures. Auto-derived fallbacks (Fly URL, bind-addr) are usually
 	// wrong for agents on another host, so we skip them here and let
-	// the client fall back to its own origin.
+	// the client render an explicit placeholder instead.
 	if os.Getenv("AGENT_VAULT_ADDR") != "" {
 		resp["base_url"] = s.BaseURL()
 	}

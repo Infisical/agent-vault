@@ -556,6 +556,23 @@ const RUN_SNIPPETS: Record<InstallTab, string> = {
   docker: `ENTRYPOINT ["agent-vault", "run", "--", "claude"]`,
 };
 
+// Loopback values almost never reach a remote agent, so we treat them
+// the same as an unset base URL and let the operator fill in the right
+// hostname.
+function resolveAgentVaultAddr(baseURL?: string): string {
+  const placeholder = "<AGENT_VAULT_ADDR>";
+  if (!baseURL) return placeholder;
+  try {
+    const host = new URL(baseURL).hostname;
+    if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") {
+      return placeholder;
+    }
+  } catch {
+    return placeholder;
+  }
+  return baseURL;
+}
+
 function InviteResultView({
   agentToken,
   baseURL,
@@ -596,7 +613,7 @@ function InviteResultView({
     );
   }
 
-  const addr = baseURL && baseURL.length > 0 ? baseURL : "<AGENT_VAULT_ADDR>";
+  const addr = resolveAgentVaultAddr(baseURL);
   const envSnippet = [
     `export AGENT_VAULT_ADDR="${addr}"`,
     `export AGENT_VAULT_TOKEN="${agentToken}"`,
