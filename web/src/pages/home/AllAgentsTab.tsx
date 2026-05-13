@@ -364,8 +364,12 @@ function InviteAgentButton({
         method: "HEAD",
         signal: controller.signal,
       });
-      if (!mitmResp.ok) {
+      if (mitmResp.status === 404) {
         setError("Transparent proxy is disabled on this server. Restart Agent Vault with --mitm-port greater than 0 to enable agent connections.");
+        return;
+      }
+      if (!mitmResp.ok) {
+        setError(`Couldn't reach the transparent proxy (HTTP ${mitmResp.status}). Check the server and try again.`);
         return;
       }
       const payload: Record<string, unknown> = { name: name.trim() };
@@ -396,9 +400,11 @@ function InviteAgentButton({
         if (err instanceof DOMException && err.name === "AbortError") throw err;
         return {};
       });
-      // Refresh the agents list whether redeem succeeded or not: a failed
-      // redeem leaves an orphan pending invite that reserves the agent name
-      // server-side, and the operator needs to see it in the list to revoke.
+      // Refresh the agents list regardless of redeem outcome. A failed redeem
+      // leaves an orphan pending invite reserving the agent name, and a 2xx
+      // with a missing token still means the session was persisted server-side
+      // (CreateAgentToken ran) — either way the operator needs the row visible
+      // to revoke.
       onInvited();
       if (!redeemResp.ok) {
         setError(redeemData.message || redeemData.error || "Failed to issue agent token.");
