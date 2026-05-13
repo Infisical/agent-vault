@@ -305,7 +305,7 @@ function InviteAgentButton({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [inviteResult, setInviteResult] = useState<{ agentToken: string } | null>(null);
-  const cancelledRef = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -321,7 +321,7 @@ function InviteAgentButton({
   }, [open, isOwner]);
 
   function close() {
-    cancelledRef.current = true;
+    abortRef.current?.abort();
     setOpen(false);
     setName("");
     setAgentRole("no-access");
@@ -350,7 +350,9 @@ function InviteAgentButton({
 
   async function handleCreate() {
     if (!name.trim()) return;
-    cancelledRef.current = false;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setSubmitting(true);
     setError("");
     try {
@@ -364,6 +366,7 @@ function InviteAgentButton({
       const createResp = await apiFetch("/v1/agents/invites", {
         method: "POST",
         body: JSON.stringify(payload),
+        signal: controller.signal,
       });
       const createData = await createResp.json();
       if (!createResp.ok) {
@@ -373,6 +376,7 @@ function InviteAgentButton({
       const redeemResp = await apiFetch(`/invite/${createData.token}`, {
         method: "POST",
         body: "{}",
+        signal: controller.signal,
       });
       const redeemData = await redeemResp.json().catch(() => ({}));
       // Refresh the agents list whether redeem succeeded or not: a failed
@@ -383,14 +387,12 @@ function InviteAgentButton({
         setError(redeemData.message || redeemData.error || "Failed to issue agent token.");
         return;
       }
-      // The modal may have been closed mid-request. Don't resurrect the result
-      // view with a token for an agent the operator thought they cancelled.
-      if (cancelledRef.current) return;
       setInviteResult({ agentToken: redeemData.av_agent_token });
-    } catch {
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
       setError("Network error.");
     } finally {
-      setSubmitting(false);
+      if (!controller.signal.aborted) setSubmitting(false);
     }
   }
 
