@@ -37,6 +37,14 @@ export interface AuthContext {
   is_owner: boolean;
 }
 
+export interface InstanceStatus {
+  initialized?: boolean;
+  needs_first_user?: boolean;
+  allowed_email_domains?: string[];
+  invite_only?: boolean;
+  base_url?: string;
+}
+
 export interface VaultContext {
   vault_name: string;
   vault_role: string;
@@ -167,15 +175,16 @@ const authLayoutRoute = createRoute({
       apiFetch("/v1/status"),
       apiFetch("/v1/auth/me"),
     ]);
+    let status: InstanceStatus = {};
     if (statusResp.ok) {
-      const status = await statusResp.json();
+      status = await statusResp.json();
       if (!status.initialized) throw redirect({ to: "/register" });
     }
     if (!meResp.ok) {
       throw redirect({ to: "/login" });
     }
     const user: AuthContext = await meResp.json();
-    return { auth: user };
+    return { auth: user, status };
   },
   component: Outlet,
 });

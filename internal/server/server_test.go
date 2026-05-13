@@ -4561,6 +4561,48 @@ func TestInviteOnlyNotInStatusWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestBaseURLInStatusWhenAddrSet(t *testing.T) {
+	t.Setenv("AGENT_VAULT_ADDR", "https://vault.example.com")
+	ms := setupMockStoreWithUser(t, "owner@test.com", "owner-password-123")
+	srv := newTestServer(withStore(ms), withBaseURL("https://vault.example.com"))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := resp["base_url"]
+	if !ok {
+		t.Fatal("expected base_url in status response when AGENT_VAULT_ADDR is set")
+	}
+	if got != "https://vault.example.com" {
+		t.Fatalf("expected base_url=https://vault.example.com, got %v", got)
+	}
+}
+
+func TestBaseURLAbsentFromStatusWhenAddrUnset(t *testing.T) {
+	t.Setenv("AGENT_VAULT_ADDR", "")
+	ms := setupMockStoreWithUser(t, "owner@test.com", "owner-password-123")
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if _, ok := resp["base_url"]; ok {
+		t.Fatal("base_url should not appear in status when AGENT_VAULT_ADDR is unset")
+	}
+}
+
 func TestSettingsGetIncludesInviteOnly(t *testing.T) {
 	ms := setupMockStoreWithUser(t, "owner@test.com", "owner-password-123")
 	ms.settings[settingInviteOnly] = "true"

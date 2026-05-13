@@ -10,8 +10,9 @@ import Input from "../../components/Input";
 import FormField from "../../components/FormField";
 import CopyButton from "../../components/CopyButton";
 import Select from "../../components/Select";
+import SegmentedTabs from "../../components/SegmentedTabs";
 import { apiFetch } from "../../lib/api";
-import type { AuthContext } from "../../router";
+import type { AuthContext, InstanceStatus } from "../../router";
 
 interface AgentRow {
   name: string;
@@ -105,7 +106,7 @@ function RowActions({
 }
 
 export default function AllAgentsTab() {
-  const { auth } = useRouteContext({ from: "/_auth" }) as { auth: AuthContext };
+  const { auth, status } = useRouteContext({ from: "/_auth" }) as { auth: AuthContext; status: InstanceStatus };
   const [rows, setRows] = useState<AgentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -239,7 +240,7 @@ export default function AllAgentsTab() {
             All agents across the instance.
           </p>
         </div>
-        <InviteAgentButton onInvited={fetchData} isOwner={auth.is_owner} />
+        <InviteAgentButton onInvited={fetchData} isOwner={auth.is_owner} baseURL={status.base_url} />
       </div>
 
       {loading ? (
@@ -290,9 +291,11 @@ interface VaultAssignment {
 function InviteAgentButton({
   onInvited,
   isOwner,
+  baseURL,
 }: {
   onInvited: () => void;
   isOwner: boolean;
+  baseURL?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -301,7 +304,7 @@ function InviteAgentButton({
   const [availableVaults, setAvailableVaults] = useState<VaultOption[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [inviteResult, setInviteResult] = useState<{ token: string } | null>(null);
+  const [inviteResult, setInviteResult] = useState<{ agentToken: string } | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -355,40 +358,31 @@ function InviteAgentButton({
       if (vaultAssignments.length > 0) {
         payload.vaults = vaultAssignments;
       }
-      const resp = await apiFetch("/v1/agents/invites", {
+      const createResp = await apiFetch("/v1/agents/invites", {
         method: "POST",
         body: JSON.stringify(payload),
       });
-      const data = await resp.json();
-      if (resp.ok) {
-        onInvited();
-        setInviteResult({ token: data.token });
-      } else {
-        setError(data.error || "Failed to create invite.");
+      const createData = await createResp.json();
+      if (!createResp.ok) {
+        setError(createData.error || "Failed to create invite.");
+        return;
       }
+      const redeemResp = await apiFetch(`/invite/${createData.token}`, {
+        method: "POST",
+        body: "{}",
+      });
+      const redeemData = await redeemResp.json().catch(() => ({}));
+      if (!redeemResp.ok) {
+        setError(redeemData.message || redeemData.error || "Failed to issue agent token.");
+        return;
+      }
+      onInvited();
+      setInviteResult({ agentToken: redeemData.av_agent_token });
     } catch {
       setError("Network error.");
     } finally {
       setSubmitting(false);
     }
-  }
-
-  function buildPrompt(): string {
-    const inviteUrl = `${window.location.origin}/invite/${inviteResult?.token}`;
-    return [
-      "You are being invited to register as an agent with Agent Vault, a local HTTP proxy that lets you call external APIs without seeing credentials.",
-      "",
-      "To accept this invite, make the following HTTP request:",
-      "",
-      `POST ${inviteUrl}`,
-      "Content-Type: application/json",
-      "",
-      "{}",
-      "",
-      "The response contains your agent token and usage instructions.",
-      "",
-      "This invite expires in 15 minutes and can only be used once.",
-    ].join("\n");
   }
 
   const assignedNames = new Set(vaultAssignments.map((a) => a.vault_name));
@@ -424,7 +418,7 @@ function InviteAgentButton({
         open={open}
         onClose={close}
         title={inviteResult ? "Connect Your Agent" : "Add Agent"}
-        description={inviteResult ? "Paste this into your agent's chat." : "Connect an agent, app, or service to Agent Vault."}
+        description={inviteResult ? "The Agent Vault CLI runs alongside your agent and reads these env vars to bootstrap its environment, so every outbound API call routes through Agent Vault for credential injection." : "Connect an agent, app, or service to Agent Vault."}
         footer={
           inviteResult ? (
             <Button onClick={close}>Done</Button>
@@ -439,7 +433,7 @@ function InviteAgentButton({
         }
       >
         {inviteResult ? (
-          <InviteResultView token={inviteResult.token} buildPrompt={buildPrompt} onRedeemed={onInvited} />
+          <InviteResultView agentToken={inviteResult.agentToken} baseURL={baseURL} />
         ) : (
           <div className="space-y-4">
             <FormField
@@ -550,130 +544,37 @@ function InviteAgentButton({
   );
 }
 
-type InviteTab = "prompt" | "manual";
+type InstallTab = "shell" | "docker";
+
+const INSTALL_SNIPPETS: Record<InstallTab, string> = {
+  shell: "curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | sh",
+  docker: "COPY --from=infisical/agent-vault:latest /usr/local/bin/agent-vault /usr/local/bin/agent-vault",
+};
+
+const RUN_SNIPPETS: Record<InstallTab, string> = {
+  shell: "agent-vault run -- claude",
+  docker: `ENTRYPOINT ["agent-vault", "run", "--", "claude"]`,
+};
 
 function InviteResultView({
-  token,
-  buildPrompt,
-  onRedeemed,
+  agentToken,
+  baseURL,
 }: {
-  token: string;
-  buildPrompt: () => string;
-  onRedeemed: () => void;
+  agentToken: string;
+  baseURL?: string;
 }) {
-  const [tab, setTab] = useState<InviteTab>("prompt");
-  const [redeeming, setRedeeming] = useState(false);
-  const [redeemError, setRedeemError] = useState("");
-  const [sessionToken, setSessionToken] = useState<string | null>(null);
-  const prompt = buildPrompt();
-
-  async function handleRedeem() {
-    setRedeeming(true);
-    setRedeemError("");
-    try {
-      const resp = await apiFetch(`/invite/${token}`, {
-        method: "POST",
-        body: "{}",
-      });
-      if (!resp.ok) {
-        const data = await resp.json().catch(() => ({}));
-        setRedeemError(data.message || data.error || "Failed to redeem invite.");
-        return;
-      }
-      const data = await resp.json();
-      setSessionToken(data.av_agent_token);
-      onRedeemed();
-    } catch {
-      setRedeemError("Network error.");
-    } finally {
-      setRedeeming(false);
-    }
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="inline-flex rounded-lg bg-bg p-0.5 border border-border">
-        {([
-          { key: "prompt" as const, label: "Chat prompt" },
-          { key: "manual" as const, label: "Manual setup" },
-        ]).map(({ key, label }) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-              tab === key
-                ? "bg-surface text-text shadow-sm"
-                : "text-text-muted hover:text-text"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {tab === "prompt" ? (
-        <>
-          <p className="text-sm text-text-muted">
-            Paste this into your agent's chat and it will connect automatically.
-          </p>
-          <div className="relative">
-            <textarea
-              readOnly
-              value={prompt}
-              rows={10}
-              className="w-full px-4 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono outline-none select-all resize-none leading-relaxed"
-              onFocus={(e) => e.target.select()}
-            />
-            <CopyButton
-              value={prompt}
-              className="absolute top-2 right-2 px-3 py-1.5 bg-primary text-primary-text rounded-md text-xs font-semibold hover:bg-primary-hover transition-colors"
-            />
-          </div>
-          <p className="text-xs text-text-dim">
-            Works with Claude Code, Cursor, ChatGPT, and other chat-based agents. For agents you can't paste into, see <strong>Manual setup</strong>.
-          </p>
-        </>
-      ) : (
-        <ManualSetupView
-          sessionToken={sessionToken}
-          redeeming={redeeming}
-          redeemError={redeemError}
-          onRedeem={handleRedeem}
-        />
-      )}
-    </div>
-  );
-}
-
-type TrustTab = "macos" | "linux" | "node" | "python";
-
-function ManualSetupView({
-  sessionToken,
-  redeeming,
-  redeemError,
-  onRedeem,
-}: {
-  sessionToken: string | null;
-  redeeming: boolean;
-  redeemError: string;
-  onRedeem: () => Promise<void>;
-}) {
-  const [mitm, setMitm] = useState<{ available: boolean; port: string } | null>(null);
-  const [trustTab, setTrustTab] = useState<TrustTab>("macos");
+  const [installTab, setInstallTab] = useState<InstallTab>("shell");
+  const [mitm, setMitm] = useState<{ available: boolean } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/v1/mitm/ca.pem")
+    apiFetch("/v1/mitm/ca.pem", { method: "HEAD" })
       .then((r) => {
         if (cancelled) return;
-        if (r.ok) {
-          setMitm({ available: true, port: r.headers.get("X-MITM-Port") ?? "14322" });
-        } else {
-          setMitm({ available: false, port: "" });
-        }
+        setMitm({ available: r.ok });
       })
       .catch(() => {
-        if (!cancelled) setMitm({ available: false, port: "" });
+        if (!cancelled) setMitm({ available: false });
       });
     return () => {
       cancelled = true;
@@ -689,83 +590,51 @@ function ManualSetupView({
       <div className="px-4 py-3 bg-bg border border-border rounded-lg">
         <p className="text-sm text-text">Transparent proxy is disabled on this server.</p>
         <p className="text-xs text-text-muted mt-1">
-          Restart Agent Vault with <code className="text-text-muted">--mitm-port</code> greater than 0 to enable it, or use the <strong>Chat prompt</strong> flow.
+          <code className="text-text-muted">agent-vault run</code> needs it to inject credentials. Restart Agent Vault with <code className="text-text-muted">--mitm-port</code> greater than 0 to enable it.
         </p>
       </div>
     );
   }
 
-  const host = window.location.hostname;
-  const tokenDisplay = sessionToken ?? "<TOKEN>";
-  const proxyURL = `https://${tokenDisplay}@${host}:${mitm.port}`;
-  const trustSnippets: Record<TrustTab, string> = {
-    macos: `sudo security add-trusted-cert -d -r trustRoot \\\n  -k /Library/Keychains/System.keychain agent-vault-ca.pem`,
-    linux: `sudo cp agent-vault-ca.pem /usr/local/share/ca-certificates/agent-vault-ca.crt\nsudo update-ca-certificates`,
-    node: `export NODE_EXTRA_CA_CERTS="$(pwd)/agent-vault-ca.pem"`,
-    python: `export REQUESTS_CA_BUNDLE="$(pwd)/agent-vault-ca.pem"`,
-  };
-  const trustTabs: { key: TrustTab; label: string }[] = [
-    { key: "macos", label: "macOS" },
-    { key: "linux", label: "Linux" },
-    { key: "node", label: "Node" },
-    { key: "python", label: "Python" },
-  ];
+  const addr = baseURL && baseURL.length > 0 ? baseURL : "<AGENT_VAULT_ADDR>";
+  const envSnippet = [
+    `export AGENT_VAULT_ADDR="${addr}"`,
+    `export AGENT_VAULT_TOKEN="${agentToken}"`,
+    `export AGENT_VAULT_VAULT="<VAULT_NAME>"`,
+  ].join("\n");
 
   return (
     <div className="space-y-5">
-      <ManualStep n={1} title="Download the root CA">
+      <SegmentedTabs<InstallTab>
+        ariaLabel="Install method"
+        value={installTab}
+        onChange={setInstallTab}
+        options={[
+          { value: "shell", label: "Shell" },
+          { value: "docker", label: "Dockerfile" },
+        ]}
+      />
+
+      <ManualStep n={1} title="Install the Agent Vault CLI">
         <p className="text-sm text-text-muted">
-          Agent Vault's transparent proxy presents TLS leaves signed by its own CA. Save the certificate and trust it so your agent's HTTPS client can verify those leaves.
+          Add the <code className="text-text-muted">agent-vault</code> binary to the environment where your agent runs.
         </p>
-        <a
-          href="/v1/mitm/ca.pem"
-          download="agent-vault-ca.pem"
-          className="inline-flex items-center gap-2 px-3 py-2 bg-primary text-primary-text rounded-lg text-sm font-semibold hover:bg-primary-hover transition-colors"
-        >
-          Download CA
-        </a>
+        <Snippet value={INSTALL_SNIPPETS[installTab]} />
       </ManualStep>
 
-      <ManualStep n={2} title="Trust the CA">
-        <div className="inline-flex rounded-lg bg-bg p-0.5 border border-border">
-          {trustTabs.map(({ key, label }) => (
-            <button
-              key={key}
-              onClick={() => setTrustTab(key)}
-              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                trustTab === key
-                  ? "bg-surface text-text shadow-sm"
-                  : "text-text-muted hover:text-text"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <Snippet value={trustSnippets[trustTab]} />
-      </ManualStep>
-
-      <ManualStep n={3} title="Point the agent at the proxy">
+      <ManualStep n={2} title="Set environment variables">
         <p className="text-sm text-text-muted">
-          The session token is embedded in the proxy URL — HTTP clients send it as <code className="text-text-muted">Proxy-Authorization</code> on every CONNECT handshake (for <code className="text-text-muted">https://</code> upstreams) and on each absolute-form forward-proxy request (for <code className="text-text-muted">http://</code> upstreams). Set both env vars to the same TLS-wrapped URL.
+          The CLI reads these on launch to authenticate with Agent Vault and scope its session to the right vault.
         </p>
-        <Snippet value={`export HTTPS_PROXY="${proxyURL}"\nexport HTTP_PROXY="${proxyURL}"`} />
-        {!sessionToken && (
-          <div className="flex items-center gap-2">
-            <Button onClick={onRedeem} loading={redeeming}>
-              Reveal token
-            </Button>
-            {redeemError && <span className="text-sm text-danger">{redeemError}</span>}
-          </div>
-        )}
-        <p className="text-xs text-text-dim">
-          If Agent Vault is behind a reverse proxy, replace <code className="text-text-muted">{host}</code> with the externally reachable hostname.
-        </p>
+        <Snippet value={envSnippet} />
       </ManualStep>
 
-      <p className="text-xs text-text-dim pt-3 border-t border-border">
-        <code className="text-text-muted">agent-vault run --vault &lt;name&gt; -- &lt;command&gt;</code> does all of this automatically.
-      </p>
+      <ManualStep n={3} title="Run your agent under agent-vault">
+        <p className="text-sm text-text-muted">
+          <code className="text-text-muted">agent-vault run</code> launches your agent with <code className="text-text-muted">HTTPS_PROXY</code> pre-set so its HTTPS calls route through Agent Vault for credential injection.
+        </p>
+        <Snippet value={RUN_SNIPPETS[installTab]} />
+      </ManualStep>
     </div>
   );
 }
@@ -793,7 +662,7 @@ function ManualStep({
 function Snippet({ value }: { value: string }) {
   return (
     <div className="relative">
-      <pre className="px-4 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono overflow-x-auto whitespace-pre">{value}</pre>
+      <pre className="pl-4 pr-20 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono overflow-x-auto whitespace-pre">{value}</pre>
       <CopyButton
         value={value}
         className="absolute top-2 right-2 px-3 py-1.5 bg-primary text-primary-text rounded-md text-xs font-semibold hover:bg-primary-hover transition-colors"
