@@ -320,6 +320,15 @@ function InviteAgentButton({
       .catch(() => {});
   }, [open, isOwner]);
 
+  // Unmount paths that bypass close() (browser back, programmatic redirect)
+  // would otherwise let an in-flight redeem land its token on an unmounted
+  // component and disappear.
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
   function close() {
     abortRef.current?.abort();
     setOpen(false);
@@ -356,10 +365,8 @@ function InviteAgentButton({
     setSubmitting(true);
     setError("");
     try {
-      // Probe MITM before creating any server-side state. Agent session tokens
-      // are returned exactly once at redemption, and InviteResultView only
-      // surfaces the token when MITM is available, so minting a session for an
-      // instance with --mitm-port 0 would lose the token irrecoverably.
+      // Probe MITM before minting anything: agent tokens are returned exactly
+      // once at redemption, so creating a session when MITM is off loses it.
       const mitmResp = await apiFetch("/v1/mitm/ca.pem", {
         method: "HEAD",
         signal: controller.signal,
@@ -373,8 +380,8 @@ function InviteAgentButton({
         return;
       }
       const payload: Record<string, unknown> = { name: name.trim() };
-      // Always send role: non-owners don't see the picker, so agentRole stays
-      // at the "no-access" default — which is what we want them creating.
+      // Non-owners don't see the picker, so agentRole stays at "no-access",
+      // which is what we want them creating.
       payload.role = agentRole;
       if (vaultAssignments.length > 0) {
         payload.vaults = vaultAssignments;
@@ -402,11 +409,9 @@ function InviteAgentButton({
         if (isAbortError(err)) throw err;
         return {};
       });
-      // Refresh the agents list regardless of redeem outcome. A failed redeem
-      // leaves an orphan pending invite reserving the agent name, and a 2xx
-      // with a missing token still means the session was persisted server-side
-      // (CreateAgentToken ran) — either way the operator needs the row visible
-      // to revoke.
+      // Refresh regardless of outcome: a failed redeem leaves an orphan
+      // pending invite, and a 2xx with a missing token still means the
+      // session was persisted. Either way the operator needs to see the row.
       onInvited();
       if (!redeemResp.ok) {
         setError(redeemData.message || redeemData.error || "Failed to issue agent token.");
@@ -418,15 +423,14 @@ function InviteAgentButton({
       }
       setInviteResult({ agentToken: redeemData.av_agent_token });
     } catch (err) {
-      // The server may have already persisted the create or redeem before
-      // the request was aborted client-side or the connection dropped, so
-      // refresh the list so any orphan invite or live session shows up.
+      // Server may have committed the create or redeem before the abort or
+      // drop, so refresh so any orphan invite or live session shows up.
       onInvited();
       if (isAbortError(err)) return;
       setError("Network error.");
     } finally {
-      // Skip if a rapid re-entrant handleCreate has already taken over: that
-      // call set submitting=true on entry and owns clearing it.
+      // Skip if a re-entrant handleCreate has taken over: that call already
+      // set submitting=true on entry and owns clearing it.
       if (abortRef.current === controller) setSubmitting(false);
     }
   }
@@ -602,9 +606,8 @@ const RUN_SNIPPETS: Record<InstallTab, string> = {
   docker: `ENTRYPOINT ["agent-vault", "run", "--", "claude"]`,
 };
 
-// Loopback values almost never reach a remote agent, so we treat them
-// the same as an unset base URL and let the operator fill in the right
-// hostname.
+// Loopback values almost never reach a remote agent, so treat them as
+// unset and let the operator fill in the right hostname.
 function resolveAgentVaultAddr(baseURL?: string): string {
   const placeholder = "<AGENT_VAULT_ADDR>";
   if (!baseURL) return placeholder;
@@ -664,7 +667,7 @@ function InviteResultView({
 
       <ManualStep n={3} title="Run your agent under agent-vault">
         <p className="text-sm text-text-muted">
-          <code className="text-text-muted">agent-vault run</code> launches your agent with <code className="text-text-muted">HTTPS_PROXY</code> pre-set so its HTTPS calls route through Agent Vault for credential injection.
+          <code className="text-text-muted">agent-vault run</code> launches your agent with <code className="text-text-muted">HTTPS_PROXY</code> and <code className="text-text-muted">HTTP_PROXY</code> pre-set so both its HTTPS and plain HTTP calls route through Agent Vault for credential injection.
         </p>
         <Snippet value={RUN_SNIPPETS[installTab]} />
       </ManualStep>

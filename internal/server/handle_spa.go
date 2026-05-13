@@ -18,12 +18,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"needs_first_user": !s.initialized,
 	}
 
-	// base_url is exposed only when the operator has explicitly set
-	// AGENT_VAULT_ADDR. That value is the SAN on the MITM leaf certs,
-	// so it is the only URL agents can use without TLS-verification
-	// failures. Auto-derived fallbacks (Fly URL, bind-addr) are usually
-	// wrong for agents on another host, so we skip them here and let
-	// the client render an explicit placeholder instead.
+	// Only the explicit AGENT_VAULT_ADDR is on the MITM SAN; auto-derived
+	// fallbacks (Fly, bind-addr) would fail TLS verification from a remote
+	// agent, so we don't expose them and let the client show a placeholder.
 	if os.Getenv("AGENT_VAULT_ADDR") != "" {
 		resp["base_url"] = s.BaseURL()
 	}

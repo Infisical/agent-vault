@@ -38,9 +38,9 @@ agent-vault vault run --vault my-vault -- claude
 `vault run` is a convenience wrapper, not a sandbox. A child process can unset `HTTPS_PROXY`/`HTTP_PROXY` or bypass the injected CA and reach the network directly — local credentials and network access are still fully available to the agent. Stronger isolation for local development is on the roadmap.
 </Note>
 
-## Option 2: Paste an invite prompt
+## Option 2: Invite an agent
 
-For agents you can't wrap with `vault run` (e.g. cloud-hosted agents, or when you want to paste into an existing session).
+For agents you can't wrap with `vault run` (e.g. cloud-hosted agents, or when you want to connect an agent on a different host).
 
 <Tabs>
   <Tab title="Web UI">
@@ -49,13 +49,16 @@ For agents you can't wrap with `vault run` (e.g. cloud-hosted agents, or when yo
         Navigate to the **Agents** tab in the home view.
       </Step>
       <Step title="Create an invite">
-        Click **Invite agent**, enter a name, and optionally pre-assign vault access.
+        Click **Add agent**, enter a name, and optionally pre-assign vault access. The modal advances to **Connect Your Agent** with a three-step walkthrough.
       </Step>
-      <Step title="Copy the prompt">
-        Copy the invite prompt that appears.
+      <Step title="Install the CLI on the agent host">
+        Step 1 of the modal shows a Shell or Dockerfile snippet to install the `agent-vault` binary in the environment where your agent runs.
       </Step>
-      <Step title="Paste into the agent">
-        Paste the prompt into your agent's chat. The agent redeems the invite automatically and receives an agent token.
+      <Step title="Set environment variables">
+        Step 2 shows the `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN`, and `AGENT_VAULT_VAULT` exports for the agent's environment. The token is pre-filled. Set [`AGENT_VAULT_ADDR`](/self-hosting/environment-variables) on the server to also pre-fill the address.
+      </Step>
+      <Step title="Run the agent under agent-vault">
+        Step 3 shows `agent-vault run -- <your-agent>` (or an `ENTRYPOINT` for Dockerfile flows). The CLI pre-sets `HTTPS_PROXY` and `HTTP_PROXY` on the child so both HTTPS and plain HTTP calls route through Agent Vault.
       </Step>
     </Steps>
   </Tab>
@@ -64,7 +67,7 @@ For agents you can't wrap with `vault run` (e.g. cloud-hosted agents, or when yo
     agent-vault agent invite my-agent
     ```
 
-    This generates a one-time onboarding prompt and copies it to your clipboard. Paste it into the agent's chat.
+    This generates a one-time onboarding prompt and copies it to your clipboard. Paste it into the agent's chat, or follow the printed instructions to set the env vars manually.
 
     Pre-assign vault access with `--vault`:
 
