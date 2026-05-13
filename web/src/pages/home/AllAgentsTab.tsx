@@ -356,6 +356,18 @@ function InviteAgentButton({
     setSubmitting(true);
     setError("");
     try {
+      // Probe MITM before creating any server-side state. Agent session tokens
+      // are returned exactly once at redemption, and InviteResultView only
+      // surfaces the token when MITM is available, so minting a session for an
+      // instance with --mitm-port 0 would lose the token irrecoverably.
+      const mitmResp = await apiFetch("/v1/mitm/ca.pem", {
+        method: "HEAD",
+        signal: controller.signal,
+      });
+      if (!mitmResp.ok) {
+        setError("Transparent proxy is disabled on this server. Restart Agent Vault with --mitm-port greater than 0 to enable agent connections.");
+        return;
+      }
       const payload: Record<string, unknown> = { name: name.trim() };
       // Always send role: non-owners don't see the picker, so agentRole stays
       // at the "no-access" default — which is what we want them creating.
@@ -378,13 +390,22 @@ function InviteAgentButton({
         body: "{}",
         signal: controller.signal,
       });
-      const redeemData = await redeemResp.json().catch(() => ({}));
+      const redeemData = await redeemResp.json().catch((err) => {
+        // Don't swallow AbortError: let it propagate to the outer catch so the
+        // shared abort branch (refresh list, no setInviteResult) runs.
+        if (err instanceof DOMException && err.name === "AbortError") throw err;
+        return {};
+      });
       // Refresh the agents list whether redeem succeeded or not: a failed
       // redeem leaves an orphan pending invite that reserves the agent name
       // server-side, and the operator needs to see it in the list to revoke.
       onInvited();
       if (!redeemResp.ok) {
         setError(redeemData.message || redeemData.error || "Failed to issue agent token.");
+        return;
+      }
+      if (!redeemData.av_agent_token) {
+        setError("Server returned no agent token. Try again.");
         return;
       }
       setInviteResult({ agentToken: redeemData.av_agent_token });
@@ -599,37 +620,6 @@ function InviteResultView({
   baseURL?: string;
 }) {
   const [installTab, setInstallTab] = useState<InstallTab>("shell");
-  const [mitm, setMitm] = useState<{ available: boolean } | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    apiFetch("/v1/mitm/ca.pem", { method: "HEAD" })
-      .then((r) => {
-        if (cancelled) return;
-        setMitm({ available: r.ok });
-      })
-      .catch(() => {
-        if (!cancelled) setMitm({ available: false });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (mitm === null) {
-    return <LoadingSpinner />;
-  }
-
-  if (!mitm.available) {
-    return (
-      <div className="px-4 py-3 bg-bg border border-border rounded-lg">
-        <p className="text-sm text-text">Transparent proxy is disabled on this server.</p>
-        <p className="text-xs text-text-muted mt-1">
-          <code className="text-text-muted">agent-vault run</code> needs it to inject credentials. Restart Agent Vault with <code className="text-text-muted">--mitm-port</code> greater than 0 to enable it.
-        </p>
-      </div>
-    );
-  }
 
   const addr = resolveAgentVaultAddr(baseURL);
   const envSnippet = [
