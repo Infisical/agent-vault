@@ -6,7 +6,7 @@ import Button from "../../components/Button";
 import Input from "../../components/Input";
 import FormField from "../../components/FormField";
 import ProposalPreview, { parseServices, parseCredentials, type CredentialSlot } from "../../components/ProposalPreview";
-import { apiFetch } from "../../lib/api";
+import { apiFetch, isAbortError } from "../../lib/api";
 
 interface Proposal {
   id: number;
@@ -79,7 +79,7 @@ export default function ProposalsTab() {
         }
       }
     } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
+      if (isAbortError(err)) return;
       setError("Network error.");
     } finally {
       setLoading(false);

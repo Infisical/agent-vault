@@ -11,7 +11,7 @@ import FormField from "../../components/FormField";
 import CopyButton from "../../components/CopyButton";
 import Select from "../../components/Select";
 import SegmentedTabs from "../../components/SegmentedTabs";
-import { apiFetch } from "../../lib/api";
+import { apiFetch, isAbortError } from "../../lib/api";
 import type { AuthContext, InstanceStatus } from "../../router";
 
 interface AgentRow {
@@ -389,15 +389,17 @@ function InviteAgentButton({
         setError(createData.error || "Failed to create invite.");
         return;
       }
+      if (!createData.token) {
+        setError("Server returned no invite token. Try again.");
+        return;
+      }
       const redeemResp = await apiFetch(`/invite/${createData.token}`, {
         method: "POST",
         body: "{}",
         signal: controller.signal,
       });
       const redeemData = await redeemResp.json().catch((err) => {
-        // Don't swallow AbortError: let it propagate to the outer catch so the
-        // shared abort branch (refresh list, no setInviteResult) runs.
-        if (err instanceof DOMException && err.name === "AbortError") throw err;
+        if (isAbortError(err)) throw err;
         return {};
       });
       // Refresh the agents list regardless of redeem outcome. A failed redeem
@@ -420,7 +422,7 @@ function InviteAgentButton({
       // the request was aborted client-side or the connection dropped, so
       // refresh the list so any orphan invite or live session shows up.
       onInvited();
-      if (err instanceof DOMException && err.name === "AbortError") return;
+      if (isAbortError(err)) return;
       setError("Network error.");
     } finally {
       // Skip if a rapid re-entrant handleCreate has already taken over: that
