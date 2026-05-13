@@ -18,10 +18,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"needs_first_user": !s.initialized,
 	}
 
-	// Only the explicit AGENT_VAULT_ADDR is on the MITM SAN; auto-derived
-	// fallbacks (Fly, bind-addr) would fail TLS verification from a remote
-	// agent, so we don't expose them and let the client show a placeholder.
-	if os.Getenv("AGENT_VAULT_ADDR") != "" {
+	// Expose base_url only when it resolves to a routable external hostname
+	// (operator-set AGENT_VAULT_ADDR or Fly-derived URL). The bind-addr
+	// fallback (http://127.0.0.1:14321 etc.) is almost never useful for a
+	// remote agent, so we skip it and let the client show a placeholder.
+	if os.Getenv("AGENT_VAULT_ADDR") != "" || os.Getenv("FLY_APP_NAME") != "" {
 		resp["base_url"] = s.BaseURL()
 	}
 
