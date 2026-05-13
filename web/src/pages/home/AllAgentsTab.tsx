@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, type ReactNode } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, type ReactNode } from "react";
 import { useRouteContext } from "@tanstack/react-router";
 import { LoadingSpinner, ErrorBanner, StatusBadge, timeAgo, formatInstanceRole, INSTANCE_ROLE_OPTIONS, type InstanceRole } from "../../components/shared";
 import DataTable, { type Column } from "../../components/DataTable";
@@ -305,6 +305,7 @@ function InviteAgentButton({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [inviteResult, setInviteResult] = useState<{ agentToken: string } | null>(null);
+  const cancelledRef = useRef(false);
 
   useEffect(() => {
     if (!open) return;
@@ -320,6 +321,7 @@ function InviteAgentButton({
   }, [open, isOwner]);
 
   function close() {
+    cancelledRef.current = true;
     setOpen(false);
     setName("");
     setAgentRole("no-access");
@@ -348,6 +350,7 @@ function InviteAgentButton({
 
   async function handleCreate() {
     if (!name.trim()) return;
+    cancelledRef.current = false;
     setSubmitting(true);
     setError("");
     try {
@@ -372,11 +375,17 @@ function InviteAgentButton({
         body: "{}",
       });
       const redeemData = await redeemResp.json().catch(() => ({}));
+      // Refresh the agents list whether redeem succeeded or not: a failed
+      // redeem leaves an orphan pending invite that reserves the agent name
+      // server-side, and the operator needs to see it in the list to revoke.
+      onInvited();
       if (!redeemResp.ok) {
         setError(redeemData.message || redeemData.error || "Failed to issue agent token.");
         return;
       }
-      onInvited();
+      // The modal may have been closed mid-request. Don't resurrect the result
+      // view with a token for an agent the operator thought they cancelled.
+      if (cancelledRef.current) return;
       setInviteResult({ agentToken: redeemData.av_agent_token });
     } catch {
       setError("Network error.");
