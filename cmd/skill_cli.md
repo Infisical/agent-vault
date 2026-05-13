@@ -157,10 +157,17 @@ bearer      -- Authorization: Bearer <token>          {"auth": {"type": "bearer"
 basic       -- HTTP Basic (user, optional password)    {"auth": {"type": "basic", "username": "API_KEY"}}
 api-key     -- key in a named header, optional prefix  {"auth": {"type": "api-key", "key": "SECRET", "header": "x-api-key"}}
 custom      -- freeform header templates               {"auth": {"type": "custom", "headers": {"X-Key": "{{ SECRET }}"}}}
+oauth       -- OAuth2 refresh-token grant              {"auth": {"type": "oauth", "client_id": "Iv1.abc", "client_secret_key": "GITHUB_CLIENT_SECRET", "refresh_token_key": "GITHUB_REFRESH_TOKEN", "token_endpoint": "https://github.com/login/oauth/access_token", "scopes": ["repo"]}}
 passthrough -- allowlist host only, no credential   {"auth": {"type": "passthrough"}}
 ```
 
 Common services: Stripe (bearer), GitHub (bearer), OpenAI (bearer), Ashby (basic -- API key as username), Jira (basic -- email + token), Anthropic (api-key, header: x-api-key). If unlisted, check the API docs.
+
+OAuth proposal example:
+
+```json
+{"auth": {"type": "oauth", "client_id": "Iv1.abc", "client_secret_key": "GITHUB_CLIENT_SECRET", "refresh_token_key": "GITHUB_REFRESH_TOKEN", "token_endpoint": "https://github.com/login/oauth/access_token", "scopes": ["repo"]}}
+```
 
 **Header forwarding.** Agent Vault forwards your request headers to the upstream unchanged, except for hop-by-hop headers (RFC 7230, including `Proxy-Connection`), broker-scoped headers (`X-Vault`, `Proxy-Authorization`), and the specific header(s) the configured auth type manages. With `auth.type: bearer`, for example, the broker overrides `Authorization` and leaves all other client headers untouched — so vendor headers like `anthropic-version` and `OpenAI-Beta` reach the upstream. Custom auth strips every header listed in `auth.headers` and replaces them with the resolved values.
 
@@ -253,6 +260,7 @@ Flag-driven auth flags by type:
 - **bearer**: `--auth-type bearer --token-key CREDENTIAL_KEY`
 - **basic**: `--auth-type basic --username-key USER_KEY [--password-key PASS_KEY]`
 - **api-key**: `--auth-type api-key --api-key-key KEY [--api-key-header x-api-key] [--api-key-prefix "ApiKey "]`
+- **oauth**: `--auth-type oauth --oauth-client-id CLIENT_ID --oauth-client-secret-key CLIENT_SECRET_KEY --oauth-refresh-token-key REFRESH_TOKEN_KEY --oauth-token-endpoint https://provider.example/token [--oauth-scope scope]`
 - **passthrough**: `--auth-type passthrough` (no credential flags; any credential flag is rejected)
 
 Other flags: `--user-message` (shown on browser approval page), `--credential KEY=description` (repeatable).
@@ -261,7 +269,7 @@ Key fields (JSON mode):
 - `services[].action` -- `"set"` (upsert, needs `host` + `auth` **or** an `enabled` change) or `"delete"`
 - `services[].name` -- canonical identifier (slug, 3–64 lowercase alphanumeric/hyphen chars). **Required for `"set"`** when creating a new service — pick a deliberate name. May be omitted only when `host` + `path` uniquely matches an existing service in the vault: the server adopts that entry's name, the same pattern as `"delete"` by host. `"delete"` may also omit `name` to fall back to host-based resolution: when the host is shared by multiple services the server returns 409 with the candidate names so the caller can retry by `name`.
 - `services[].host` -- single matcher field. Accepts a bare hostname (e.g. `api.stripe.com`), a one-level wildcard (e.g. `*.github.com`), or an inline path-scoped form (e.g. `slack.com/api/*`). The server splits the path off the host on ingest and resolves overlapping rules deterministically (exact-host beats wildcard, then longer literal path prefix wins, then declaration order). Path globs use `*` as a greedy glob (cross-`/`); `**`, `?`, regex, and bare `*` are rejected.
-- `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates), `passthrough` (no credential fields)
+- `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates), `oauth` (`client_id`, `client_secret_key`, `refresh_token_key`, `token_endpoint`, optional `scopes`), `passthrough` (no credential fields)
 - `services[].substitutions` -- optional list of URL/header rewrites. Each entry has `key` (UPPER_SNAKE_CASE credential reference), `placeholder` (the exact wire string the broker matches case-sensitively, e.g. `__account_sid__`), and optional `in` (subset of `["path", "query", "header"]`; defaults to `["path", "query"]`). Surfaces not in `in` are not scanned. Must be paired with an `auth` change in the same proposal — substitutions cannot be added on an enable/disable-only update.
 - `services[].enabled` -- optional boolean. Omitted means "enabled" for new services. A `"set"` proposal may supply `enabled` alone (no `auth`) to toggle an existing service's state without replacing its auth config -- useful for staged rollouts
 - `credentials[].action` -- `"set"` (omit `value` for human to supply; include `value` to store back) or `"delete"`

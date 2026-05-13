@@ -220,6 +220,9 @@ func (p *Proxy) forwardRequest(
 			errCode = "credential_not_found"
 			status = http.StatusBadGateway
 			brokercore.LogCredentialMissing(p.logger, scope.VaultID, event.MatchedService, event.CredentialKeys)
+		} else if errors.Is(err, brokercore.ErrOAuthRefreshDenied) {
+			errCode = "oauth_refresh_denied"
+			status = http.StatusBadGateway
 		}
 		brokercore.WriteInjectError(w, err, host, scope.VaultName, p.baseURL)
 		emit(status, errCode)

@@ -1,0 +1,56 @@
+---
+title: "OAuth Services"
+description: "Use OAuth refresh tokens for brokered services."
+---
+
+OAuth services let Agent Vault broker APIs that require short-lived access tokens. Instead of storing an access token directly, the vault stores the OAuth client secret and refresh token as ordinary credentials. At request time, the broker exchanges the refresh token for an access token and injects:
+
+```http
+Authorization: Bearer <access_token>
+```
+
+The access token is cached in memory until shortly before it expires. The cache is process-local, so restarting Agent Vault clears cached access tokens but does not affect the stored refresh token.
+
+## Auth config
+
+```yaml
+services:
+  - name: github-oauth
+    host: api.github.com
+    auth:
+      type: oauth
+      client_id: Iv1.abc
+      client_secret_key: GITHUB_CLIENT_SECRET
+      refresh_token_key: GITHUB_REFRESH_TOKEN
+      token_endpoint: https://github.com/login/oauth/access_token
+      scopes:
+        - repo
+```
+
+Fields:
+
+- `client_id`: Public OAuth client id assigned by the provider.
+- `client_secret_key`: Vault credential key containing the OAuth client secret.
+- `refresh_token_key`: Vault credential key containing the OAuth refresh token.
+- `token_endpoint`: Absolute `https://` OAuth token endpoint URL.
+- `scopes`: Optional scopes to request during refresh, sent as a space-delimited `scope` form value.
+
+## Runtime behavior
+
+When a request matches an OAuth service, Agent Vault decrypts the client secret and refresh token, POSTs an OAuth2 refresh-token grant to the token endpoint, and caches the returned `access_token`. The refresh request uses `application/x-www-form-urlencoded` with `grant_type=refresh_token`, `refresh_token`, `client_id`, `client_secret`, and optional `scope`.
+
+If the provider returns `expires_in`, Agent Vault caches the access token for `expires_in - 60s`. If the provider omits `expires_in`, Agent Vault defaults to 3600 seconds. Very short lifetimes are not cached beyond the current request.
+
+## Revoked refresh tokens
+
+If the refresh token or client secret is revoked or rejected by the provider, proxied requests return a broker `502` with `oauth_refresh_denied` and a proposal hint. Replace the stored OAuth credentials by creating a new proposal or updating the vault credentials directly as an admin.
+
+Agent Vault never exposes refresh token, client secret, or access token values in discovery responses, logs, or proposal hints. Logs include credential key names only.
+
+## Catalog templates
+
+Agent Vault includes OAuth catalog templates for:
+
+- GitHub OAuth Apps: `https://github.com/login/oauth/access_token`
+- Google OAuth: `https://oauth2.googleapis.com/token`
+- Microsoft Identity v2.0: `https://login.microsoftonline.com/common/oauth2/v2.0/token`

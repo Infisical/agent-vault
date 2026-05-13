@@ -166,6 +166,25 @@ func WriteProxyError(w http.ResponseWriter, status int, code, message string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "message": message})
 }
 
+func writeProxyErrorWithProposalHint(w http.ResponseWriter, status int, code, message, targetHost, baseURL string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(ProxyErrorHeader, "true")
+	w.WriteHeader(status)
+	body := map[string]interface{}{
+		"error":   code,
+		"message": message,
+		"proposal_hint": map[string]interface{}{
+			"host":                 targetHost,
+			"endpoint":             "POST /v1/proposals",
+			"supported_auth_types": broker.SupportedAuthTypes,
+		},
+	}
+	if baseURL != "" {
+		body["help"] = helpLinks(baseURL)
+	}
+	_ = json.NewEncoder(w).Encode(body)
+}
+
 // writeProxyErrorWithHelp is like WriteProxyError but appends an optional
 // help field when baseURL is non-empty.
 func writeProxyErrorWithHelp(w http.ResponseWriter, status int, code, message, baseURL string) {
@@ -202,6 +221,9 @@ func WriteInjectError(w http.ResponseWriter, err error, targetHost, vaultName, b
 	case errors.Is(err, ErrCredentialMissing):
 		writeProxyErrorWithHelp(w, http.StatusBadGateway, "credential_not_found",
 			"A required credential could not be resolved; check vault configuration", baseURL)
+	case errors.Is(err, ErrOAuthRefreshDenied):
+		writeProxyErrorWithProposalHint(w, http.StatusBadGateway, "oauth_refresh_denied",
+			"The OAuth refresh token was rejected; replace the stored OAuth credentials", targetHost, baseURL)
 	default:
 		WriteProxyError(w, http.StatusInternalServerError, "internal",
 			"Failed to resolve broker services")

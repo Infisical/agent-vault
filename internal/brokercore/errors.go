@@ -42,4 +42,9 @@ var (
 	// ErrServiceNotFound so agents can tell "configured but off" from "not
 	// configured". Callers surface 403 with error code "service_disabled".
 	ErrServiceDisabled = errors.New("brokercore: broker service is disabled")
+
+	// ErrOAuthRefreshDenied means an OAuth token endpoint rejected the stored
+	// refresh token or client secret. Callers surface 502 with a proposal hint
+	// so the operator can replace the revoked or invalid credentials.
+	ErrOAuthRefreshDenied = errors.New("brokercore: oauth refresh denied")
 )

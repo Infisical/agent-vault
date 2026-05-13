@@ -3,8 +3,10 @@ package broker
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -76,7 +78,7 @@ func (s *Service) IsEnabled() bool {
 // client's request headers flow through (minus broker-scoped headers
 // like X-Vault and Proxy-Authorization, and hop-by-hop headers).
 type Auth struct {
-	Type string `yaml:"type" json:"type"` // "bearer", "basic", "api-key", "custom", "passthrough"
+	Type string `yaml:"type" json:"type"` // "bearer", "basic", "api-key", "custom", "passthrough", "oauth"
 
 	// type: bearer — token credential key
 	Token string `yaml:"token,omitempty" json:"token,omitempty"`
@@ -92,10 +94,25 @@ type Auth struct {
 
 	// type: custom — arbitrary header templates with {{ CREDENTIAL }} placeholders
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// type: oauth — OAuth2 refresh-token grant.
+	// ClientID is public (the OAuth client id assigned by the provider).
+	// ClientSecretKey, RefreshTokenKey are credential key names (UPPER_SNAKE_CASE).
+	// TokenEndpoint is the provider's token URL.
+	// Scopes is the optional scope list to request on refresh.
+	ClientID        string   `yaml:"client_id,omitempty" json:"client_id,omitempty"`
+	ClientSecretKey string   `yaml:"client_secret_key,omitempty" json:"client_secret_key,omitempty"`
+	RefreshTokenKey string   `yaml:"refresh_token_key,omitempty" json:"refresh_token_key,omitempty"`
+	TokenEndpoint   string   `yaml:"token_endpoint,omitempty" json:"token_endpoint,omitempty"`
+	Scopes          []string `yaml:"scopes,omitempty" json:"scopes,omitempty"`
 }
 
 // SupportedAuthTypes lists the valid auth type values.
-var SupportedAuthTypes = []string{"bearer", "basic", "api-key", "custom", "passthrough"}
+var SupportedAuthTypes = []string{"bearer", "basic", "api-key", "custom", "passthrough", "oauth"}
+
+// ErrOAuthResolveAsync means oauth auth requires network I/O and must be
+// resolved by the brokercore async injection path instead of Auth.Resolve.
+var ErrOAuthResolveAsync = errors.New("broker: oauth auth requires async token refresh")
 
 // CredentialKeyPattern validates credential key names: UPPER_SNAKE_CASE.
 var CredentialKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
@@ -192,6 +209,34 @@ func (a *Auth) Validate() error {
 		}
 		return nil
 
+	case "oauth":
+		if a.ClientID == "" {
+			return fmt.Errorf("auth: \"client_id\" is required for oauth auth")
+		}
+		if a.ClientSecretKey == "" {
+			return fmt.Errorf("auth: \"client_secret_key\" is required for oauth auth")
+		}
+		if a.RefreshTokenKey == "" {
+			return fmt.Errorf("auth: \"refresh_token_key\" is required for oauth auth")
+		}
+		if a.TokenEndpoint == "" {
+			return fmt.Errorf("auth: \"token_endpoint\" is required for oauth auth")
+		}
+		if err := checkUnexpectedFields(a, "oauth", "client_id", "client_secret_key", "refresh_token_key", "token_endpoint", "scopes"); err != nil {
+			return err
+		}
+		if err := validateCredentialKey("client_secret_key", a.ClientSecretKey); err != nil {
+			return err
+		}
+		if err := validateCredentialKey("refresh_token_key", a.RefreshTokenKey); err != nil {
+			return err
+		}
+		u, err := url.Parse(a.TokenEndpoint)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("auth: token_endpoint %q must be an absolute https:// URL", a.TokenEndpoint)
+		}
+		return nil
+
 	case "passthrough":
 		// Passthrough forwards client headers unchanged and injects nothing.
 		// No credential fields are permitted.
@@ -229,6 +274,11 @@ func checkUnexpectedFields(a *Auth, authType string, allowed ...string) error {
 		{"header", a.Header != ""},
 		{"prefix", a.Prefix != ""},
 		{"headers", len(a.Headers) > 0},
+		{"client_id", a.ClientID != ""},
+		{"client_secret_key", a.ClientSecretKey != ""},
+		{"refresh_token_key", a.RefreshTokenKey != ""},
+		{"token_endpoint", a.TokenEndpoint != ""},
+		{"scopes", len(a.Scopes) > 0},
 	}
 
 	for _, c := range checks {
@@ -260,6 +310,8 @@ func (a *Auth) CredentialKeys() []string {
 		return []string{a.Key}
 	case "custom":
 		return credentialKeysFromHeaders(a.Headers)
+	case "oauth":
+		return []string{a.ClientSecretKey, a.RefreshTokenKey}
 	case "passthrough":
 		return nil
 	default:
@@ -285,6 +337,8 @@ func credentialKeysFromHeaders(headers map[string]string) []string {
 
 // Resolve resolves the auth config into a map of HTTP headers ready for attachment.
 // The getCredential function retrieves decrypted credential values by key name.
+// OAuth auth requires network I/O for the refresh-token grant, so Resolve returns
+// an empty header map and ErrOAuthResolveAsync for callers to route to brokercore.
 func (a *Auth) Resolve(getCredential func(key string) (string, error)) (map[string]string, error) {
 	switch a.Type {
 	case "bearer":
@@ -322,6 +376,9 @@ func (a *Auth) Resolve(getCredential func(key string) (string, error)) (map[stri
 
 	case "custom":
 		return resolveHeaders(a.Headers, getCredential)
+
+	case "oauth":
+		return map[string]string{}, ErrOAuthResolveAsync
 
 	case "passthrough":
 		// Passthrough injects nothing. Callers should branch on the service
@@ -877,7 +934,6 @@ func SplitInlineHost(host, path string) (string, string) {
 	}
 	return host, path
 }
-
 
 // resolveHeaders renders {{ credential_name }} placeholders in header values
 // by calling getCredential for each referenced name. Returns a new map with

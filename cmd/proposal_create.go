@@ -251,8 +251,31 @@ func buildAuthFromFlags(cmd *cobra.Command, authType string) (*broker.Auth, erro
 		a.Header, _ = cmd.Flags().GetString("api-key-header")
 		a.Prefix, _ = cmd.Flags().GetString("api-key-prefix")
 
+	case "oauth":
+		clientID, _ := cmd.Flags().GetString("oauth-client-id")
+		if clientID == "" {
+			return nil, fmt.Errorf("--oauth-client-id is required for oauth auth")
+		}
+		clientSecretKey, _ := cmd.Flags().GetString("oauth-client-secret-key")
+		if clientSecretKey == "" {
+			return nil, fmt.Errorf("--oauth-client-secret-key is required for oauth auth")
+		}
+		refreshTokenKey, _ := cmd.Flags().GetString("oauth-refresh-token-key")
+		if refreshTokenKey == "" {
+			return nil, fmt.Errorf("--oauth-refresh-token-key is required for oauth auth")
+		}
+		tokenEndpoint, _ := cmd.Flags().GetString("oauth-token-endpoint")
+		if tokenEndpoint == "" {
+			return nil, fmt.Errorf("--oauth-token-endpoint is required for oauth auth")
+		}
+		a.ClientID = clientID
+		a.ClientSecretKey = clientSecretKey
+		a.RefreshTokenKey = refreshTokenKey
+		a.TokenEndpoint = tokenEndpoint
+		a.Scopes, _ = cmd.Flags().GetStringArray("oauth-scope")
+
 	case "custom":
-		return nil, fmt.Errorf("custom auth type requires JSON mode (-f); use flags for bearer, basic, or api-key")
+		return nil, fmt.Errorf("custom auth type requires JSON mode (-f); use flags for bearer, basic, api-key, or oauth")
 
 	case "passthrough":
 		if err := rejectCredentialFlags(cmd, "passthrough"); err != nil {
@@ -263,6 +286,9 @@ func buildAuthFromFlags(cmd *cobra.Command, authType string) (*broker.Auth, erro
 		return nil, fmt.Errorf("unsupported auth type %q (supported: %s)", authType, strings.Join(broker.SupportedAuthTypes, ", "))
 	}
 
+	if err := a.Validate(); err != nil {
+		return nil, err
+	}
 	return a, nil
 }
 
@@ -276,10 +302,26 @@ func rejectCredentialFlags(cmd *cobra.Command, authType string) error {
 		"api-key-key",
 		"api-key-header",
 		"api-key-prefix",
+		"oauth-client-id",
+		"oauth-client-secret-key",
+		"oauth-refresh-token-key",
+		"oauth-token-endpoint",
+		"oauth-scope",
 	}
 	for _, f := range credFlags {
-		if v, _ := cmd.Flags().GetString(f); v != "" {
-			return fmt.Errorf("--%s is not accepted for %s auth (no credential is injected)", f, authType)
+		flag := cmd.Flags().Lookup(f)
+		if flag == nil {
+			continue
+		}
+		switch flag.Value.Type() {
+		case "stringArray":
+			if v, _ := cmd.Flags().GetStringArray(f); len(v) > 0 {
+				return fmt.Errorf("--%s is not accepted for %s auth (no credential is injected)", f, authType)
+			}
+		default:
+			if v, _ := cmd.Flags().GetString(f); v != "" {
+				return fmt.Errorf("--%s is not accepted for %s auth (no credential is injected)", f, authType)
+			}
 		}
 	}
 	return nil
@@ -292,13 +334,18 @@ func init() {
 	// Flag-driven mode.
 	proposalCreateCmd.Flags().String("name", "", "service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required for new services; may be omitted when --host uniquely matches an existing service (the server adopts that name).")
 	proposalCreateCmd.Flags().String("host", "", "target service host. Accepts api.stripe.com, *.github.com, or inline path form like slack.com/api/*.")
-	proposalCreateCmd.Flags().String("auth-type", "", "auth type: bearer, basic, api-key, passthrough")
+	proposalCreateCmd.Flags().String("auth-type", "", "auth type: bearer, basic, api-key, oauth, passthrough")
 	proposalCreateCmd.Flags().String("token-key", "", "credential key for bearer auth")
 	proposalCreateCmd.Flags().String("username-key", "", "credential key for basic auth username")
 	proposalCreateCmd.Flags().String("password-key", "", "credential key for basic auth password")
 	proposalCreateCmd.Flags().String("api-key-key", "", "credential key for api-key auth")
 	proposalCreateCmd.Flags().String("api-key-header", "", "header name for api-key (default Authorization)")
 	proposalCreateCmd.Flags().String("api-key-prefix", "", "prefix for api-key value")
+	proposalCreateCmd.Flags().String("oauth-client-id", "", "OAuth client id")
+	proposalCreateCmd.Flags().String("oauth-client-secret-key", "", "credential key for OAuth client secret")
+	proposalCreateCmd.Flags().String("oauth-refresh-token-key", "", "credential key for OAuth refresh token")
+	proposalCreateCmd.Flags().String("oauth-token-endpoint", "", "OAuth token endpoint URL")
+	proposalCreateCmd.Flags().StringArray("oauth-scope", nil, "OAuth scope to request on refresh (repeatable)")
 	proposalCreateCmd.Flags().StringArray("credential", nil, "credential to request: KEY or KEY=description (repeatable)")
 
 	// Shared flags.
