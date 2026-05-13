@@ -777,7 +777,7 @@ func TestProposalCreateFlagsRegistered(t *testing.T) {
 		t.Fatal("create command not found under proposal")
 	}
 
-	expectedFlags := []string{"file", "name", "host", "auth-type", "token-key", "credential", "message", "user-message", "json", "username-key", "password-key", "api-key-key", "api-key-header", "api-key-prefix"}
+	expectedFlags := []string{"file", "name", "host", "auth-type", "token-key", "credential", "message", "user-message", "json", "username-key", "password-key", "api-key-key", "api-key-header", "api-key-prefix", "oauth-client-id", "oauth-client-secret-key", "oauth-refresh-token-key", "oauth-token-endpoint", "oauth-scope"}
 	for _, name := range expectedFlags {
 		if createCmd.Flags().Lookup(name) == nil {
 			t.Errorf("expected flag --%s on proposal create command", name)

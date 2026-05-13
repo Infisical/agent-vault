@@ -2,6 +2,7 @@ package broker
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -442,6 +443,74 @@ func TestAuthValidateCredentialKeyFormat(t *testing.T) {
 	}
 }
 
+func TestAuthValidate_OAuth_OK(t *testing.T) {
+	a := Auth{
+		Type:            "oauth",
+		ClientID:        "Iv1.abc",
+		ClientSecretKey: "GITHUB_CLIENT_SECRET",
+		RefreshTokenKey: "GITHUB_REFRESH_TOKEN",
+		TokenEndpoint:   "https://github.com/login/oauth/access_token",
+		Scopes:          []string{"repo"},
+	}
+	if err := a.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAuthValidate_OAuth_MissingClientID(t *testing.T) {
+	a := Auth{
+		Type:            "oauth",
+		ClientSecretKey: "GITHUB_CLIENT_SECRET",
+		RefreshTokenKey: "GITHUB_REFRESH_TOKEN",
+		TokenEndpoint:   "https://github.com/login/oauth/access_token",
+	}
+	if err := a.Validate(); err == nil {
+		t.Fatal("expected error for missing client_id")
+	}
+}
+
+func TestAuthValidate_OAuth_BadTokenEndpoint(t *testing.T) {
+	cases := []string{
+		"http://oauth2.googleapis.com/token",
+		"oauth2.googleapis.com/token",
+	}
+	for _, endpoint := range cases {
+		t.Run(endpoint, func(t *testing.T) {
+			a := Auth{
+				Type:            "oauth",
+				ClientID:        "client-id",
+				ClientSecretKey: "GOOGLE_CLIENT_SECRET",
+				RefreshTokenKey: "GOOGLE_REFRESH_TOKEN",
+				TokenEndpoint:   endpoint,
+			}
+			if err := a.Validate(); err == nil {
+				t.Fatal("expected error for bad token_endpoint")
+			}
+		})
+	}
+}
+
+func TestAuthValidate_OAuth_UnexpectedField(t *testing.T) {
+	a := Auth{
+		Type:            "oauth",
+		ClientID:        "client-id",
+		ClientSecretKey: "GITHUB_CLIENT_SECRET",
+		RefreshTokenKey: "GITHUB_REFRESH_TOKEN",
+		TokenEndpoint:   "https://github.com/login/oauth/access_token",
+		Token:           "GITHUB_TOKEN",
+	}
+	if err := a.Validate(); err == nil {
+		t.Fatal("expected error for token on oauth auth")
+	}
+}
+
+func TestAuthValidate_RejectsOAuthFieldsOnOtherTypes(t *testing.T) {
+	a := Auth{Type: "bearer", Token: "GITHUB_TOKEN", ClientID: "client-id"}
+	if err := a.Validate(); err == nil {
+		t.Fatal("expected error for client_id on bearer auth")
+	}
+}
+
 // --- Auth.CredentialKeys tests ---
 
 func TestAuthCredentialKeysBearer(t *testing.T) {
@@ -484,6 +553,14 @@ func TestAuthCredentialKeysCustom(t *testing.T) {
 	keys := a.CredentialKeys()
 	if len(keys) != 2 {
 		t.Fatalf("expected 2 keys, got %v", keys)
+	}
+}
+
+func TestAuthCredentialKeysOAuth(t *testing.T) {
+	a := Auth{Type: "oauth", ClientSecretKey: "CLIENT_SECRET", RefreshTokenKey: "REFRESH_TOKEN"}
+	keys := a.CredentialKeys()
+	if len(keys) != 2 || keys[0] != "CLIENT_SECRET" || keys[1] != "REFRESH_TOKEN" {
+		t.Fatalf("expected [CLIENT_SECRET REFRESH_TOKEN], got %v", keys)
 	}
 }
 
@@ -603,6 +680,20 @@ func TestAuthResolveUnsupportedType(t *testing.T) {
 	_, err := a.Resolve(testGetCredential(map[string]string{}))
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
+	}
+}
+
+func TestAuthResolve_OAuth_ReturnsSentinelError(t *testing.T) {
+	a := Auth{Type: "oauth"}
+	resolved, err := a.Resolve(func(key string) (string, error) {
+		t.Fatalf("getCredential should not be called for oauth, got %q", key)
+		return "", nil
+	})
+	if !errors.Is(err, ErrOAuthResolveAsync) {
+		t.Fatalf("expected ErrOAuthResolveAsync, got %v", err)
+	}
+	if len(resolved) != 0 {
+		t.Fatalf("expected empty headers, got %v", resolved)
 	}
 }
 
@@ -775,6 +866,11 @@ func TestAuthValidatePassthroughRejectsCredentialFields(t *testing.T) {
 		{"header", Auth{Type: "passthrough", Header: "X-Foo"}},
 		{"prefix", Auth{Type: "passthrough", Prefix: "Bearer "}},
 		{"headers", Auth{Type: "passthrough", Headers: map[string]string{"X-Foo": "bar"}}},
+		{"client_id", Auth{Type: "passthrough", ClientID: "client-id"}},
+		{"client_secret_key", Auth{Type: "passthrough", ClientSecretKey: "CLIENT_SECRET"}},
+		{"refresh_token_key", Auth{Type: "passthrough", RefreshTokenKey: "REFRESH_TOKEN"}},
+		{"token_endpoint", Auth{Type: "passthrough", TokenEndpoint: "https://oauth2.googleapis.com/token"}},
+		{"scopes", Auth{Type: "passthrough", Scopes: []string{"repo"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

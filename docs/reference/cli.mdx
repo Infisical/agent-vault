@@ -448,14 +448,21 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `-f` | | Path to a YAML services file (upsert mode) |
     | `--name` | | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required for new services. May be omitted when `--host` uniquely matches an existing service — the server adopts that service's name (same pattern as `service remove` by host). |
     | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). The server splits the path off the host on ingest. |
-    | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, `custom`, `passthrough` |
+    | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, `custom`, `oauth`, `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
     | `--username-key` | | Credential key for basic auth username |
     | `--password-key` | | Credential key for basic auth password |
     | `--api-key-key` | | Credential key for api-key auth |
     | `--api-key-header` | `Authorization` | Header name for api-key |
     | `--api-key-prefix` | | Prefix for api-key value |
+    | `--oauth-client-id` | | OAuth client id |
+    | `--oauth-client-secret-key` | | Credential key for OAuth client secret |
+    | `--oauth-refresh-token-key` | | Credential key for OAuth refresh token |
+    | `--oauth-token-endpoint` | | OAuth token endpoint URL |
+    | `--oauth-scope` | | OAuth scope to request on refresh (repeatable) |
     | `--disabled` | `false` | Create the service in a disabled state (proxy traffic returns 403 until enabled) |
+
+    For `oauth`, Agent Vault stores the refresh token and client secret in the vault, refreshes access tokens at request time, and injects `Authorization: Bearer <access_token>`. See [OAuth services](/learn/oauth-services).
 
     The `passthrough` auth type accepts no credential flags; Agent Vault allowlists the host but does not store or inject a credential. See [Header forwarding](/learn/services#header-forwarding) for the rules that apply across every auth type — passthrough simply has no auth slot to override.
 
@@ -611,13 +618,18 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `-f`, `--file` | | Path to JSON proposal file (use `-` for stdin) |
     | `--name` | | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required for new services. May be omitted when `--host` uniquely matches an existing service — the server adopts that service's name (same pattern as host-based delete). |
     | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). |
-    | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, or `passthrough` |
+    | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, `oauth`, or `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
     | `--username-key` | | Credential key for basic auth username |
     | `--password-key` | | Credential key for basic auth password |
     | `--api-key-key` | | Credential key for api-key auth |
     | `--api-key-header` | | Header name for api-key (default `Authorization`) |
     | `--api-key-prefix` | | Prefix for api-key value |
+    | `--oauth-client-id` | | OAuth client id |
+    | `--oauth-client-secret-key` | | Credential key for OAuth client secret |
+    | `--oauth-refresh-token-key` | | Credential key for OAuth refresh token |
+    | `--oauth-token-endpoint` | | OAuth token endpoint URL |
+    | `--oauth-scope` | | OAuth scope to request on refresh (repeatable) |
     | `--credential` | | Credential to request: `KEY` or `KEY=description` (repeatable) |
     | `-m`, `--message` | | Proposal message/reason |
     | `--user-message` | | Human-facing explanation for the browser approval page |

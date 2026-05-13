@@ -14,13 +14,35 @@ import (
 
 // fakeCredStore satisfies CredentialStore for tests.
 type fakeCredStore struct {
-	brokerCfg     map[string]*store.BrokerConfig // vaultID → config
-	creds         map[string]*store.Credential   // key = vaultID+"|"+key
-	missKey       string                         // if set, GetCredential for this key returns nil/err
-	policy        UnmatchedHostPolicy            // unmatched-host policy returned by UnmatchedHostPolicy
-	brokerCfgErr  error                          // if non-nil, GetBrokerConfig returns this error
+	brokerCfg    map[string]*store.BrokerConfig // vaultID → config
+	creds        map[string]*store.Credential   // key = vaultID+"|"+key
+	missKey      string                         // if set, GetCredential for this key returns nil/err
+	policy       UnmatchedHostPolicy            // unmatched-host policy returned by UnmatchedHostPolicy
+	brokerCfgErr error                          // if non-nil, GetBrokerConfig returns this error
 
 	getCredentialCalls int // call count — used by passthrough tests to assert no lookup
+}
+
+type fakeOAuthTokenSource struct {
+	token         string
+	err           error
+	clientID      string
+	clientSecret  string
+	refreshToken  string
+	tokenEndpoint string
+	scopes        []string
+}
+
+func (f *fakeOAuthTokenSource) Get(_ context.Context, clientID, clientSecret, refreshToken, tokenEndpoint string, scopes []string) (string, error) {
+	f.clientID = clientID
+	f.clientSecret = clientSecret
+	f.refreshToken = refreshToken
+	f.tokenEndpoint = tokenEndpoint
+	f.scopes = append([]string(nil), scopes...)
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.token, nil
 }
 
 func newFakeCredStore() *fakeCredStore {
@@ -145,6 +167,69 @@ func TestInject_APIKeyCustomHeader(t *testing.T) {
 	}
 	if res.Headers["X-API-Key"] != "sk_live123" {
 		t.Fatalf("got X-API-Key=%q", res.Headers["X-API-Key"])
+	}
+}
+
+func TestInject_OAuthHappyPath(t *testing.T) {
+	key32 := make32(0x35)
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "api.github.com",
+		Auth: broker.Auth{
+			Type:            "oauth",
+			ClientID:        "Iv1.client",
+			ClientSecretKey: "GITHUB_CLIENT_SECRET",
+			RefreshTokenKey: "GITHUB_REFRESH_TOKEN",
+			TokenEndpoint:   "https://github.com/login/oauth/access_token",
+			Scopes:          []string{"repo"},
+		},
+	}})
+	f.setCred(t, key32, "v1", "GITHUB_CLIENT_SECRET", "client-secret")
+	f.setCred(t, key32, "v1", "GITHUB_REFRESH_TOKEN", "refresh-token")
+	tokenSource := &fakeOAuthTokenSource{token: "access-token"}
+
+	p := NewStoreCredentialProvider(f, key32, WithOAuthTokenSource(tokenSource))
+	res, err := p.Inject(context.Background(), "v1", "api.github.com", "/")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Headers["Authorization"] != "Bearer access-token" {
+		t.Fatalf("got Authorization=%q", res.Headers["Authorization"])
+	}
+	if got := res.CredentialKeys; len(got) != 2 || got[0] != "GITHUB_CLIENT_SECRET" || got[1] != "GITHUB_REFRESH_TOKEN" {
+		t.Fatalf("unexpected CredentialKeys: %v", got)
+	}
+	if tokenSource.clientID != "Iv1.client" || tokenSource.clientSecret != "client-secret" || tokenSource.refreshToken != "refresh-token" {
+		t.Fatalf("unexpected token source inputs: %+v", tokenSource)
+	}
+	if tokenSource.tokenEndpoint != "https://github.com/login/oauth/access_token" {
+		t.Fatalf("tokenEndpoint = %q", tokenSource.tokenEndpoint)
+	}
+	if len(tokenSource.scopes) != 1 || tokenSource.scopes[0] != "repo" {
+		t.Fatalf("scopes = %v", tokenSource.scopes)
+	}
+}
+
+func TestInject_OAuthRefreshDenied(t *testing.T) {
+	key32 := make32(0x36)
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "api.github.com",
+		Auth: broker.Auth{
+			Type:            "oauth",
+			ClientID:        "Iv1.client",
+			ClientSecretKey: "GITHUB_CLIENT_SECRET",
+			RefreshTokenKey: "GITHUB_REFRESH_TOKEN",
+			TokenEndpoint:   "https://github.com/login/oauth/access_token",
+		},
+	}})
+	f.setCred(t, key32, "v1", "GITHUB_CLIENT_SECRET", "client-secret")
+	f.setCred(t, key32, "v1", "GITHUB_REFRESH_TOKEN", "refresh-token")
+
+	p := NewStoreCredentialProvider(f, key32, WithOAuthTokenSource(&fakeOAuthTokenSource{err: ErrOAuthRefreshFailed}))
+	_, err := p.Inject(context.Background(), "v1", "api.github.com", "/")
+	if !errors.Is(err, ErrOAuthRefreshDenied) {
+		t.Fatalf("expected ErrOAuthRefreshDenied, got %v", err)
 	}
 }
 

@@ -73,13 +73,31 @@ type CredentialStore interface {
 // StoreCredentialProvider injects credentials using a CredentialStore and a
 // 32-byte AES-256-GCM key held in memory for the lifetime of the process.
 type StoreCredentialProvider struct {
-	Store  CredentialStore
-	EncKey []byte
+	Store       CredentialStore
+	EncKey      []byte
+	OAuthTokens OAuthAccessTokenSource
+}
+
+// StoreCredentialProviderOption customizes a StoreCredentialProvider.
+type StoreCredentialProviderOption func(*StoreCredentialProvider)
+
+// WithOAuthTokenSource injects the OAuth token source used for oauth auth.
+func WithOAuthTokenSource(source OAuthAccessTokenSource) StoreCredentialProviderOption {
+	return func(p *StoreCredentialProvider) {
+		p.OAuthTokens = source
+	}
 }
 
 // NewStoreCredentialProvider constructs a provider. encKey must be 32 bytes.
-func NewStoreCredentialProvider(s CredentialStore, encKey []byte) *StoreCredentialProvider {
-	return &StoreCredentialProvider{Store: s, EncKey: encKey}
+func NewStoreCredentialProvider(s CredentialStore, encKey []byte, opts ...StoreCredentialProviderOption) *StoreCredentialProvider {
+	p := &StoreCredentialProvider{Store: s, EncKey: encKey, OAuthTokens: NewOAuthTokenSource()}
+	for _, opt := range opts {
+		opt(p)
+	}
+	if p.OAuthTokens == nil {
+		p.OAuthTokens = NewOAuthTokenSource()
+	}
+	return p
 }
 
 // Inject matches (targetHost, targetPath) and resolves the matched
@@ -192,6 +210,27 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	}
 
 	if matched.Auth.Type == "passthrough" {
+		result.Substitutions = resolvedSubs
+		return result, nil
+	}
+
+	if matched.Auth.Type == "oauth" {
+		clientSecret, err := getCredential(matched.Auth.ClientSecretKey)
+		if err != nil {
+			return result, fmt.Errorf("%w: %v", ErrCredentialMissing, err)
+		}
+		refreshToken, err := getCredential(matched.Auth.RefreshTokenKey)
+		if err != nil {
+			return result, fmt.Errorf("%w: %v", ErrCredentialMissing, err)
+		}
+		accessToken, err := p.OAuthTokens.Get(ctx, matched.Auth.ClientID, clientSecret, refreshToken, matched.Auth.TokenEndpoint, matched.Auth.Scopes)
+		if err != nil {
+			if errors.Is(err, ErrOAuthRefreshFailed) {
+				return result, fmt.Errorf("%w: %v", ErrOAuthRefreshDenied, err)
+			}
+			return result, err
+		}
+		result.Headers = map[string]string{"Authorization": "Bearer " + accessToken}
 		result.Substitutions = resolvedSubs
 		return result, nil
 	}

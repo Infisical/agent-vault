@@ -10,6 +10,7 @@ type Template struct {
 	SuggestedCredentialKey string `json:"suggested_credential_key"`
 	Header                 string `json:"header,omitempty"`
 	Prefix                 string `json:"prefix,omitempty"`
+	TokenEndpoint          string `json:"token_endpoint,omitempty"`
 }
 
 // catalog is the built-in list of common service templates.
@@ -34,6 +35,9 @@ var catalog = []Template{
 	{ID: "postmark", Name: "Postmark", Host: "api.postmarkapp.com", Description: "Transactional email service", AuthType: "api-key", SuggestedCredentialKey: "POSTMARK_SERVER_TOKEN", Header: "X-Postmark-Server-Token"},
 	{ID: "sentry", Name: "Sentry", Host: "sentry.io", Description: "Error tracking and performance monitoring", AuthType: "bearer", SuggestedCredentialKey: "SENTRY_AUTH_TOKEN"},
 	{ID: "shopify", Name: "Shopify", Host: "*.myshopify.com", Description: "Shopify e-commerce API", AuthType: "api-key", SuggestedCredentialKey: "SHOPIFY_ACCESS_TOKEN", Header: "X-Shopify-Access-Token"},
+	{ID: "github-oauth", Name: "GitHub OAuth", Host: "api.github.com", Description: "GitHub API via OAuth refresh token", AuthType: "oauth", SuggestedCredentialKey: "GITHUB_REFRESH_TOKEN", TokenEndpoint: "https://github.com/login/oauth/access_token"},
+	{ID: "google-oauth", Name: "Google OAuth", Host: "www.googleapis.com", Description: "Google APIs via OAuth refresh token", AuthType: "oauth", SuggestedCredentialKey: "GOOGLE_REFRESH_TOKEN", TokenEndpoint: "https://oauth2.googleapis.com/token"},
+	{ID: "microsoft-oauth", Name: "Microsoft Identity", Host: "graph.microsoft.com", Description: "Microsoft Graph via OAuth refresh token", AuthType: "oauth", SuggestedCredentialKey: "MICROSOFT_REFRESH_TOKEN", TokenEndpoint: "https://login.microsoftonline.com/common/oauth2/v2.0/token"},
 }
 
 // GetAll returns all available service templates.
