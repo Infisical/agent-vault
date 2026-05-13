@@ -610,8 +610,8 @@ function resolveAgentVaultAddr(baseURL?: string): string {
   if (!baseURL) return placeholder;
   try {
     const host = new URL(baseURL).hostname;
-    // URL.hostname strips IPv6 brackets, so "::1" not "[::1]".
-    if (host === "localhost" || host === "::1" || /^127\./.test(host)) {
+    // URL.hostname preserves IPv6 brackets per WHATWG URL host serializer.
+    if (host === "localhost" || host === "[::1]" || /^127\./.test(host)) {
       return placeholder;
     }
   } catch {
