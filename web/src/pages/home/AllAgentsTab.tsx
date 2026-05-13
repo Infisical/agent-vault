@@ -389,16 +389,16 @@ function InviteAgentButton({
       }
       setInviteResult({ agentToken: redeemData.av_agent_token });
     } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") {
-        // The server may have already persisted the create or redeem before
-        // the abort reached it; refresh so any orphan or live session shows
-        // up in the list.
-        onInvited();
-        return;
-      }
+      // The server may have already persisted the create or redeem before
+      // the request was aborted client-side or the connection dropped, so
+      // refresh the list so any orphan invite or live session shows up.
+      onInvited();
+      if (err instanceof DOMException && err.name === "AbortError") return;
       setError("Network error.");
     } finally {
-      setSubmitting(false);
+      // Skip if a rapid re-entrant handleCreate has already taken over: that
+      // call set submitting=true on entry and owns clearing it.
+      if (abortRef.current === controller) setSubmitting(false);
     }
   }
 
