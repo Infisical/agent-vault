@@ -564,7 +564,8 @@ function resolveAgentVaultAddr(baseURL?: string): string {
   if (!baseURL) return placeholder;
   try {
     const host = new URL(baseURL).hostname;
-    if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") {
+    // URL.hostname strips IPv6 brackets, so "::1" not "[::1]".
+    if (host === "localhost" || host === "::1" || /^127\./.test(host)) {
       return placeholder;
     }
   } catch {
