@@ -606,15 +606,21 @@ const RUN_SNIPPETS: Record<InstallTab, string> = {
   docker: `ENTRYPOINT ["agent-vault", "run", "--", "claude"]`,
 };
 
-// Loopback values almost never reach a remote agent, so treat them as
-// unset and let the operator fill in the right hostname.
+// Loopback and bind-wildcard values almost never reach a remote agent,
+// so treat them as unset and let the operator fill in the right hostname.
 function resolveAgentVaultAddr(baseURL?: string): string {
   const placeholder = "<AGENT_VAULT_ADDR>";
   if (!baseURL) return placeholder;
   try {
     const host = new URL(baseURL).hostname;
     // URL.hostname preserves IPv6 brackets per WHATWG URL host serializer.
-    if (host === "localhost" || host === "[::1]" || /^127\./.test(host)) {
+    if (
+      host === "localhost" ||
+      host === "[::1]" ||
+      host === "[::]" ||
+      host === "0.0.0.0" ||
+      /^127\./.test(host)
+    ) {
       return placeholder;
     }
   } catch {

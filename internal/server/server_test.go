@@ -4597,8 +4597,13 @@ func TestBaseURLAbsentFromStatusWhenAddrUnset(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
 	var resp map[string]interface{}
-	json.NewDecoder(rec.Body).Decode(&resp)
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if _, ok := resp["base_url"]; ok {
 		t.Fatal("base_url should not appear in status when AGENT_VAULT_ADDR and FLY_APP_NAME are unset")
 	}
