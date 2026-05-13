@@ -389,10 +389,16 @@ function InviteAgentButton({
       }
       setInviteResult({ agentToken: redeemData.av_agent_token });
     } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
+      if (err instanceof DOMException && err.name === "AbortError") {
+        // The server may have already persisted the create or redeem before
+        // the abort reached it; refresh so any orphan or live session shows
+        // up in the list.
+        onInvited();
+        return;
+      }
       setError("Network error.");
     } finally {
-      if (!controller.signal.aborted) setSubmitting(false);
+      setSubmitting(false);
     }
   }
 
