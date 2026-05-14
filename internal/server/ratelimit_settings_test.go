@@ -57,6 +57,12 @@ func TestResolveRateLimitConfigDefault(t *testing.T) {
 	if cfg.Tiers[ratelimit.TierProxy].Concurrency != 64 {
 		t.Fatalf("PROXY concurrency should allow normal agent fan-out, got %v", cfg.Tiers[ratelimit.TierProxy].Concurrency)
 	}
+	if cfg.Tiers[ratelimit.TierAuthed].Rate != 10 {
+		t.Fatalf("AUTHED rate should accommodate heaviest legitimate workload, got %v", cfg.Tiers[ratelimit.TierAuthed].Rate)
+	}
+	if cfg.Tiers[ratelimit.TierAuthed].Burst != 240 {
+		t.Fatalf("AUTHED burst should accommodate heaviest legitimate workload, got %v", cfg.Tiers[ratelimit.TierAuthed].Burst)
+	}
 }
 
 func TestResolveRateLimitConfigWithOverride(t *testing.T) {
