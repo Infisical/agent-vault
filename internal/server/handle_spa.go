@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"os"
 )
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -15,6 +16,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]interface{}{
 		"initialized":      s.initialized,
 		"needs_first_user": !s.initialized,
+	}
+
+	// Expose base_url only when the operator has explicitly set
+	// AGENT_VAULT_ADDR. Auto-derived fallbacks may not be reachable from a
+	// remote agent, so we suppress them and let the client show a placeholder.
+	if os.Getenv("AGENT_VAULT_ADDR") != "" {
+		resp["base_url"] = s.BaseURL()
 	}
 
 	// Read all settings in one query instead of two separate reads.
