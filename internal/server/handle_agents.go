@@ -480,7 +480,10 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 		seen[ag.Name] = true
 	}
 
-	// Include agents with pending invites (not yet redeemed).
+	// Include agents with pending invites (not yet redeemed) as rows with
+	// status="pending" and InviteID set. The UI relies on InviteID to route
+	// revokes for those rows through DELETE /v1/agents/invites/by-id/{id};
+	// without it, the active-agent revoke path 404s on pending names.
 	// Non-owners only see invites targeting vaults they can access.
 	pendingInvites, _ := s.store.ListInvites(ctx, "pending")
 	for _, inv := range pendingInvites {

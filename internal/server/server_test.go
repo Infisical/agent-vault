@@ -3840,6 +3840,12 @@ func TestAgentList(t *testing.T) {
 	if len(agents) != 2 {
 		t.Fatalf("expected 2 agents, got %d", len(agents))
 	}
+	for _, raw := range agents {
+		row := raw.(map[string]interface{})
+		if _, has := row["invite_id"]; has {
+			t.Fatalf("active agent row should not include invite_id, got %v", row)
+		}
+	}
 }
 
 func TestAgentList_PendingInviteCarriesInviteID(t *testing.T) {
