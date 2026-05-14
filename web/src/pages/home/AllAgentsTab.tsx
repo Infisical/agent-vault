@@ -114,10 +114,7 @@ export default function AllAgentsTab() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [agentsResp, invResp] = await Promise.all([
-        apiFetch("/v1/agents"),
-        apiFetch("/v1/agents/invites?status=pending"),
-      ]);
+      const agentsResp = await apiFetch("/v1/agents");
 
       if (!agentsResp.ok) {
         const data = await agentsResp.json();
@@ -126,37 +123,18 @@ export default function AllAgentsTab() {
       }
 
       const agentsData = await agentsResp.json();
-      const activeRows: AgentRow[] = (agentsData.agents ?? []).map(
-        (a: { name: string; role: string; status: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
+      const nextRows: AgentRow[] = (agentsData.agents ?? []).map(
+        (a: { name: string; role: string; status: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[]; invite_id?: number }) => ({
           name: a.name,
           role: a.role || "member",
           status: a.status,
           created_at: a.created_at,
           vaults: a.vaults ?? [],
+          invite_id: a.invite_id,
         })
       );
 
-      let pendingRows: AgentRow[] = [];
-      if (invResp.ok) {
-        const invData = await invResp.json();
-        const agentNames = new Set(activeRows.map((a) => a.name));
-        pendingRows = (invData.invites ?? [])
-          .filter((inv: { agent_name: string; status: string }) =>
-            inv.status === "pending" && !agentNames.has(inv.agent_name)
-          )
-          .map(
-            (inv: { id: number; agent_name: string; agent_role?: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
-              name: inv.agent_name,
-              role: inv.agent_role || "member",
-              status: "pending",
-              created_at: inv.created_at,
-              vaults: inv.vaults ?? [],
-              invite_id: inv.id,
-            })
-          );
-      }
-
-      setRows([...activeRows, ...pendingRows]);
+      setRows(nextRows);
     } catch {
       setError("Network error.");
     } finally {

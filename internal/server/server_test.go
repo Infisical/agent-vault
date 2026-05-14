@@ -3842,6 +3842,47 @@ func TestAgentList(t *testing.T) {
 	}
 }
 
+func TestAgentList_PendingInviteCarriesInviteID(t *testing.T) {
+	srv, ms, sessID := setupAgentTest(t)
+
+	// Pending invites surface in /v1/agents as agent rows with status="pending".
+	// They must carry invite_id so the UI can route revoke through the
+	// invite endpoint instead of the active-agents one.
+	inv := &store.Invite{
+		ID: 42, Token: "av_inv_pending_test_token1234567",
+		Status: "pending", AgentName: "hermes", AgentRole: "no-access",
+		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(15 * time.Minute),
+	}
+	ms.invites[inv.Token] = inv
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/agents", nil)
+	req.Header.Set("Authorization", "Bearer "+sessID)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	agents := resp["agents"].([]interface{})
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 agent row, got %d: %s", len(agents), rec.Body.String())
+	}
+	row := agents[0].(map[string]interface{})
+	if row["name"] != "hermes" || row["status"] != "pending" {
+		t.Fatalf("expected hermes/pending, got name=%v status=%v", row["name"], row["status"])
+	}
+	id, ok := row["invite_id"].(float64)
+	if !ok {
+		t.Fatalf("expected invite_id on pending row, got %v (full row: %v)", row["invite_id"], row)
+	}
+	if int(id) != inv.ID {
+		t.Fatalf("expected invite_id=%d, got %d", inv.ID, int(id))
+	}
+}
+
 func TestAgentRevoke(t *testing.T) {
 	srv, ms, sessID := setupAgentTest(t)
 
