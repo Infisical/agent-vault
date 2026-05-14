@@ -18,11 +18,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"needs_first_user": !s.initialized,
 	}
 
-	// Expose base_url only when it resolves to a routable external hostname
-	// (operator-set AGENT_VAULT_ADDR or Fly-derived URL). The bind-addr
-	// fallback (http://127.0.0.1:14321 etc.) is almost never useful for a
-	// remote agent, so we skip it and let the client show a placeholder.
-	if os.Getenv("AGENT_VAULT_ADDR") != "" || os.Getenv("FLY_APP_NAME") != "" {
+	// Expose base_url only when the operator has explicitly set
+	// AGENT_VAULT_ADDR. Auto-derived fallbacks may not be reachable from a
+	// remote agent, so we suppress them and let the client show a placeholder.
+	if os.Getenv("AGENT_VAULT_ADDR") != "" {
 		resp["base_url"] = s.BaseURL()
 	}
 

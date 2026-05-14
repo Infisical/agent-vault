@@ -4589,7 +4589,6 @@ func TestBaseURLInStatusWhenAddrSet(t *testing.T) {
 
 func TestBaseURLAbsentFromStatusWhenAddrUnset(t *testing.T) {
 	t.Setenv("AGENT_VAULT_ADDR", "")
-	t.Setenv("FLY_APP_NAME", "")
 	ms := setupMockStoreWithUser(t, "owner@test.com", "owner-password-123")
 	srv := newTestServer(withStore(ms))
 
@@ -4605,30 +4604,7 @@ func TestBaseURLAbsentFromStatusWhenAddrUnset(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	if _, ok := resp["base_url"]; ok {
-		t.Fatal("base_url should not appear in status when AGENT_VAULT_ADDR and FLY_APP_NAME are unset")
-	}
-}
-
-func TestBaseURLInStatusWhenFlyAppNameSet(t *testing.T) {
-	t.Setenv("AGENT_VAULT_ADDR", "")
-	t.Setenv("FLY_APP_NAME", "my-vault")
-	ms := setupMockStoreWithUser(t, "owner@test.com", "owner-password-123")
-	srv := newTestServer(withStore(ms), withBaseURL("https://my-vault.fly.dev"))
-
-	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	var resp map[string]interface{}
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	got, ok := resp["base_url"]
-	if !ok {
-		t.Fatal("expected base_url in status response when FLY_APP_NAME is set")
-	}
-	if got != "https://my-vault.fly.dev" {
-		t.Fatalf("expected base_url=https://my-vault.fly.dev, got %v", got)
+		t.Fatal("base_url should not appear in status when AGENT_VAULT_ADDR is unset")
 	}
 }
 
