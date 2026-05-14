@@ -23,6 +23,10 @@ export async function apiFetch(
   });
 }
 
+export function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "AbortError";
+}
+
 export async function apiRequest<T = unknown>(
   url: string,
   options?: RequestInit,

@@ -43,3 +43,10 @@ func withNotifier(n *notify.Notifier) testServerOption {
 		srv.notifier = n
 	}
 }
+
+// withBaseURL overrides the default base URL.
+func withBaseURL(url string) testServerOption {
+	return func(srv *Server) {
+		srv.baseURL = url
+	}
+}
