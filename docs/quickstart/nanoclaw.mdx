@@ -5,10 +5,8 @@ description: "Learn how to connect NanoClaw to Agent Vault so it can make authen
 
 ## Prerequisites
 
-To get the most out of this guide, you'll need to:
-
-- A deployed Agent Vault instance ([see installation guide](/installation))
-- Have [NanoClaw](https://nanoclaw.dev/) installed
+- A running Agent Vault instance ([see installation guide](/installation)).
+- [NanoClaw](https://nanoclaw.dev/) installed.
 
 ## 1. Create an agent invite
 
@@ -23,29 +21,6 @@ This generates a one-time onboarding prompt and copies it to your clipboard.
 ## 2. Paste the prompt into NanoClaw
 
 Open NanoClaw's chat and paste the invite prompt. NanoClaw redeems the invite automatically and receives an agent token.
-
-## 3. Start using it
-
-Ask NanoClaw to do something that requires an external API:
-
-> "Fetch my recent Stripe charges"
-
-Here's what happens — with zero pre-configuration:
-
-1. NanoClaw routes a request to `https://api.stripe.com/...` (or `http://internal.example/...`) through Agent Vault via `HTTPS_PROXY`/`HTTP_PROXY`
-2. Agent Vault returns a **403** — Stripe isn't configured yet
-3. NanoClaw reads the `proposal_hint` and creates a proposal requesting Stripe access
-4. NanoClaw presents you with an approval link
-5. You click the link, paste your Stripe key, and click **Allow**
-6. NanoClaw retries — Agent Vault injects your Stripe credentials at the proxy boundary and the request succeeds
-
-<Note>
-Invited agents like NanoClaw build their own `HTTPS_PROXY`/`HTTP_PROXY` from the token + vault returned by the redemption response (both env vars point at the same TLS-wrapped MITM URL so plain `http://` upstreams route through the broker via absolute-form forward-proxy requests) and fetch the root CA from `{AGENT_VAULT_ADDR}/v1/mitm/ca.pem` themselves — the embedded `instructions` field walks them through it. Local agents you wrap with `agent-vault vault run` (Claude Code, Cursor, Codex, Hermes) inherit the same env vars automatically.
-</Note>
-
-<Note>
-You didn't pre-configure anything. The agent discovered what it needed, asked for approval, and handled the rest.
-</Note>
 
 ## Next steps
 

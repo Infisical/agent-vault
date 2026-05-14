@@ -454,7 +454,7 @@ function InviteAgentButton({
             <>
               <Button variant="secondary" onClick={close}>Cancel</Button>
               <Button onClick={handleCreate} disabled={!name.trim()} loading={submitting}>
-                Create invite
+                Add
               </Button>
             </>
           )
