@@ -32,7 +32,7 @@ const TIER_LABELS: Record<string, string> = {
 
 const TIER_TOOLTIPS: Record<string, string> = {
   AUTH: "Every unauthenticated endpoint: login, register, forgot/reset password, email verification, invite redemption, approval-token lookups. Keyed on client IP (and additionally on email for login; rejected when either bucket is exhausted).",
-  PROXY: "MITM forward path, keyed on (agent, vault). Token bucket smooths sustained traffic; a per-scope concurrency semaphore bounds in-flight upstream calls.",
+  PROXY: "MITM forward path, keyed on (agent, vault). Defaults allow normal agent fan-out; a per-scope concurrency semaphore still bounds in-flight upstream calls.",
   AUTHED: "Everything behind requireAuth — CRUD, reads, admin, proposals, /discover. One bucket per actor. Defaults accommodate the heaviest legitimate agent workload; tighten only if abuse is observed.",
   GLOBAL: "Server-wide backstop: Rate + Burst drive a requests-per-second ceiling; Concurrency caps total in-flight requests. Outermost safety net — sheds load before per-tier limits engage.",
 };

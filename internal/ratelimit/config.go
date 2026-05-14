@@ -56,15 +56,17 @@ func DefaultsFor(profile Profile) Config {
 		Algorithm: AlgSliding, Window: 5 * time.Minute, Max: scaleMax(10, mul), MaxKeys: 10000,
 	}
 	// MITM proxy: token bucket smooths traffic; Concurrency caps
-	// in-flight slow upstream calls per (actor, vault).
+	// in-flight slow upstream calls per (actor, vault). Defaults are
+	// intentionally roomy because agent runtimes fan out across model,
+	// gateway, and tool API calls.
 	c.Tiers[TierProxy] = TierConfig{
-		Algorithm: AlgTokenBucket, Rate: scaleRate(2.0, mul), Burst: scaleMax(30, mul),
-		Concurrency: scaleMax(16, mul), MaxKeys: 10000,
+		Algorithm: AlgTokenBucket, Rate: scaleRate(20.0, mul), Burst: scaleMax(200, mul),
+		Concurrency: scaleMax(64, mul), MaxKeys: 10000,
 	}
 	// Everything behind requireAuth — generous; the heaviest legitimate
-	// agent workload is 50+ discover+CRUD calls/minute.
+	// agent workload can be several discover+CRUD bursts per minute.
 	c.Tiers[TierAuthed] = TierConfig{
-		Algorithm: AlgTokenBucket, Rate: scaleRate(5.0, mul), Burst: scaleMax(120, mul), MaxKeys: 10000,
+		Algorithm: AlgTokenBucket, Rate: scaleRate(10.0, mul), Burst: scaleMax(240, mul), MaxKeys: 10000,
 	}
 	// Server-wide backstop. Rate/Burst drive the RPS bucket; Concurrency
 	// drives the in-flight semaphore.

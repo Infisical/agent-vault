@@ -148,7 +148,7 @@ Agent Vault enforces a tiered, in-memory rate limiter on every HTTP ingress. Eac
 
 Requests that exceed a tier return `429 Too Many Requests` with a `Retry-After` header so clients can back off.
 
-Operators pick a profile via `AGENT_VAULT_RATELIMIT_PROFILE` (`default`, `strict`, `loose`, `off`) or tune individual tiers in **Manage Instance → Settings → Rate Limiting**. Setting `AGENT_VAULT_RATELIMIT_LOCK=true` pins limits to env vars and makes the UI read-only, which is recommended on PaaS deployments. See [environment variables](/self-hosting/environment-variables) for the full knob list.
+Operators pick a profile via `AGENT_VAULT_RATELIMIT_PROFILE` (`default`, `strict`, `loose`, `off`) or tune individual tiers in **Manage Instance → Settings → Rate Limiting**. The default proxy tier is sized for normal agent fan-out while anonymous auth remains tighter. Setting `AGENT_VAULT_RATELIMIT_LOCK=true` pins limits to env vars and makes the UI read-only, which is recommended on PaaS deployments. See [environment variables](/self-hosting/environment-variables) for the full knob list.
 
 ### Resource caps
 
