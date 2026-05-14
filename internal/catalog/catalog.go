@@ -22,6 +22,8 @@ var catalog = []Template{
 	{ID: "jira", Name: "Jira", Host: "*.atlassian.net", Description: "Atlassian Jira project tracking", AuthType: "basic", SuggestedCredentialKey: "JIRA_API_TOKEN"},
 	{ID: "linear", Name: "Linear", Host: "api.linear.app", Description: "Project management and issue tracking", AuthType: "bearer", SuggestedCredentialKey: "LINEAR_API_KEY"},
 	{ID: "notion", Name: "Notion", Host: "api.notion.com", Description: "Notion workspace API", AuthType: "bearer", SuggestedCredentialKey: "NOTION_TOKEN"},
+	{ID: "npm", Name: "NPM", Host: "registry.npmjs.org", Description: "NPM Default registry", AuthType: "bearer", SuggestedCredentialKey: "NPM_TOKEN"},
+	{ID: "npmgh", Name: "Github NPM registry", Host: "npm.pkg.github.com", Description: "Github's NPM registry", AuthType: "bearer", SuggestedCredentialKey: "NPM_GH_TOKEN"},
 	{ID: "openai", Name: "OpenAI", Host: "api.openai.com", Description: "OpenAI / ChatGPT API", AuthType: "bearer", SuggestedCredentialKey: "OPENAI_API_KEY"},
 	{ID: "pagerduty", Name: "PagerDuty", Host: "api.pagerduty.com", Description: "Incident management", AuthType: "bearer", SuggestedCredentialKey: "PAGERDUTY_TOKEN"},
 	{ID: "postmark", Name: "Postmark", Host: "api.postmarkapp.com", Description: "Transactional email service", AuthType: "api-key", SuggestedCredentialKey: "POSTMARK_SERVER_TOKEN", Header: "X-Postmark-Server-Token"},
