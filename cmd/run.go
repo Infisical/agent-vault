@@ -87,6 +87,7 @@ Example:
 	c.Flags().Bool("no-firewall", false, "Skip iptables egress rules inside the container (requires --isolation=container; debug only)")
 	c.Flags().Bool("home-volume-shared", false, "Share /home/claude/.claude across invocations (requires --isolation=container); default is a per-invocation volume, losing auth state but avoiding concurrency corruption")
 	c.Flags().Bool("share-agent-dir", false, "Bind-mount the host's agent state dir (~/.claude) into the container so it reuses your host login (requires --isolation=container; mutually exclusive with --home-volume-shared)")
+	c.Flags().Bool("git", false, "Configure Git HTTPS credential helper and CA settings for the child process without exposing real credentials")
 
 	return c
 }
@@ -196,6 +197,19 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	}
 	env = newEnv
 	fmt.Fprintf(os.Stderr, "%s routing HTTP/HTTPS through MITM proxy (%s)\n", successText("agent-vault:"), net.JoinHostPort(resolveMITMHost(addr), strconv.Itoa(mitmPort)))
+
+	gitEnabled, _ := cmd.Flags().GetBool("git")
+	if gitEnabled {
+		caPath, err := defaultMITMCAPath()
+		if err != nil {
+			return err
+		}
+		env = gitConfigEnv(env, gitHelperPath(), caPath)
+		if hosts := fetchAllowedGitHosts(addr, token, vault); hosts != "" {
+			env = append(env, "AGENT_VAULT_GIT_HOSTS="+hosts)
+		}
+		fmt.Fprintf(os.Stderr, "%s configured Git HTTPS credential helper and CA settings\n", successText("agent-vault:"))
+	}
 
 	// 7. If the target command is a supported agent, offer to install the
 	//    Agent Vault skill (only when not already present).
@@ -486,6 +500,14 @@ func requireMITMEnv(env []string, addr, token, vault, caPath string) ([]string, 
 		return env, 0, errors.New("MITM proxy is disabled on the Agent Vault server; restart the server without --mitm-port 0 to enable it")
 	}
 	return newEnv, port, nil
+}
+
+func defaultMITMCAPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home dir: %w", err)
+	}
+	return filepath.Join(home, ".agent-vault", "mitm-ca.pem"), nil
 }
 
 // augmentEnvWithMITM extends env so the child transparently routes HTTP

@@ -134,6 +134,23 @@ agent-vault vault run -- codex
 agent-vault vault run -- opencode
 ```
 
+For Git-over-HTTPS inside a wrapped process, add `--git`. Agent Vault configures Git with a credential helper, disables interactive prompts, and points Git at the Agent Vault MITM CA without writing secrets into Git config or remote URLs. The helper returns only sentinel credentials; the real upstream credential stays in Agent Vault and is attached by the proxy when the Git HTTP request matches a configured service.
+
+```bash
+agent-vault vault credential set AZURE_DEVOPS_USER=your-azure-devops-username
+agent-vault vault credential set AZURE_DEVOPS_PASSWORD
+agent-vault vault service add \
+  --name azure-devops-git \
+  --host dev.azure.com \
+  --auth-type basic \
+  --username-key AZURE_DEVOPS_USER \
+  --password-key AZURE_DEVOPS_PASSWORD
+
+agent-vault run --git -- git ls-remote https://dev.azure.com/org/project/_git/repo
+```
+
+The `agent-vault git-credential` command implements Git's credential helper protocol and is intended to be installed by `agent-vault run --git`; it does not store, erase, print, or return vault credential values.
+
 Alternatively, if your agent is running with Docker, you can install the Agent Vault CLI via a Dockerfile by copying the binary into your own image and using it to start up your agent process:
 
 ```dockerfile
