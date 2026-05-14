@@ -24,21 +24,21 @@ If you're using Claude Code, Cursor, or another supported agent, see the [Quicks
     agent-vault vault run -- my-agent
     ```
 
-    `vault run` sets `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN`, and `AGENT_VAULT_VAULT` on the child, then pre-configures `HTTPS_PROXY`/`HTTP_PROXY` and the CA trust chain so standard HTTP clients route both HTTP and HTTPS traffic through the broker transparently. No invite needed.
+    `vault run` sets `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN`, and `AGENT_VAULT_VAULT` on the child, then pre-configures `HTTPS_PROXY`/`HTTP_PROXY` and the CA trust chain so standard HTTP clients route both HTTP and HTTPS traffic through the broker transparently.
   </Tab>
-  <Tab title="Agent invite">
-    For CI pipelines, cloud-hosted agents, or when you need the agent to redeem an invite via HTTP:
+  <Tab title="agent create">
+    For CI pipelines, cloud-hosted agents, or any agent that lives outside `vault run`:
 
     ```bash
-    agent-vault agent invite my-agent --vault default:proxy
+    agent-vault agent create my-agent --vault default:proxy
     ```
 
-    This prints an invite prompt. The agent redeems it via `POST {invite_url}` and receives:
+    Prints the agent's token (copies to clipboard). The response also includes:
     - `av_addr` — the Agent Vault server URL
     - `av_agent_token` — bearer token for all requests
     - `vaults` — list of accessible vaults
 
-    Invited agents don't get `HTTPS_PROXY`/`HTTP_PROXY` auto-configured — set them yourself (see [Set the proxy env vars manually](#set-the-proxy-env-vars-manually)).
+    Set `AGENT_VAULT_TOKEN` and `AGENT_VAULT_ADDR` in the agent's runtime. The agent doesn't get `HTTPS_PROXY`/`HTTP_PROXY` auto-configured — set them yourself (see [Set the proxy env vars manually](#set-the-proxy-env-vars-manually)) or launch the agent under `agent-vault run`.
 
     Instance-level agent tokens require the `X-Vault` header on `/discover` and `/v1/proposals` requests.
   </Tab>
@@ -53,7 +53,7 @@ Your agent needs these values to operate:
 | `AGENT_VAULT_ADDR` | Yes | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
 | `AGENT_VAULT_TOKEN` | Yes | Bearer token for authenticating control-plane requests (`/discover`, proposals) |
 
-For instance-level agent tokens (from agent invites), the agent must also send the `X-Vault` header on `/discover` and `/v1/proposals` requests. For vault-scoped sessions (from `vault run`), the vault is embedded in the session.
+For instance-level agent tokens (from `agent create`), the agent must also send the `X-Vault` header on `/discover` and `/v1/proposals` requests. For vault-scoped sessions (from `vault run`), the vault is embedded in the session.
 
 When the agent is launched via `vault run`, these additional variables are also set automatically on the child:
 
@@ -118,7 +118,7 @@ Leave the upstream `Authorization` header blank or set it to a placeholder — A
 
 ### Set the proxy env vars manually
 
-If your agent wasn't launched via `vault run` (e.g. an invited agent, a Docker container, a sandboxed runtime), configure the proxy yourself. The MITM listener is TLS-encrypted, so the proxy URL uses the `https://` scheme and needs the root CA trusted. Set `HTTPS_PROXY` and `HTTP_PROXY` to the same URL — the listener handles `CONNECT` (for `https://` upstreams) and absolute-form forward-proxy requests (for `http://` upstreams) on the same port.
+If your agent wasn't launched via `vault run` (e.g. an agent created via `agent create`, a Docker container, a sandboxed runtime), configure the proxy yourself. The MITM listener is TLS-encrypted, so the proxy URL uses the `https://` scheme and needs the root CA trusted. Set `HTTPS_PROXY` and `HTTP_PROXY` to the same URL — the listener handles `CONNECT` (for `https://` upstreams) and absolute-form forward-proxy requests (for `http://` upstreams) on the same port.
 
 ```bash
 # 1. Fetch the CA certificate

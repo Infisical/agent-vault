@@ -44,7 +44,7 @@ Set these on the container's environment (k8s `env:`, Fly `[env]`, ECS task defi
 
 ## Rotating the token
 
-Mint a new token the same way you minted the original (see [Agents](/agents/overview#rotating-an-agent-token)), then roll the deployment with the new `AGENT_VAULT_TOKEN`. Old tokens for the agent are invalidated when the agent redeems the rotation invite, not at the moment `agent-vault agent rotate` is run — so finish redeeming and rolling the deployment together to avoid a window where the in-flight container is still using the soon-to-be-invalid token.
+Run `agent-vault agent rotate <name>` to mint a new token. The old token is invalidated immediately on rotation, so roll the deployment with the new `AGENT_VAULT_TOKEN` promptly to avoid a window where the in-flight container is still using the now-invalid token.
 
 ## Troubleshooting
 

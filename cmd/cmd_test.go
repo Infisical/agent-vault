@@ -464,7 +464,7 @@ func TestAgentSubcommandsRegistered(t *testing.T) {
 }
 
 func TestTopAgentSubcommandsRegistered(t *testing.T) {
-	// Instance-level agent commands: list, info, revoke, rotate, rename, invite
+	// Instance-level agent commands: list, info, delete, rotate, rename, create, set-role
 	agCmd := findSubcommand(rootCmd, "agent")
 	if agCmd == nil {
 		t.Fatal("agent command not found")
@@ -475,7 +475,7 @@ func TestTopAgentSubcommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"list", "info", "delete", "rotate", "rename", "invite"}
+	expected := []string{"list", "info", "delete", "rotate", "rename", "create", "set-role"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected agent subcommand %q to be registered, but it was not", name)
@@ -483,32 +483,20 @@ func TestTopAgentSubcommandsRegistered(t *testing.T) {
 	}
 }
 
-func TestAgentInviteSubcommandsRegistered(t *testing.T) {
+func TestAgentCreateFlags(t *testing.T) {
 	agCmd := findSubcommand(rootCmd, "agent")
 	if agCmd == nil {
 		t.Fatal("agent command not found")
 	}
-	invCmd := findSubcommand(agCmd, "invite")
-	if invCmd == nil {
-		t.Fatal("invite command not found under agent")
+	createCmd := findSubcommand(agCmd, "create")
+	if createCmd == nil {
+		t.Fatal("create command not found under agent")
 	}
 
-	registered := make(map[string]bool)
-	for _, c := range invCmd.Commands() {
-		registered[c.Name()] = true
-	}
-
-	expected := []string{"list", "revoke"}
-	for _, name := range expected {
-		if !registered[name] {
-			t.Errorf("expected agent invite subcommand %q to be registered, but it was not", name)
+	for _, name := range []string{"vault", "role", "token-only"} {
+		if createCmd.Flags().Lookup(name) == nil {
+			t.Errorf("expected agent create flag --%s to be registered", name)
 		}
-	}
-
-	// Verify --vault flag on invite command
-	f := invCmd.Flags().Lookup("vault")
-	if f == nil {
-		t.Fatal("expected --vault flag on agent invite command")
 	}
 }
 

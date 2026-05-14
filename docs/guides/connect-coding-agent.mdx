@@ -16,7 +16,7 @@ For agents that don't have a chat interface or need raw environment variables, s
 
 ## Option 1: Wrap with `agent-vault vault run`
 
-The simplest approach for local development. Wraps your agent process with the environment variables it needs — no invite, no token management. `vault run` also pre-configures `HTTPS_PROXY`, `HTTP_PROXY`, and the CA trust chain on the child, so the agent calls upstream URLs directly (over either `http://` or `https://`) and Agent Vault transparently injects credentials.
+The simplest approach for local development. Wraps your agent process with the environment variables it needs — no token to manage. `vault run` also pre-configures `HTTPS_PROXY`, `HTTP_PROXY`, and the CA trust chain on the child, so the agent calls upstream URLs directly (over either `http://` or `https://`) and Agent Vault transparently injects credentials.
 
 ```bash
 agent-vault vault run -- claude    # Claude Code
@@ -38,7 +38,7 @@ agent-vault vault run --vault my-vault -- claude
 `vault run` is a convenience wrapper, not a sandbox. A child process can unset `HTTPS_PROXY`/`HTTP_PROXY` or bypass the injected CA and reach the network directly — local credentials and network access are still fully available to the agent. Stronger isolation for local development is on the roadmap.
 </Note>
 
-## Option 2: Invite an agent
+## Option 2: Create a named agent
 
 For agents you can't wrap with `vault run` (e.g. cloud-hosted agents, or when you want to connect an agent on a different host).
 
@@ -48,7 +48,7 @@ For agents you can't wrap with `vault run` (e.g. cloud-hosted agents, or when yo
       <Step title="Open the Agents tab">
         Navigate to the **Agents** tab in the home view.
       </Step>
-      <Step title="Create an invite">
+      <Step title="Add the agent">
         Click **Add agent**, enter a name, and optionally pre-assign vault access. The modal advances to **Connect Your Agent** with a three-step walkthrough.
       </Step>
       <Step title="Install the CLI on the agent host">
@@ -64,15 +64,15 @@ For agents you can't wrap with `vault run` (e.g. cloud-hosted agents, or when yo
   </Tab>
   <Tab title="CLI">
     ```bash
-    agent-vault agent invite my-agent
+    agent-vault agent create my-agent
     ```
 
-    This generates a one-time onboarding prompt and copies it to your clipboard. Paste it into the agent's chat.
+    This prints an agent token and copies it to your clipboard. Set `AGENT_VAULT_TOKEN` and `AGENT_VAULT_ADDR` in the agent's runtime.
 
     Pre-assign vault access with `--vault`:
 
     ```bash
-    agent-vault agent invite my-agent --vault default:proxy
+    agent-vault agent create my-agent --vault default:proxy
     ```
   </Tab>
 </Tabs>
@@ -92,7 +92,7 @@ You don't need to pre-configure anything. The agent discovers what it needs, ask
 
 ## For long-lived agents
 
-Invited agents are instance-level entities with named identities that persist across sessions. You can manage vault access, rotate agent tokens, and revoke agents at any time. See [Agents overview](/agents/overview) for the full lifecycle.
+Named agents are instance-level entities that persist across sessions. You can manage vault access, rotate agent tokens, and revoke agents at any time. See [Agents overview](/agents/overview) for the full lifecycle.
 
 ## Next steps
 

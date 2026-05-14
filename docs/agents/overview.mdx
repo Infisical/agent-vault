@@ -5,11 +5,11 @@ description: "Understand how agents connect to Agent Vault and how to manage the
 
 An `Agent` is any AI-powered process that connects to Agent Vault to proxy requests and raise [proposals](/learn/proposals). Agents are **instance-level entities** (like users) with an [instance-level role](/learn/permissions#instance-roles) (`owner`, `member`, or `no-access`) and can be granted access to multiple [vaults](/learn/vaults) with independent roles per vault.
 
-There are two ways to connect an agent: **wrapping** a local process or **inviting** any agent via a prompt.
+There are two ways to connect an agent: **wrapping** a local process or **creating** a named agent and supplying its token to a remote runtime.
 
 ## Wrapping with `vault run`
 
-The simplest approach for local development. Wraps a local agent process with the environment variables it needs — no invite, no token management. `vault run` also pre-configures `HTTPS_PROXY`/`HTTP_PROXY` and the CA trust chain on the child, so the agent calls upstream URLs directly (over `https://` or `http://`) and Agent Vault transparently injects credentials at the proxy boundary.
+The simplest approach for local development. Wraps a local agent process with the environment variables it needs — no token to manage. `vault run` also pre-configures `HTTPS_PROXY`/`HTTP_PROXY` and the CA trust chain on the child, so the agent calls upstream URLs directly (over `https://` or `http://`) and Agent Vault transparently injects credentials at the proxy boundary.
 
 ```bash
 agent-vault vault run -- claude    # Claude Code
@@ -22,41 +22,41 @@ The agent receives a temporary, vault-scoped session and can immediately make au
 `vault run` is a convenience wrapper, not a sandbox. A child process can unset `HTTPS_PROXY`/`HTTP_PROXY` or bypass the injected CA and reach the network directly — local credentials and network access are still fully available to the agent. Stronger isolation for local development is on the roadmap.
 </Note>
 
-## Inviting an agent
+## Creating an agent
 
-For agents you can't wrap (cloud-hosted agents, existing sessions, CI pipelines), create an invite. The agent redeems the invite via HTTP and receives an agent token.
+For agents you can't wrap (cloud-hosted agents, existing sessions, CI pipelines), create a named agent. The server returns a long-lived agent token; supply it to the agent's runtime via `AGENT_VAULT_TOKEN`.
 
 ```bash
-agent-vault agent invite my-agent
+agent-vault agent create my-agent
 ```
 
-Outputs a prompt with the invite URL. Paste it into the agent's chat. The agent redeems the invite and receives an instance-level agent token.
+Prints the agent token (and copies it to your clipboard). Set `AGENT_VAULT_TOKEN` and `AGENT_VAULT_ADDR` wherever the agent runs.
 
 ### Instance role
 
-By default, invited agents are created with the `member` instance role. Use `--role` to set a different instance-level role:
+By default, agents are created with the `member` instance role. Use `--role` to set a different instance-level role:
 
 ```bash
-# Invite an agent as an instance owner
-agent-vault agent invite my-agent --role owner
+# Create an agent as an instance owner
+agent-vault agent create my-agent --role owner
 
-# Invite an agent with no instance-scoped capabilities — useful when the
+# Create an agent with no instance-scoped capabilities — useful when the
 # agent should only operate within a specific vault at proxy role.
-agent-vault agent invite my-agent --role no-access --vault payments:proxy
+agent-vault agent create my-agent --role no-access --vault payments:proxy
 ```
 
 See [Permissions](/learn/permissions#instance-roles) for what each role can do.
 
 ### Vault pre-assignments
 
-Optionally pre-assign vault access at invite time using the `--vault` flag (repeatable):
+Optionally pre-assign vault access at create time using the `--vault` flag (repeatable):
 
 ```bash
-# Invite with proxy access to the default vault
-agent-vault agent invite my-agent --vault default:proxy
+# Create with proxy access to the default vault
+agent-vault agent create my-agent --vault default:proxy
 
-# Invite with access to multiple vaults
-agent-vault agent invite my-agent --vault default:member --vault payments:proxy
+# Create with access to multiple vaults
+agent-vault agent create my-agent --vault default:member --vault payments:proxy
 ```
 
 The format is `vault_name:role` where role is `proxy`, `member`, or `admin` (defaults to `proxy` if omitted).
@@ -119,17 +119,7 @@ agent-vault vault agent remove my-agent
 agent-vault agent rotate my-agent
 ```
 
-This creates a rotation invite. Paste the prompt into the agent's chat. The agent redeems it and receives a new agent token. Old tokens are invalidated when the rotation invite is redeemed.
-
-### Managing invites
-
-```bash
-# List pending invites
-agent-vault agent invite list --status pending
-
-# Revoke a pending invite
-agent-vault agent invite revoke <token_suffix>
-```
+Invalidates the agent's existing token and prints a new one. Update `AGENT_VAULT_TOKEN` wherever the agent runs — the previous token stops working immediately.
 
 ## The X-Vault header
 
@@ -152,9 +142,9 @@ Agents created via `agent-vault vault run` receive vault-scoped sessions and do 
 | Scenario | Approach | Why |
 |---|---|---|
 | Local dev with Claude Code or Cursor | `agent-vault vault run` | Simplest setup, no tokens to manage |
-| Cloud-hosted agent (e.g. Devin) | `agent-vault agent invite` | Paste a prompt, agent connects itself |
-| CI/CD pipeline | `agent-vault agent invite` | Named identity, survives restarts |
-| Always-on assistant | `agent-vault agent invite` | Multi-vault access, session rotation |
+| Cloud-hosted agent (e.g. Devin) | `agent-vault agent create` | Named identity, supply token via env |
+| CI/CD pipeline | `agent-vault agent create` | Named identity, survives restarts |
+| Always-on assistant | `agent-vault agent create` | Multi-vault access, token rotation |
 
 <Tip>
 When in doubt, start with `agent-vault vault run`. You can always create a named agent later.

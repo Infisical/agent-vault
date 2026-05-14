@@ -141,10 +141,11 @@ var agentRevokeCmd = &cobra.Command{
 
 var agentRotateCmd = &cobra.Command{
 	Use:   "rotate <name>",
-	Short: "Create a rotation invite to re-issue an agent's token",
+	Short: "Rotate an agent's token (invalidates the old one)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
+		tokenOnly, _ := cmd.Flags().GetBool("token-only")
 		sess, err := ensureSession()
 		if err != nil {
 			return err
@@ -157,21 +158,25 @@ var agentRotateCmd = &cobra.Command{
 		}
 
 		var result struct {
-			InviteURL string `json:"invite_url"`
-			Prompt    string `json:"prompt"`
-			ExpiresIn string `json:"expires_in"`
+			AvAgentToken string `json:"av_agent_token"`
+			RotatedAt    string `json:"rotated_at"`
 		}
 		if err := json.Unmarshal(respBody, &result); err != nil {
 			return fmt.Errorf("parsing response: %w", err)
 		}
 
-		w := cmd.OutOrStdout()
-		_, _ = fmt.Fprintf(w, "Rotation invite created for agent %q (expires in %s).\n", name, result.ExpiresIn)
-		_, _ = fmt.Fprintf(w, "Paste the following into the agent's chat:\n\n")
-		_, _ = fmt.Fprintf(w, "---\n\n%s\n---\n", result.Prompt)
+		if tokenOnly {
+			fmt.Fprint(cmd.OutOrStdout(), result.AvAgentToken)
+			return nil
+		}
 
-		if err := copyToClipboard(result.Prompt); err == nil {
-			_, _ = fmt.Fprintf(w, "\n(Copied to clipboard)\n")
+		w := cmd.OutOrStdout()
+		fmt.Fprintf(w, "%s Agent %q token rotated.\n", successText("✓"), name)
+		fmt.Fprintf(w, "\n%s %s\n", fieldLabel("Agent token:"), result.AvAgentToken)
+		fmt.Fprintf(w, "\nUpdate AGENT_VAULT_TOKEN wherever the agent runs. The previous token is now invalid.\n")
+
+		if err := copyToClipboard(result.AvAgentToken); err == nil {
+			fmt.Fprintf(w, "\n(Token copied to clipboard)\n")
 		}
 		return nil
 	},
@@ -379,6 +384,7 @@ func init() {
 	vaultAgentSetRoleCmd.Flags().String("role", "", "vault role (proxy, member, admin)")
 
 	agentSetRoleCmd.Flags().String("role", "", "instance-level role (owner, member, or no-access)")
+	agentRotateCmd.Flags().Bool("token-only", false, "output only the raw agent token (for programmatic use)")
 
 	// Instance-level agent commands: agent-vault agent [list|info|revoke|rotate|rename|set-role]
 	topAgentCmd.AddCommand(agentListCmd)

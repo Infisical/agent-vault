@@ -8,19 +8,19 @@ description: "Learn how to connect NanoClaw to Agent Vault so it can make authen
 - A running Agent Vault instance ([see installation guide](/installation)).
 - [NanoClaw](https://nanoclaw.dev/) installed.
 
-## 1. Create an agent invite
+## 1. Create the agent
 
 If you haven't logged in yet, you'll be guided through setup automatically.
 
 ```bash
-agent-vault agent invite nanoclaw
+agent-vault agent create nanoclaw
 ```
 
-This generates a one-time onboarding prompt and copies it to your clipboard.
+This prints an agent token and copies it to your clipboard.
 
-## 2. Paste the prompt into NanoClaw
+## 2. Supply the token to NanoClaw
 
-Open NanoClaw's chat and paste the invite prompt. NanoClaw redeems the invite automatically and receives an agent token.
+Set `AGENT_VAULT_TOKEN` and `AGENT_VAULT_ADDR` in NanoClaw's environment (or run NanoClaw under `agent-vault run -- ...`) so it can authenticate with Agent Vault.
 
 ## Next steps
 

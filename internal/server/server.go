@@ -211,25 +211,6 @@ type Store interface {
 	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string) error
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
 
-	// Agent invites (instance-level)
-	CreateAgentInvite(ctx context.Context, agentName, createdBy string, expiresAt time.Time, sessionTTLSeconds int, agentRole string, vaults []store.AgentInviteVault) (*store.Invite, error)
-	CreateRotationInvite(ctx context.Context, agentID, createdBy string, expiresAt time.Time) (*store.Invite, error)
-	GetInviteByToken(ctx context.Context, token string) (*store.Invite, error)
-	ListInvites(ctx context.Context, status string) ([]store.Invite, error)
-	ListInvitesByVault(ctx context.Context, vaultID, status string) ([]store.Invite, error)
-	RedeemInvite(ctx context.Context, token, sessionID string) error
-	UpdateInviteSessionID(ctx context.Context, inviteID int, sessionID string) error
-	RevokeInvite(ctx context.Context, token string) error
-	GetInviteByID(ctx context.Context, id int) (*store.Invite, error)
-	RevokeInviteByID(ctx context.Context, id int) error
-	CountPendingInvites(ctx context.Context) (int, error)
-	HasPendingInviteByAgentName(ctx context.Context, name string) (bool, error)
-	GetPendingInviteByAgentName(ctx context.Context, name string) (*store.Invite, error)
-	AddAgentInviteVault(ctx context.Context, inviteID int, vaultID, role string) error
-	RemoveAgentInviteVault(ctx context.Context, inviteID int, vaultID string) error
-	UpdateAgentInviteVaultRole(ctx context.Context, inviteID int, vaultID, role string) error
-	ExpirePendingInvites(ctx context.Context, before time.Time) (int, error)
-
 	// User invites (instance-level)
 	CreateUserInvite(ctx context.Context, email, createdBy, role string, expiresAt time.Time, vaults []store.UserInviteVault) (*store.UserInvite, error)
 	GetUserInviteByToken(ctx context.Context, token string) (*store.UserInvite, error)
@@ -652,7 +633,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	}
 
 	ipAuth := s.tier(ratelimit.TierAuth, s.ipKeyer())
-	ipInviteToken := s.tier(ratelimit.TierAuth, s.tokenKeyer("token"))
 
 	// /health, /v1/status, and other public static routes rely on the
 	// server-wide TierGlobal backstop; no per-route limit is useful.
@@ -686,10 +666,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("POST /v1/admin/proposals/{id}/approve", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAdminProposalApprove)))))
 	mux.HandleFunc("POST /v1/admin/proposals/{id}/reject", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAdminProposalReject)))))
 
-	// Agent invite redemption (no auth — token is the credential)
-	mux.HandleFunc("GET /invite/{token}", s.requireInitialized(ipInviteToken(s.handleInviteRedeem)))
-	mux.HandleFunc("POST /invite/{token}", s.requireInitialized(ipInviteToken(limitBody(s.handlePersistentInviteRedeem))))
-
 	ipUserInviteToken := s.tier(ratelimit.TierAuth, ratelimit.IPTokenKey(clientIP, func(r *http.Request) string {
 		return r.PathValue("token")
 	}))
@@ -697,13 +673,8 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 		return r.URL.Query().Get("token")
 	}))
 
-	// Agent invites (instance-level, requires auth)
-	mux.HandleFunc("POST /v1/agents/invites", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAgentInviteCreate)))))
-	mux.HandleFunc("GET /v1/agents/invites", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentInviteList))))
-	mux.HandleFunc("DELETE /v1/agents/invites/{token}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentInviteRevoke))))
-	mux.HandleFunc("DELETE /v1/agents/invites/by-id/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentInviteRevokeByID))))
-
 	// Agent management (instance-level)
+	mux.HandleFunc("POST /v1/agents", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAgentCreate)))))
 	mux.HandleFunc("GET /v1/agents", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentList))))
 	mux.HandleFunc("GET /v1/agents/{name}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentGet))))
 	mux.HandleFunc("DELETE /v1/agents/{name}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentRevoke))))
@@ -1004,15 +975,6 @@ func (s *Server) actorKeyer() ratelimit.Keyer {
 			return "u:" + sess.UserID
 		}
 		return "a:" + sess.AgentID
-	})
-}
-
-// tokenKeyer returns a ratelimit.Keyer that combines clientIP with a
-// hashed URL path value so token-enumeration attempts are bounded by
-// both the caller's IP and the token being probed.
-func (s *Server) tokenKeyer(pathValue string) ratelimit.Keyer {
-	return ratelimit.IPTokenKey(clientIP, func(r *http.Request) string {
-		return r.PathValue(pathValue)
 	})
 }
 

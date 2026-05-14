@@ -26,7 +26,7 @@ For vaults where you have admin role, you can also:
 - Delete credentials: DELETE {AGENT_VAULT_ADDR}/v1/credentials with X-Vault header and {"vault": "...", "keys": ["KEY"]}
 - Approve proposals: POST {AGENT_VAULT_ADDR}/v1/admin/proposals/{id}/approve with {"vault": "...", "credentials": {"KEY": "value"}}
 - Reject proposals: POST {AGENT_VAULT_ADDR}/v1/admin/proposals/{id}/reject with {"vault": "...", "reason": "..."}
-- Invite agents: POST {AGENT_VAULT_ADDR}/v1/agents/invites with {"name": "...", "vaults": [{"vault_name": "...", "vault_role": "proxy|member|admin"}]}
+- Create agents: POST {AGENT_VAULT_ADDR}/v1/agents with {"name": "...", "role": "member", "vaults": [{"vault_name": "...", "vault_role": "proxy|member|admin"}]} — returns av_agent_token directly
 - Invite users: POST {AGENT_VAULT_ADDR}/v1/users/invites with {"email": "...", "vaults": [{"vault_name": "...", "vault_role": "member|admin"}]}
 
 ## Full Reference
