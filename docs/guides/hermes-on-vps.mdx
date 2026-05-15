@@ -90,8 +90,6 @@ In the project sidebar: **Security → SSH Keys → Add SSH Key.** Paste the con
 - **IP range:** `10.0.0.0/24`
 - **Network zone:** any (e.g. `eu-central`)
 
-Remember the network zone — you'll match it when creating servers.
-
 </Step>
 
 <Step title="Create av-broker">
@@ -128,7 +126,7 @@ ssh -i ~/.ssh/agent-vault-lab root@<av-broker-public-ip>
 ping -c 3 10.0.0.3
 ```
 
-Three replies confirms `av-broker` and `hermes-vps` can see each other across the private subnet. Type `exit` to disconnect — you'll come back to install Agent Vault.
+Three replies confirms the private subnet is live. Type `exit` to disconnect.
 
 </Step>
 
