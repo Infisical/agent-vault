@@ -3,7 +3,7 @@ title: "Run Hermes on a VPS"
 description: "Keep real credentials off the agent host by routing every outbound call through Agent Vault on a separate VPS."
 ---
 
-This guide takes you from two empty Hetzner VPS boxes to a long-running, brokered Hermes Agent. Allow about 60–90 minutes; budget around €10/month.
+Provision two Hetzner VPS boxes, install Agent Vault on one and Hermes Agent on the other, and broker every outbound call through Agent Vault. Plan for 60–90 minutes and ~€10/month.
 
 By the end, you'll have:
 
@@ -284,10 +284,12 @@ In the `prod` vault, **Credentials tab → Add credential.** Add four rows:
 
 | Key | Value |
 | --- | --- |
-| `ANTHROPIC_API_KEY` | Your real Anthropic key (`sk-ant-...`) |
-| `GITHUB_TOKEN` | Your real GitHub PAT |
-| `SLACK_BOT_TOKEN` | Your real Slack bot token (`xoxb-...`) |
-| `TELEGRAM_BOT_TOKEN` | Placeholder for now — you create the real bot in the next section |
+| `ANTHROPIC_API_KEY` | Anthropic API key (`sk-ant-...`) |
+| `GITHUB_TOKEN` | GitHub PAT with `repo` scope |
+| `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) |
+| `TELEGRAM_BOT_TOKEN` | Placeholder — you create the real bot in the next section |
+
+The Slack bot needs `chat:write`, `channels:read`, and `groups:read` scopes. Reinstall the app after adding them so the token picks them up, and invite the bot to your target channel (e.g. `#ai-updates`).
 
 </Step>
 
