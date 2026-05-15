@@ -96,29 +96,26 @@ Remember the network zone — you'll match it when creating servers.
 
 <Step title="Create av-broker">
 
-**Servers → + Add Server.** Walk the form top to bottom:
+**Servers → + Add Server.** Set:
 
 | Panel | Setting |
 | --- | --- |
-| **Location** | Any datacenter in the network zone you picked above (e.g. `nbg1`) |
+| **Location** | A datacenter in your `av-net` network zone (e.g. `nbg1`) |
 | **Image** | Ubuntu 24.04 |
-| **Type** | `CX23` (or whatever the cheapest x86 tier currently visible is — Hetzner retires tiers, so trust the UI's availability) |
-| **Networking** | Expand **Private networks** and tick `av-net`. After it's attached, click the IP field and set it to `10.0.0.2`. |
-| **SSH keys** | The key you uploaded should already be ticked (because you ticked "Make default"). If it isn't, tick it manually. |
+| **Type** | `CX23` (or any cheap x86 tier) |
+| **Networking** | Tick `av-net` under **Private networks**, then set the IP to `10.0.0.2` |
 | **Name** | `av-broker` |
 
-Click **Create & Buy now**. After ~30 seconds the server's **Status** flips to **Running**. Copy its **public IPv4** from the server's detail page — you need it in step 7.
+Click **Create & Buy now**.
 
 </Step>
 
 <Step title="Create hermes-vps">
 
-Same form, same answers — same location, image, type, SSH key. Two differences:
+Repeat the previous step with two changes:
 
 - **Networking → Private network IP:** `10.0.0.3`
 - **Name:** `hermes-vps`
-
-Click **Create & Buy now**. Copy this server's public IPv4 too.
 
 </Step>
 
