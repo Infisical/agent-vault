@@ -611,19 +611,19 @@ That should time out — the firewall blocks direct egress. Routed through the p
 
 ## 10. Try it end-to-end
 
-Send a prompt to your Telegram bot:
+Send any prompt to your Telegram bot. Hermes replies, with every outbound call routed through `10.0.0.2:14322`.
+
+To exercise all four brokered services in one prompt:
 
 > Summarize the last five commits in `<owner>/<repo>` and post the summary to `#ai-updates` on Slack.
 
-In a separate SSH session on `hermes-vps`:
+To watch brokered traffic in real time, tail the gateway journal on `hermes-vps`:
 
 ```bash
 journalctl -u hermes-gateway -f
 ```
 
-Watch the GitHub call, the Anthropic completion, and the Slack post fly past. All four calls route through `10.0.0.2:14322` — Agent Vault substitutes placeholders for real credentials at the wire boundary. No real keys ever existed on `hermes-vps`.
-
-Open **Logs** in the AV UI to confirm. Each request shows the matched service and which credential placeholder got substituted.
+Open **Logs** in the AV UI to see each request's matched service and substituted credential.
 
 ## 11. Revoke and recover
 
