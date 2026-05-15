@@ -436,10 +436,6 @@ Near the top of the output you should see `agent-vault: routing HTTP/HTTPS throu
 
 </Steps>
 
-<Warning>
-If a model call returns `401: invalid x-api-key`, open **Logs** in the AV UI, click the `POST /v1/messages` row, and check **Credential keys**. Empty means the substitution didn't fire — the placeholder in your service config doesn't match `__anthropic_api_key__` exactly.
-</Warning>
-
 ## 7. Configure the Hermes gateway
 
 The gateway is Hermes's always-on messaging daemon. Configure it via a wizard wrapped in `agent-vault run` so its environment has the broker config.
