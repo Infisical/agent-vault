@@ -258,6 +258,7 @@ type Store interface {
 	CountAgentTokens(ctx context.Context, agentID string) (int, error)
 	GetLatestAgentTokenExpiry(ctx context.Context, agentID string) (*time.Time, error)
 	DeleteAgentTokens(ctx context.Context, agentID string) error
+	RotateAgentToken(ctx context.Context, agentID string, tokenExpiresAt *time.Time) (*store.Session, error)
 	CreateAgentToken(ctx context.Context, agentID string, expiresAt *time.Time) (*store.Session, error)
 	CountAllOwners(ctx context.Context) (int, error)
 

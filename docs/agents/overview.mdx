@@ -34,15 +34,14 @@ Prints the agent token (and copies it to your clipboard). Set `AGENT_VAULT_TOKEN
 
 ### Instance role
 
-By default, agents are created with the `member` instance role. Use `--role` to set a different instance-level role:
+By default, agents are created with the `no-access` instance role — they cannot perform instance-scoped actions and must be granted vault access to do anything. Use `--role` to widen this:
 
 ```bash
 # Create an agent as an instance owner
 agent-vault agent create my-agent --role owner
 
-# Create an agent with no instance-scoped capabilities — useful when the
-# agent should only operate within a specific vault at proxy role.
-agent-vault agent create my-agent --role no-access --vault payments:proxy
+# Create an agent as an instance member (can list users/agents, create vaults)
+agent-vault agent create my-agent --role member
 ```
 
 See [Permissions](/learn/permissions#instance-roles) for what each role can do.

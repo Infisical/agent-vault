@@ -1019,6 +1019,13 @@ func (m *mockStore) DeleteAgentTokens(_ context.Context, agentID string) error {
 	return nil
 }
 
+func (m *mockStore) RotateAgentToken(ctx context.Context, agentID string, expiresAt *time.Time) (*store.Session, error) {
+	if err := m.DeleteAgentTokens(ctx, agentID); err != nil {
+		return nil, err
+	}
+	return m.CreateAgentToken(ctx, agentID, expiresAt)
+}
+
 func (m *mockStore) CreateAgentToken(_ context.Context, agentID string, expiresAt *time.Time) (*store.Session, error) {
 	m.sessionCounter++
 	id := "agent-token-" + agentID + "-" + fmt.Sprintf("%d", m.sessionCounter)

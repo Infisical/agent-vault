@@ -43,7 +43,7 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Name   string     `json:"name"`
-		Role   string     `json:"role"` // instance-level role: "owner", "member", or "no-access" (default: "member")
+		Role   string     `json:"role"` // instance-level role: "owner", "member", or "no-access" (default: "no-access")
 		Vaults []vaultReq `json:"vaults"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -95,7 +95,7 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 
 	agentRole := req.Role
 	if agentRole == "" {
-		agentRole = "member"
+		agentRole = "no-access"
 	}
 	if !validInstanceRole(agentRole) {
 		jsonError(w, http.StatusBadRequest, "Role must be one of: owner, member, no-access")
@@ -306,14 +306,9 @@ func (s *Server) handleAgentRotate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.DeleteAgentTokens(ctx, agent.ID); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to invalidate old agent tokens")
-		return
-	}
-
-	sess, err := s.store.CreateAgentToken(ctx, agent.ID, nil)
+	sess, err := s.store.RotateAgentToken(ctx, agent.ID, nil)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to create agent token")
+		jsonError(w, http.StatusInternalServerError, "Failed to rotate agent token")
 		return
 	}
 

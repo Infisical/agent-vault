@@ -2282,6 +2282,40 @@ func (s *SQLiteStore) DeleteAgentTokens(ctx context.Context, agentID string) err
 	return nil
 }
 
+func (s *SQLiteStore) RotateAgentToken(ctx context.Context, agentID string, expiresAt *time.Time) (*Session, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE agent_id = ?", agentID); err != nil {
+		return nil, fmt.Errorf("deleting agent tokens: %w", err)
+	}
+
+	rawToken := newAgentToken()
+	tokenHash := hashSessionToken(rawToken)
+	now := time.Now().UTC()
+
+	var expiresAtStr sql.NullString
+	if expiresAt != nil {
+		expiresAtStr = sql.NullString{String: expiresAt.UTC().Format(time.DateTime), Valid: true}
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO sessions (id, agent_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+		tokenHash, agentID, expiresAtStr, now.Format(time.DateTime),
+	); err != nil {
+		return nil, fmt.Errorf("creating agent token: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing transaction: %w", err)
+	}
+
+	return &Session{ID: rawToken, AgentID: agentID, ExpiresAt: utcTimePtr(expiresAt), CreatedAt: now}, nil
+}
+
 func (s *SQLiteStore) CreateAgentToken(ctx context.Context, agentID string, expiresAt *time.Time) (*Session, error) {
 	rawToken := newAgentToken()
 	tokenHash := hashSessionToken(rawToken)
