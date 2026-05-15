@@ -135,8 +135,6 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Owner: full directory. Non-owner: filtered (agentDirectoryRowVisibleToNonOwner).
-	// no-access actors never reach here (requireInstanceMember).
 	actor, err := s.requireInstanceMember(w, r)
 	if err != nil {
 		return

@@ -2016,9 +2016,6 @@ func (s *SQLiteStore) CreateAgent(ctx context.Context, name, createdBy, role str
 	}, nil
 }
 
-// CreateAgentWithGrantsAndToken creates an agent, optional vault grants, and its
-// first agent token in a single transaction so partial failures cannot strand
-// an agent row without a token or with half-applied grants.
 func (s *SQLiteStore) CreateAgentWithGrantsAndToken(ctx context.Context, name, createdBy, role string, vaultGrants []AgentVaultGrantSpec, expiresAt *time.Time) (*Agent, *Session, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

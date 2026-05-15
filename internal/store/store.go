@@ -388,8 +388,9 @@ type Store interface {
 
 	// Agents
 	CreateAgent(ctx context.Context, name, createdBy, role string) (*Agent, error)
-	// CreateAgentWithGrantsAndToken creates the agent row, vault grants, and initial
-	// agent token in a single database transaction.
+	// CreateAgentWithGrantsAndToken creates an agent, its vault grants, and its
+	// first agent token in a single transaction so partial failures cannot strand
+	// an agent row without a token or with half-applied grants.
 	CreateAgentWithGrantsAndToken(ctx context.Context, name, createdBy, role string, vaultGrants []AgentVaultGrantSpec, tokenExpiresAt *time.Time) (*Agent, *Session, error)
 	GetAgentByID(ctx context.Context, id string) (*Agent, error)
 	GetAgentByName(ctx context.Context, name string) (*Agent, error)
