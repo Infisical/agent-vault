@@ -407,16 +407,16 @@ Switch to the AV UI tab in your laptop browser. Sidebar: **All Agents → Add ag
 - **Vault access:** click **+ Add vault**, pick `prod`, leave role at `proxy`
 - Click **Add**
 
-The modal flips to the **Connect Your Agent** view with a copyable snippet of three `export` lines. Broker address and agent token are pre-filled; the vault name is a placeholder. Click the inline **Copy** button. You'll paste it in the next step.
+The modal flips to the **Connect Your Agent** view with a copyable snippet of three `export` lines. The agent token and the `prod` vault name are pre-filled; the broker address renders as the placeholder `<AGENT_VAULT_ADDR>` (the server was launched without that env var set, so the UI can't infer it). Click the inline **Copy** button. You'll paste it in the next step.
 
 </Step>
 
 <Step title="Export the three AV env vars">
 
-Back on the `hermes-vps` terminal, paste the snippet. Replace `<VAULT_NAME>` with `prod`:
+Back on the `hermes-vps` terminal, paste the snippet. Replace `<AGENT_VAULT_ADDR>` with `http://10.0.0.2:14321`:
 
 ```bash
-export AGENT_VAULT_ADDR="http://10.0.0.2:14321"
+export AGENT_VAULT_ADDR="<AGENT_VAULT_ADDR>"   # ← replace with http://10.0.0.2:14321
 export AGENT_VAULT_TOKEN="<long-token-from-UI>"
 export AGENT_VAULT_VAULT="prod"
 ```
