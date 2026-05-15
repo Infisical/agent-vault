@@ -3,7 +3,12 @@ title: "Run Hermes on a VPS"
 description: "Run Hermes Agent on one VPS, brokering every outbound API call through Agent Vault on another. Real credentials never touch the agent host."
 ---
 
-Run [Hermes Agent](https://github.com/NousResearch/hermes-agent) on a Hetzner VPS, broker every outbound call through Agent Vault on a second VPS, and prove the agent host never holds a real credential. Allow about 60–90 minutes; budget around €10/month for the two boxes.
+This guide takes you from two empty Hetzner VPS boxes to a long-running Hermes Agent that calls Anthropic, GitHub, Slack, and Telegram without ever holding a real credential on the agent host. Allow about 60–90 minutes; budget around €10/month for the two boxes.
+
+By the end, you'll have:
+
+1. **Agent Vault running on one VPS**, holding real Anthropic, GitHub, Slack, and Telegram credentials encrypted at rest behind a master password.
+2. **A [Hermes Agent](https://github.com/NousResearch/hermes-agent) running on a second VPS**, reachable via a Telegram bot, with every outbound API call brokered through Agent Vault — and revocable from the UI in one click.
 
 {/* TODO(jake): swap YOUTUBE_VIDEO_ID for the real ID once the video is published. */}
 <iframe
@@ -16,6 +21,16 @@ Run [Hermes Agent](https://github.com/NousResearch/hermes-agent) on a Hetzner VP
   referrerpolicy="strict-origin-when-cross-origin"
   allowfullscreen
 ></iframe>
+
+## Prerequisites
+
+- A [Hetzner Cloud](https://www.hetzner.com/cloud) account.
+- An Anthropic API key (`sk-ant-...`), a GitHub PAT with `repo` scope, and a Slack bot token (`xoxb-...`) with `chat:write`, `channels:read`, and `groups:read`. Invite the Slack bot to a channel (e.g. `#ai-updates`).
+- A Telegram account on your phone.
+
+<Note>
+This guide installs Agent Vault as a native binary via the install script — the path documented in [Self-hosting locally](/self-hosting/local). For containers, see [Docker self-hosting](/self-hosting/docker).
+</Note>
 
 ## Architecture
 
@@ -41,17 +56,7 @@ Run [Hermes Agent](https://github.com/NousResearch/hermes-agent) on a Hetzner VP
 
 Only `av-broker` holds real credentials, encrypted at rest behind your master password. `hermes-vps` holds placeholder strings (`__anthropic_api_key__`, etc.) and one revocable [agent token](/agents/overview).
 
-## Prerequisites
-
-- A [Hetzner Cloud](https://www.hetzner.com/cloud) account.
-- An Anthropic API key (`sk-ant-...`), a GitHub PAT with `repo` scope, and a Slack bot token (`xoxb-...`) with `chat:write`, `channels:read`, and `groups:read`. Invite the Slack bot to a channel (e.g. `#ai-updates`).
-- A Telegram account on your phone.
-
-<Note>
-This guide installs Agent Vault as a native binary via the install script — the path documented in [Self-hosting locally](/self-hosting/local). For containers, see [Docker self-hosting](/self-hosting/docker).
-</Note>
-
-## Provision the VPS boxes
+## 1. Provision the VPS boxes
 
 <Steps>
 
@@ -134,7 +139,7 @@ Three replies confirms `av-broker` and `hermes-vps` can see each other across th
 
 </Steps>
 
-## Restrict SSH to your laptop
+## 2. Restrict SSH to your laptop
 
 <Steps>
 
@@ -170,7 +175,7 @@ Test from a different device (your phone on cellular): SSH should time out. From
 If your laptop's public IP changes (cafe networks, VPNs), update the firewall rule's source IP.
 </Warning>
 
-## Install Agent Vault on av-broker
+## 3. Install Agent Vault on av-broker
 
 <Steps>
 
@@ -237,7 +242,7 @@ Expect `HTTP/1.1 200 OK`.
 On reboot, tmux dies and so does the server. SSH back in, `tmux new -s av`, restart with the same command, re-enter the master password. For zero-touch restart, set [`AGENT_VAULT_MASTER_PASSWORD`](/self-hosting/environment-variables) — but the password then lives in an env file.
 </Note>
 
-## Configure the vault
+## 4. Configure the vault
 
 <Steps>
 
@@ -309,7 +314,7 @@ Three services use `header` (the upstream reads the credential from an HTTP head
 **Placeholder strings are exact-match.** `__anthropic_api_key` (one trailing underscore) will not match `__anthropic_api_key__` (two). If you later see a `401: invalid x-api-key` from an upstream, open **Logs** in the AV UI, click the failing request, and check the **Credential keys** field. Empty means the substitution didn't fire — fix the string.
 </Warning>
 
-## Create the Telegram bot
+## 5. Create the Telegram bot
 
 <Steps>
 
@@ -333,7 +338,7 @@ Message `@userinfobot`, send `/start`. Copy the numeric `Id:` — you'll need it
 
 </Steps>
 
-## Connect Hermes
+## 6. Connect Hermes
 
 <Steps>
 
@@ -435,7 +440,7 @@ Near the top of the output you should see `agent-vault: routing HTTP/HTTPS throu
 If a model call returns `401: invalid x-api-key`, open **Logs** in the AV UI, click the `POST /v1/messages` row, and check **Credential keys**. Empty means the substitution didn't fire — the placeholder in your service config doesn't match `__anthropic_api_key__` exactly.
 </Warning>
 
-## Configure the Hermes gateway
+## 7. Configure the Hermes gateway
 
 The gateway is Hermes's always-on messaging daemon. Configure it via a wizard wrapped in `agent-vault run` so its environment has the broker config.
 
@@ -470,7 +475,7 @@ The installer writes `/etc/systemd/system/hermes-gateway.service` and enables it
 
 </Steps>
 
-## Start the gateway daemon
+## 8. Start the gateway daemon
 
 systemd doesn't inherit your shell environment, so the unit the wizard installed has no token, no proxy, and no CA trust. Bump one rate-limit knob in the UI, then run three pastes on `hermes-vps`.
 
@@ -563,7 +568,7 @@ head -5 /root/.hermes/gateway.env
 
 The token line is the usual culprit. If `$AGENT_VAULT_TOKEN` was empty when you ran paste 1, the `if` guard skipped the heredoc. Re-export, redo paste 1, then `systemctl daemon-reload && systemctl restart hermes-gateway`.
 
-## Lock down egress (optional)
+## 9. Lock down egress (optional)
 
 Restrict `hermes-vps` to talking only to `av-broker` so a compromised Hermes has nowhere to exfiltrate to.
 
@@ -591,7 +596,7 @@ That should time out — the firewall blocks direct egress. Routed through the p
 
 </Steps>
 
-## Try it end-to-end
+## 10. Try it end-to-end
 
 Send a prompt to your Telegram bot:
 
@@ -607,7 +612,7 @@ Watch the GitHub call, the Anthropic completion, and the Slack post fly past. Al
 
 Open **Logs** in the AV UI to confirm. Each request shows the matched service and which credential placeholder got substituted.
 
-## Revoke and recover
+## 11. Revoke and recover
 
 <Steps>
 
