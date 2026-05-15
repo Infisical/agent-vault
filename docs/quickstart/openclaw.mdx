@@ -8,16 +8,16 @@ import InstallCommand from "/snippets/install-command.mdx";
 ## Prerequisites
 
 - A running Agent Vault instance on a separate host from where OpenClaw runs ([see installation guide](/installation)).
-- [OpenClaw](https://openclaw.ai) installed on your VPS.
+- [OpenClaw](https://openclaw.ai) installed.
 - An agent token from Agent Vault (create one under **Agents → Add agent**).
 
-Install the Agent Vault CLI on the VPS (or in the container image) where OpenClaw runs, and point it at your Agent Vault instance. The CLI bootstraps OpenClaw's environment so every outbound API call routes through Agent Vault for credential injection.
+Install the Agent Vault CLI on the host or in the container image where OpenClaw runs, and point it at your Agent Vault instance. The CLI bootstraps OpenClaw's environment so every outbound API call routes through Agent Vault for credential injection.
 
 <Tabs>
   <Tab title="Shell">
     ### 1. Install the Agent Vault CLI
 
-    SSH into your VPS and add the `agent-vault` binary alongside OpenClaw.
+    Add the `agent-vault` binary to the environment where OpenClaw runs.
 
     <InstallCommand />
 
