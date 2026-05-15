@@ -430,7 +430,7 @@ Each one answers a different question: **which broker** (`ADDR`), **who is calli
 agent-vault run -- hermes
 ```
 
-Near the top of the output you should see `agent-vault: routing HTTP/HTTPS through MITM proxy (10.0.0.2:14322)` — that's the wrapper confirming the proxy path is live. Hermes drops you into its interactive shell. Send a short prompt (e.g. `hi`); if Anthropic substitution is wired correctly, Claude replies through the broker. `Ctrl-D` to quit — the demo uses the gateway daemon, not interactive Hermes.
+Near the top of the output you should see `agent-vault: routing HTTP/HTTPS through MITM proxy (10.0.0.2:14322)` — that's the wrapper confirming the proxy path is live. Hermes drops you into its interactive shell. Send a short prompt (e.g. `hi`); if Anthropic substitution is wired correctly, Claude replies through the broker. `Ctrl-D` to quit — the rest of this guide uses the gateway daemon, not the interactive shell.
 
 </Step>
 
