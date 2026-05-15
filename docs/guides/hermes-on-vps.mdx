@@ -34,24 +34,34 @@ This guide installs Agent Vault as a native binary via the install script, the p
 
 ## Architecture
 
-```text
-                Your laptop (browser + phone for Telegram)
-                          │
-                          │ SSH (locked to your laptop IP) + SSH tunnel for AV UI
-                          │
-    Public Internet ──────┼──────────────────────────────────────
-                          │                                     │
-                ┌─────────▼──────────┐               ┌──────────▼──────────┐
-                │ av-broker (10.0.0.2)│               │ hermes-vps (10.0.0.3)│
-                │ Agent Vault server  │◀──HTTPS_PROXY─┤ Hermes + gateway     │
-                │  :14321 control     │   (private)   │ Placeholders only    │
-                │  :14322 MITM        │               │                      │
-                └─────────┬───────────┘               └─────────────────────┘
-                          │
-                          │ Real credentials injected here
-                          ▼
-              api.anthropic.com   api.github.com
-              slack.com           api.telegram.org
+```
++-----------------------------------------------------------------+
+| Public internet                                                 |
+|                                                                 |
+|   api.anthropic.com   api.github.com                            |
+|   slack.com           api.telegram.org                          |
+|          ^                   ^                                  |
++----------+-------------------+----------------------------------+
+           |                   |
+           +-------------------+
+                               | outbound HTTPS, Agent Vault
+                               | injects real credentials here
++------------------------------+----------------------------------+
+| Private network (av-net, 10.0.0.0/24)                           |
+|                              |                                  |
+|  +---------------------------+----+     +--------------------+  |
+|  | av-broker  10.0.0.2            |     | hermes-vps         |  |
+|  | Agent Vault server             |<----| 10.0.0.3           |  |
+|  | :14321  control UI / API       |     | Hermes Agent +     |  |
+|  | :14322  MITM proxy             |     | gateway daemon     |  |
+|  | (real credentials, encrypted)  |     | (placeholders)     |  |
+|  +----------------^---------------+     +--------------------+  |
+|                   |                                             |
++-------------------+---------------------------------------------+
+                    | SSH + tunnel for AV UI from laptop
+                    | (browser admin; phone for Telegram bot)
+                    |
+                Operator
 ```
 
 Only `av-broker` holds real credentials, encrypted at rest behind your master password. `hermes-vps` holds placeholder strings (`__anthropic_api_key__`, etc.) and one revocable [agent token](/agents/overview).
@@ -142,8 +152,6 @@ Three replies confirms the private subnet is live. Type `exit` to disconnect.
 curl -4 ifconfig.me; echo
 ```
 
-The `-4` flag forces IPv4. Without it `curl` often returns IPv6.
-
 </Step>
 
 <Step title="Create and attach the firewall">
@@ -152,7 +160,7 @@ The `-4` flag forces IPv4. Without it `curl` often returns IPv6.
 
 - **Protocol:** TCP
 - **Port:** `22`
-- **Source IPs:** the IPv4 from the previous step in CIDR form (e.g. `203.0.113.42/32` for a single address)
+- **Source IPs:** the IPv4 from the previous step
 
 Leave outbound rules empty (Hetzner allows all outbound by default).
 
