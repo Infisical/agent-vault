@@ -488,7 +488,7 @@ The installer writes `/etc/systemd/system/hermes-gateway.service` and enables it
 
 ## 8. Start the gateway daemon
 
-The wizard installed a systemd unit, but systemd doesn't inherit your shell — so the unit has no token, no proxy, and no CA trust yet. Bump one rate-limit knob in the UI, then run three pastes on `hermes-vps`.
+The unit needs Agent Vault's environment wired explicitly (systemd doesn't inherit it from your shell). Bump one rate-limit knob in the UI, then run three pastes on `hermes-vps`.
 
 <Steps>
 
