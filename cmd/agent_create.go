@@ -26,11 +26,18 @@ var agentCreateCmd = &cobra.Command{
 			return err
 		}
 
+		addr := sess.Address
+		if flagAddr, _ := cmd.Flags().GetString("address"); flagAddr != "" {
+			addr = flagAddr
+		}
+
 		type vaultEntry struct {
 			VaultName string `json:"vault_name"`
 			VaultRole string `json:"vault_role"`
 		}
 
+		// Empty role (bare "--vault foo" or trailing colon) is left to the
+		// server, which defaults it to "proxy".
 		var vaults []vaultEntry
 		for _, v := range vaultFlags {
 			name, role, _ := strings.Cut(v, ":")
@@ -50,7 +57,7 @@ var agentCreateCmd = &cobra.Command{
 			return err
 		}
 
-		reqURL := sess.Address + "/v1/agents"
+		reqURL := addr + "/v1/agents"
 		respBody, err := doAdminRequestWithBody("POST", reqURL, sess.Token, body)
 		if err != nil {
 			return err
@@ -104,6 +111,7 @@ var agentCreateCmd = &cobra.Command{
 func init() {
 	agentCreateCmd.Flags().StringArray("vault", nil, "vault pre-assignment (format: name:role, role defaults to proxy)")
 	agentCreateCmd.Flags().Bool("token-only", false, "output only the raw agent token (for programmatic use)")
-	agentCreateCmd.Flags().String("role", "member", "instance-level role for the agent (owner, member, or no-access)")
+	agentCreateCmd.Flags().String("role", "no-access", "instance-level role for the agent (owner, member, or no-access)")
+	agentCreateCmd.Flags().String("address", "", "Agent Vault server address (defaults to session address)")
 	topAgentCmd.AddCommand(agentCreateCmd)
 }

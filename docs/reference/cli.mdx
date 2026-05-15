@@ -691,9 +691,10 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--role` | `member` | Instance-level role: `owner`, `member`, or `no-access` |
+    | `--role` | `no-access` | Instance-level role: `owner`, `member`, or `no-access` |
     | `--vault` | | Vault pre-assignment in `name:role` format (repeatable). Role defaults to `proxy`. |
     | `--token-only` | `false` | Output only the raw agent token (for programmatic use) |
+    | `--address` | | Agent Vault server address (defaults to session address) |
 
     ```bash
     # Create with vault pre-assignments
