@@ -198,7 +198,7 @@ The script detects your architecture, verifies the signed release, and drops the
 apt update && apt install -y tmux
 ```
 
-`tmux` is a terminal multiplexer. You'll start Agent Vault inside a `tmux` session in the next step — that way the server keeps running on `av-broker` after you disconnect from SSH, instead of being killed when your shell exits. Without it, the server dies the moment you close your laptop or your SSH connection drops.
+You'll run Agent Vault inside a `tmux` session so it survives your SSH disconnect.
 
 </Step>
 
