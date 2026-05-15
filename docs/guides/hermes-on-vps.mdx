@@ -392,13 +392,33 @@ Each one answers a different question: **which broker** (`ADDR`), **who is calli
 
 </Step>
 
-<Step title="Sanity-check the proxy path">
+<Step title="Run Hermes for the first time">
 
 ```bash
 agent-vault run -- hermes
 ```
 
-Look for a line near the top: `agent-vault: routing HTTP/HTTPS through MITM proxy (10.0.0.2:14322)`. Send any prompt to confirm Anthropic substitution end-to-end. `Ctrl-D` to quit — the demo uses the gateway daemon, not interactive Hermes.
+Near the top of the output you should see `agent-vault: routing HTTP/HTTPS through MITM proxy (10.0.0.2:14322)` — that's the wrapper confirming the proxy path is live.
+
+The first time you run Hermes, it walks you through a four-question setup wizard. Answer:
+
+1. **How would you like to set up Hermes?** → **Quick setup**.
+
+![Hermes first-launch setup: Quick setup vs Full setup](/images/hermes-on-vps/hermes-on-vps-wizard-setup.png)
+
+2. **Select provider:** scroll to the bottom and choose **Leave unchanged**. The placeholder lines you wrote to `~/.hermes/.env` are already pointing at the right providers; we don't want the wizard overwriting them.
+
+![Hermes provider list with Leave unchanged selected at the bottom](/images/hermes-on-vps/hermes-on-vps-wizard-provider.png)
+
+3. **Select terminal backend:** **Keep current (local)**. Hermes runs directly on `hermes-vps`; you don't need a sandbox.
+
+![Hermes terminal backend list with Keep current local selected](/images/hermes-on-vps/hermes-on-vps-wizard-terminal.png)
+
+4. **Connect a messaging platform?** **Skip — set up later with `hermes setup gateway`**. You'll configure Telegram in the next section using the gateway wizard.
+
+![Hermes messaging platform prompt with Skip selected](/images/hermes-on-vps/hermes-on-vps-wizard-messaging.png)
+
+Hermes drops you into its interactive shell. Send a short prompt (e.g. `hi`) — if Anthropic substitution is wired correctly, Claude replies through the broker. `Ctrl-D` to quit; the demo uses the gateway daemon, not interactive Hermes.
 
 </Step>
 
