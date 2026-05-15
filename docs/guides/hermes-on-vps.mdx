@@ -8,14 +8,14 @@ Provision two Hetzner VPS boxes, install Agent Vault on one and Hermes Agent on 
 By the end, you'll have:
 
 1. **Agent Vault running on one VPS**, holding real Anthropic, GitHub, Slack, and Telegram credentials encrypted at rest behind a master password.
-2. **A [Hermes Agent](https://github.com/NousResearch/hermes-agent) running on a second VPS**, reachable via a Telegram bot, with every outbound API call brokered through Agent Vault — and revocable from the UI in one click.
+2. **A [Hermes Agent](https://github.com/NousResearch/hermes-agent) running on a second VPS**, reachable via a Telegram bot, with every outbound API call brokered through Agent Vault and revocable from the UI in one click.
 
 {/* TODO(jake): swap YOUTUBE_VIDEO_ID for the real ID once the video is published. */}
 <iframe
   width="100%"
   height="450"
   src="https://www.youtube.com/embed/YOUTUBE_VIDEO_ID"
-  title="Run Hermes on a VPS — companion video"
+  title="Run Hermes on a VPS: companion video"
   frameborder="0"
   allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
   referrerpolicy="strict-origin-when-cross-origin"
@@ -25,11 +25,11 @@ By the end, you'll have:
 ## Prerequisites
 
 - A [Hetzner Cloud](https://www.hetzner.com/cloud) account.
-- API keys for the services you want Hermes to call — this guide uses Anthropic, GitHub, and Slack.
+- API keys for the services you want Hermes to call. This guide uses Anthropic, GitHub, and Slack.
 - A Telegram account on your phone.
 
 <Note>
-This guide installs Agent Vault as a native binary via the install script — the path documented in [Self-hosting locally](/self-hosting/local). For containers, see [Docker self-hosting](/self-hosting/docker).
+This guide installs Agent Vault as a native binary via the install script, the path documented in [Self-hosting locally](/self-hosting/local). For containers, see [Docker self-hosting](/self-hosting/docker).
 </Note>
 
 ## Architecture
@@ -142,7 +142,7 @@ Three replies confirms the private subnet is live. Type `exit` to disconnect.
 curl -4 ifconfig.me; echo
 ```
 
-The `-4` flag forces IPv4 — without it `curl` often returns IPv6.
+The `-4` flag forces IPv4. Without it `curl` often returns IPv6.
 
 </Step>
 
@@ -152,7 +152,7 @@ The `-4` flag forces IPv4 — without it `curl` often returns IPv6.
 
 - **Protocol:** TCP
 - **Port:** `22`
-- **Source IPs:** the IPv4 from the previous step followed by `/32` (e.g. `203.0.113.42/32` — the `/32` means "just this one address")
+- **Source IPs:** the IPv4 from the previous step in CIDR form (e.g. `203.0.113.42/32` for a single address)
 
 Leave outbound rules empty (Hetzner allows all outbound by default).
 
@@ -209,7 +209,7 @@ tmux new -s av
 agent-vault server --host 10.0.0.2 --port 14321 --mitm-port 14322
 ```
 
-`--host 10.0.0.2` binds both listeners to the private NIC — Agent Vault is unreachable from the public internet.
+`--host 10.0.0.2` binds both listeners to the private NIC, keeping Agent Vault unreachable from the public internet.
 
 First-run prompts: master password, admin email, admin password.
 
@@ -230,7 +230,7 @@ Expect `HTTP/1.1 200 OK`.
 </Steps>
 
 <Note>
-On reboot, tmux dies and so does the server. SSH back in, `tmux new -s av`, restart with the same command, re-enter the master password. For zero-touch restart, set [`AGENT_VAULT_MASTER_PASSWORD`](/self-hosting/environment-variables) — but the password then lives in an env file.
+On reboot, tmux dies and so does the server. SSH back in, `tmux new -s av`, restart with the same command, re-enter the master password. For zero-touch restart, set [`AGENT_VAULT_MASTER_PASSWORD`](/self-hosting/environment-variables), but note the password then lives in an env file.
 </Note>
 
 ## 4. Configure the vault
@@ -245,7 +245,7 @@ In a **new terminal on your laptop** (don't reuse the one you used to install Ag
 ssh -i ~/.ssh/agent-vault-lab -L 14321:10.0.0.2:14321 root@<av-broker-public-ip> -N
 ```
 
-The terminal hangs silently — that's correct. **Leave it running for the rest of the guide.** Closing it stops the tunnel and the AV UI goes dark.
+The terminal hangs silently. That's correct. **Leave it running for the rest of the guide.** Closing it stops the tunnel and the AV UI goes dark.
 
 Open `http://localhost:14321` in your laptop's browser and sign in with the admin email and password you set during install.
 
@@ -278,7 +278,7 @@ In the `prod` vault, **Credentials tab → Add credential.** Add four rows:
 | `ANTHROPIC_API_KEY` | Anthropic API key (`sk-ant-...`) |
 | `GITHUB_TOKEN` | GitHub PAT with `repo` scope |
 | `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) |
-| `TELEGRAM_BOT_TOKEN` | Placeholder — you create the real bot in the next section |
+| `TELEGRAM_BOT_TOKEN` | Placeholder; you create the real bot in the next section |
 
 The Slack bot needs `chat:write`, `channels:read`, and `groups:read` scopes. Reinstall the app after adding them so the token picks them up, and invite the bot to your target channel (e.g. `#ai-updates`).
 
@@ -304,7 +304,7 @@ Three services use `header` (the upstream reads the credential from an HTTP head
 </Steps>
 
 <Warning>
-**Placeholder strings are exact-match.** `__anthropic_api_key` (one trailing underscore) will not match `__anthropic_api_key__` (two). If you later see a `401: invalid x-api-key` from an upstream, open **Logs** in the AV UI, click the failing request, and check the **Credential keys** field. Empty means the substitution didn't fire — fix the string.
+**Placeholder strings are exact-match.** `__anthropic_api_key` (one trailing underscore) will not match `__anthropic_api_key__` (two). If you later see a `401: invalid x-api-key` from an upstream, open **Logs** in the AV UI, click the failing request, and check the **Credential keys** field. Empty means the substitution didn't fire; fix the string.
 </Warning>
 
 ## 5. Create the Telegram bot
@@ -325,7 +325,7 @@ In the AV UI: `prod` → **Credentials** → `TELEGRAM_BOT_TOKEN` → edit → p
 
 <Step title="Get your numeric Telegram user ID">
 
-Message `@userinfobot`, send `/start`. Copy the numeric `Id:` — you'll need it when configuring the Hermes gateway to lock the bot to your account.
+Message `@userinfobot`, send `/start`. Copy the numeric `Id:` (you'll need it when configuring the Hermes gateway to lock the bot to your account).
 
 </Step>
 
@@ -344,7 +344,7 @@ ssh -i ~/.ssh/agent-vault-lab root@<hermes-vps-public-ip>
 curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | sh
 ```
 
-Every command from here through starting the gateway runs on `hermes-vps`. On this box the AV CLI is a client wrapper — no server runs here.
+Every command from here through starting the gateway runs on `hermes-vps`. On this box the AV CLI is a client wrapper; no server runs here.
 
 </Step>
 
@@ -368,7 +368,7 @@ The install script drops Hermes at `/usr/local/lib/hermes-agent/` and then launc
 
 ![Hermes terminal backend list with Keep current local selected](/images/hermes-on-vps/hermes-on-vps-wizard-terminal.png)
 
-4. **Connect a messaging platform?** **Skip — set up later with `hermes setup gateway`**. You'll configure Telegram in a later section using the gateway wizard.
+4. **Connect a messaging platform?** **Skip** (set up later via `hermes setup gateway`). You'll configure Telegram in a later section using the gateway wizard.
 
 ![Hermes messaging platform prompt with Skip selected](/images/hermes-on-vps/hermes-on-vps-wizard-messaging.png)
 
@@ -399,7 +399,7 @@ Switch to the AV UI tab in your laptop browser. Sidebar: **All Agents → Add ag
 - **Vault access:** click **+ Add vault**, pick `prod`, leave role at `proxy`
 - Click **Add**
 
-The modal flips to the **Connect Your Agent** view with a copyable snippet of three `export` lines — broker address and agent token pre-filled, vault name as a placeholder. Click the inline **Copy** button. You'll paste it in the next step.
+The modal flips to the **Connect Your Agent** view with a copyable snippet of three `export` lines. Broker address and agent token are pre-filled; the vault name is a placeholder. Click the inline **Copy** button. You'll paste it in the next step.
 
 </Step>
 
@@ -463,7 +463,7 @@ Telegram already shows as `configured` in the platform list because the placehol
 
 6. **Install the gateway as a systemd service?** → `Y`.
 
-7. **Choose how the gateway should run** → **System service** (the second option). System service writes the unit to `/etc/systemd/system/` and starts on boot natively — no `loginctl enable-linger` needed.
+7. **Choose how the gateway should run** → **System service** (the second option). System service writes the unit to `/etc/systemd/system/` and starts on boot natively. No `loginctl enable-linger` needed.
 
 ![Hermes gateway wizard service-type prompt with System service selected](/images/hermes-on-vps/hermes-on-vps-gateway-service-type.png)
 
@@ -499,13 +499,13 @@ Rate limits throttle brute force at the login endpoint and the proxy. Agent Vaul
 
 </Step>
 
-<Step title="Paste 1 — write /root/.hermes/gateway.env">
+<Step title="Paste 1: write /root/.hermes/gateway.env">
 
 In the SSH shell on `hermes-vps` where `$AGENT_VAULT_TOKEN` is still set:
 
 ```bash
 if [ -z "$AGENT_VAULT_TOKEN" ]; then
-  echo "✗ AGENT_VAULT_TOKEN not set — re-export from the Connect Hermes section"
+  echo "✗ AGENT_VAULT_TOKEN not set; re-export from the Connect Hermes section"
 else
   cat > /root/.hermes/gateway.env <<EOF
 AGENT_VAULT_ADDR=http://10.0.0.2:14321
@@ -530,7 +530,7 @@ Expect `-rw------- 1 root root <~600–700> ... gateway.env`. If you see the war
 
 </Step>
 
-<Step title="Paste 2 — systemd drop-in">
+<Step title="Paste 2: systemd drop-in">
 
 ```bash
 mkdir -p /etc/systemd/system/hermes-gateway.service.d
@@ -546,23 +546,23 @@ Expect two lines from the trailing `cat`: `[Service]` and `EnvironmentFile=/root
 
 </Step>
 
-<Step title="Paste 3 — start and verify">
+<Step title="Paste 3: start and verify">
 
 ```bash
 systemctl start hermes-gateway
 sleep 3
 systemctl status hermes-gateway --no-pager | head -20
-ss -tnp state established | grep -E 'python|14322' || echo "(none yet — wait a few seconds and re-run)"
+ss -tnp state established | grep -E 'python|14322' || echo "(none yet; wait a few seconds and re-run)"
 ```
 
-`systemctl status` should show `Active: active (running)`, a `Drop-In:` line, and `Main PID: ... (python)`. `ss` should show one or two rows pointing at `10.0.0.2:14322` — that's the Telegram long-poll going through Agent Vault.
+`systemctl status` should show `Active: active (running)`, a `Drop-In:` line, and `Main PID: ... (python)`. `ss` should show one or two rows pointing at `10.0.0.2:14322`. That's the Telegram long-poll going through Agent Vault.
 
 </Step>
 
 </Steps>
 
 <Note>
-A repeating `[Slack] SLACK_APP_TOKEN not set` warning in `journalctl -u hermes-gateway` is expected. The gateway sees `SLACK_BOT_TOKEN` in `~/.hermes/.env` and tries to register Slack **inbound**, which needs a separate `xapp-` app token. We don't use Slack inbound — the gateway logs the error, skips it, and keeps running. Telegram inbound and Slack outbound both still work.
+A repeating `[Slack] SLACK_APP_TOKEN not set` warning in `journalctl -u hermes-gateway` is expected. The gateway sees `SLACK_BOT_TOKEN` in `~/.hermes/.env` and tries to register Slack **inbound**, which needs a separate `xapp-` app token. We don't use Slack inbound; the gateway logs the error, skips it, and keeps running. Telegram inbound and Slack outbound both still work.
 </Note>
 
 ### If the service fails to start
@@ -584,7 +584,7 @@ Restrict `hermes-vps` to talking only to `av-broker` so a compromised Hermes has
 
 **Firewalls → Create Firewall**, name `hermes-egress`. One outbound rule: TCP, destination `10.0.0.0/24`, any port.
 
-In **Apply To → Servers**, select **only** `hermes-vps`. Do not attach this to `av-broker` — that box needs public internet to reach upstream APIs.
+In **Apply To → Servers**, select **only** `hermes-vps`. Do not attach this to `av-broker`; that box needs public internet to reach upstream APIs.
 
 </Step>
 
@@ -596,7 +596,7 @@ From `hermes-vps`:
 curl --max-time 5 https://api.anthropic.com/v1/models
 ```
 
-That should time out — the firewall blocks direct egress. Routed through the proxy (`10.0.0.2:14322`, inside the allowed range), the same call succeeds.
+That should time out. The firewall blocks direct egress; routed through the proxy (`10.0.0.2:14322`, inside the allowed range), the same call succeeds.
 
 </Step>
 
@@ -644,13 +644,13 @@ Copy the rotated token, update `AGENT_VAULT_TOKEN` in `/root/.hermes/gateway.env
 
 ## Cleanup
 
-1. **Hetzner Cloud Console → Servers** — delete `av-broker` and `hermes-vps`.
-2. **Networks → `av-net`** — delete.
-3. **Firewalls** — delete `ssh-lockdown` and `hermes-egress`.
+1. **Hetzner Cloud Console → Servers:** delete `av-broker` and `hermes-vps`.
+2. **Networks → `av-net`:** delete.
+3. **Firewalls:** delete `ssh-lockdown` and `hermes-egress`.
 4. Rotate or revoke the real upstream API tokens you uploaded (they remain valid in their home services until you do).
 
 ## Related
 
-- [Hermes Agent quickstart](/quickstart/hermes-agent) — local-laptop version of this flow.
-- [Connect a custom agent](/guides/connect-custom-agent) — same pattern for any agent that supports `HTTPS_PROXY`.
-- [Container isolation](/guides/container-isolation) — local Docker isolation as an alternative to a remote VPS.
+- [Hermes Agent quickstart](/quickstart/hermes-agent): local-laptop version of this flow.
+- [Connect a custom agent](/guides/connect-custom-agent): same pattern for any agent that supports `HTTPS_PROXY`.
+- [Container isolation](/guides/container-isolation): local Docker isolation as an alternative to a remote VPS.
