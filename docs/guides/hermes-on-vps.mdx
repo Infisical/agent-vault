@@ -299,7 +299,7 @@ If you're using Slack, the bot needs `chat:write`, `channels:read`, and `groups:
 
 **Services tab → + Add service.** For each row below: fill **Name** and **Host**, set **Authentication** to **Passthrough**, then scroll to **URL Substitutions** and click **+ Add substitution**. Paste the placeholder, tick exactly one **Surface** box (untick the others), select the credential. Save.
 
-![Add Service side panel with the URL Substitutions form open](/images/hermes-on-vps/hermes-on-vps-services-2.png)
+![Add Service side panel with the URL Substitutions form open](/images/hermes-on-vps/hermes-on-vps-services.png)
 
 Each substitution rule tells Agent Vault to scan that surface in outbound requests for the placeholder string and swap it for the credential's value before forwarding. Hermes emits placeholders on the wire; the real keys never leave `av-broker`.
 
@@ -311,8 +311,6 @@ Each substitution rule tells Agent Vault to scan that surface in outbound reques
 | `telegram` | `api.telegram.org` | `__telegram_bot_token__` | **`path`** | `TELEGRAM_BOT_TOKEN` |
 
 Three services use `header` (the upstream reads the credential from an HTTP header). Telegram uses `path` because its Bot API encodes the token inline in the URL (`/bot<TOKEN>/sendMessage`).
-
-![Services tab in the prod vault with four services configured](/images/hermes-on-vps/hermes-on-vps-services-1.png)
 
 </Step>
 
