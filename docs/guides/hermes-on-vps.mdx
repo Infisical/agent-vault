@@ -580,7 +580,7 @@ journalctl -u hermes-gateway -n 50 --no-pager
 head -5 /root/.hermes/gateway.env
 ```
 
-The token line is the usual culprit. If `$AGENT_VAULT_TOKEN` was empty when you ran paste 1, the `if` guard skipped the heredoc. Re-export, redo paste 1, then `systemctl daemon-reload && systemctl restart hermes-gateway`.
+Usual culprit: an empty `AGENT_VAULT_TOKEN` made Paste 1 skip writing the env file. Re-export, redo Paste 1, then `systemctl daemon-reload && systemctl restart hermes-gateway`.
 
 ## 9. Lock down egress (optional)
 
