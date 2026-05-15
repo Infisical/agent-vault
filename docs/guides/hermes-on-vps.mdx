@@ -584,7 +584,7 @@ Usual culprit: an empty `AGENT_VAULT_TOKEN` made Paste 1 skip writing the env fi
 
 ## 9. Lock down egress (optional)
 
-Restrict `hermes-vps` to talking only to `av-broker` so a compromised Hermes has nowhere to exfiltrate to.
+Restrict `hermes-vps` outbound to `av-broker` only. A compromised Hermes then has nowhere to exfiltrate.
 
 <Steps>
 
@@ -592,7 +592,7 @@ Restrict `hermes-vps` to talking only to `av-broker` so a compromised Hermes has
 
 **Firewalls → Create Firewall**, name `hermes-egress`. One outbound rule: TCP, destination `10.0.0.0/24`, any port.
 
-In **Apply To → Servers**, select **only** `hermes-vps`. Do not attach this to `av-broker`; that box needs public internet to reach upstream APIs.
+In **Apply To → Servers**, select **only** `hermes-vps`. Attaching this to `av-broker` breaks the brokered requests.
 
 </Step>
 
@@ -604,7 +604,7 @@ From `hermes-vps`:
 curl --max-time 5 https://api.anthropic.com/v1/models
 ```
 
-That should time out. The firewall blocks direct egress; routed through the proxy (`10.0.0.2:14322`, inside the allowed range), the same call succeeds.
+That should time out. Proxied calls through `10.0.0.2:14322` still work.
 
 </Step>
 
