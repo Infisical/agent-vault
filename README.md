@@ -14,7 +14,7 @@ Agents should not possess credentials. Agent Vault eliminates credential exfiltr
 </p>
 
 <p align="center">
-<a href="https://docs.agent-vault.dev">Documentation</a> | <a href="https://docs.agent-vault.dev/installation">Installation</a> | <a href="https://docs.agent-vault.dev/tutorial">Tutorial</a> | <a href="https://docs.agent-vault.dev/reference/cli">CLI Reference</a> | <a href="https://infisical.com/slack">Slack</a>
+<a href="https://docs.agent-vault.dev">Documentation</a> | <a href="https://docs.agent-vault.dev/installation">Installation</a> | <a href="https://docs.agent-vault.dev/tutorial">Tutorial</a> | <a href="https://youtu.be/6dERVjLk0-Q">Video Demo</a> | <a href="https://infisical.com/slack">Slack</a>
 </p>
 
 <p align="center">
@@ -146,6 +146,18 @@ ENTRYPOINT ["agent-vault", "run", "--", "claude"]
 ```
 
 There are many ways to deploy Agent Vault and integrate your AI agents with it. We recommend consulting the fuller [documentation](https://docs.agent-vault.dev/installation).
+
+## See it in Action
+
+A full end-to-end walkthrough: running Hermes Agent on a remote VPS while Agent Vault brokers every outbound API call from a second box. Real credentials never touch the agent host.
+
+<p align="center">
+  <a href="https://youtu.be/6dERVjLk0-Q">
+    <img src="assets/hermes-vps-video-thumbnail.png" alt="Watch: Run Hermes on a VPS without leaking your API keys" />
+  </a>
+</p>
+
+Step-by-step companion guide: [Run Hermes on a VPS](https://docs.agent-vault.dev/guides/hermes-on-vps).
 
 ## Best Practices
 
