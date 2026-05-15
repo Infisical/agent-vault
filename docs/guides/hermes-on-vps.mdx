@@ -292,11 +292,11 @@ If you're using Slack, the bot needs `chat:write`, `channels:read`, and `groups:
 
 </Step>
 
-<Step title="Add four services">
-
-A substitution rule tells Agent Vault: "in requests to this host, scan the **surface** (header / path / query) for the **placeholder** string and replace it with the **credential**'s value before forwarding." Hermes will emit the placeholders on the wire; the real keys never leave `av-broker`.
+<Step title="Add services">
 
 **Services tab → + Add service.** For each row below: fill **Name** and **Host**, set **Authentication** to **Passthrough**, then scroll to **URL Substitutions** and click **+ Add substitution**. Paste the placeholder, tick exactly one **Surface** box (untick the others), select the credential. Save.
+
+Each substitution rule tells Agent Vault to scan that surface in outbound requests for the placeholder string and swap it for the credential's value before forwarding. Hermes emits placeholders on the wire; the real keys never leave `av-broker`.
 
 | Name | Host | Placeholder | Surface | Credential |
 | --- | --- | --- | --- | --- |
