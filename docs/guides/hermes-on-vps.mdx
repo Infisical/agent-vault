@@ -452,20 +452,35 @@ agent-vault run -- hermes gateway setup
 
 <Step title="Walk the wizard">
 
-| Prompt | Answer |
-| --- | --- |
-| Messaging Platforms → Telegram | configure |
-| Bot token | paste `__telegram_bot_token__` (the **placeholder**, not the BotFather token) |
-| Add allowed users now? | `Y` |
-| Allowed user IDs | your numeric Telegram user ID from `@userinfobot` |
-| Home / default chat ID | same user ID |
-| Other platforms (Slack/Discord/etc.) | `N` |
-| Install the gateway as a systemd service? | `Y` |
-| Choose how the gateway should run | **System service** (not user service) |
-| Run as which user? | `root` |
-| Start the service now? | **`N`** — do not start yet |
+Telegram already shows as `configured` in the platform list because the placeholder line you wrote to `~/.hermes/.env` earlier is enough for the wizard to consider it set up. You'll skip reconfiguring the token and just add the user allowlist.
 
-The installer writes `/etc/systemd/system/hermes-gateway.service` and enables it on boot. The next section wires the env, then starts it.
+1. **Select a platform to configure** → **Telegram** (shown as `(configured)`).
+
+![Hermes gateway wizard platform list with Telegram shown as configured](/images/hermes-on-vps/hermes-on-vps-gateway-platforms.png)
+
+2. **Reconfigure Telegram?** → `N`.
+
+3. **Add allowed users now?** → `Y`.
+
+4. **Allowed user IDs (comma-separated)** → your numeric Telegram user ID from `@userinfobot`. This locks the bot to your account.
+
+5. **Select a platform to configure** (you're back at the platform list) → scroll to the bottom and select **Done**.
+
+![Hermes gateway wizard platform list with Done at the bottom](/images/hermes-on-vps/hermes-on-vps-gateway-done.png)
+
+6. **Install the gateway as a systemd service?** → `Y`.
+
+7. **Choose how the gateway should run** → **System service** (the second option). System service writes the unit to `/etc/systemd/system/` and starts on boot natively — no `loginctl enable-linger` needed.
+
+![Hermes gateway wizard service-type prompt with System service selected](/images/hermes-on-vps/hermes-on-vps-gateway-service-type.png)
+
+8. **Run as which user?** → `root`.
+
+9. **Start the service now?** → **`N`**. The unit has no Agent Vault env yet; the next section wires it before starting.
+
+![Hermes gateway wizard start-now prompt with No selected](/images/hermes-on-vps/hermes-on-vps-gateway-start.png)
+
+The installer writes `/etc/systemd/system/hermes-gateway.service` and enables it on boot.
 
 </Step>
 
