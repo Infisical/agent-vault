@@ -74,22 +74,50 @@ After creating the agent, Agent Vault shows a ready-to-copy block of the three e
 
 ## 6. Run Claude Code through Agent Vault
 
-Everything else happens on the **agent host** (the machine where Claude Code runs, separate from the Agent Vault server). Install the Agent Vault CLI there:
+Everything else happens on the **agent host** (the machine where Claude Code runs, separate from the Agent Vault server). Pick the flavor that matches your setup.
 
-<InstallCommand />
+<Tabs>
+  <Tab title="Shell">
+    Install the Agent Vault CLI:
 
-Then install the [GitHub CLI](https://github.com/cli/cli#installation) so Claude Code has a tool to talk to GitHub with.
+    <InstallCommand />
 
-Set the three Agent Vault env vars (paste the block from step 5) plus `GH_TOKEN` with the substitution placeholder, then wrap Claude Code with `agent-vault run`:
+    Install the [GitHub CLI](https://github.com/cli/cli#installation) so Claude Code has a tool to talk to GitHub with.
 
-```bash
-export AGENT_VAULT_ADDR="http://<your-host>:14321"
-export AGENT_VAULT_TOKEN="av_agt_..."   # the token from step 5
-export AGENT_VAULT_VAULT="claude-code"
-export GH_TOKEN="__github_token__"   # placeholder to be swapped for the real credential by Agent Vault
+    Set the three Agent Vault env vars (paste the block from step 5) plus `GH_TOKEN` with the substitution placeholder, then wrap Claude Code with `agent-vault run`:
 
-agent-vault run -- claude
-```
+    ```bash
+    export AGENT_VAULT_ADDR="http://<your-host>:14321"
+    export AGENT_VAULT_TOKEN="av_agt_..."   # the token from step 5
+    export AGENT_VAULT_VAULT="claude-code"
+    export GH_TOKEN="__github_token__"      # placeholder to be swapped for the real credential by Agent Vault
+
+    agent-vault run -- claude
+    ```
+
+  </Tab>
+  <Tab title="Dockerfile">
+    Add the Agent Vault binary to your agent's image and make sure `gh` is also installed (see [GitHub CLI install](https://github.com/cli/cli#installation) for your base image), then set the entrypoint:
+
+    ```dockerfile
+    COPY --from=infisical/agent-vault:latest /usr/local/bin/agent-vault /usr/local/bin/agent-vault
+
+    ENTRYPOINT ["agent-vault", "run", "--", "claude"]
+    ```
+
+    Pass the env vars at runtime so the token never gets baked into the image:
+
+    ```bash
+    docker run --rm -it \
+      -e AGENT_VAULT_ADDR="http://<your-host>:14321" \
+      -e AGENT_VAULT_TOKEN="av_agt_..." \
+      -e AGENT_VAULT_VAULT="claude-code" \
+      -e GH_TOKEN="__github_token__" \
+      your-image
+    ```
+
+  </Tab>
+</Tabs>
 
 The `agent-vault run` command bootstraps the agent's environment so that API calls, including those invoked via CLI/SDK/MCP, get routed through Agent Vault.
 
