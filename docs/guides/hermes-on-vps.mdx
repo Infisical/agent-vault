@@ -1,6 +1,6 @@
 ---
 title: "Run Hermes on a VPS"
-description: "Run Hermes Agent on one VPS, brokering every outbound API call through Agent Vault on another. Real credentials never touch the agent host."
+description: "Keep real credentials off the agent host by routing every outbound call through Agent Vault on a separate VPS."
 ---
 
 This guide takes you from two empty Hetzner VPS boxes to a long-running Hermes Agent that calls Anthropic, GitHub, Slack, and Telegram without ever holding a real credential on the agent host. Allow about 60–90 minutes; budget around €10/month for the two boxes.
