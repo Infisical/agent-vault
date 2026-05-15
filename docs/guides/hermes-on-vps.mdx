@@ -277,9 +277,9 @@ Credentials store values. Services define wiring. At request time, Agent Vault m
 
 </Step>
 
-<Step title="Add four credentials">
+<Step title="Add credentials">
 
-In the `prod` vault, **Credentials tab → Add credential.** Add four rows:
+In the `prod` vault, **Credentials tab → Add credential.** This guide configures four credentials; Anthropic (model) and Telegram (inbound channel) are required for the rest of the guide to work, the others are illustrative. Substitute or add credentials for whatever services you want Hermes to call.
 
 | Key | Value |
 | --- | --- |
@@ -288,7 +288,7 @@ In the `prod` vault, **Credentials tab → Add credential.** Add four rows:
 | `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) |
 | `TELEGRAM_BOT_TOKEN` | Placeholder; you create the real bot in the next section |
 
-The Slack bot needs `chat:write`, `channels:read`, and `groups:read` scopes. Reinstall the app after adding them so the token picks them up, and invite the bot to your target channel (e.g. `#ai-updates`).
+If you're using Slack, the bot needs `chat:write`, `channels:read`, and `groups:read` scopes. Reinstall the app after adding them so the token picks them up, and invite the bot to your target channel.
 
 </Step>
 
