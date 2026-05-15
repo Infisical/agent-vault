@@ -3372,6 +3372,46 @@ func TestAgentList(t *testing.T) {
 	}
 }
 
+// Non-owner creators must see their own vault-less agents in /v1/agents.
+// Mutation endpoints (revoke/rotate/rename) accept agent.CreatedBy == actor.ID
+// regardless of vault overlap, so the list endpoint must mirror that ACL.
+func TestAgentList_NonOwnerSeesOwnVaultlessAgent(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	ms.agents["alice-bot"] = &store.Agent{
+		ID: "alice-bot-id", Name: "alice-bot", Status: "active",
+		CreatedBy: "member-user-id",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	// Sibling agent owned by someone else with no shared vault; must not leak.
+	ms.agents["other-bot"] = &store.Agent{
+		ID: "other-bot-id", Name: "other-bot", Status: "active",
+		CreatedBy: "owner-user-id",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/agents", nil)
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	agents := resp["agents"].([]interface{})
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 visible agent (own), got %d: %s", len(agents), rec.Body.String())
+	}
+	if agents[0].(map[string]interface{})["name"] != "alice-bot" {
+		t.Fatalf("expected alice-bot, got %v", agents[0])
+	}
+}
+
 func TestAgentRevoke(t *testing.T) {
 	srv, ms, sessID := setupAgentTest(t)
 

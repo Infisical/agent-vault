@@ -84,8 +84,12 @@ var agentCreateCmd = &cobra.Command{
 			}
 		}
 		fmt.Fprintf(w, "\n%s %s\n", fieldLabel("Agent token:"), resp.AvAgentToken)
-		fmt.Fprintf(w, "\nSet AGENT_VAULT_TOKEN and AGENT_VAULT_ADDR in the agent's environment, or run:\n")
-		fmt.Fprintf(w, "  AGENT_VAULT_TOKEN=%s agent-vault run -- <command>\n", resp.AvAgentToken)
+		vaultHint := "<vault>"
+		if len(resp.Vaults) > 0 {
+			vaultHint = resp.Vaults[0].VaultName
+		}
+		fmt.Fprintf(w, "\nSet AGENT_VAULT_TOKEN, AGENT_VAULT_ADDR, and AGENT_VAULT_VAULT in the agent's environment, or run:\n")
+		fmt.Fprintf(w, "  AGENT_VAULT_TOKEN=%q AGENT_VAULT_VAULT=%q agent-vault run -- <command>\n", resp.AvAgentToken, vaultHint)
 
 		if err := copyToClipboard(resp.AvAgentToken); err == nil {
 			fmt.Fprintf(w, "\n(Token copied to clipboard)\n")

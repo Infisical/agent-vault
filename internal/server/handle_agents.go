@@ -156,7 +156,10 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For non-owner actors, filter to agents sharing at least one vault.
+	// Non-owners see agents they created plus agents sharing at least one
+	// vault with them. The CreatedBy branch matches the ACL used by
+	// handleAgentRevoke / Rotate / Rename, so a vault-less agent created
+	// by a non-owner remains visible to its creator.
 	if !actor.IsOwner() {
 		grants, _ := s.store.ListActorGrants(ctx, actor.ID)
 		accessibleVaults := make(map[string]bool, len(grants))
@@ -165,6 +168,10 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 		}
 		var filtered []store.Agent
 		for _, ag := range agents {
+			if ag.CreatedBy == actor.ID {
+				filtered = append(filtered, ag)
+				continue
+			}
 			for _, v := range ag.Vaults {
 				if accessibleVaults[v.VaultID] {
 					filtered = append(filtered, ag)
