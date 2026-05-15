@@ -45,14 +45,6 @@ func nowUTC() string {
 	return time.Now().UTC().Format(time.DateTime)
 }
 
-// nullableInt returns nil for zero/negative ints, enabling SQL NULL inserts.
-func nullableInt(n int) interface{} {
-	if n <= 0 {
-		return nil
-	}
-	return n
-}
-
 // nullableString returns nil for empty strings, enabling SQL NULL inserts.
 func nullableString(s string) interface{} {
 	if s == "" {
