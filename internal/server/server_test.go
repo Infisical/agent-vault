@@ -3318,6 +3318,30 @@ func TestHandleAgentCreate(t *testing.T) {
 	}
 }
 
+func TestHandleAgentCreate_DefaultsToNoAccess(t *testing.T) {
+	srv, ms, sessID := setupAgentTest(t)
+
+	body := strings.NewReader(`{"name":"newbot"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents", body)
+	req.Header.Set("Authorization", "Bearer "+sessID)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["role"] != "no-access" {
+		t.Fatalf("expected role=no-access (server default), got %v", resp["role"])
+	}
+	if ag := ms.agents["newbot"]; ag == nil || ag.Role != "no-access" {
+		t.Fatalf("expected persisted agent role=no-access, got %+v", ag)
+	}
+}
+
 func TestHandleAgentCreate_DuplicateName(t *testing.T) {
 	srv, ms, sessID := setupAgentTest(t)
 
