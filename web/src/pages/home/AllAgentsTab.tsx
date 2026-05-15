@@ -254,7 +254,7 @@ function AddAgentButton({
   const [availableVaults, setAvailableVaults] = useState<VaultOption[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [createResult, setCreateResult] = useState<{ agentToken: string } | null>(null);
+  const [createResult, setCreateResult] = useState<{ agentToken: string; vaults: VaultAssignment[] } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -344,7 +344,10 @@ function AddAgentButton({
         setError("Server returned no agent token. Try again.");
         return;
       }
-      setCreateResult({ agentToken: createData.av_agent_token });
+      setCreateResult({
+        agentToken: createData.av_agent_token,
+        vaults: createData.vaults ?? vaultAssignments,
+      });
     } catch (err) {
       // Server may have committed the create before the abort or drop, so
       // refresh so any new agent shows up.
@@ -406,7 +409,7 @@ function AddAgentButton({
         }
       >
         {createResult ? (
-          <ConnectAgentView agentToken={createResult.agentToken} baseURL={baseURL} />
+          <ConnectAgentView agentToken={createResult.agentToken} vaults={createResult.vaults} baseURL={baseURL} />
         ) : (
           <div className="space-y-4">
             <FormField
@@ -554,18 +557,21 @@ function resolveAgentVaultAddr(baseURL?: string): string {
 
 function ConnectAgentView({
   agentToken,
+  vaults,
   baseURL,
 }: {
   agentToken: string;
+  vaults: VaultAssignment[];
   baseURL?: string;
 }) {
   const [installTab, setInstallTab] = useState<InstallTab>("shell");
 
   const addr = resolveAgentVaultAddr(baseURL);
+  const vaultHint = vaults.length > 0 ? vaults[0].vault_name : "<VAULT_NAME>";
   const envSnippet = [
     `export AGENT_VAULT_ADDR="${addr}"`,
     `export AGENT_VAULT_TOKEN="${agentToken}"`,
-    `export AGENT_VAULT_VAULT="<VAULT_NAME>"`,
+    `export AGENT_VAULT_VAULT="${vaultHint}"`,
   ].join("\n");
 
   return (

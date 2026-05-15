@@ -96,7 +96,7 @@ var agentCreateCmd = &cobra.Command{
 			vaultHint = resp.Vaults[0].VaultName
 		}
 		fmt.Fprintf(w, "\nSet AGENT_VAULT_TOKEN, AGENT_VAULT_ADDR, and AGENT_VAULT_VAULT in the agent's environment, or run:\n")
-		fmt.Fprintf(w, "  AGENT_VAULT_TOKEN=%q AGENT_VAULT_VAULT=%q agent-vault run -- <command>\n", resp.AvAgentToken, vaultHint)
+		fmt.Fprintf(w, "  AGENT_VAULT_TOKEN=%q AGENT_VAULT_ADDR=%q AGENT_VAULT_VAULT=%q agent-vault run -- <command>\n", resp.AvAgentToken, addr, vaultHint)
 		if len(resp.Vaults) > 1 {
 			fmt.Fprintf(w, "\n(Multiple vaults were pre-assigned; pick the vault this run should use for AGENT_VAULT_VAULT or pass --vault.)\n")
 		}

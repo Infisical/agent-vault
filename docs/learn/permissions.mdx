@@ -13,7 +13,7 @@ Instance-level roles govern administrative operations across the entire Agent Va
 | ------------------------------------- | --------------- | --------------- | --------------- |
 | [Instance settings](/guides/instance-settings) (invite-only, domains) | Yes | No | No |
 | Manage users (list, remove, set-role) | Yes             | No              | No              |
-| Manage agents (create, list, revoke, rotate, rename, set-role) | Yes | Yes | No |
+| Manage agents (create, list, delete, rotate, rename, set-role) | Yes | Yes | No |
 | Create new vaults                     | Yes             | Yes             | No              |
 | List / delete all vaults              | Yes             | No              | No              |
 | See all vaults & join as admin        | Yes             | No              | No              |
@@ -120,7 +120,7 @@ agent-vault vault agent set-role my-agent --role member --vault my-vault
     - **See all vaults**: Owners see every vault in their vault list, including vaults they have not joined.
     - **Join any vault**: `agent-vault owner vault join <name>` grants the owner admin access to a vault. Useful for recovering orphaned vaults.
     - **Delete any vault**: `agent-vault owner vault delete <name>` deletes a vault regardless of membership.
-    - **Manage agents**: `agent-vault agent list`, `info`, `delete`, `rotate`, `rename`, and `set-role` are instance-level operations. Any authenticated user can create agents; vault admins control per-vault agent access.
+    - **Manage agents**: `agent-vault agent list`, `info`, `delete`, `rotate`, `rename`, and `set-role` are instance-level operations. Any instance member can create agents; vault admins control per-vault agent access.
 
     These operations affect vault existence and agent lifecycle. To access vault contents (credentials, proposals, proxy), the owner must first join the vault.
 
