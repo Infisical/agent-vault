@@ -337,17 +337,44 @@ Message `@userinfobot`, send `/start`. Copy the numeric `Id:` — you'll need it
 
 <Steps>
 
-<Step title="SSH into hermes-vps and install Hermes + the AV CLI">
+<Step title="SSH into hermes-vps and install the Agent Vault CLI">
 
 In a **fresh terminal on your laptop** (leave the SSH tunnel to `av-broker` running):
 
 ```bash
 ssh -i ~/.ssh/agent-vault-lab root@<hermes-vps-public-ip>
 curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | sh
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
 Every command from here through starting the gateway runs on `hermes-vps`. On this box the AV CLI is a client wrapper — no server runs here.
+
+</Step>
+
+<Step title="Install Hermes and walk the setup wizard">
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+```
+
+The install script drops Hermes at `/usr/local/lib/hermes-agent/` and then launches an interactive four-question setup wizard. Answer:
+
+1. **How would you like to set up Hermes?** → **Quick setup**.
+
+![Hermes first-launch setup: Quick setup vs Full setup](/images/hermes-on-vps/hermes-on-vps-wizard-setup.png)
+
+2. **Select provider:** scroll to the bottom and choose **Leave unchanged**. The next step writes placeholder lines to `~/.hermes/.env`; you don't want the wizard baking in any provider config that would compete with that.
+
+![Hermes provider list with Leave unchanged selected at the bottom](/images/hermes-on-vps/hermes-on-vps-wizard-provider.png)
+
+3. **Select terminal backend:** **Keep current (local)**. Hermes runs directly on `hermes-vps`; no sandbox needed.
+
+![Hermes terminal backend list with Keep current local selected](/images/hermes-on-vps/hermes-on-vps-wizard-terminal.png)
+
+4. **Connect a messaging platform?** **Skip — set up later with `hermes setup gateway`**. You'll configure Telegram in a later section using the gateway wizard.
+
+![Hermes messaging platform prompt with Skip selected](/images/hermes-on-vps/hermes-on-vps-wizard-messaging.png)
+
+The wizard exits and you're back at the shell prompt.
 
 </Step>
 
@@ -392,33 +419,13 @@ Each one answers a different question: **which broker** (`ADDR`), **who is calli
 
 </Step>
 
-<Step title="Run Hermes for the first time">
+<Step title="Sanity-check the proxy path">
 
 ```bash
 agent-vault run -- hermes
 ```
 
-Near the top of the output you should see `agent-vault: routing HTTP/HTTPS through MITM proxy (10.0.0.2:14322)` — that's the wrapper confirming the proxy path is live.
-
-The first time you run Hermes, it walks you through a four-question setup wizard. Answer:
-
-1. **How would you like to set up Hermes?** → **Quick setup**.
-
-![Hermes first-launch setup: Quick setup vs Full setup](/images/hermes-on-vps/hermes-on-vps-wizard-setup.png)
-
-2. **Select provider:** scroll to the bottom and choose **Leave unchanged**. The placeholder lines you wrote to `~/.hermes/.env` are already pointing at the right providers; we don't want the wizard overwriting them.
-
-![Hermes provider list with Leave unchanged selected at the bottom](/images/hermes-on-vps/hermes-on-vps-wizard-provider.png)
-
-3. **Select terminal backend:** **Keep current (local)**. Hermes runs directly on `hermes-vps`; you don't need a sandbox.
-
-![Hermes terminal backend list with Keep current local selected](/images/hermes-on-vps/hermes-on-vps-wizard-terminal.png)
-
-4. **Connect a messaging platform?** **Skip — set up later with `hermes setup gateway`**. You'll configure Telegram in the next section using the gateway wizard.
-
-![Hermes messaging platform prompt with Skip selected](/images/hermes-on-vps/hermes-on-vps-wizard-messaging.png)
-
-Hermes drops you into its interactive shell. Send a short prompt (e.g. `hi`) — if Anthropic substitution is wired correctly, Claude replies through the broker. `Ctrl-D` to quit; the demo uses the gateway daemon, not interactive Hermes.
+Near the top of the output you should see `agent-vault: routing HTTP/HTTPS through MITM proxy (10.0.0.2:14322)` — that's the wrapper confirming the proxy path is live. Hermes drops you into its interactive shell. Send a short prompt (e.g. `hi`); if Anthropic substitution is wired correctly, Claude replies through the broker. `Ctrl-D` to quit — the demo uses the gateway daemon, not interactive Hermes.
 
 </Step>
 
