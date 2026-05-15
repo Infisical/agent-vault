@@ -570,7 +570,7 @@ ss -tnp state established | grep -E 'python|14322' || echo "(none yet; wait a fe
 </Steps>
 
 <Note>
-A repeating `[Slack] SLACK_APP_TOKEN not set` warning in `journalctl -u hermes-gateway` is expected. The gateway sees `SLACK_BOT_TOKEN` in `~/.hermes/.env` and tries to register Slack **inbound**, which needs a separate `xapp-` app token. We don't use Slack inbound; the gateway logs the error, skips it, and keeps running. Telegram inbound and Slack outbound both still work.
+If you configured Slack, the `SLACK_APP_TOKEN not set` warning in `journalctl` is expected and harmless. Slack outbound still works; only inbound (Socket Mode) is skipped.
 </Note>
 
 ### If the service fails to start
