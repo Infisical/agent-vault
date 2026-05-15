@@ -312,7 +312,7 @@ Three services use `header` (the upstream reads the credential from an HTTP head
 </Steps>
 
 <Warning>
-**Placeholder strings are exact-match.** `__anthropic_api_key` (one trailing underscore) will not match `__anthropic_api_key__` (two). If you later see a `401: invalid x-api-key` from an upstream, open **Logs** in the AV UI, click the failing request, and check the **Credential keys** field. Empty means the substitution didn't fire; fix the string.
+**Placeholder strings are exact-match.** If an upstream returns 401, check the failing request's **Credential keys** field in the AV UI's **Logs** tab; an empty value means the substitution didn't fire.
 </Warning>
 
 ## 5. Create the Telegram bot
