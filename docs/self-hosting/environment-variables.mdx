@@ -1,94 +1,44 @@
 ---
 title: "Environment variables"
-description: "All environment variables used to configure Agent Vault"
+description: "Configuration for deploying an instance of Agent Vault."
 ---
 
 ## Server configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `14321` | Server listen port. Respected by most PaaS platforms (Fly.io, Cloud Run, Heroku). The `--port` flag takes precedence when set. |
-| `AGENT_VAULT_MASTER_PASSWORD` | (unset) | Derives a KEK (Key Encryption Key) via Argon2id that wraps the data encryption key (DEK). If omitted, the DEK is stored unwrapped (passwordless mode). Read at startup, then immediately unset from the process. |
-| `AGENT_VAULT_ADDR` | (auto) | Externally-reachable base URL. Used for generating links in emails, invites, and discovery responses, and the hostname is added as a SubjectAltName on every MITM leaf cert so clients that TLS-verify against the proxy's own hostname (not the upstream SNI) succeed without a shim. Falls back to `https://<FLY_APP_NAME>.fly.dev` on Fly.io, then `http://{host}:{port}`. The **Connect Your Agent** modal pre-fills the agent address from this value when set; when unset, the modal renders a literal `<AGENT_VAULT_ADDR>` placeholder. |
-| `FLY_APP_NAME` | (set by Fly.io) | When `AGENT_VAULT_ADDR` is unset and this variable is present, the base URL is automatically derived as `https://<FLY_APP_NAME>.fly.dev`. Set automatically by the Fly.io platform — you should not need to set this manually. |
-| `AGENT_VAULT_ALLOW_PRIVATE_RANGES` | `false` | When `false` (default), proxy connections to private/reserved IP ranges (RFC-1918, loopback, link-local, IPv6 ULA, CGN) are blocked at dial time. Set to `true` for local/private deployments where the proxy needs to reach internal services. Cloud metadata endpoints (`169.254.169.254`, `fd00:ec2::254`) are blocked regardless of this setting. |
-| `AGENT_VAULT_NETWORK_ALLOWLIST` | (unset) | Comma-separated CIDRs or bare IPs to allow when `AGENT_VAULT_ALLOW_PRIVATE_RANGES=false` (e.g. `10.163.0.0/16,192.168.1.1`). Bare IPv4 expands to `/32`, bare IPv6 to `/128`. IMDS endpoints stay blocked. Has no effect when `AGENT_VAULT_ALLOW_PRIVATE_RANGES=true`. |
-| `AGENT_VAULT_TRUSTED_PROXIES` | (unset) | Comma-separated CIDR ranges of trusted reverse proxies (e.g. `10.0.0.0/8,172.16.0.0/12`). When set, `X-Forwarded-For` is only trusted if the direct connection comes from a listed proxy. Used for rate limiting and audit logging behind a load balancer. |
-| `AGENT_VAULT_LOG_LEVEL` | `info` | Log level for the server. `info` (default) keeps startup banners and warnings only. `debug` adds one structured line per proxied request (ingress path, method, host, path, matched service, injected credential **key names**, upstream status, duration). Credential values are never logged. The `--log-level` flag takes precedence when set. |
-| `AGENT_VAULT_RATELIMIT_PROFILE` | `default` | Rate-limit profile: `default`, `strict` (≈0.5× the defaults), `loose` (≈2×), or `off` (disable all limits). Affects every tier — anonymous auth, token-redeem, proxy, authenticated CRUD, global in-flight. Owners can override per-tier in **Manage Instance → Settings → Rate Limiting** unless `AGENT_VAULT_RATELIMIT_LOCK=true`. |
-| `AGENT_VAULT_RATELIMIT_LOCK` | `false` | When `true`, the rate-limit UI in **Manage Instance** is read-only and UI overrides are ignored. Use on PaaS deployments (Fly.io, Cloud Run) when the operator wants limits pinned to env vars. |
-| `AGENT_VAULT_RATELIMIT_<TIER>_<KNOB>` | — | Fine-grained per-tier overrides. `TIER` is one of `AUTH` (unauthenticated endpoints), `PROXY` (proxy + MITM), `AUTHED` (everything behind requireAuth), `GLOBAL` (server-wide backstop). `KNOB` is one of `RATE` (tokens/sec), `BURST` (bucket depth), `WINDOW` (duration like `5m`), `MAX` (sliding-window event cap), `CONCURRENCY` (semaphore slots). Env-set knobs always take precedence over UI overrides. |
-| `AGENT_VAULT_LOGS_MAX_AGE_HOURS` | `168` | Retention for the per-vault request log (surfaced in **Vault → Logs**). Rows older than this many hours are trimmed by a background job every 15 minutes. Only secret-free metadata is stored (method, host, path, status, latency, matched service, credential key names) — never bodies or query strings. |
-| `AGENT_VAULT_LOGS_MAX_ROWS_PER_VAULT` | `10000` | Per-vault row cap for the request log. Whichever limit (age or rows) hits first wins, so heavy-traffic vaults retain a shorter window than the time-based TTL alone would suggest. Set to `0` to disable the row cap. |
-| `AGENT_VAULT_LOGS_RETENTION_LOCK` | `false` | When `true`, any owner-UI overrides for log retention are ignored and env values (or defaults) are pinned. Use when you want retention limits controlled only by the operator. |
-| `AGENT_VAULT_ISOLATION` | `host` | Default isolation mode for `agent-vault vault run`. `host` forks the child on the host with `HTTPS_PROXY`/`HTTP_PROXY` envvars (cooperative). `container` launches it inside a Docker container with iptables-locked egress (non-cooperative; see [Container isolation](/guides/container-isolation)). The `--isolation` flag overrides this. |
-
-Master password resolution order:
-
-1. `AGENT_VAULT_MASTER_PASSWORD` environment variable
-2. `--password-stdin` flag
-3. Interactive prompt
-
-<Warning>
-  Never put `AGENT_VAULT_MASTER_PASSWORD` in Dockerfiles, committed `.env` files, or shell history. Use secret management features of your deployment platform (e.g., `fly secrets set`, Docker secrets, or your CI/CD provider's secret store).
-</Warning>
-
-## Installer
-
-Read by [`install.sh`](https://github.com/Infisical/agent-vault/blob/main/install.sh) only — not by the server or the CLI binary.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AGENT_VAULT_NO_TELEMETRY` | (unset) | When set to any non-empty value, skips the anonymous install/upgrade beacon that reports OS, architecture, and version. Must be placed in front of `sh`, not `curl`: `curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev \| AGENT_VAULT_NO_TELEMETRY=1 sh`. |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `PORT` | Optional (defaults to `14321`) | The TCP port the server listens on. Overridden by `--port`. |
+| `AGENT_VAULT_MASTER_PASSWORD` | Recommended (passwordless mode if unset) | The master password used to derive the KEK that wraps the data encryption key. Source via your platform's secret store (e.g., `fly secrets set`, Docker secrets); falls back to `--password-stdin` or an interactive prompt. |
+| `AGENT_VAULT_ADDR` | Optional (auto-derived) | The externally-reachable base URL of the server (e.g., `https://vault.example.com`). Used for invite links, discovery responses, and MITM cert SANs. Falls back to `https://<FLY_APP_NAME>.fly.dev` on Fly.io, then `http://{host}:{port}`. |
+| `FLY_APP_NAME` | Set by Fly.io | The Fly.io app name. Used to derive `AGENT_VAULT_ADDR` when unset. |
+| `AGENT_VAULT_ALLOW_PRIVATE_RANGES` | Optional (defaults to `false`) | Whether the proxy may dial private/reserved IP ranges (RFC-1918, loopback, link-local, IPv6 ULA, CGN). Cloud metadata endpoints stay blocked either way. |
+| `AGENT_VAULT_NETWORK_ALLOWLIST` | Optional | Comma-separated CIDRs or bare IPs the proxy may dial when `AGENT_VAULT_ALLOW_PRIVATE_RANGES=false` (e.g., `10.163.0.0/16,192.168.1.1`). |
+| `AGENT_VAULT_TRUSTED_PROXIES` | Optional | Comma-separated CIDRs of reverse proxies whose `X-Forwarded-For` headers are honored (e.g., `10.0.0.0/8,172.16.0.0/12`). |
+| `AGENT_VAULT_LOG_LEVEL` | Optional (defaults to `info`) | Log verbosity. One of: `info`, `debug`. `debug` adds one structured line per proxied request (no credential values). Overridden by `--log-level`. |
+| `AGENT_VAULT_RATELIMIT_PROFILE` | Optional (defaults to `default`) | Rate-limit preset. One of: `default`, `strict` (≈0.5× the defaults), `loose` (≈2×), `off`. |
+| `AGENT_VAULT_RATELIMIT_LOCK` | Optional (defaults to `false`) | Whether to make the rate-limit UI read-only and ignore UI overrides. |
+| `AGENT_VAULT_RATELIMIT_<TIER>_<KNOB>` | Optional | Per-tier override. `TIER` is one of: `AUTH`, `PROXY`, `AUTHED`, `GLOBAL`. `KNOB` is one of: `RATE` (tokens/sec), `BURST`, `WINDOW` (e.g., `5m`), `MAX`, `CONCURRENCY`. Always takes precedence over UI overrides. |
+| `AGENT_VAULT_LOGS_MAX_AGE_HOURS` | Optional (defaults to `168`) | Maximum age, in hours, of rows retained in the per-vault request log. |
+| `AGENT_VAULT_LOGS_MAX_ROWS_PER_VAULT` | Optional (defaults to `10000`) | Maximum number of rows retained per vault in the request log. Set to `0` to disable the row cap. |
+| `AGENT_VAULT_LOGS_RETENTION_LOCK` | Optional (defaults to `false`) | Whether to ignore owner-UI overrides for log retention and pin to env values. |
+| `AGENT_VAULT_ISOLATION` | Optional (defaults to `host`) | Default isolation mode for `agent-vault vault run`. One of: `host`, `container` (see [Container isolation](/guides/container-isolation)). Overridden by `--isolation`. |
 
 ## Email SMTP configuration
 
 Configure SMTP to enable Agent Vault to send emails for verification codes, vault invites, and notifications.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AGENT_VAULT_SMTP_HOST` | (unset) | SMTP server hostname. If unset, email notifications are disabled. |
-| `AGENT_VAULT_SMTP_PORT` | `587` | SMTP port. Use `465` for implicit TLS, `587` for STARTTLS. |
-| `AGENT_VAULT_SMTP_USERNAME` | (unset) | SMTP authentication username. |
-| `AGENT_VAULT_SMTP_PASSWORD` | (unset) | SMTP authentication password. |
-| `AGENT_VAULT_SMTP_FROM` | (unset) | Sender email address. Required if SMTP is enabled. |
-| `AGENT_VAULT_SMTP_FROM_NAME` | `Agent Vault` | Display name used in the From header of outgoing emails. |
-| `AGENT_VAULT_SMTP_TLS_MODE` | `opportunistic` | TLS behavior for non-465 ports: `opportunistic` (try STARTTLS, fall back to plain), `required` (STARTTLS must succeed), `none` (skip STARTTLS). Port 465 always uses implicit TLS. |
-| `AGENT_VAULT_SMTP_TLS_SKIP_VERIFY` | `false` | Skip TLS certificate verification. Set to `true` or `1` to enable. Useful for self-signed certificates in development. |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `AGENT_VAULT_SMTP_HOST` | Conditional (required to enable email) | The SMTP server hostname. If unset, email is disabled. |
+| `AGENT_VAULT_SMTP_PORT` | Optional (defaults to `587`) | The SMTP port. `465` for implicit TLS, `587` for STARTTLS. |
+| `AGENT_VAULT_SMTP_USERNAME` | Conditional (if the SMTP server requires auth) | The SMTP authentication username. |
+| `AGENT_VAULT_SMTP_PASSWORD` | Conditional (if the SMTP server requires auth) | The SMTP authentication password. |
+| `AGENT_VAULT_SMTP_FROM` | Conditional (required if SMTP is enabled) | The sender email address. |
+| `AGENT_VAULT_SMTP_FROM_NAME` | Optional (defaults to `Agent Vault`) | The display name used in the From header of outgoing emails. |
+| `AGENT_VAULT_SMTP_TLS_MODE` | Optional (defaults to `opportunistic`) | TLS behavior on non-465 ports. One of: `opportunistic`, `required`, `none`. Port 465 always uses implicit TLS. |
+| `AGENT_VAULT_SMTP_TLS_SKIP_VERIFY` | Optional (defaults to `false`) | Whether to skip TLS certificate verification. Useful for self-signed certificates in development. |
 
 <Tip>
   To verify SMTP is working, run `agent-vault email test`. It sends a test email to the owner's address. See the [Configure Email SMTP](/guides/smtp) guide for step-by-step setup instructions for popular providers like SendGrid, AWS SES, Resend, and more.
 </Tip>
 
-## Agent runtime variables
-
-These variables are set automatically by `agent-vault vault run` on the agent's environment for local / interactive use. You do not need to set them manually in that case.
-
-For **unattended / containerized deployments** (no human to `auth login`), set them yourself on the agent process — `agent-vault run` will skip the mint step and use the supplied token as the credential. See [Deploy your agent in a container](/guides/deploy-agent-container) for the full recipe.
-
-### Control-plane
-
-| Variable | Description |
-|----------|-------------|
-| `AGENT_VAULT_ADDR` | Server base URL (e.g., `http://127.0.0.1:14321`) |
-| `AGENT_VAULT_TOKEN` | Bearer token for authenticating with Agent Vault (control-plane: `/discover`, proposals, credentials). Either a vault-scoped session token or a long-lived agent token. |
-| `AGENT_VAULT_VAULT` | Name of the vault the session is scoped to |
-
-### Transparent proxy
-
-`vault run` wires up `HTTPS_PROXY`, `HTTP_PROXY`, and the CA trust chain so standard HTTP clients transparently route both HTTPS and plain-HTTP traffic through Agent Vault.
-
-| Variable | Description |
-|----------|-------------|
-| `HTTPS_PROXY` | Points at the MITM listener (`https://{token}:{vault}@host:14322`). Used for `https://` upstreams via the CONNECT method. |
-| `HTTP_PROXY` | Same URL as `HTTPS_PROXY`. Plain `http://` upstreams reach the same TLS-wrapped listener via absolute-form forward-proxy requests, so the broker still authenticates, injects credentials, and audits the traffic. |
-| `NO_PROXY` | `localhost,127.0.0.1` — so agent-to-vault control-plane traffic skips the proxy |
-| `NODE_USE_ENV_PROXY` | `1` — enables Node.js v22.21+ built-in proxy support for `fetch()` and `http.get()`/`https.get()` |
-| `SSL_CERT_FILE` | Points OpenSSL-linked clients (Python, Ruby, PHP) at the Agent Vault root CA |
-| `NODE_EXTRA_CA_CERTS` | Trusts the root CA in Node.js |
-| `REQUESTS_CA_BUNDLE` | Trusts the root CA in Python `requests` |
-| `CURL_CA_BUNDLE` | Trusts the root CA in `curl` |
-| `GIT_SSL_CAINFO` | Trusts the root CA in `git` |
-| `DENO_CERT` | Trusts the root CA in Deno |
-
-The CA PEM is written to `~/.agent-vault/mitm-ca.pem` by `vault run` on first launch. Agents use `HTTPS_PROXY` and `HTTP_PROXY` to make authenticated requests to upstream APIs transparently and call `GET {AGENT_VAULT_ADDR}/discover` over the control-plane to learn which services are available.
