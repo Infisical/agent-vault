@@ -492,14 +492,14 @@ The unit needs Agent Vault's environment wired explicitly (systemd doesn't inher
 
 <Steps>
 
-<Step title="Raise the AUTH rate limit in the AV UI">
+<Step title="Raise the AUTH rate limit">
 
-In the AV UI tab on your laptop: [**Instance Settings → Rate Limits**](/guides/instance-settings). Find the **AUTH** row and change `Max` from `10` to `10000`. Leave `Window` at `5m`. Save.
+In the AV UI tab on your laptop: click your email (top right) → **Manage Instance** → scroll to **Rate Limits**. In the **AUTH** row, change `Max` from `10` to `10000`. Save.
 
-The gateway daemon's `httpx` client opens fresh CONNECTs every time it resets its connection pool (startup, retries, network blips). Each CONNECT counts against the auth tier — the default 10-in-5-minutes is fine for one-off prompts but a long-running daemon will burn through it in seconds, returning `httpx.ProxyError: 429 Too Many Requests`.
+The default 10-per-5-minute auth limit locks a long-running daemon out in seconds — the gateway's `httpx` client opens a fresh CONNECT every retry. See [Instance settings](/guides/instance-settings) for the full knob reference.
 
 <Note>
-This knob defends against credential-stuffing brute force at the login endpoint. In this setup, Agent Vault is bound to `10.0.0.2` and only `hermes-vps` can reach it, so the per-IP gate isn't load-bearing. If you ever expose Agent Vault publicly (binding to `0.0.0.0` on an internet-routable address), keep this tight.
+The auth tier throttles brute force at the login endpoint. Agent Vault is bound to `10.0.0.2` and only `hermes-vps` can reach it, so the per-IP gate isn't load-bearing here. Keep it tight if you ever bind to `0.0.0.0`.
 </Note>
 
 </Step>
