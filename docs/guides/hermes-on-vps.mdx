@@ -274,6 +274,8 @@ Credentials store values. Services define wiring. At request time, Agent Vault m
 
 **Vaults → New vault → `prod` → Create.**
 
+![Agent Vault UI showing the prod vault](/images/hermes-on-vps/hermes-on-vps-create-vault.png)
+
 </Step>
 
 <Step title="Add credentials">
@@ -288,6 +290,8 @@ In the `prod` vault, **Credentials tab → Add credential.** This guide configur
 | `TELEGRAM_BOT_TOKEN` | Placeholder; you create the real bot in the next section |
 
 If you're using Slack, the bot needs `chat:write`, `channels:read`, and `groups:read` scopes. Reinstall the app after adding them so the token picks them up, and invite the bot to your target channel.
+
+![Credentials tab in the prod vault with four credentials added](/images/hermes-on-vps/hermes-on-vps-credentials.png)
 
 </Step>
 
@@ -305,6 +309,8 @@ Each substitution rule tells Agent Vault to scan that surface in outbound reques
 | `telegram` | `api.telegram.org` | `__telegram_bot_token__` | **`path`** | `TELEGRAM_BOT_TOKEN` |
 
 Three services use `header` (the upstream reads the credential from an HTTP header). Telegram uses `path` because its Bot API encodes the token inline in the URL (`/bot<TOKEN>/sendMessage`).
+
+![Services tab in the prod vault with four services configured](/images/hermes-on-vps/hermes-on-vps-services.png)
 
 </Step>
 
@@ -402,11 +408,19 @@ These placeholders match the substitution rules you created earlier.
 
 Switch to the AV UI tab in your laptop browser. Sidebar: **All Agents → Add agent.**
 
+![All Agents tab with the Add agent button highlighted](/images/hermes-on-vps/hermes-on-vps-agents-add.png)
+
+In the modal:
+
 - **Agent name:** `hermes-vps`
 - **Vault access:** click **+ Add vault**, pick `prod`, leave role at `proxy`
 - Click **Add**
 
+![Add Agent modal with hermes-vps name and prod vault assignment](/images/hermes-on-vps/hermes-on-vps-agent-modal-1.png)
+
 The modal flips to the **Connect Your Agent** view with a copyable snippet of three `export` lines. The agent token and the `prod` vault name are pre-filled; the broker address renders as the placeholder `<AGENT_VAULT_ADDR>` (the server was launched without that env var set, so the UI can't infer it). Click the inline **Copy** button. You'll paste it in the next step.
+
+![Connect Your Agent modal with the three-line export snippet](/images/hermes-on-vps/hermes-on-vps-agent-modal-2.png)
 
 </Step>
 
