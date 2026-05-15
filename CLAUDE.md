@@ -1,6 +1,6 @@
 # Agent Vault (agent-vault)
 
-A local-first HTTP brokerage layer for AI agents. Sits between development agents (Claude Code, Cursor) and target services (Stripe, GitHub, etc.), proxying requests and injecting credentials so agents never see raw keys or tokens.
+An HTTP brokerage layer for AI agents. Sits between development agents (Claude Code, Cursor) and target services (Stripe, GitHub, etc.), proxying requests and injecting credentials so agents never see raw keys or tokens. Typically deployed to a remote host that agents reach over the network.
 
 ## Build, run, test
 

@@ -1,0 +1,153 @@
+---
+title: "Tutorial"
+description: "Walk through your first vault, service, and agent end to end."
+---
+
+import InstallCommand from "/snippets/install-command.mdx";
+
+This tutorial takes you from a freshly deployed Agent Vault instance to a Claude Code session making authenticated calls through Agent Vault. Agent Vault and Claude Code should run on two different machines on the same private network.
+
+By the end, you'll have:
+
+1. An Agent Vault instance set up with credentials and credential brokering rules for the services your agent needs to reach.
+2. A Claude Code agent proxying its requests through Agent Vault, making authenticated requests to GitHub without holding any real credentials. This, by the way, works with any other agent ([OpenCode](/quickstart/opencode), [OpenClaw](/quickstart/openclaw), [Hermes Agent](/quickstart/hermes-agent), [custom agents](/quickstart/custom-agent), etc.) and even traditional deterministic workloads.
+
+## Prerequisites
+
+- An Agent Vault server [installed](/installation) and running on a **separate host** from where the agent will run, and reachable over the same network.
+- An API key to broker for Claude Code. This tutorial uses a [GitHub personal access token (PAT)](https://github.com/settings/tokens), invoked via the [GitHub CLI](https://cli.github.com/), but this could be any credential and tool combination.
+
+Steps 1–5 all happen in the Agent Vault web UI at `http://<your-host>:14321`. Step 6 runs the agent on the agent host.
+
+## 1. Register the instance owner
+
+Open `http://<your-host>:14321/register` in a browser and create your account. The first user to register becomes the instance [owner](/learn/permissions#instance-roles) and is auto-granted admin on the `default` [vault](/learn/vaults).
+
+![Create Owner Account registration page](/images/tutorial/tutorial-register.png)
+
+After registering, you land in the dashboard signed in as the owner.
+
+## 2. Create a vault
+
+A [vault](/learn/vaults) is the logical container for credentials, services, and the agents allowed to use them. The `default` vault is fine for testing, but we'll create a dedicated one to mirror real usage.
+
+In the sidebar, open **Vaults** and click **New vault**. Name it `claude-code` and create it.
+
+![New vault dialog with name claude-code](/images/tutorial/tutorial-create-vault.png)
+
+## 3. Add a credential
+
+Open the `claude-code` vault and go to the **[Credentials](/learn/credentials)** tab. Click **Add credential** and enter:
+
+- **Key**: `GITHUB_TOKEN`
+- **Value**: your GitHub PAT (`ghp_...`)
+
+![Add Credential form with key GITHUB_TOKEN](/images/tutorial/tutorial-add-credential.png)
+
+## 4. Define a service
+
+A [service](/learn/services) tells Agent Vault which upstream host the agent can reach and how to wire the credential in. For this tutorial we'll use the **passthrough + substitution** pattern: Agent Vault doesn't pick an auth header for you, it just swaps a placeholder string the agent sends for the real credential.
+
+In the same vault, go to the **Services** tab, click **Add service**, and enter:
+
+- **Name**: `github`
+- **Host**: `api.github.com`
+- **Auth type**: `passthrough`
+- **Substitution**:
+  - **Key**: `GITHUB_TOKEN`
+  - **Placeholder**: `__github_token__`
+  - **In**: `header`
+
+![Add Service form with passthrough auth and GITHUB_TOKEN header substitution](/images/tutorial/tutorial-define-service.png)
+
+Save the service. Now any request to `api.github.com` that includes the literal string `__github_token__` in a header gets that placeholder swapped for the real credential before being forwarded upstream.
+
+## 5. Create an agent
+
+In the sidebar, open **Agents** and click **Add agent**. Name it `claude-1` and grant it the **proxy** role on the `claude-code` vault.
+
+![Add Agent form with name claude-1 and proxy access to the claude-code vault](/images/tutorial/tutorial-create-agent.png)
+
+After creating the agent, Agent Vault shows a ready-to-copy block of the three env vars you'll need on the agent host. Copy it; the token is only displayed this once.
+
+![Connect Your Agent modal showing the env var export block and the agent token](/images/tutorial/tutorial-connect-agent.png)
+
+## 6. Run Claude Code through Agent Vault
+
+Everything else happens on the **agent host** (the machine where Claude Code runs, separate from the Agent Vault server). Pick the flavor that matches your setup.
+
+<Tabs>
+  <Tab title="Shell">
+    Install the Agent Vault CLI:
+
+    <InstallCommand />
+
+    Install the [GitHub CLI](https://github.com/cli/cli#installation) so Claude Code has a tool to talk to GitHub with.
+
+    Set the three Agent Vault env vars (paste the block from step 5) plus `GH_TOKEN` with the substitution placeholder, then wrap Claude Code with `agent-vault run`:
+
+    ```bash
+    export AGENT_VAULT_ADDR="http://<your-host>:14321"
+    export AGENT_VAULT_TOKEN="av_agt_..."   # the token from step 5
+    export AGENT_VAULT_VAULT="claude-code"
+    export GH_TOKEN="__github_token__"      # placeholder to be swapped for the real credential by Agent Vault
+
+    agent-vault run -- claude
+    ```
+
+  </Tab>
+  <Tab title="Dockerfile">
+    Add the Agent Vault binary to your agent's image and make sure `gh` is also installed (see [GitHub CLI install](https://github.com/cli/cli#installation) for your base image), then set the entrypoint:
+
+    ```dockerfile
+    COPY --from=infisical/agent-vault:latest /usr/local/bin/agent-vault /usr/local/bin/agent-vault
+
+    ENTRYPOINT ["agent-vault", "run", "--", "claude"]
+    ```
+
+    Pass the env vars at runtime so the token never gets baked into the image:
+
+    ```bash
+    docker run --rm -it \
+      -e AGENT_VAULT_ADDR="http://<your-host>:14321" \
+      -e AGENT_VAULT_TOKEN="av_agt_..." \
+      -e AGENT_VAULT_VAULT="claude-code" \
+      -e GH_TOKEN="__github_token__" \
+      your-image
+    ```
+
+  </Tab>
+</Tabs>
+
+The `agent-vault run` command bootstraps the agent's environment so that API calls, including those invoked via CLI/SDK/MCP, get routed through Agent Vault.
+
+Inside the Claude Code session, ask it to use `gh`. For example:
+
+> List my 3 most recently updated GitHub repos using the GitHub CLI (`gh`).
+
+Claude Code should use the GitHub CLI to fetch your repos and print them back. Agent Vault holds the real PAT the entire time; Claude Code and `gh` only ever see the placeholder.
+
+## 7. (Optional) View the request in Agent Vault
+
+Back in the web UI, open the `claude-code` vault and click the **Logs** tab.
+
+You should see the request the agent just made to `api.github.com`, including the method, path, response status, and which service matched.
+
+![Request Logs tab in the claude-code vault](/images/tutorial/tutorial-logs.png)
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Connect more agents" icon="robot" href="/quickstart/claude-code">
+    Cursor, Codex, OpenCode, and custom runtimes.
+  </Card>
+  <Card title="Services" icon="shield" href="/learn/services">
+    Auth types, path scoping, and substitutions.
+  </Card>
+  <Card title="Permissions" icon="users" href="/learn/permissions">
+    Instance and vault roles for humans and agents.
+  </Card>
+  <Card title="Credentials" icon="key" href="/learn/credentials">
+    Storage, encryption, and lifecycle.
+  </Card>
+</CardGroup>

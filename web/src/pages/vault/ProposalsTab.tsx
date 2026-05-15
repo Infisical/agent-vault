@@ -167,7 +167,7 @@ export default function ProposalsTab() {
           emptyDescription={
             totalCount === 0 ? (
               <div className="flex flex-col items-center">
-                <span>Invite an agent to get started. It will request access to services and credentials to be approved here.</span>
+                <span>Connect an agent to get started. It will request access to services and credentials to be approved here.</span>
                 <a
                   href="https://docs.agent-vault.dev/first-proposal"
                   target="_blank"

@@ -1,94 +1,90 @@
 ---
 title: "Custom Agent"
-description: "Connect any HTTP-capable agent or script to Agent Vault through HTTPS_PROXY/HTTP_PROXY."
+description: "Wire up any custom agent, harness, or application so its outbound API calls route through Agent Vault for credential injection."
 ---
+
+import InstallCommand from "/snippets/install-command.mdx";
 
 ## Prerequisites
 
-- A running Agent Vault instance ([see installation guide](/installation))
-- An agent or script that can make HTTP requests
+- A running Agent Vault instance on a separate host from where your workload runs ([see installation guide](/installation)).
+- A custom agent, harness, or application that makes HTTP requests.
+- An agent token from Agent Vault (create one under **Agents → Add agent**).
 
-## Quick start
+Unlike prebuilt agents (Claude Code, OpenClaw, Hermes Agent), this quickstart covers any custom environment you build yourself: an agent loop, a harness orchestrating multiple models, a CI job, or even a traditional deterministic application.
 
-Wrap your agent process with `vault run`. It sets `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN`, and `AGENT_VAULT_VAULT`, then pre-configures `HTTPS_PROXY`/`HTTP_PROXY` and the CA trust chain so standard HTTP clients route both HTTP and HTTPS traffic through the broker transparently:
+You can use the Agent Vault CLI to scaffold any agent or application environment, so every outbound API call routes through Agent Vault for credential injection.
 
-```bash
-agent-vault vault run -- my-agent
-```
+<Tabs>
+  <Tab title="Shell">
+    ### 1. Install the Agent Vault CLI
 
-### Target a specific vault
+    Add the `agent-vault` binary to the environment where your workload runs.
 
-```bash
-agent-vault vault run --vault myproject -- my-agent
-```
+    <InstallCommand />
 
-## Try it out
+    ### 2. Set environment variables
 
-Your agent calls real API URLs directly (over `https://` or `http://`). `HTTPS_PROXY`/`HTTP_PROXY` routes the request through Agent Vault, which matches the host against the vault's [services](/learn/services) and injects the stored credential into the auth header for that service.
+    The CLI reads these on launch to authenticate with Agent Vault and scope its session to the right vault.
 
-<CodeGroup>
+    ```bash
+    export AGENT_VAULT_ADDR="http://<your-host>:14321"
+    export AGENT_VAULT_TOKEN="av_agt_xxx"
+    export AGENT_VAULT_VAULT="<VAULT_NAME>"
+    ```
 
-```bash curl
-curl "https://api.stripe.com/v1/charges?limit=10"
-```
+    ### 3. Run your workload under agent-vault
 
-```python Python
-import requests
+    `agent-vault run` launches your process with `HTTPS_PROXY` and `HTTP_PROXY` pre-set so both its HTTPS and plain HTTP calls route through Agent Vault for credential injection.
 
-# Authorization intentionally omitted — Agent Vault injects the real credential.
-resp = requests.get(
-    "https://api.stripe.com/v1/charges",
-    params={"limit": 10},
-)
-print(resp.json())
-```
+    ```bash
+    agent-vault run -- your-agent
+    ```
 
-```typescript TypeScript
-const resp = await fetch("https://api.stripe.com/v1/charges?limit=10");
-console.log(await resp.json());
-```
+  </Tab>
+  <Tab title="Dockerfile">
+    ### 1. Install the Agent Vault CLI
 
-</CodeGroup>
+    Add the `agent-vault` binary to the image where your workload runs.
 
-If the service isn't configured yet, Agent Vault returns a **403** with a `proposal_hint`. Your agent can use this to create a [proposal](/learn/proposals) requesting access.
+    ```dockerfile
+    COPY --from=infisical/agent-vault:latest /usr/local/bin/agent-vault /usr/local/bin/agent-vault
+    ```
 
-<Note>
-Your agent never sees or handles credentials. Agent Vault strips whatever the client sends and injects the real API key at the proxy boundary.
-</Note>
+    ### 2. Set the entrypoint
 
-## Other connection flows
+    `agent-vault run` launches your process with `HTTPS_PROXY` and `HTTP_PROXY` pre-set so both its HTTPS and plain HTTP calls route through Agent Vault for credential injection.
 
-- **Agent invites** — for cloud-hosted agents or CI pipelines that can't be wrapped with `vault run`. See [Connect a custom agent](/guides/connect-custom-agent#get-connection-credentials).
-- **Manual proxy setup** — for containerized agents and sandboxes that need to configure the proxy themselves. See [Set the proxy env vars manually](/guides/connect-custom-agent#set-the-proxy-env-vars-manually).
+    ```dockerfile
+    ENTRYPOINT ["agent-vault", "run", "--", "your-agent"]
+    ```
 
-## Discover available services
+    ### 3. Pass environment variables at runtime
 
-Call `/discover` to check which hosts have credentials configured:
+    Inject the env vars when you run the container so the token never gets baked into the image. The CLI reads them on launch to authenticate with Agent Vault and scope its session to the right vault.
 
-```bash
-curl ${AGENT_VAULT_ADDR}/discover \
-  -H "Authorization: Bearer ${AGENT_VAULT_TOKEN}"
-```
+    ```bash
+    docker run --rm -it \
+      -e AGENT_VAULT_ADDR="http://<your-host>:14321" \
+      -e AGENT_VAULT_TOKEN="av_agt_xxx" \
+      -e AGENT_VAULT_VAULT="<VAULT_NAME>" \
+      your-image
+    ```
 
-```json Response
-{
-  "vault": "default",
-  "services": [
-    { "name": "stripe", "host": "api.stripe.com" }
-  ],
-  "available_credentials": ["STRIPE_KEY"]
-}
-```
-
-Requests to hosts not in `services` go direct, not through the proxy.
+  </Tab>
+</Tabs>
 
 ## Next steps
 
 <CardGroup cols={2}>
-  <Card title="Connect a custom agent" icon="plug" href="/guides/connect-custom-agent">
-    Full guide with manual proxy setup, error handling, and proposals.
+  <Card
+    title="Connect a custom agent"
+    icon="plug"
+    href="/guides/connect-custom-agent"
+  >
+    Manual proxy setup, error handling, and proposals.
   </Card>
   <Card title="Agent protocol" icon="code" href="/agents/protocol">
-    HTTP reference for sessions, discovery, and proposals.
+    Full request lifecycle end-to-end.
   </Card>
 </CardGroup>

@@ -211,32 +211,6 @@ type ListRequestLogsOpts struct {
 	Limit          int   // capped at 200 by handler; store trusts caller
 }
 
-// Invite represents a named agent invite with optional vault pre-assignments.
-// All invites create named, instance-level agents on redemption.
-type Invite struct {
-	ID                int
-	Token             string
-	AgentName         string             // required: agent name (3-64 chars, lowercase alphanumeric + hyphens)
-	AgentID           string             // set for rotation invites (references existing agent)
-	AgentRole         string             // "owner", "member", or "no-access" — instance role for the agent
-	SessionTTLSeconds int                // desired session lifetime when redeemed (0 = no expiry)
-	Status            string             // pending, redeemed, expired, revoked
-	SessionID         string             // populated after redemption
-	CreatedBy         string             // session ID of the creator
-	Vaults            []AgentInviteVault // pre-assigned vault access
-	CreatedAt         time.Time
-	ExpiresAt         time.Time
-	RedeemedAt        *time.Time
-	RevokedAt         *time.Time
-}
-
-// AgentInviteVault represents a pre-assigned vault grant on an agent invite.
-type AgentInviteVault struct {
-	VaultID   string
-	VaultName string // populated via JOIN on reads
-	VaultRole string // "proxy", "member", or "admin"
-}
-
 // Agent represents a named, instance-level agent entity.
 // Agents have multi-vault access via VaultGrant records and an instance-level role.
 type Agent struct {
@@ -249,6 +223,12 @@ type Agent struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	RevokedAt *time.Time
+}
+
+// AgentVaultGrantSpec is a vault ID + vault role pair used when creating an agent.
+type AgentVaultGrantSpec struct {
+	VaultID string
+	Role    string
 }
 
 // UserInvite represents an instance-level invitation for a new user.
@@ -382,25 +362,6 @@ type Store interface {
 	GetProposalCredentials(ctx context.Context, vaultID string, proposalID int) (map[string]EncryptedCredential, error)
 	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string) error
 
-	// Agent invites (instance-level)
-	CreateAgentInvite(ctx context.Context, agentName, createdBy string, expiresAt time.Time, sessionTTLSeconds int, agentRole string, vaults []AgentInviteVault) (*Invite, error)
-	CreateRotationInvite(ctx context.Context, agentID, createdBy string, expiresAt time.Time) (*Invite, error)
-	GetInviteByToken(ctx context.Context, token string) (*Invite, error)
-	ListInvites(ctx context.Context, status string) ([]Invite, error)
-	ListInvitesByVault(ctx context.Context, vaultID, status string) ([]Invite, error)
-	RedeemInvite(ctx context.Context, token, sessionID string) error
-	UpdateInviteSessionID(ctx context.Context, inviteID int, sessionID string) error
-	RevokeInvite(ctx context.Context, token string) error
-	GetInviteByID(ctx context.Context, id int) (*Invite, error)
-	RevokeInviteByID(ctx context.Context, id int) error
-	CountPendingInvites(ctx context.Context) (int, error)
-	HasPendingInviteByAgentName(ctx context.Context, name string) (bool, error)
-	GetPendingInviteByAgentName(ctx context.Context, name string) (*Invite, error)
-	AddAgentInviteVault(ctx context.Context, inviteID int, vaultID, role string) error
-	RemoveAgentInviteVault(ctx context.Context, inviteID int, vaultID string) error
-	UpdateAgentInviteVaultRole(ctx context.Context, inviteID int, vaultID, role string) error
-	ExpirePendingInvites(ctx context.Context, before time.Time) (int, error)
-
 	// User invites (instance-level)
 	CreateUserInvite(ctx context.Context, email, createdBy, role string, expiresAt time.Time, vaults []UserInviteVault) (*UserInvite, error)
 	GetUserInviteByToken(ctx context.Context, token string) (*UserInvite, error)
@@ -427,6 +388,10 @@ type Store interface {
 
 	// Agents
 	CreateAgent(ctx context.Context, name, createdBy, role string) (*Agent, error)
+	// CreateAgentWithGrantsAndToken creates an agent, its vault grants, and its
+	// first agent token in a single transaction so partial failures cannot strand
+	// an agent row without a token or with half-applied grants.
+	CreateAgentWithGrantsAndToken(ctx context.Context, name, createdBy, role string, vaultGrants []AgentVaultGrantSpec, tokenExpiresAt *time.Time) (*Agent, *Session, error)
 	GetAgentByID(ctx context.Context, id string) (*Agent, error)
 	GetAgentByName(ctx context.Context, name string) (*Agent, error)
 	ListAgents(ctx context.Context, vaultID string) ([]Agent, error)
@@ -437,6 +402,9 @@ type Store interface {
 	CountAgentTokens(ctx context.Context, agentID string) (int, error)
 	GetLatestAgentTokenExpiry(ctx context.Context, agentID string) (*time.Time, error)
 	DeleteAgentTokens(ctx context.Context, agentID string) error
+	// RotateAgentToken deletes the agent's existing tokens and mints a new one
+	// in a single transaction so the agent is never stranded without a token.
+	RotateAgentToken(ctx context.Context, agentID string, tokenExpiresAt *time.Time) (*Session, error)
 	CreateAgentToken(ctx context.Context, agentID string, expiresAt *time.Time) (*Session, error)
 	CountAllOwners(ctx context.Context) (int, error)
 

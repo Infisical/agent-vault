@@ -20,7 +20,6 @@ interface AgentRow {
   status: string;
   created_at: string;
   vaults: { vault_name: string; vault_role: string }[];
-  invite_id?: number;
 }
 
 interface VaultOption {
@@ -43,32 +42,6 @@ function RowActions({
   onError: (msg: string) => void;
 }) {
   if (agent.status === "revoked") return null;
-
-  if (agent.status === "pending" && agent.invite_id) {
-    return (
-      <DropdownMenu
-        width={192}
-        items={[
-          {
-            label: "Revoke invite",
-            onClick: async () => {
-              const resp = await apiFetch(
-                `/v1/agents/invites/by-id/${agent.invite_id}`,
-                { method: "DELETE" }
-              );
-              if (!resp.ok) {
-                const data = await resp.json().catch(() => ({}));
-                onError(data.error || "Failed to revoke invite");
-                return;
-              }
-              onDone();
-            },
-            variant: "danger",
-          },
-        ]}
-      />
-    );
-  }
 
   async function setRoleTo(newRole: InstanceRole) {
     const resp = await apiFetch(
@@ -124,13 +97,12 @@ export default function AllAgentsTab() {
 
       const agentsData = await agentsResp.json();
       const nextRows: AgentRow[] = (agentsData.agents ?? []).map(
-        (a: { name: string; role: string; status: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[]; invite_id?: number }) => ({
+        (a: { name: string; role: string; status: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
           name: a.name,
           role: a.role || "member",
           status: a.status,
           created_at: a.created_at,
           vaults: a.vaults ?? [],
-          invite_id: a.invite_id,
         })
       );
 
@@ -218,7 +190,7 @@ export default function AllAgentsTab() {
             All agents across the instance.
           </p>
         </div>
-        <InviteAgentButton onInvited={fetchData} isOwner={auth.is_owner} baseURL={status.base_url} />
+        <AddAgentButton onCreated={fetchData} isOwner={auth.is_owner} baseURL={status.base_url} />
       </div>
 
       {loading ? (
@@ -229,9 +201,9 @@ export default function AllAgentsTab() {
         <DataTable
           columns={columns}
           data={rows}
-          rowKey={(row) => row.invite_id ? `invite-${row.invite_id}` : row.name}
+          rowKey={(row) => row.name}
           emptyTitle="No agents"
-          emptyDescription="Invite an agent to give it access to your instance."
+          emptyDescription="Add an agent to give it access to your instance."
         />
       )}
 
@@ -266,12 +238,12 @@ interface VaultAssignment {
   vault_role: "proxy" | "member" | "admin";
 }
 
-function InviteAgentButton({
-  onInvited,
+function AddAgentButton({
+  onCreated,
   isOwner,
   baseURL,
 }: {
-  onInvited: () => void;
+  onCreated: () => void;
   isOwner: boolean;
   baseURL?: string;
 }) {
@@ -282,7 +254,7 @@ function InviteAgentButton({
   const [availableVaults, setAvailableVaults] = useState<VaultOption[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [inviteResult, setInviteResult] = useState<{ agentToken: string } | null>(null);
+  const [createResult, setCreateResult] = useState<{ agentToken: string; vaults: VaultAssignment[] } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -299,7 +271,7 @@ function InviteAgentButton({
   }, [open, isOwner]);
 
   // Unmount paths that bypass close() (browser back, programmatic redirect)
-  // would otherwise let an in-flight redeem land its token on an unmounted
+  // would otherwise let an in-flight create land its token on an unmounted
   // component and disappear.
   useEffect(() => {
     return () => {
@@ -314,7 +286,7 @@ function InviteAgentButton({
     setAgentRole("no-access");
     setVaultAssignments([]);
     setError("");
-    setInviteResult(null);
+    setCreateResult(null);
   }
 
   function addVault() {
@@ -343,67 +315,43 @@ function InviteAgentButton({
     setSubmitting(true);
     setError("");
     try {
-      // Probe MITM before minting anything: agent tokens are returned exactly
-      // once at redemption, so creating a session when MITM is off loses it.
-      const mitmResp = await apiFetch("/v1/mitm/ca.pem", {
-        method: "HEAD",
-        signal: controller.signal,
-      });
-      if (mitmResp.status === 404) {
-        setError("Transparent proxy is disabled on this server. Restart Agent Vault with --mitm-port greater than 0 to enable agent connections.");
-        return;
-      }
-      if (!mitmResp.ok) {
-        setError(`Couldn't reach the transparent proxy (HTTP ${mitmResp.status}). Check the server and try again.`);
-        return;
-      }
-      const payload: Record<string, unknown> = { name: name.trim() };
-      // Non-owners don't see the picker, so agentRole stays at "no-access",
-      // which is what we want them creating.
-      payload.role = agentRole;
+      const payload: Record<string, unknown> = {
+        name: name.trim(),
+        // Non-owners don't see the picker, so agentRole stays at "no-access".
+        role: agentRole,
+      };
       if (vaultAssignments.length > 0) {
         payload.vaults = vaultAssignments;
       }
-      const createResp = await apiFetch("/v1/agents/invites", {
+      const createResp = await apiFetch("/v1/agents", {
         method: "POST",
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
-      const createData = await createResp.json();
-      if (!createResp.ok) {
-        setError(createData.error || "Failed to create invite.");
-        return;
-      }
-      if (!createData.token) {
-        setError("Server returned no invite token. Try again.");
-        return;
-      }
-      const redeemResp = await apiFetch(`/invite/${createData.token}`, {
-        method: "POST",
-        body: "{}",
-        signal: controller.signal,
-      });
-      const redeemData = await redeemResp.json().catch((err) => {
+      const createData = await createResp.json().catch((err) => {
         if (isAbortError(err)) throw err;
         return {};
       });
-      // Refresh regardless of outcome: a failed redeem leaves an orphan
-      // pending invite, and a 2xx with a missing token still means the
-      // session was persisted. Either way the operator needs to see the row.
-      onInvited();
-      if (!redeemResp.ok) {
-        setError(redeemData.message || redeemData.error || "Failed to issue agent token.");
+      // Refresh regardless of outcome: the server may have committed the
+      // agent even if the response failed to deserialize, and the operator
+      // needs to see the resulting row.
+      onCreated();
+      if (!createResp.ok) {
+        setError(createData.error || "Failed to create agent.");
         return;
       }
-      if (!redeemData.av_agent_token) {
+      if (!createData.av_agent_token) {
         setError("Server returned no agent token. Try again.");
         return;
       }
-      setInviteResult({ agentToken: redeemData.av_agent_token });
+      setCreateResult({
+        agentToken: createData.av_agent_token,
+        vaults: createData.vaults ?? vaultAssignments,
+      });
     } catch (err) {
-      // Server may have committed the create or redeem before the abort or
-      // drop, so refresh so any orphan invite or live session shows up.
-      onInvited();
+      // Server may have committed the create before the abort or drop, so
+      // refresh so any new agent shows up.
+      onCreated();
       if (isAbortError(err)) return;
       setError("Network error.");
     } finally {
@@ -445,23 +393,23 @@ function InviteAgentButton({
       <Modal
         open={open}
         onClose={close}
-        title={inviteResult ? "Connect Your Agent" : "Add Agent"}
-        description={inviteResult ? "The Agent Vault CLI runs alongside your agent and reads these env vars to bootstrap its environment, so every outbound API call routes through Agent Vault for credential injection." : "Connect an agent, app, or service to Agent Vault."}
+        title={createResult ? "Connect Your Agent" : "Add Agent"}
+        description={createResult ? "The Agent Vault CLI runs alongside your agent and reads these env vars to bootstrap its environment, so every outbound API call routes through Agent Vault for credential injection." : "Connect an agent, app, or service to Agent Vault."}
         footer={
-          inviteResult ? (
+          createResult ? (
             <Button onClick={close}>Done</Button>
           ) : (
             <>
               <Button variant="secondary" onClick={close}>Cancel</Button>
               <Button onClick={handleCreate} disabled={!name.trim()} loading={submitting}>
-                Create invite
+                Add
               </Button>
             </>
           )
         }
       >
-        {inviteResult ? (
-          <InviteResultView agentToken={inviteResult.agentToken} baseURL={baseURL} />
+        {createResult ? (
+          <ConnectAgentView agentToken={createResult.agentToken} vaults={createResult.vaults} baseURL={baseURL} />
         ) : (
           <div className="space-y-4">
             <FormField
@@ -607,20 +555,23 @@ function resolveAgentVaultAddr(baseURL?: string): string {
   return baseURL;
 }
 
-function InviteResultView({
+function ConnectAgentView({
   agentToken,
+  vaults,
   baseURL,
 }: {
   agentToken: string;
+  vaults: VaultAssignment[];
   baseURL?: string;
 }) {
   const [installTab, setInstallTab] = useState<InstallTab>("shell");
 
   const addr = resolveAgentVaultAddr(baseURL);
+  const vaultHint = vaults.length > 0 ? vaults[0].vault_name : "<VAULT_NAME>";
   const envSnippet = [
     `export AGENT_VAULT_ADDR="${addr}"`,
     `export AGENT_VAULT_TOKEN="${agentToken}"`,
-    `export AGENT_VAULT_VAULT="<VAULT_NAME>"`,
+    `export AGENT_VAULT_VAULT="${vaultHint}"`,
   ].join("\n");
 
   return (
@@ -647,6 +598,11 @@ function InviteResultView({
           The CLI reads these on launch to authenticate with Agent Vault and scope its session to the right vault.
         </p>
         <Snippet value={envSnippet} />
+        {vaults.length > 1 && (
+          <p className="text-xs text-text-muted">
+            Multiple vaults were pre-assigned; this snippet uses <code className="text-text-muted">{vaults[0].vault_name}</code>. Edit <code className="text-text-muted">AGENT_VAULT_VAULT</code> to pick a different one for this run.
+          </p>
+        )}
       </ManualStep>
 
       <ManualStep n={3} title="Run your agent under agent-vault">

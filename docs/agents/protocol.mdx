@@ -3,7 +3,7 @@ title: "Agent protocol"
 description: "How agents authenticate, discover services, route requests through HTTPS_PROXY/HTTP_PROXY, and propose changes through Agent Vault."
 ---
 
-Agent Vault agents follow a standard HTTP protocol to interact with the server. Agents handle this automatically — the instructions are embedded in every invite response and in the [agent skill files](https://github.com/Infisical/agent-vault/blob/main/cmd/skill_http.md). This page is a reference for understanding what happens under the hood.
+Agent Vault agents follow a standard HTTP protocol to interact with the server. Agents handle this automatically — the canonical reference lives in the [agent skill files](https://github.com/Infisical/agent-vault/blob/main/cmd/skill_http.md), also served at `/v1/skills/http`. This page is a reference for understanding what happens under the hood.
 
 <Warning>
 Agents must never extract, log, or display credential values. They reference credentials by key name only.
@@ -16,7 +16,7 @@ Every request an agent makes to Agent Vault requires a bearer token. How the age
 | Method | How the agent gets a token |
 |---|---|
 | `agent-vault vault run` | Agent Vault sets `AGENT_VAULT_TOKEN` on the child process automatically |
-| Agent invite | Agent calls `POST {invite_url}` and receives an agent token |
+| `agent-vault agent create` | Operator runs the command, supplies the returned token via `AGENT_VAULT_TOKEN` |
 
 Both methods deliver the same core connection details:
 
@@ -30,7 +30,7 @@ Both methods deliver the same core connection details:
 There are two session types:
 
 - **Vault-scoped sessions** — created by `agent-vault vault run`. The vault is embedded in the session. No extra headers needed.
-- **Instance-level agent tokens** — created via agent invites. The agent must include an `X-Vault` header on `/discover` and `/v1/proposals` requests to select which vault to use.
+- **Instance-level agent tokens** — created via `agent-vault agent create`. The agent must include an `X-Vault` header on `/discover` and `/v1/proposals` requests to select which vault to use.
 
 ### The X-Vault header
 

@@ -10,7 +10,7 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "agent-vault",
-	Short: "Agent Vault, a local-first credential brokerage layer for AI agents",
+	Short: "Agent Vault, a credential brokerage layer for AI agents",
 	Long: `Agent Vault sits between a development agent and target services,
 proxying requests and attaching credentials on behalf of the agent.
 

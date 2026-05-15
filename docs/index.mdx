@@ -49,11 +49,11 @@ Enter Agent Vault - a new credential management solution built for agents that p
 
 Start by setting up an instance of Agent Vault on a separate host machine:
 
-1. You install the Agent Vault binary or deploy an instance with Docker.
+1. You [install](/installation) the Agent Vault binary or deploy an instance with Docker.
 2. You configure Agent Vault with the credentials and service credential substitution rules to enable Agent Vault to broker credentials for your AI agent.
 3. You configure an agent in Agent Vault to represent your AI agent and obtain a token for it. If your workflow involves using an orchestrator backend to spin up ephemeral sandboxed agents, you can use the agent construct to represent your orchestrator and mint a short-lived token to be passed into the sandbox for the agent to use and proxy requests through Agent Vault.
 
-Next, you configure your AI agent to connect to Agent Vault:
+Next, you [configure](/quickstart/custom-agent) your AI agent to connect to Agent Vault:
 
 4. You bootstrap your AI agent's environment to automatically route all outbound HTTP and HTTPS traffic through Agent Vault. This can be done with the Agent Vault CLI and setting `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN`, and `AGENT_VAULT_VAULT` in the agent's environment.
 5. You give your AI agent dummy credentials like `__anthropic_api_key__` or `__github_pat__` to use when making API calls.
@@ -65,7 +65,7 @@ Agent Vault matches the target host on the proxied request against the configure
 ## Get started
 
 <CardGroup cols={1}>
-  <Card title="Deploy Agent Vault" icon="download" href="/installation">
+  <Card title="Installation" icon="download" href="/installation">
     Deploy Agent Vault, start a server, and register.
   </Card>
 </CardGroup>
@@ -84,9 +84,6 @@ Agent Vault matches the target host on the proxied request against the configure
   </Card>
   <Card title="OpenClaw" icon="robot" href="/quickstart/openclaw">
     Connect OpenClaw to Agent Vault.
-  </Card>
-  <Card title="NanoClaw" icon="microchip" href="/quickstart/nanoclaw">
-    Connect NanoClaw to Agent Vault.
   </Card>
   <Card title="Hermes Agent" icon="bolt" href="/quickstart/hermes-agent">
     Connect Hermes Agent to Agent Vault.

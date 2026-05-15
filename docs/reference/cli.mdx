@@ -682,48 +682,27 @@ description: "Complete reference for all Agent Vault CLI commands."
 ## Agents (instance-level)
 
 <AccordionGroup>
-  <Accordion title="agent-vault agent invite">
+  <Accordion title="agent-vault agent create">
     ```bash
-    agent-vault agent invite <name> [flags]
+    agent-vault agent create <name> [flags]
     ```
 
-    Create an agent invite and print the onboarding prompt (copies to clipboard). The agent redeems the invite via HTTP and receives an instance-level agent token.
+    Create a new instance-level agent and print its token (copies to clipboard). Supply the token to the agent's runtime via `AGENT_VAULT_TOKEN`.
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--role` | `member` | Instance-level role: `owner`, `member`, or `no-access` |
+    | `--role` | `no-access` | Instance-level role: `owner`, `member`, or `no-access` |
     | `--vault` | | Vault pre-assignment in `name:role` format (repeatable). Role defaults to `proxy`. |
-    | `--invite-ttl` | `15m` | Invite link expiration time (Go duration format) |
-    | `--address` | | Agent Vault server address (default: from session) |
-    | `--token-only` | `false` | Output only the raw invite token (for programmatic use) |
+    | `--token-only` | `false` | Output only the raw agent token (for programmatic use) |
+    | `--address` | | Agent Vault server address (defaults to session address) |
 
     ```bash
-    # Invite with vault pre-assignments
-    agent-vault agent invite my-agent --vault default:proxy --vault payments:member
+    # Create with vault pre-assignments
+    agent-vault agent create my-agent --vault default:proxy --vault payments:member
 
-    # Invite as an instance owner
-    agent-vault agent invite my-agent --role owner --vault default:admin
+    # Create as an instance owner
+    agent-vault agent create my-agent --role owner --vault default:admin
     ```
-  </Accordion>
-
-  <Accordion title="agent-vault agent invite list">
-    ```bash
-    agent-vault agent invite list [flags]
-    ```
-
-    List agent invites.
-
-    | Flag | Default | Description |
-    |------|---------|-------------|
-    | `--status` | | Filter by status (e.g. `pending`) |
-  </Accordion>
-
-  <Accordion title="agent-vault agent invite revoke">
-    ```bash
-    agent-vault agent invite revoke <token_suffix>
-    ```
-
-    Revoke a pending invite by the last 8 or more characters of the token.
   </Accordion>
 
   <Accordion title="agent-vault agent list">
@@ -752,10 +731,14 @@ description: "Complete reference for all Agent Vault CLI commands."
 
   <Accordion title="agent-vault agent rotate">
     ```bash
-    agent-vault agent rotate <name>
+    agent-vault agent rotate <name> [flags]
     ```
 
-    Create a rotation invite to re-issue an agent's session. The old sessions are invalidated when the agent redeems the new invite.
+    Invalidate the agent's existing token and print a new one. Update `AGENT_VAULT_TOKEN` wherever the agent runs.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--token-only` | `false` | Output only the raw agent token (for programmatic use) |
   </Accordion>
 
   <Accordion title="agent-vault agent rename">

@@ -17,7 +17,8 @@
         "group": "Getting Started",
         "pages": [
           "index",
-          "installation"
+          "installation",
+          "tutorial"
         ]
       },
       {
@@ -27,7 +28,6 @@
           "quickstart/cursor",
           "quickstart/codex",
           "quickstart/openclaw",
-          "quickstart/nanoclaw",
           "quickstart/hermes-agent",
           "quickstart/opencode",
           "quickstart/custom-agent"
@@ -41,7 +41,6 @@
             "pages": [
               "guides/connect-coding-agent",
               "guides/connect-custom-agent",
-              "guides/container-isolation",
               "guides/deploy-agent-container",
               "guides/hermes-on-vps"
             ]

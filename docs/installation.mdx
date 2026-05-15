@@ -1,5 +1,5 @@
 ---
-title: "Deploy Agent Vault"
+title: "Installation"
 description: "Get a server running in under a minute."
 ---
 
@@ -18,6 +18,7 @@ Each install method below configures a master password at startup. Store it some
     Start the Agent Vault server (pass `-d` to run in the background):
 
     ```bash
+    export AGENT_VAULT_ADDR="http://<your-host>:14321"
     agent-vault server
     ```
 
@@ -26,6 +27,7 @@ Each install method below configures a master password at startup. Store it some
     ```bash
     docker run -it -p 14321:14321 -p 14322:14322 \
       -e AGENT_VAULT_MASTER_PASSWORD=your-password \
+      -e AGENT_VAULT_ADDR="http://<your-host>:14321" \
       -v agent-vault-data:/data infisical/agent-vault
     ```
 
@@ -45,6 +47,7 @@ Each install method below configures a master password at startup. Store it some
     Start the Agent Vault server (pass `-d` to run in the background):
 
     ```bash
+    export AGENT_VAULT_ADDR="http://<your-host>:14321"
     agent-vault server
     ```
 
@@ -53,16 +56,7 @@ Each install method below configures a master password at startup. Store it some
 
 Agent Vault exposes two listeners: the HTTP API on `14321` and the transparent MITM proxy on `14322` (the canonical ingress for agents).
 
-Open `http://localhost:14321/register` (or your server's hostname at port `14321` for a remote deploy) to create your account. The first user becomes the instance [owner](/learn/permissions#instance-roles) with admin on the default [vault](/learn/vaults).
-
-For remote deploys, set [`AGENT_VAULT_ADDR`](/self-hosting/environment-variables) to your public URL so invite links and MITM cert SANs match.
-
-<Tip>
-  Press enter at the prompt (or leave `AGENT_VAULT_MASTER_PASSWORD` unset on
-  Docker) for passwordless mode. The DEK is stored in plaintext, suitable for
-  environments where volume security is the trust boundary. See [environment
-  variables](/self-hosting/environment-variables) for all options.
-</Tip>
+Open `http://<your-host>:14321/register` (the hostname or address where you deployed Agent Vault) to create your account. The first user becomes the instance [owner](/learn/permissions#instance-roles) with admin on the default [vault](/learn/vaults).
 
 ## Next steps
 
