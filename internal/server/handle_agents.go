@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -105,29 +106,20 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agent, err := s.store.CreateAgent(ctx, req.Name, actor.ID, agentRole)
+	grantSpecs := make([]store.AgentVaultGrantSpec, 0, len(vaultGrants))
+	vaultInfos := make([]agentVaultJSON, 0, len(vaultGrants))
+	for _, v := range vaultGrants {
+		grantSpecs = append(grantSpecs, store.AgentVaultGrantSpec{VaultID: v.VaultID, Role: v.VaultRole})
+		vaultInfos = append(vaultInfos, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.VaultRole})
+	}
+	agent, sess, err := s.store.CreateAgentWithGrantsAndToken(ctx, req.Name, actor.ID, agentRole, grantSpecs, nil)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			jsonError(w, http.StatusConflict, fmt.Sprintf("An agent named %q already exists", req.Name))
 			return
 		}
-		fmt.Fprintf(os.Stderr, "[agent-vault] ERROR: CreateAgent(%q): %v\n", req.Name, err)
+		fmt.Fprintf(os.Stderr, "[agent-vault] ERROR: CreateAgentWithGrantsAndToken(%q): %v\n", req.Name, err)
 		jsonError(w, http.StatusInternalServerError, "Failed to create agent")
-		return
-	}
-
-	vaultInfos := make([]agentVaultJSON, 0, len(vaultGrants))
-	for _, v := range vaultGrants {
-		if err := s.store.GrantVaultRole(ctx, agent.ID, "agent", v.VaultID, v.VaultRole); err != nil {
-			jsonError(w, http.StatusInternalServerError, "Failed to grant vault access")
-			return
-		}
-		vaultInfos = append(vaultInfos, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.VaultRole})
-	}
-
-	sess, err := s.store.CreateAgentToken(ctx, agent.ID, nil)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to create agent token")
 		return
 	}
 
@@ -143,8 +135,8 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Owners see all agents; members see agents that share at least one vault.
-	// no-access actors are blocked — the agent directory is instance-scoped.
+	// Owner: full directory. Non-owner: filtered (agentDirectoryRowVisibleToNonOwner).
+	// no-access actors never reach here (requireInstanceMember).
 	actor, err := s.requireInstanceMember(w, r)
 	if err != nil {
 		return
@@ -156,27 +148,16 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Non-owners see agents they created plus agents sharing at least one
-	// vault with them. The CreatedBy branch matches the ACL used by
-	// handleAgentRevoke / Rotate / Rename, so a vault-less agent created
-	// by a non-owner remains visible to its creator.
 	if !actor.IsOwner() {
-		grants, _ := s.store.ListActorGrants(ctx, actor.ID)
-		accessibleVaults := make(map[string]bool, len(grants))
-		for _, g := range grants {
-			accessibleVaults[g.VaultID] = true
+		accessible, accErr := s.actorAccessibleVaultIDs(ctx, actor.ID)
+		if accErr != nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to list agents")
+			return
 		}
 		var filtered []store.Agent
-		for _, ag := range agents {
-			if ag.CreatedBy == actor.ID {
-				filtered = append(filtered, ag)
-				continue
-			}
-			for _, v := range ag.Vaults {
-				if accessibleVaults[v.VaultID] {
-					filtered = append(filtered, ag)
-					break
-				}
+		for i := range agents {
+			if agentDirectoryRowVisibleToNonOwner(&agents[i], actor, accessible) {
+				filtered = append(filtered, agents[i])
 			}
 		}
 		agents = filtered
@@ -194,15 +175,11 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]agentItem, 0, len(agents))
 	for _, ag := range agents {
-		vaults := make([]agentVaultJSON, 0, len(ag.Vaults))
-		for _, v := range ag.Vaults {
-			vaults = append(vaults, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.Role})
-		}
 		item := agentItem{
 			Name:      ag.Name,
 			Role:      ag.Role,
 			Status:    ag.Status,
-			Vaults:    vaults,
+			Vaults:    agentVaultsJSON(&ag),
 			CreatedAt: ag.CreatedAt.Format(time.RFC3339),
 		}
 		if ag.RevokedAt != nil {
@@ -225,7 +202,8 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")
 
-	if _, err := s.requireInstanceMember(w, r); err != nil {
+	actor, err := s.requireInstanceMember(w, r)
+	if err != nil {
 		return
 	}
 
@@ -235,16 +213,23 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	vaults := make([]agentVaultJSON, 0, len(agent.Vaults))
-	for _, v := range agent.Vaults {
-		vaults = append(vaults, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.Role})
+	if !actor.IsOwner() {
+		accessible, accErr := s.actorAccessibleVaultIDs(ctx, actor.ID)
+		if accErr != nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to load agent")
+			return
+		}
+		if !agentDirectoryRowVisibleToNonOwner(agent, actor, accessible) {
+			jsonError(w, http.StatusNotFound, "Agent not found")
+			return
+		}
 	}
 
 	resp := map[string]interface{}{
 		"name":       agent.Name,
 		"role":       agent.Role,
 		"status":     agent.Status,
-		"vaults":     vaults,
+		"vaults":     agentVaultsJSON(agent),
 		"created_by": agent.CreatedBy,
 		"created_at": agent.CreatedAt.Format(time.RFC3339),
 		"updated_at": agent.UpdatedAt.Format(time.RFC3339),
@@ -619,4 +604,37 @@ func (s *Server) handleAgentSetRole(w http.ResponseWriter, r *http.Request) {
 		"old_role": agent.Role,
 		"new_role": body.Role,
 	})
+}
+
+func agentVaultsJSON(ag *store.Agent) []agentVaultJSON {
+	out := make([]agentVaultJSON, 0, len(ag.Vaults))
+	for _, v := range ag.Vaults {
+		out = append(out, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.Role})
+	}
+	return out
+}
+
+func (s *Server) actorAccessibleVaultIDs(ctx context.Context, actorID string) (map[string]bool, error) {
+	grants, err := s.store.ListActorGrants(ctx, actorID)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string]bool, len(grants))
+	for _, g := range grants {
+		m[g.VaultID] = true
+	}
+	return m, nil
+}
+
+// agentDirectoryRowVisibleToNonOwner is the non-owner directory filter (see handleAgentList).
+func agentDirectoryRowVisibleToNonOwner(ag *store.Agent, actor *Actor, accessibleVaults map[string]bool) bool {
+	if ag.CreatedBy == actor.ID {
+		return true
+	}
+	for _, v := range ag.Vaults {
+		if accessibleVaults[v.VaultID] {
+			return true
+		}
+	}
+	return false
 }

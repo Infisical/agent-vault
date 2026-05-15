@@ -247,6 +247,7 @@ type Store interface {
 
 	// Agents
 	CreateAgent(ctx context.Context, name, createdBy, role string) (*store.Agent, error)
+	CreateAgentWithGrantsAndToken(ctx context.Context, name, createdBy, role string, vaultGrants []store.AgentVaultGrantSpec, tokenExpiresAt *time.Time) (*store.Agent, *store.Session, error)
 	GetAgentByID(ctx context.Context, id string) (*store.Agent, error)
 	GetAgentByName(ctx context.Context, name string) (*store.Agent, error)
 	ListAgents(ctx context.Context, vaultID string) ([]store.Agent, error)

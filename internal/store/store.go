@@ -225,6 +225,12 @@ type Agent struct {
 	RevokedAt *time.Time
 }
 
+// AgentVaultGrantSpec is a vault ID + vault role pair used when creating an agent.
+type AgentVaultGrantSpec struct {
+	VaultID string
+	Role    string
+}
+
 // UserInvite represents an instance-level invitation for a new user.
 // Invites bring users into the instance, with optional vault pre-assignment.
 type UserInvite struct {
@@ -382,6 +388,9 @@ type Store interface {
 
 	// Agents
 	CreateAgent(ctx context.Context, name, createdBy, role string) (*Agent, error)
+	// CreateAgentWithGrantsAndToken creates the agent row, vault grants, and initial
+	// agent token in a single database transaction.
+	CreateAgentWithGrantsAndToken(ctx context.Context, name, createdBy, role string, vaultGrants []AgentVaultGrantSpec, tokenExpiresAt *time.Time) (*Agent, *Session, error)
 	GetAgentByID(ctx context.Context, id string) (*Agent, error)
 	GetAgentByName(ctx context.Context, name string) (*Agent, error)
 	ListAgents(ctx context.Context, vaultID string) ([]Agent, error)

@@ -882,6 +882,23 @@ func (m *mockStore) CreateAgent(_ context.Context, name, createdBy, role string)
 	return ag, nil
 }
 
+func (m *mockStore) CreateAgentWithGrantsAndToken(ctx context.Context, name, createdBy, role string, vaultGrants []store.AgentVaultGrantSpec, expiresAt *time.Time) (*store.Agent, *store.Session, error) {
+	ag, err := m.CreateAgent(ctx, name, createdBy, role)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, vg := range vaultGrants {
+		if err := m.GrantVaultRole(ctx, ag.ID, "agent", vg.VaultID, vg.Role); err != nil {
+			return nil, nil, err
+		}
+	}
+	sess, err := m.CreateAgentToken(ctx, ag.ID, expiresAt)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ag, sess, nil
+}
+
 func (m *mockStore) GetAgentByName(_ context.Context, name string) (*store.Agent, error) {
 	ag, ok := m.agents[name]
 	if !ok {
@@ -3409,6 +3426,48 @@ func TestAgentList_NonOwnerSeesOwnVaultlessAgent(t *testing.T) {
 	}
 	if agents[0].(map[string]interface{})["name"] != "alice-bot" {
 		t.Fatalf("expected alice-bot, got %v", agents[0])
+	}
+}
+
+func TestAgentGet_NonOwnerOwnVaultlessAgent(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	ms.agents["alice-bot"] = &store.Agent{
+		ID: "alice-bot-id", Name: "alice-bot", Status: "active",
+		CreatedBy: "member-user-id",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/agents/alice-bot", nil)
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAgentGet_NonOwnerCannotViewOthersAgent(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	ms.agents["other-bot"] = &store.Agent{
+		ID: "other-bot-id", Name: "other-bot", Status: "active",
+		CreatedBy: "owner-user-id",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/agents/other-bot", nil)
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

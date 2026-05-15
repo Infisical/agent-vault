@@ -1686,6 +1686,52 @@ func TestCreateAgent(t *testing.T) {
 	}
 }
 
+func TestCreateAgentWithGrantsAndToken(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	ns, err := s.GetVault(ctx, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ag, sess, err := s.CreateAgentWithGrantsAndToken(ctx, "txbot", "creator-uid", "member",
+		[]AgentVaultGrantSpec{{VaultID: ns.ID, Role: "proxy"}}, nil)
+	if err != nil {
+		t.Fatalf("CreateAgentWithGrantsAndToken: %v", err)
+	}
+	if ag.Name != "txbot" || sess.AgentID != ag.ID || sess.ID == "" {
+		t.Fatalf("unexpected agent/session: ag=%+v sess=%+v", ag, sess)
+	}
+
+	got, err := s.GetAgentByName(ctx, "txbot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Vaults) != 1 || got.Vaults[0].Role != "proxy" {
+		t.Fatalf("expected one proxy grant, got %+v", got.Vaults)
+	}
+	if n, _ := s.CountAgentTokens(ctx, ag.ID); n != 1 {
+		t.Fatalf("expected 1 token, got %d", n)
+	}
+}
+
+func TestCreateAgentWithGrantsAndToken_NoVaults(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	ag, sess, err := s.CreateAgentWithGrantsAndToken(ctx, "barebot", "creator-uid", "member", nil, nil)
+	if err != nil {
+		t.Fatalf("CreateAgentWithGrantsAndToken: %v", err)
+	}
+	if len(ag.Name) == 0 || sess.AgentID != ag.ID {
+		t.Fatalf("unexpected agent/session: ag=%+v sess=%+v", ag, sess)
+	}
+	if n, _ := s.CountAgentTokens(ctx, ag.ID); n != 1 {
+		t.Fatalf("expected 1 token, got %d", n)
+	}
+}
+
 func TestGetAgentByName(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()

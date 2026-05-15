@@ -2016,6 +2016,72 @@ func (s *SQLiteStore) CreateAgent(ctx context.Context, name, createdBy, role str
 	}, nil
 }
 
+// CreateAgentWithGrantsAndToken creates an agent, optional vault grants, and its
+// first agent token in a single transaction so partial failures cannot strand
+// an agent row without a token or with half-applied grants.
+func (s *SQLiteStore) CreateAgentWithGrantsAndToken(ctx context.Context, name, createdBy, role string, vaultGrants []AgentVaultGrantSpec, expiresAt *time.Time) (*Agent, *Session, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	agentID := newUUID()
+	now := time.Now().UTC()
+	nowStr := now.Format(time.DateTime)
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO agents (id, name, role, status, created_by, created_at, updated_at)
+		 VALUES (?, ?, ?, 'active', ?, ?, ?)`,
+		agentID, name, role, createdBy, nowStr, nowStr,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating agent: %w", err)
+	}
+
+	grantNow := nowUTC()
+	for _, vg := range vaultGrants {
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO vault_grants (actor_id, actor_type, vault_id, role, created_at) VALUES (?, 'agent', ?, ?, ?)
+			 ON CONFLICT(actor_id, vault_id) DO UPDATE SET role = excluded.role`,
+			agentID, vg.VaultID, vg.Role, grantNow,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("granting vault role: %w", err)
+		}
+	}
+
+	rawToken := newAgentToken()
+	tokenHash := hashSessionToken(rawToken)
+	var expiresAtStr sql.NullString
+	if expiresAt != nil {
+		expiresAtStr = sql.NullString{String: expiresAt.UTC().Format(time.DateTime), Valid: true}
+	}
+	_, err = tx.ExecContext(ctx,
+		"INSERT INTO sessions (id, agent_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+		tokenHash, agentID, expiresAtStr, nowStr,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating agent token: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("committing transaction: %w", err)
+	}
+
+	ag := &Agent{
+		ID:        agentID,
+		Name:      name,
+		Role:      role,
+		Status:    "active",
+		CreatedBy: createdBy,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	sess := &Session{ID: rawToken, AgentID: agentID, ExpiresAt: utcTimePtr(expiresAt), CreatedAt: now}
+	return ag, sess, nil
+}
+
 func (s *SQLiteStore) GetAgentByID(ctx context.Context, id string) (*Agent, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, name, role, status, created_by, created_at, updated_at, revoked_at
