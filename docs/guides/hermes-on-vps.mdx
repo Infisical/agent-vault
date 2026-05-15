@@ -10,11 +10,10 @@ By the end, you'll have:
 1. **Agent Vault running on one VPS**, holding real Anthropic, GitHub, Slack, and Telegram credentials encrypted at rest behind a master password.
 2. **A [Hermes Agent](https://github.com/NousResearch/hermes-agent) running on a second VPS**, reachable via a Telegram bot, with every outbound API call brokered through Agent Vault and revocable from the UI in one click.
 
-{/* TODO(jake): swap YOUTUBE_VIDEO_ID for the real ID once the video is published. */}
 <iframe
   width="100%"
   height="450"
-  src="https://www.youtube.com/embed/YOUTUBE_VIDEO_ID"
+  src="https://www.youtube.com/embed/6dERVjLk0-Q"
   title="Run Hermes on a VPS: companion video"
   frameborder="0"
   allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
@@ -376,7 +375,7 @@ The install script drops Hermes at `/usr/local/lib/hermes-agent/` and then launc
 
 ![Hermes terminal backend list with Keep current local selected](/images/hermes-on-vps/hermes-on-vps-wizard-terminal.png)
 
-4. **Connect a messaging platform?** **Skip** (set up later via `hermes setup gateway`). You'll configure Telegram in a later section using the gateway wizard.
+4. **Connect a messaging platform?** **Skip** (set up later via `agent-vault run -- hermes gateway setup`). You'll configure Telegram in a later section using the gateway wizard.
 
 ![Hermes messaging platform prompt with Skip selected](/images/hermes-on-vps/hermes-on-vps-wizard-messaging.png)
 
