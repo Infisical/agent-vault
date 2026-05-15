@@ -34,8 +34,8 @@ If you're using Claude Code, Cursor, or another supported agent, see the [Quicks
     ```
 
     Prints the agent's token (copies to clipboard). The response also includes:
-    - `av_addr` — the Agent Vault server URL
     - `av_agent_token` — bearer token for all requests
+    - `name`, `role`, `created_at` — the agent identity the server persisted
     - `vaults` — list of accessible vaults
 
     Set `AGENT_VAULT_TOKEN` and `AGENT_VAULT_ADDR` in the agent's runtime. The agent doesn't get `HTTPS_PROXY`/`HTTP_PROXY` auto-configured — set them yourself (see [Set the proxy env vars manually](#set-the-proxy-env-vars-manually)) or launch the agent under `agent-vault run`.

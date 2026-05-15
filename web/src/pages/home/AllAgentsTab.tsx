@@ -598,6 +598,11 @@ function ConnectAgentView({
           The CLI reads these on launch to authenticate with Agent Vault and scope its session to the right vault.
         </p>
         <Snippet value={envSnippet} />
+        {vaults.length > 1 && (
+          <p className="text-xs text-text-muted">
+            Multiple vaults were pre-assigned; this snippet uses <code className="text-text-muted">{vaults[0].vault_name}</code>. Edit <code className="text-text-muted">AGENT_VAULT_VAULT</code> to pick a different one for this run.
+          </p>
+        )}
       </ManualStep>
 
       <ManualStep n={3} title="Run your agent under agent-vault">
