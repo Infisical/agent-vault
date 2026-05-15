@@ -1,7 +1,6 @@
 package server
 
 import (
-	_ "embed"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,9 +11,6 @@ import (
 	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/store"
 )
-
-//go:embed persistent_instructions_admin.txt
-var persistentInstructionsAdmin string
 
 // reservedVaultNames are names that conflict with /vaults/* frontend routes.
 // Keep in sync with vaultsLayoutRoute children in web/src/router.tsx.
@@ -27,20 +23,27 @@ func isReservedVaultName(name string) bool {
 	return ok
 }
 
-// handleAgentCreate creates a new instance-level agent and returns its token directly.
-// Replaces the old invite-create + redeem ceremony.
+// validVaultRole reports whether s is a recognized vault role.
+func validVaultRole(s string) bool {
+	return s == "proxy" || s == "member" || s == "admin"
+}
+
 func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	actor, err := s.requireInstanceMember(w, r)
+	if err != nil {
+		return
+	}
 
 	type vaultReq struct {
 		VaultName string `json:"vault_name"`
 		VaultRole string `json:"vault_role"`
 	}
 	var req struct {
-		Name              string     `json:"name"`
-		Role              string     `json:"role"` // instance-level role: "owner", "member", or "no-access" (default: "member")
-		SessionTTLSeconds *int       `json:"session_ttl_seconds,omitempty"`
-		Vaults            []vaultReq `json:"vaults"`
+		Name   string     `json:"name"`
+		Role   string     `json:"role"` // instance-level role: "owner", "member", or "no-access" (default: "member")
+		Vaults []vaultReq `json:"vaults"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
@@ -56,30 +59,6 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cap finite session TTL.
-	if req.SessionTTLSeconds != nil && *req.SessionTTLSeconds > 0 {
-		minSecs := int(scopedSessionMinTTL.Seconds())
-		maxSecs := int(scopedSessionMaxTTL.Seconds())
-		ttl := *req.SessionTTLSeconds
-		if ttl < minSecs {
-			ttl = minSecs
-		} else if ttl > maxSecs {
-			ttl = maxSecs
-		}
-		req.SessionTTLSeconds = &ttl
-	}
-
-	actor, err := s.requireInstanceMember(w, r)
-	if err != nil {
-		return
-	}
-
-	if existing, _ := s.store.GetAgentByName(ctx, req.Name); existing != nil {
-		jsonError(w, http.StatusConflict, fmt.Sprintf("An agent named %q already exists", req.Name))
-		return
-	}
-
-	// Validate and resolve vault pre-assignments.
 	type resolvedVault struct {
 		VaultID   string
 		VaultName string
@@ -90,7 +69,7 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 		if v.VaultRole == "" {
 			v.VaultRole = "proxy"
 		}
-		if v.VaultRole != "proxy" && v.VaultRole != "member" && v.VaultRole != "admin" {
+		if !validVaultRole(v.VaultRole) {
 			jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid vault role %q for vault %q", v.VaultRole, v.VaultName))
 			return
 		}
@@ -99,7 +78,6 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", v.VaultName))
 			return
 		}
-		// Caller must be admin of the vault (or instance owner).
 		if !actor.IsOwner() {
 			role, err := s.store.GetVaultRole(ctx, actor.ID, ns.ID)
 			if err != nil || role != "admin" {
@@ -114,7 +92,6 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Validate and default agent instance role.
 	agentRole := req.Role
 	if agentRole == "" {
 		agentRole = "member"
@@ -148,24 +125,18 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 		vaultInfos = append(vaultInfos, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.VaultRole})
 	}
 
-	var tokenExpiry *time.Time
-	if req.SessionTTLSeconds != nil && *req.SessionTTLSeconds > 0 {
-		tokenExpiry = timePtr(time.Now().Add(time.Duration(*req.SessionTTLSeconds) * time.Second))
-	}
-	sess, err := s.store.CreateAgentToken(ctx, agent.ID, tokenExpiry)
+	sess, err := s.store.CreateAgentToken(ctx, agent.ID, nil)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create agent token")
 		return
 	}
 
 	jsonCreated(w, map[string]interface{}{
-		"av_addr":        s.baseURL,
 		"av_agent_token": sess.ID,
 		"name":           agent.Name,
 		"role":           agent.Role,
 		"vaults":         vaultInfos,
 		"created_at":     agent.CreatedAt.Format(time.RFC3339),
-		"instructions":   persistentInstructionsAdmin,
 	})
 }
 
@@ -484,7 +455,7 @@ func (s *Server) handleVaultAgentAdd(w http.ResponseWriter, r *http.Request) {
 	if body.Role == "" {
 		body.Role = "proxy"
 	}
-	if body.Role != "proxy" && body.Role != "member" && body.Role != "admin" {
+	if !validVaultRole(body.Role) {
 		jsonError(w, http.StatusBadRequest, "Role must be one of: proxy, member, admin")
 		return
 	}
@@ -567,7 +538,7 @@ func (s *Server) handleVaultAgentSetRole(w http.ResponseWriter, r *http.Request)
 		jsonError(w, http.StatusBadRequest, `Request body must include {"role": "proxy|member|admin"}`)
 		return
 	}
-	if body.Role != "proxy" && body.Role != "member" && body.Role != "admin" {
+	if !validVaultRole(body.Role) {
 		jsonError(w, http.StatusBadRequest, "Role must be one of: proxy, member, admin")
 		return
 	}

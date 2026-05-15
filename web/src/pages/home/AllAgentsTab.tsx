@@ -315,24 +315,11 @@ function AddAgentButton({
     setSubmitting(true);
     setError("");
     try {
-      // Probe MITM before minting anything: agent tokens are returned exactly
-      // once at redemption, so creating a session when MITM is off loses it.
-      const mitmResp = await apiFetch("/v1/mitm/ca.pem", {
-        method: "HEAD",
-        signal: controller.signal,
-      });
-      if (mitmResp.status === 404) {
-        setError("Transparent proxy is disabled on this server. Restart Agent Vault with --mitm-port greater than 0 to enable agent connections.");
-        return;
-      }
-      if (!mitmResp.ok) {
-        setError(`Couldn't reach the transparent proxy (HTTP ${mitmResp.status}). Check the server and try again.`);
-        return;
-      }
-      const payload: Record<string, unknown> = { name: name.trim() };
-      // Non-owners don't see the picker, so agentRole stays at "no-access",
-      // which is what we want them creating.
-      payload.role = agentRole;
+      const payload: Record<string, unknown> = {
+        name: name.trim(),
+        // Non-owners don't see the picker, so agentRole stays at "no-access".
+        role: agentRole,
+      };
       if (vaultAssignments.length > 0) {
         payload.vaults = vaultAssignments;
       }

@@ -866,6 +866,9 @@ func (m *mockStore) GetProposalByApprovalToken(_ context.Context, token string) 
 // --- Agent mock methods ---
 
 func (m *mockStore) CreateAgent(_ context.Context, name, createdBy, role string) (*store.Agent, error) {
+	if _, exists := m.agents[name]; exists {
+		return nil, fmt.Errorf("UNIQUE constraint failed: agents.name")
+	}
 	ag := &store.Agent{
 		ID:        "agent-" + name,
 		Name:      name,
@@ -3335,9 +3338,6 @@ func TestHandleAgentCreate(t *testing.T) {
 	}
 	if resp["role"] != "member" {
 		t.Fatalf("expected role=member, got %v", resp["role"])
-	}
-	if resp["instructions"] == nil || resp["instructions"].(string) == "" {
-		t.Fatal("expected non-empty instructions")
 	}
 	if ms.agents["newbot"] == nil {
 		t.Fatal("expected agent to be persisted")

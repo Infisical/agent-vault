@@ -34,9 +34,6 @@ var agentCreateCmd = &cobra.Command{
 		var vaults []vaultEntry
 		for _, v := range vaultFlags {
 			name, role, _ := strings.Cut(v, ":")
-			if role == "" {
-				role = "proxy"
-			}
 			vaults = append(vaults, vaultEntry{VaultName: name, VaultRole: role})
 		}
 
