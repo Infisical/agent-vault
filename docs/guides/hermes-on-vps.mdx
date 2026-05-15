@@ -72,15 +72,13 @@ In the [Hetzner Cloud Console](https://console.hetzner.cloud), click **+ New Pro
 ssh-keygen -t ed25519 -f ~/.ssh/agent-vault-lab -C "agent-vault-lab"
 ```
 
-Press Enter twice at the passphrase prompts to leave it empty. Every `ssh` command in this guide uses `-i ~/.ssh/agent-vault-lab` to pin the connection to this specific key, so `ssh-agent` doesn't try other keys and trip Hetzner's attempt cap.
+Every `ssh` command in this guide uses `-i ~/.ssh/agent-vault-lab` to pin to this key.
 
 </Step>
 
 <Step title="Upload the public key to Hetzner">
 
-In the project sidebar: **Security → SSH Keys → Add SSH Key.** Paste the contents of `~/.ssh/agent-vault-lab.pub`. Name it (e.g. `lab`).
-
-**Tick "Make default for this project"** before saving. This auto-attaches the key to every server you create in the project, which is what lets you skip the SSH-key picker in step 5.
+In the project sidebar: **Security → SSH Keys → Add SSH Key.** Paste the contents of `~/.ssh/agent-vault-lab.pub`, name it (e.g. `lab`), and tick **Make default for this project** before saving.
 
 </Step>
 
