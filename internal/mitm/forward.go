@@ -123,6 +123,32 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 	p.forwardRequest(w, r, target, host, false, scope)
 }
 
+// hostHeaderForScheme strips target's port when it matches the default for
+// scheme so SigV4/GCS/Azure-SAS signatures over Host match; non-default
+// ports are preserved for vhost routing on internal upstreams.
+func hostHeaderForScheme(scheme, target string) string {
+	host, port, err := net.SplitHostPort(target)
+	if err != nil {
+		return target
+	}
+	var defaultPort string
+	switch strings.ToLower(scheme) {
+	case "https":
+		defaultPort = "443"
+	case "http":
+		defaultPort = "80"
+	default:
+		return target
+	}
+	if port != defaultPort {
+		return target
+	}
+	if strings.ContainsRune(host, ':') {
+		return "[" + host + "]"
+	}
+	return host
+}
+
 // forwardHandler returns an http.Handler that forwards each request to
 // target (the host:port captured from the original CONNECT line). Using
 // a closed-over target rather than r.Host defeats post-tunnel host
@@ -195,14 +221,7 @@ func (p *Proxy) forwardRequest(
 		emit(http.StatusBadGateway, "internal")
 		return
 	}
-	// Wire Host header preserves the port for non-default ports, per
-	// RFC 7230 §5.4 (Host field-value MUST equal the URI authority,
-	// excluding userinfo). Stripping the port broke vhost routing on
-	// internal upstreams that key on host:port (k8s ingress, dev
-	// servers, microservices) — a non-issue for the legacy CONNECT
-	// path because HTTPS:443 is canonical, but the dominant case for
-	// the new plain-HTTP forward path.
-	outReq.Host = target
+	outReq.Host = hostHeaderForScheme(scheme, target)
 	outReq.ContentLength = contentLength
 
 	inject, err := p.creds.Inject(r.Context(), scope.VaultID, host, r.URL.Path)
