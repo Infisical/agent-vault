@@ -656,3 +656,141 @@ func TestMITMForwardIPv6PreservesHostHeader(t *testing.T) {
 		t.Errorf("upstream Host = %q, want %q (IPv6 brackets must round-trip)", sawHost, wantHost)
 	}
 }
+
+// TestMITMForwardStreamsChunksPromptly verifies the forward path delivers
+// each upstream chunk to the client as it arrives, not as one coalesced
+// buffer at the end. Streaming protocols on top of HTTP (git smart-HTTP
+// sideband packs, SSE, gRPC-over-h2) rely on byte boundaries reaching the
+// client promptly; without flushing, git aborts mid-pack with
+// "early EOF / fetch-pack: invalid index-pack output".
+//
+// Upstream writes N chunks separated by a delay > the flusher's latency,
+// flushing each. The test asserts the client observes each chunk before
+// the upstream has written the next one.
+func TestMITMForwardStreamsChunksPromptly(t *testing.T) {
+	const chunkCount = 4
+	const chunkPayload = "chunk-body-"
+	const interChunkDelay = 200 * time.Millisecond // > flusher latency (50ms)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		fl, ok := w.(http.Flusher)
+		if !ok {
+			t.Errorf("upstream ResponseWriter is not a Flusher")
+			return
+		}
+		for i := 0; i < chunkCount; i++ {
+			fmt.Fprintf(w, "%s%d\n", chunkPayload, i)
+			fl.Flush()
+			time.Sleep(interChunkDelay)
+		}
+	}))
+	defer upstream.Close()
+
+	upstreamAuthority := strings.TrimPrefix(upstream.URL, "http://")
+	upstreamHost, _, _ := net.SplitHostPort(upstreamAuthority)
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{Passthrough: true}},
+	}}
+	proxyURL, clientRoots, _ := setupProxy(t, sr, cp)
+	client := newTrustingClient(proxyURL, url.User("av_sess_ok"), clientRoots)
+
+	req, err := http.NewRequest("GET", upstream.URL+"/stream", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	var arrivals []time.Time
+	for i := 0; i < chunkCount; i++ {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read chunk %d: %v (got %q so far)", i, err, line)
+		}
+		arrivals = append(arrivals, time.Now())
+		want := fmt.Sprintf("%s%d\n", chunkPayload, i)
+		if line != want {
+			t.Errorf("chunk %d = %q, want %q", i, line, want)
+		}
+	}
+	spread := arrivals[len(arrivals)-1].Sub(arrivals[0])
+	minSpread := time.Duration(chunkCount-1) * interChunkDelay / 2
+	if spread < minSpread {
+		t.Errorf("chunks arrived in %v; expected ≥ %v (proxy is buffering instead of flushing periodically)",
+			spread, minSpread)
+	}
+}
+
+// TestMITMForwardStreamsLargeBodyAtLineRate is a throughput floor: the
+// per-chunk flushing fix MUST NOT throttle bulk transfers. A regression
+// where every upstream Read triggers a TLS write + flush syscall drops
+// throughput by 100×+ (observed in production: 19 KB/s through the proxy
+// for a git clone that finishes in <1s direct), so this test sends a few
+// MiB through the proxy and asserts the copy finishes in well under the
+// time a per-Write-flush implementation would take.
+//
+// Upstream writes a precomputed payload with one Flush at the end (so we
+// only measure proxy-side throughput, not upstream pacing). Floor is
+// generous to avoid flakiness on slow CI; the regression we're catching
+// is two orders of magnitude away from this bound.
+func TestMITMForwardStreamsLargeBodyAtLineRate(t *testing.T) {
+	const payloadBytes = 4 << 20 // 4 MiB
+	payload := bytes.Repeat([]byte("agent-vault-stream-throughput\n"), payloadBytes/30)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	upstreamAuthority := strings.TrimPrefix(upstream.URL, "http://")
+	upstreamHost, _, _ := net.SplitHostPort(upstreamAuthority)
+
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{Passthrough: true}},
+	}}
+	proxyURL, clientRoots, _ := setupProxy(t, sr, cp)
+	client := newTrustingClient(proxyURL, url.User("av_sess_ok"), clientRoots)
+
+	req, err := http.NewRequest("GET", upstream.URL+"/big", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	elapsed := time.Since(start)
+	if len(body) != len(payload) {
+		t.Fatalf("body size = %d, want %d (proxy truncated mid-stream)", len(body), len(payload))
+	}
+	// Floor: 4 MiB must finish in ≤ 5s. A per-Write-flush regression takes
+	// ~200s on the same data path; line rate over localhost is ~50ms.
+	if elapsed > 5*time.Second {
+		t.Errorf("4 MiB took %v through the proxy — throughput regression (per-Write Flush?)", elapsed)
+	}
+}
