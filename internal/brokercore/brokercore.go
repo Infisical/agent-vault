@@ -10,15 +10,76 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/Infisical/agent-vault/internal/broker"
 )
 
-// MaxResponseBytes caps response bodies streamed back to agents on the
-// MITM proxy ingress.
-const MaxResponseBytes = 100 << 20
+// DefaultMaxResponseBytes caps response bodies streamed back to agents
+// on the MITM proxy ingress. The default is generous (1 GiB) because
+// agents proxy not just JSON LLM responses but also git clones, model
+// artifact downloads, datasets, and other bulk transfers that easily
+// exceed the old 100 MiB cap (silent truncation surfaced as
+// `fetch-pack: invalid index-pack output` for git, broken downloads
+// otherwise). Override with AGENT_VAULT_MAX_RESPONSE_BYTES — accepts a
+// plain byte count or a human suffix ("256MB", "5GB"). "0" disables
+// the cap entirely.
+const DefaultMaxResponseBytes int64 = 1 << 30
+
+// MaxResponseBytes returns the resolved response-body cap for the
+// current process. Computed once on first call; env changes after
+// startup are ignored to keep the value deterministic for the lifetime
+// of the proxy.
+var MaxResponseBytes = resolveMaxResponseBytes()
+
+func resolveMaxResponseBytes() int64 {
+	v := strings.TrimSpace(os.Getenv("AGENT_VAULT_MAX_RESPONSE_BYTES"))
+	if v == "" {
+		return DefaultMaxResponseBytes
+	}
+	if n, err := parseByteSize(v); err == nil {
+		if n == 0 {
+			return math.MaxInt64 // operator opt-out — effectively unbounded
+		}
+		return n
+	}
+	return DefaultMaxResponseBytes
+}
+
+// parseByteSize accepts a raw integer or one of the common
+// case-insensitive suffixes (KB, MB, GB, TB — base 1024 to match how
+// operators typically reason about HTTP payload sizes). Negative values
+// and trailing garbage are rejected.
+func parseByteSize(s string) (int64, error) {
+	s = strings.TrimSpace(strings.ToUpper(s))
+	mult := int64(1)
+	switch {
+	case strings.HasSuffix(s, "TB"):
+		mult = 1 << 40
+		s = strings.TrimSuffix(s, "TB")
+	case strings.HasSuffix(s, "GB"):
+		mult = 1 << 30
+		s = strings.TrimSuffix(s, "GB")
+	case strings.HasSuffix(s, "MB"):
+		mult = 1 << 20
+		s = strings.TrimSuffix(s, "MB")
+	case strings.HasSuffix(s, "KB"):
+		mult = 1 << 10
+		s = strings.TrimSuffix(s, "KB")
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("invalid byte size %q", s)
+	}
+	if n != 0 && n > math.MaxInt64/mult {
+		return 0, fmt.Errorf("byte size %q overflows int64", s)
+	}
+	return n * mult, nil
+}
 
 // ProxyErrorHeader is the response header Agent Vault sets on broker-layer
 // error responses so SDK clients can distinguish them from upstream
