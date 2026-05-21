@@ -278,6 +278,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--home-volume-shared` | `false` | Share `/home/claude/.claude` across invocations via a persistent docker volume (`--isolation=container` only). Default is a per-invocation volume — auth doesn't persist but concurrent runs can't corrupt each other. |
     | `--share-agent-dir` | `false` | Bind-mount the host's agent state dir (`~/.claude`) at `/home/claude/.claude` so the container reuses your host login (`--isolation=container` only). On Linux the container's `claude` user is remapped to your host uid/gid so writes land owned by you. Mutually exclusive with `--home-volume-shared`. |
     | `--git` | `false` | Configure Git-over-HTTPS for the child process. Installs the Agent Vault Git credential helper via process-local Git config, disables interactive Git prompts, and sets Git's `http.sslCAInfo` / `http.proxySSLCAInfo` to the Agent Vault MITM CA. The helper returns only sentinel credentials; real upstream credentials stay in Agent Vault and are injected by the proxy when a service matches. |
+    | `--cli-profile` | | Project vault-stored credentials into supported CLI auth env vars for this child process only; repeatable. Built-in: `azure-devops`, which maps `AZURE_DEVOPS_PASSWORD` to `AZURE_DEVOPS_EXT_PAT`. Requires an admin session because env-supplied proxy tokens cannot reveal credentials. |
 
     Example Azure DevOps Git-over-HTTPS setup:
 
@@ -292,6 +293,13 @@ description: "Complete reference for all Agent Vault CLI commands."
       --password-key AZURE_DEVOPS_PASSWORD
 
     agent-vault run --git -- git ls-remote https://dev.azure.com/org/project/_git/repo
+    ```
+
+    Example Azure DevOps CLI PR operation without Keychain:
+
+    ```bash
+    agent-vault run --vault default --cli-profile azure-devops -- \
+      az repos pr show --id 123 --organization https://dev.azure.com/org --project project
     ```
   </Accordion>
 

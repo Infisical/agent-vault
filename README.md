@@ -151,6 +151,13 @@ agent-vault run --git -- git ls-remote https://dev.azure.com/org/project/_git/re
 
 The `agent-vault git-credential` command implements Git's credential helper protocol and is intended to be installed by `agent-vault run --git`; it does not store, erase, print, or return vault credential values.
 
+For developer CLIs that require env-token auth, add `--cli-profile`. The first built-in profile is `azure-devops`, which reads `AZURE_DEVOPS_PASSWORD` from Agent Vault and sets `AZURE_DEVOPS_EXT_PAT` only on the child process. The token is not passed in argv, written to shell profiles, stored in macOS Keychain, or printed in Agent Vault status logs.
+
+```bash
+agent-vault run --vault default --cli-profile azure-devops -- \
+  az repos pr show --id 123 --organization https://dev.azure.com/org --project project
+```
+
 Alternatively, if your agent is running with Docker, you can install the Agent Vault CLI via a Dockerfile by copying the binary into your own image and using it to start up your agent process:
 
 ```dockerfile

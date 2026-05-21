@@ -88,6 +88,7 @@ Example:
 	c.Flags().Bool("home-volume-shared", false, "Share /home/claude/.claude across invocations (requires --isolation=container); default is a per-invocation volume, losing auth state but avoiding concurrency corruption")
 	c.Flags().Bool("share-agent-dir", false, "Bind-mount the host's agent state dir (~/.claude) into the container so it reuses your host login (requires --isolation=container; mutually exclusive with --home-volume-shared)")
 	c.Flags().Bool("git", false, "Configure Git HTTPS credential helper and CA settings for the child process without exposing real credentials")
+	c.Flags().StringArray("cli-profile", nil, "Project vault credentials into supported CLI auth env vars for this child process only (repeatable; built-in: azure-devops)")
 
 	return c
 }
@@ -209,6 +210,28 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 			env = append(env, "AGENT_VAULT_GIT_HOSTS="+hosts)
 		}
 		fmt.Fprintf(os.Stderr, "%s configured Git HTTPS credential helper and CA settings\n", successText("agent-vault:"))
+	}
+
+	cliProfiles, _ := cmd.Flags().GetStringArray("cli-profile")
+	projections, err := resolveCLIProfileProjections(cliProfiles)
+	if err != nil {
+		return err
+	}
+	if len(projections) > 0 {
+		if fromEnv {
+			return fmt.Errorf("--cli-profile requires an admin session so Agent Vault can reveal the selected credential only to this wrapper process; env-supplied proxy tokens cannot reveal credentials")
+		}
+		fetch := func(key string) (string, error) {
+			return fetchRevealedCredentialValue(addr, sess.Token, vault, key)
+		}
+		var summaries []string
+		env, summaries, err = applyCLIProfileProjections(env, projections, fetch)
+		if err != nil {
+			return err
+		}
+		for _, summary := range summaries {
+			fmt.Fprintf(os.Stderr, "%s configured CLI profile projection %s\n", successText("agent-vault:"), summary)
+		}
 	}
 
 	// 7. If the target command is a supported agent, offer to install the
