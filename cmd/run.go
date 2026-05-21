@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -11,12 +12,14 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/Infisical/agent-vault/internal/isolation"
+	"github.com/Infisical/agent-vault/internal/proxybridge"
 	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/Infisical/agent-vault/internal/store"
 	"github.com/charmbracelet/huh"
@@ -87,6 +90,15 @@ Example:
 	c.Flags().Bool("no-firewall", false, "Skip iptables egress rules inside the container (requires --isolation=container; debug only)")
 	c.Flags().Bool("home-volume-shared", false, "Share /home/claude/.claude across invocations (requires --isolation=container); default is a per-invocation volume, losing auth state but avoiding concurrency corruption")
 	c.Flags().Bool("share-agent-dir", false, "Bind-mount the host's agent state dir (~/.claude) into the container so it reuses your host login (requires --isolation=container; mutually exclusive with --home-volume-shared)")
+
+	// --tls-bridge controls the loopback TLS-terminating shim used for
+	// children whose HTTP libraries reject `https://`-scheme HTTPS_PROXY
+	// URLs (notably Codex's WebSocket transport via tokio-tungstenite).
+	// auto = enable for binaries flagged in knownAgents.needsTLSBridge.
+	// always = enable regardless of binary.
+	// never = disable (today's behavior).
+	// Also read from AGENT_VAULT_TLS_BRIDGE.
+	c.Flags().String("tls-bridge", "", "Loopback TLS bridge mode: auto (default), always, never. Also reads AGENT_VAULT_TLS_BRIDGE.")
 
 	return c
 }
@@ -197,34 +209,158 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	env = newEnv
 	fmt.Fprintf(os.Stderr, "%s routing HTTP/HTTPS through MITM proxy (%s)\n", successText("agent-vault:"), net.JoinHostPort(resolveMITMHost(addr), strconv.Itoa(mitmPort)))
 
+	// 6b. If the child is on the TLS-bridge auto-list (or --tls-bridge=always
+	//     was passed), start a loopback TLS terminator and rewrite
+	//     HTTPS_PROXY/HTTP_PROXY to point at it. The bridge lets clients
+	//     that only support `http://`-scheme proxy URLs (notably Codex's
+	//     WebSocket transport via tokio-tungstenite) still go through the
+	//     TLS-wrapped MITM listener without the broker accepting cleartext
+	//     CONNECT on the wire.
+	bridgeMode := resolveTLSBridgeMode(cmd)
+	useBridge := false
+	switch bridgeMode {
+	case "always":
+		useBridge = true
+	case "never":
+		useBridge = false
+	case "", "auto":
+		useBridge = knownAgentNeedsTLSBridge(args[0])
+	default:
+		return fmt.Errorf("--tls-bridge: unknown mode %q (want auto, always, or never)", bridgeMode)
+	}
+
+	ctx, cancelBridge := context.WithCancel(context.Background())
+	defer cancelBridge()
+	var bridge *proxybridge.Bridge
+	if useBridge {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("resolve home dir for TLS bridge: %w", err)
+		}
+		caPath := filepath.Join(home, ".agent-vault", "mitm-ca.pem")
+		mitmHost := resolveMITMHost(addr)
+		mitmHostPort := net.JoinHostPort(mitmHost, strconv.Itoa(mitmPort))
+
+		bridge, err = proxybridge.Start(ctx, mitmHostPort, caPath, mitmHost)
+		if err != nil {
+			return fmt.Errorf("start TLS bridge: %w", err)
+		}
+		defer func() { _ = bridge.Close() }()
+
+		proxyURL := (&url.URL{
+			Scheme: "http",
+			User:   url.UserPassword(token, vault),
+			Host:   bridge.Addr(),
+		}).String()
+		env = stripEnvKeys(env, mitmInjectedKeys)
+		env = append(env,
+			"HTTPS_PROXY="+proxyURL,
+			"HTTP_PROXY="+proxyURL,
+			"NO_PROXY=localhost",
+			"NODE_USE_ENV_PROXY=1",
+			"SSL_CERT_FILE="+caPath,
+			"NODE_EXTRA_CA_CERTS="+caPath,
+			"REQUESTS_CA_BUNDLE="+caPath,
+			"CURL_CA_BUNDLE="+caPath,
+			"GIT_SSL_CAINFO="+caPath,
+			"DENO_CERT="+caPath,
+		)
+		fmt.Fprintf(os.Stderr, "%s routing through loopback TLS bridge at %s\n", successText("agent-vault:"), bridge.Addr())
+	}
+
 	// 7. If the target command is a supported agent, offer to install the
 	//    Agent Vault skill (only when not already present).
 	if name, dir, ok := agentSkillDir(args[0]); ok {
 		maybeInstallSkills(name, dir)
 	}
 
-	// 8. Confirm, then exec — replaces this process entirely so the child
-	//    (e.g. Claude Code) gets direct terminal control.
+	// 8. Launch the child. When the TLS bridge is active we can't use
+	//    syscall.Exec because it would replace this process and kill the
+	//    bridge goroutine. Use os/exec instead, with stdin/stdout/stderr
+	//    inherited, signal forwarding, and exit-code propagation so the
+	//    UX matches an exec wrapper as closely as possible. When the
+	//    bridge is disabled we keep the original syscall.Exec path so
+	//    existing agents (Claude, Cursor, Hermes, OpenCode) see zero
+	//    behavior change.
 	fmt.Fprintf(os.Stderr, "%s agent-vault connected. Starting %s...\n\n", successText("agent-vault:"), boldText(args[0]))
-	// gosec G702: this is an exec wrapper — the whole purpose is to run a
-	// user-specified binary with user-specified args, identical to the
-	// rationale for the G204 exclusion in .golangci.yml.
-	return syscall.Exec(binary, args, env) //nolint:gosec
+	if bridge == nil {
+		// gosec G702: this is an exec wrapper — the whole purpose is to run a
+		// user-specified binary with user-specified args, identical to the
+		// rationale for the G204 exclusion in .golangci.yml.
+		return syscall.Exec(binary, args, env) //nolint:gosec
+	}
+	return runChildWithSignals(binary, args, env)
+}
+
+// resolveTLSBridgeMode reads --tls-bridge, falling back to
+// AGENT_VAULT_TLS_BRIDGE. Returns "" when neither is set; the caller
+// treats "" identically to "auto".
+func resolveTLSBridgeMode(cmd *cobra.Command) string {
+	if v, _ := cmd.Flags().GetString("tls-bridge"); v != "" {
+		return v
+	}
+	if v := os.Getenv("AGENT_VAULT_TLS_BRIDGE"); v != "" {
+		return v
+	}
+	return ""
+}
+
+// runChildWithSignals is the non-exec launch path used when the TLS
+// bridge is active. The bridge runs in a goroutine in this process, so
+// we can't replace the process via syscall.Exec — we have to start the
+// child, forward signals to it, wait for it to exit, and propagate its
+// exit code.
+func runChildWithSignals(binary string, args, env []string) error {
+	// gosec G204: same rationale as the syscall.Exec branch.
+	child := exec.Command(binary, args[1:]...) //nolint:gosec
+	child.Env = env
+	child.Stdin = os.Stdin
+	child.Stdout = os.Stdout
+	child.Stderr = os.Stderr
+	if err := child.Start(); err != nil {
+		return fmt.Errorf("start %s: %w", binary, err)
+	}
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
+	go func() {
+		for s := range sigs {
+			if child.Process != nil {
+				_ = child.Process.Signal(s)
+			}
+		}
+	}()
+
+	err := child.Wait()
+	signal.Stop(sigs)
+	close(sigs)
+
+	if err == nil {
+		return nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		os.Exit(exitErr.ExitCode())
+	}
+	return err
 }
 
 // knownAgents maps CLI binary base-names to the (agentName, skillsDir)
 // pair used by maybeInstallSkills. Multiple base-names can map to the
 // same entry (e.g. "cursor" and "agent" both target ".cursor").
+// needsTLSBridge=true marks binaries whose HTTP libraries reject
+// `https://`-scheme HTTPS_PROXY URLs and therefore need the loopback
+// TLS bridge in `--tls-bridge=auto` mode.
 var knownAgents = []struct {
-	bases     []string
-	agentName string
-	baseDir   string
+	bases          []string
+	agentName      string
+	baseDir        string
+	needsTLSBridge bool
 }{
-	{[]string{"claude"}, "Claude Code", ".claude"},
-	{[]string{"cursor", "agent"}, "Cursor", ".cursor"},
-	{[]string{"codex"}, "Codex", ".agents"},
-	{[]string{"hermes"}, "Hermes", ".hermes"},
-	{[]string{"opencode"}, "OpenCode", ".opencode"},
+	{[]string{"claude"}, "Claude Code", ".claude", false},
+	{[]string{"cursor", "agent"}, "Cursor", ".cursor", false},
+	{[]string{"codex"}, "Codex", ".agents", true},
+	{[]string{"hermes"}, "Hermes", ".hermes", false},
+	{[]string{"opencode"}, "OpenCode", ".opencode", false},
 }
 
 // agentSkillDir returns the display name and skills base directory for a
@@ -239,6 +375,20 @@ func agentSkillDir(cmd string) (agentName, baseDir string, ok bool) {
 		}
 	}
 	return "", "", false
+}
+
+// knownAgentNeedsTLSBridge reports whether the binary at cmd is on the
+// per-binary auto-enable list for the loopback TLS bridge.
+func knownAgentNeedsTLSBridge(cmd string) bool {
+	base := filepath.Base(cmd)
+	for _, a := range knownAgents {
+		for _, b := range a.bases {
+			if base == b {
+				return a.needsTLSBridge
+			}
+		}
+	}
+	return false
 }
 
 // maybeInstallSkills installs both Agent Vault skills (CLI and HTTP) under
