@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -87,7 +88,15 @@ func (s *Server) handleVaultContext(w http.ResponseWriter, r *http.Request) {
 		"vault_name": vault.Name,
 		"vault_role": vaultRole,
 	}
-	if cs, err := s.store.GetVaultCredentialStore(ctx, vault.ID); err == nil && cs != nil && cs.Kind != "" {
+	// Distinguish a missing row (vault is builtin) from a real DB error.
+	// Failing open here would render an external vault as builtin in the UI,
+	// showing mutation buttons that then 409 against assertBuiltinCredentialStore.
+	cs, err := s.store.GetVaultCredentialStore(ctx, vault.ID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		jsonError(w, http.StatusInternalServerError, "Failed to read credential store")
+		return
+	}
+	if cs != nil && cs.Kind != "" {
 		resp["credential_store"] = credentialStoreSummaryOf(cs, true)
 	}
 	jsonOK(w, resp)
@@ -442,7 +451,15 @@ func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context,
 
 	secs, err := s.infisicalClient.FetchSecrets(ctx, cfg)
 	if err != nil {
-		jsonCodedError(w, http.StatusBadGateway, "infisical_fetch_failed", err.Error())
+		// Don't echo the SDK error: it embeds the configured INFISICAL_URL
+		// and verbatim upstream rejection bodies, turning this endpoint
+		// (open to any instance member) into an oracle for the operator's
+		// Infisical topology.
+		s.logger.Warn("infisical fetch failed during vault create",
+			slog.String("vault_name", req.Name),
+			slog.String("err", err.Error()))
+		jsonCodedError(w, http.StatusBadGateway, "infisical_fetch_failed",
+			"Failed to fetch secrets from Infisical. See server logs for details.")
 		return
 	}
 
@@ -507,8 +524,15 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 
 	// One query for every vault's credential-store row; built into a map so
 	// the per-vault loop below is a cheap lookup instead of an N+1 fan-out.
+	// On error we keep serving the list — credential-store info is supplemental
+	// enrichment and the mutation gate (assertBuiltinCredentialStore) still
+	// fails closed — but we surface the underlying error to the logs so
+	// operators can see why external vaults briefly lose their kind pill.
 	csByVault := map[string]*store.VaultCredentialStore{}
-	if rows, err := s.store.ListVaultCredentialStores(ctx); err == nil {
+	if rows, err := s.store.ListVaultCredentialStores(ctx); err != nil {
+		s.logger.Warn("listing credential stores failed; vault list will omit credential_store fields",
+			slog.String("err", err.Error()))
+	} else {
 		for i := range rows {
 			csByVault[rows[i].VaultID] = &rows[i]
 		}

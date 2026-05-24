@@ -97,7 +97,7 @@ func TestDetectAuthMethod_LDAPRequiresAllThree(t *testing.T) {
 	got, _ = DetectAuthMethod(envFunc(map[string]string{
 		"INFISICAL_LDAP_AUTH_IDENTITY_ID": "id",
 		"INFISICAL_LDAP_AUTH_USERNAME":    "bob",
-		"INFISICAL_LDAP_AUTH_PASSWORD":    "s3cret",
+		"INFISICAL_LDAP_AUTH_PASSWORD":    "x",
 	}), newDiscardLogger())
 	if got != AuthLDAP {
 		t.Fatalf("expected ldap, got %q", got)

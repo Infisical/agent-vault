@@ -24,10 +24,12 @@ type SyncerStore interface {
 // credential-store row.
 const tickInterval = 10 * time.Second
 
-// maxSyncErrorChars caps the length of the human-facing last_sync_error
-// message we store. The SDK can return verbose errors and we want a short,
-// secret-free string in the DB.
-const maxSyncErrorChars = 200
+// syncFailedPublicMessage is what we persist into vault_credential_stores.last_sync_error
+// and surface to every vault member via /v1/vaults/{name}/context. Upstream
+// SDK errors can embed the configured INFISICAL_URL plus verbatim upstream
+// rejection bodies, so we keep the persisted value generic and log the real
+// error server-side where only the operator sees it.
+const syncFailedPublicMessage = "Infisical sync failed. See server logs for details."
 
 // Syncer pulls Infisical secrets into the local credentials table at each
 // vault's configured cadence.
@@ -185,20 +187,12 @@ func EncryptSecrets(secs []Secret, dek []byte) ([]store.EncryptedKV, error) {
 }
 
 func (s *Syncer) recordFailure(ctx context.Context, vaultID string, err error) {
-	msg := truncate(err.Error(), maxSyncErrorChars)
 	s.Logger.Warn("infisical sync failed",
 		slog.String("vault_id", vaultID),
-		slog.String("err", msg))
-	if uerr := s.Store.UpdateVaultCredentialStoreHealth(ctx, vaultID, StatusError, msg, s.Clock()); uerr != nil {
+		slog.String("err", err.Error()))
+	if uerr := s.Store.UpdateVaultCredentialStoreHealth(ctx, vaultID, StatusError, syncFailedPublicMessage, s.Clock()); uerr != nil {
 		s.Logger.Warn("updating health=error failed",
 			slog.String("vault_id", vaultID),
 			slog.String("err", uerr.Error()))
 	}
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
 }
