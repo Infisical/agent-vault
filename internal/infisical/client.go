@@ -65,7 +65,7 @@ func (c *Client) AuthMethod() AuthMethod { return c.method }
 // returns values in plaintext; callers are responsible for encrypting
 // before persistence and clearing plaintext after use.
 func (c *Client) FetchSecrets(ctx context.Context, cfg VaultConfig) ([]Secret, error) {
-	secs, err := c.sdk.Secrets().List(sdk.ListSecretsOptions{
+	res, err := c.sdk.Secrets().ListSecrets(sdk.ListSecretsOptions{
 		ProjectID:              cfg.ProjectID,
 		Environment:            cfg.Environment,
 		SecretPath:             cfg.SecretPath,
@@ -76,8 +76,8 @@ func (c *Client) FetchSecrets(ctx context.Context, cfg VaultConfig) ([]Secret, e
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Secret, 0, len(secs))
-	for _, s := range secs {
+	out := make([]Secret, 0, len(res.Secrets))
+	for _, s := range res.Secrets {
 		out = append(out, Secret{Key: s.SecretKey, Value: s.SecretValue})
 	}
 	return out, nil
