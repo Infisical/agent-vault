@@ -141,6 +141,20 @@ Proposals are the primary way to exchange credentials with a human operator. Use
 
 When you get a `403` for a host not in `/discover` (only happens when the vault is in strict deny mode), the response includes a `proposal_hint` with the denied host.
 
+### Vaults backed by an external credential store
+
+Some vaults sync credentials read-only from an external system (e.g. Infisical). For these vaults:
+
+- `POST /v1/credentials` and `DELETE /v1/credentials` return `409 Conflict` with `{"code": "external_credential_store", "error": "..."}`. Manage credentials in the upstream system; the next sync brings them in.
+- `POST /v1/proposals` rejects any payload that includes `credentials[]` (same shape). Service-only proposals are still accepted; reference credential keys that already exist in the upstream snapshot.
+
+`GET /v1/vaults/{name}/context` includes a `credential_store: { kind, config, last_sync_status, last_synced_at, last_sync_error }` field when the vault is external. If `credential_store` is absent or `kind` is empty, the vault is built-in.
+
+Operator-facing endpoints (informational, not used in the agent hot path):
+
+- `GET /v1/instance/credential-stores` returns `{"available": ["builtin"]}` or `{"available": ["builtin", "infisical"]}` depending on the server's INFISICAL_URL configuration.
+- `POST /v1/vaults` with `credential_store: { kind: "infisical", config: {...}, poll_interval_seconds: N }` creates an external-store vault. Errors include `{"code": "infisical_not_configured", ...}` (503, when INFISICAL_URL is unset) and `{"code": "infisical_fetch_failed", ...}` (502, when the initial probe fails).
+
 ## Choosing the Right Auth Method
 
 **Before creating a proposal for a new service, you MUST look up how that service authenticates API requests.** If you have internet access, fetch the service's API authentication documentation to determine the correct auth type. Do not guess -- incorrect auth wastes the operator's time and will fail at the proxy.

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, type FormEvent } from "react";
 import { useVaultParams, StatusBadge, LoadingSpinner, ErrorBanner, timeAgo } from "./shared";
+import { InfoBanner } from "../../components/shared";
 import DataTable, { type Column } from "../../components/DataTable";
 import Modal from "../../components/Modal";
 import Button from "../../components/Button";
@@ -21,7 +22,7 @@ interface Proposal {
 }
 
 export default function ProposalsTab() {
-  const { vaultName } = useVaultParams();
+  const { vaultName, credentialStore } = useVaultParams();
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -123,6 +124,14 @@ export default function ProposalsTab() {
           Review and approve access requests proposed by agents.
         </p>
       </div>
+
+      {credentialStore && (
+        <InfoBanner className="mb-6">
+          Proposals on this vault may include service changes only. Credential
+          additions are rejected — manage credentials in{" "}
+          <span className="font-medium text-text">{credentialStore.kind}</span>.
+        </InfoBanner>
+      )}
 
       {/* Filter tabs */}
       <div className="flex mb-6 border border-border rounded-lg overflow-hidden w-fit">

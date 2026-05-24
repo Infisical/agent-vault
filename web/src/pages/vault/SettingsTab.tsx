@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, Fragment } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { useVaultParams, ErrorBanner } from "./shared";
+import { useVaultParams, ErrorBanner, timeAgo } from "./shared";
+import { SyncStatusDot } from "../../components/shared";
 import Button from "../../components/Button";
 import Input from "../../components/Input";
 import FormField from "../../components/FormField";
@@ -11,7 +12,7 @@ import { apiFetch } from "../../lib/api";
 type UnmatchedHostPolicy = "passthrough" | "deny";
 
 export default function SettingsTab() {
-  const { vaultName, vaultRole, isOwner } = useVaultParams();
+  const { vaultName, vaultRole, isOwner, credentialStore } = useVaultParams();
   const navigate = useNavigate();
   const canManage = vaultRole === "admin" || isOwner;
   const isDefault = vaultName === "default";
@@ -143,6 +144,54 @@ export default function SettingsTab() {
           Manage vault configuration and preferences.
         </p>
       </div>
+
+      {/* Credential store (read-only; immutable post-create) */}
+      <section className="mb-8">
+        <div className="border border-border rounded-xl bg-surface p-5">
+          <h3 className="text-sm font-semibold text-text mb-1">Credential store</h3>
+          {!credentialStore ? (
+            <p className="text-sm text-text-muted">
+              Agent Vault (built-in). Credentials are stored locally and managed through this UI.
+            </p>
+          ) : (
+            <div className="space-y-2 text-sm">
+              <p className="text-text-muted">
+                This vault is backed by{" "}
+                <span className="font-medium text-text">{credentialStore.kind}</span>.
+                Credential mutations from Agent Vault are disabled; manage credentials in the
+                upstream system.
+              </p>
+              {credentialStore.config && (
+                <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-xs text-text-muted">
+                  {Object.entries(credentialStore.config).map(([k, v]) => (
+                    <Fragment key={k}>
+                      <dt className="text-text-dim">{k}</dt>
+                      <dd className="text-text break-all">{String(v)}</dd>
+                    </Fragment>
+                  ))}
+                </dl>
+              )}
+              <div className="flex flex-wrap items-center gap-3 pt-2 text-xs text-text-muted">
+                {credentialStore.poll_interval_seconds && (
+                  <span>Poll every {credentialStore.poll_interval_seconds}s</span>
+                )}
+                {credentialStore.last_sync_status && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <SyncStatusDot status={credentialStore.last_sync_status} />
+                    Last sync: {credentialStore.last_sync_status}
+                  </span>
+                )}
+                {credentialStore.last_synced_at && (
+                  <span>{timeAgo(credentialStore.last_synced_at)}</span>
+                )}
+              </div>
+              {credentialStore.last_sync_error && (
+                <ErrorBanner message={credentialStore.last_sync_error} className="mt-2" />
+              )}
+            </div>
+          )}
+        </div>
+      </section>
 
       {/* Vault config (rename + unmatched-host policy) */}
       <section className="mb-8">

@@ -4,10 +4,18 @@ import type { AuthContext } from "../../router";
 import Modal from "../../components/Modal";
 import FormField from "../../components/FormField";
 import Input from "../../components/Input";
+import Select from "../../components/Select";
+import Toggle from "../../components/Toggle";
 import Button from "../../components/Button";
 import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
-import { ErrorBanner, LoadingSpinner, timeAgo } from "../../components/shared";
+import { ErrorBanner, LoadingSpinner, SyncStatusDot, timeAgo } from "../../components/shared";
 import { apiFetch } from "../../lib/api";
+
+interface CredentialStoreSummary {
+  kind: string;
+  last_sync_status?: string;
+  last_synced_at?: string;
+}
 
 interface Vault {
   id: string;
@@ -17,6 +25,7 @@ interface Vault {
   is_default?: boolean;
   created_at: string;
   pending_proposals: number;
+  credential_store?: CredentialStoreSummary;
 }
 
 export default function VaultsListTab() {
@@ -277,6 +286,9 @@ function VaultCard({
             {vault.role}
           </span>
         )}
+        {vault.credential_store && (
+          <CredentialStorePill store={vault.credential_store} />
+        )}
       </div>
     </div>
   );
@@ -290,16 +302,56 @@ function VaultCard({
   );
 }
 
+function CredentialStorePill({ store }: { store: CredentialStoreSummary }) {
+  const tooltip = store.last_synced_at
+    ? `Last synced ${timeAgo(store.last_synced_at)}`
+    : "Synced from external source";
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-surface-raised border border-border text-text-muted"
+      title={tooltip}
+    >
+      <SyncStatusDot status={store.last_sync_status} />
+      {store.kind}
+    </span>
+  );
+}
+
 function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
+  const [availableStores, setAvailableStores] = useState<string[]>(["builtin"]);
+  const [kind, setKind] = useState<string>("builtin");
+
+  // Infisical-only fields.
+  const [projectID, setProjectID] = useState("");
+  const [environment, setEnvironment] = useState("");
+  const [secretPath, setSecretPath] = useState("/");
+  const [recursive, setRecursive] = useState(false);
+  const [pollSecs, setPollSecs] = useState(60);
+
+  useEffect(() => {
+    apiFetch("/v1/instance/credential-stores")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.available) setAvailableStores(data.available);
+      })
+      .catch(() => {/* fall back to builtin only */});
+  }, []);
+
   function close() {
     setOpen(false);
     setName("");
     setError("");
+    setKind("builtin");
+    setProjectID("");
+    setEnvironment("");
+    setSecretPath("/");
+    setRecursive(false);
+    setPollSecs(60);
   }
 
   async function handleCreate() {
@@ -308,9 +360,27 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
     setError("");
     const trimmed = name.trim();
     try {
+      const body: Record<string, unknown> = { name: trimmed };
+      if (kind === "infisical") {
+        if (!projectID.trim() || !environment.trim()) {
+          setError("Project ID and environment are required for Infisical.");
+          setSubmitting(false);
+          return;
+        }
+        body.credential_store = {
+          kind: "infisical",
+          config: {
+            project_id: projectID.trim(),
+            environment: environment.trim(),
+            secret_path: secretPath.trim() || "/",
+            recursive,
+          },
+          poll_interval_seconds: pollSecs,
+        };
+      }
       const resp = await apiFetch("/v1/vaults", {
         method: "POST",
-        body: JSON.stringify({ name: trimmed }),
+        body: JSON.stringify(body),
       });
       if (resp.ok) {
         close();
@@ -325,6 +395,8 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
       setSubmitting(false);
     }
   }
+
+  const infisicalAvailable = availableStores.includes("infisical");
 
   return (
     <>
@@ -367,19 +439,84 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
         <FormField
           label="Vault Name"
           helperText="Lowercase letters, numbers, and hyphens. 3–64 characters."
-          error={error}
+          error={error && kind === "builtin" ? error : undefined}
         >
           <Input
             placeholder="e.g. my-project"
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") handleCreate();
+              if (e.key === "Enter" && kind === "builtin") handleCreate();
             }}
-            error={!!error}
+            error={!!error && kind === "builtin"}
             autoFocus
           />
         </FormField>
+
+        <FormField
+          label="Credential store"
+          helperText={
+            infisicalAvailable
+              ? "Built-in keeps credentials in Agent Vault. Infisical syncs read-only from your Infisical instance."
+              : "Set INFISICAL_URL on the server to enable Infisical-backed vaults."
+          }
+        >
+          <Select
+            value={kind}
+            onChange={(e) => setKind(e.target.value)}
+          >
+            <option value="builtin">Agent Vault (built-in)</option>
+            <option value="infisical" disabled={!infisicalAvailable}>
+              Infisical{infisicalAvailable ? "" : " (unavailable)"}
+            </option>
+          </Select>
+        </FormField>
+
+        {kind === "infisical" && (
+          <div className="space-y-3">
+            <FormField label="Project ID" required>
+              <Input
+                placeholder="abcdef..."
+                value={projectID}
+                onChange={(e) => setProjectID(e.target.value)}
+              />
+            </FormField>
+            <FormField label="Environment" required helperText="e.g. dev, prod">
+              <Input
+                placeholder="dev"
+                value={environment}
+                onChange={(e) => setEnvironment(e.target.value)}
+              />
+            </FormField>
+            <FormField label="Secret path" helperText='Use "/" for the project root.'>
+              <Input
+                placeholder="/"
+                value={secretPath}
+                onChange={(e) => setSecretPath(e.target.value)}
+              />
+            </FormField>
+            <div className="flex items-center gap-2 text-sm">
+              <Toggle
+                checked={recursive}
+                onChange={setRecursive}
+                ariaLabel="Recursive"
+              />
+              <span className="text-text-muted">Pull secrets recursively below the path</span>
+            </div>
+            <FormField
+              label="Poll interval (seconds)"
+              helperText="How often Agent Vault refreshes the cached secrets. Minimum 10."
+            >
+              <Input
+                type="number"
+                min={10}
+                value={pollSecs}
+                onChange={(e) => setPollSecs(parseInt(e.target.value || "60", 10))}
+              />
+            </FormField>
+            {error && <ErrorBanner message={error} />}
+          </div>
+        )}
       </Modal>
     </>
   );

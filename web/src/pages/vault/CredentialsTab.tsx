@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useVaultParams, LoadingSpinner, ErrorBanner } from "./shared";
+import { InfoBanner } from "../../components/shared";
 import DropdownMenu from "../../components/DropdownMenu";
 import DataTable, { type Column } from "../../components/DataTable";
 import Modal from "../../components/Modal";
@@ -9,7 +10,10 @@ import FormField from "../../components/FormField";
 import { apiFetch } from "../../lib/api";
 
 export default function CredentialsTab() {
-  const { vaultName, vaultRole } = useVaultParams();
+  const { vaultName, vaultRole, credentialStore } = useVaultParams();
+  const externalKind = credentialStore?.kind;
+  const isExternal = !!externalKind;
+  const pollSecs = credentialStore?.poll_interval_seconds;
   const [keys, setKeys] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -87,7 +91,7 @@ export default function CredentialsTab() {
     }
   }
 
-  const isAdmin = vaultRole === "admin";
+  const isAdmin = vaultRole === "admin" && !isExternal;
   const canReveal = vaultRole === "member" || vaultRole === "admin";
 
   // Reveal state: tracks which credential values have been fetched and are visible.
@@ -242,6 +246,15 @@ export default function CredentialsTab() {
         )}
       </div>
 
+      {isExternal && (
+        <InfoBanner className="mb-4">
+          Credentials for this vault are synced read-only from{" "}
+          <span className="font-medium text-text">{externalKind}</span>
+          {pollSecs ? ` every ${pollSecs}s` : ""}. Add, edit, or delete them in{" "}
+          {externalKind}; changes appear here on the next sync.
+        </InfoBanner>
+      )}
+
       {loading ? (
         <LoadingSpinner />
       ) : error ? (
@@ -251,8 +264,12 @@ export default function CredentialsTab() {
           columns={columns}
           data={keys}
           rowKey={(key) => key}
-          emptyTitle="No credentials stored"
-          emptyDescription="Credentials will appear here when agents request and you approve them."
+          emptyTitle={isExternal ? "No credentials synced yet" : "No credentials stored"}
+          emptyDescription={
+            isExternal
+              ? "Add credentials in the upstream system; they'll appear here after the next sync."
+              : "Credentials will appear here when agents request and you approve them."
+          }
         />
       )}
 

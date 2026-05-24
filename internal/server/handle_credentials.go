@@ -47,6 +47,10 @@ func (s *Server) handleCredentialsSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.assertBuiltinCredentialStore(w, ctx, ns.ID, ns.Name) {
+		return
+	}
+
 	for key := range req.Credentials {
 		if !broker.CredentialKeyPattern.MatchString(key) {
 			jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid credential key %q: must be SCREAMING_SNAKE_CASE (e.g. STRIPE_KEY)", key))
@@ -191,6 +195,10 @@ func (s *Server) handleCredentialsDelete(w http.ResponseWriter, r *http.Request)
 
 	// Deleting credentials requires member+ role.
 	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
+		return
+	}
+
+	if !s.assertBuiltinCredentialStore(w, ctx, ns.ID, ns.Name) {
 		return
 	}
 

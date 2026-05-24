@@ -13,6 +13,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/auth"
 	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/brokercore"
+	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
@@ -82,9 +83,54 @@ func (s *Server) handleVaultContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonOK(w, map[string]interface{}{
+	resp := map[string]interface{}{
 		"vault_name": vault.Name,
 		"vault_role": vaultRole,
+	}
+	if cs, err := s.store.GetVaultCredentialStore(ctx, vault.ID); err == nil && cs != nil && cs.Kind != "" {
+		resp["credential_store"] = credentialStoreSummaryOf(cs, true)
+	}
+	jsonOK(w, resp)
+}
+
+// credentialStoreSummary is the shape the vaults-list and vault-context
+// endpoints share. Fields are populated in two layers: summary only for the
+// list path, full body (config + poll_interval + last_sync_error) for the
+// per-vault context.
+type credentialStoreSummary struct {
+	Kind                string          `json:"kind"`
+	Config              json.RawMessage `json:"config,omitempty"`
+	PollIntervalSeconds int             `json:"poll_interval_seconds,omitempty"`
+	LastSyncStatus      string          `json:"last_sync_status,omitempty"`
+	LastSyncedAt        string          `json:"last_synced_at,omitempty"`
+	LastSyncError       string          `json:"last_sync_error,omitempty"`
+}
+
+func credentialStoreSummaryOf(cs *store.VaultCredentialStore, full bool) *credentialStoreSummary {
+	out := &credentialStoreSummary{Kind: cs.Kind, LastSyncStatus: cs.LastSyncStatus}
+	if cs.LastSyncedAt != nil {
+		out.LastSyncedAt = cs.LastSyncedAt.Format(time.RFC3339)
+	}
+	if !full {
+		return out
+	}
+	out.PollIntervalSeconds = cs.PollIntervalSeconds
+	out.LastSyncError = cs.LastSyncError
+	if cs.ConfigJSON != "" {
+		out.Config = json.RawMessage(cs.ConfigJSON)
+	}
+	return out
+}
+
+// handleInstanceCredentialStores reports which credential-store kinds an
+// operator may pick from at vault-create time. Always includes "builtin";
+// includes "infisical" only when the server has a healthy Infisical client.
+func (s *Server) handleInstanceCredentialStores(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.requireActor(w, r); err != nil {
+		return
+	}
+	jsonOK(w, map[string]interface{}{
+		"available": s.CredentialStoresAvailable(),
 	})
 }
 
@@ -293,6 +339,17 @@ func (s *Server) handleVaultUserSetRole(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+type vaultCreateCredentialStoreRequest struct {
+	Kind                string          `json:"kind"`
+	Config              json.RawMessage `json:"config"`
+	PollIntervalSeconds int             `json:"poll_interval_seconds"`
+}
+
+type vaultCreateRequest struct {
+	Name            string                              `json:"name"`
+	CredentialStore *vaultCreateCredentialStoreRequest `json:"credential_store,omitempty"`
+}
+
 func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 	// no-access actors are blocked so they can't escalate by becoming admin
 	// of a brand-new vault they just created.
@@ -301,9 +358,7 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Name string `json:"name"`
-	}
+	var req vaultCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
@@ -322,6 +377,13 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+
+	// External credential store branch — probe + atomic create.
+	if req.CredentialStore != nil && req.CredentialStore.Kind != "" {
+		s.createExternalVault(w, r.Context(), actor, req)
+		return
+	}
+
 	ns, err := s.store.CreateVault(ctx, req.Name)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
@@ -342,6 +404,88 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// createExternalVault handles the kind="infisical" branch of POST /v1/vaults:
+// validates the supplied config, probes Infisical for the configured path,
+// encrypts the secret snapshot, and commits the vault + credential-store
+// row + initial credentials + creator admin grant in one SQL transaction.
+// Any failure leaves the database untouched.
+func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context, actor *Actor, req vaultCreateRequest) {
+	if s.infisicalClient == nil {
+		jsonCodedError(w, http.StatusServiceUnavailable, "infisical_not_configured",
+			"Infisical is not configured on this Agent Vault instance. Set INFISICAL_URL and a supported auth method's env vars.")
+		return
+	}
+	cs := req.CredentialStore
+	if cs.Kind != infisical.KindInfisical {
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Unknown credential store kind %q", cs.Kind))
+		return
+	}
+
+	cfg, err := infisical.ParseConfigJSON(string(cs.Config))
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, "Invalid credential_store.config JSON")
+		return
+	}
+	if err := cfg.Validate(); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	pollInterval := cs.PollIntervalSeconds
+	if pollInterval == 0 {
+		pollInterval = infisical.DefaultPollIntervalSeconds
+	}
+	if pollInterval < infisical.MinPollIntervalSeconds {
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("poll_interval_seconds must be at least %d", infisical.MinPollIntervalSeconds))
+		return
+	}
+
+	secs, err := s.infisicalClient.FetchSecrets(ctx, cfg)
+	if err != nil {
+		jsonCodedError(w, http.StatusBadGateway, "infisical_fetch_failed", err.Error())
+		return
+	}
+
+	items, err := infisical.EncryptSecrets(secs, s.encKey)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to encrypt fetched secrets")
+		return
+	}
+
+	configJSON, _ := infisical.MarshalConfigJSON(cfg)
+	vault, err := s.store.CreateExternalVault(ctx, store.CreateExternalVaultParams{
+		Name:                req.Name,
+		Kind:                infisical.KindInfisical,
+		ConfigJSON:          configJSON,
+		PollIntervalSeconds: pollInterval,
+		Credentials:         items,
+		CreatorActorID:      actor.ID,
+		CreatorActorType:    actor.Type,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			jsonError(w, http.StatusConflict, fmt.Sprintf("Vault %q already exists", req.Name))
+			return
+		}
+		jsonError(w, http.StatusInternalServerError, "Failed to create vault")
+		return
+	}
+
+	now := vault.CreatedAt
+	jsonCreated(w, map[string]interface{}{
+		"id":         vault.ID,
+		"name":       vault.Name,
+		"created_at": now.Format(time.RFC3339),
+		"credential_store": &credentialStoreSummary{
+			Kind:                infisical.KindInfisical,
+			Config:              json.RawMessage(configJSON),
+			PollIntervalSeconds: pollInterval,
+			LastSyncStatus:      infisical.StatusOK,
+			LastSyncedAt:        now.Format(time.RFC3339),
+		},
+	})
+}
+
 func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 	// Any authenticated actor can list vaults.
 	actor, err := s.requireActor(w, r)
@@ -352,12 +496,29 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	type nsItem struct {
-		ID               string `json:"id"`
-		Name             string `json:"name"`
-		Role             string `json:"role,omitempty"`
-		Membership       string `json:"membership"`
-		CreatedAt        string `json:"created_at"`
-		PendingProposals int    `json:"pending_proposals"`
+		ID               string                  `json:"id"`
+		Name             string                  `json:"name"`
+		Role             string                  `json:"role,omitempty"`
+		Membership       string                  `json:"membership"`
+		CreatedAt        string                  `json:"created_at"`
+		PendingProposals int                     `json:"pending_proposals"`
+		CredentialStore  *credentialStoreSummary `json:"credential_store,omitempty"`
+	}
+
+	// One query for every vault's credential-store row; built into a map so
+	// the per-vault loop below is a cheap lookup instead of an N+1 fan-out.
+	csByVault := map[string]*store.VaultCredentialStore{}
+	if rows, err := s.store.ListVaultCredentialStores(ctx); err == nil {
+		for i := range rows {
+			csByVault[rows[i].VaultID] = &rows[i]
+		}
+	}
+	credStoreFor := func(vaultID string) *credentialStoreSummary {
+		cs := csByVault[vaultID]
+		if cs == nil || cs.Kind == "" {
+			return nil
+		}
+		return credentialStoreSummaryOf(cs, false)
 	}
 
 	var items []nsItem
@@ -384,6 +545,7 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 				Membership:       membership,
 				CreatedAt:        v.CreatedAt.Format(time.RFC3339),
 				PendingProposals: pending,
+				CredentialStore:  credStoreFor(v.ID),
 			})
 		}
 	} else {
@@ -406,6 +568,7 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 				Membership:       "explicit",
 				CreatedAt:        ns.CreatedAt.Format(time.RFC3339),
 				PendingProposals: pending,
+				CredentialStore:  credStoreFor(ns.ID),
 			})
 		}
 	}

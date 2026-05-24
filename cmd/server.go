@@ -20,6 +20,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/auth"
 	"github.com/Infisical/agent-vault/internal/ca"
 	"github.com/Infisical/agent-vault/internal/crypto"
+	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/mitm"
 	"github.com/Infisical/agent-vault/internal/notify"
 	"github.com/Infisical/agent-vault/internal/pidfile"
@@ -159,6 +160,7 @@ var serverCmd = &cobra.Command{
 		if err := attachMITMIfEnabled(srv, host, mitmPort, masterKey.Key()); err != nil {
 			return err
 		}
+		attachInfisicalIfConfigured(srv, logger)
 		return srv.Start()
 	},
 }
@@ -199,6 +201,24 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 		},
 	))
 	return nil
+}
+
+// attachInfisicalIfConfigured wires the optional Infisical client when
+// INFISICAL_URL is set. Non-fatal: a slow or unhealthy Infisical must not
+// block server startup, so the initial login runs under a 10s deadline.
+func attachInfisicalIfConfigured(srv *server.Server, logger *slog.Logger) {
+	if os.Getenv("INFISICAL_URL") == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := infisical.NewClient(ctx, logger)
+	if err != nil {
+		logger.Warn("infisical client unavailable; external-store vaults will not refresh",
+			slog.String("err", err.Error()))
+		return
+	}
+	srv.AttachInfisical(client)
 }
 
 // attachLogSink wires the request-log pipeline: a SQLiteSink with async

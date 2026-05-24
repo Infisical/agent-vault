@@ -42,3 +42,36 @@ Configure SMTP to enable Agent Vault to send emails for verification codes, vaul
   To verify SMTP is working, run `agent-vault email test`. It sends a test email to the owner's address. See the [Configure Email SMTP](/guides/smtp) guide for step-by-step setup instructions for popular providers like SendGrid, AWS SES, Resend, and more.
 </Tip>
 
+## Infisical credential store
+
+Setting `INFISICAL_URL` enables Infisical-backed vaults. When a vault is created with `--credential-store=infisical`, Agent Vault polls Infisical at a per-vault cadence and caches the encrypted secret snapshot in its local DB. Local credential mutations are rejected for those vaults; Infisical is the source of truth. See the [Credential stores](/learn/credential-stores) page for the full mental model.
+
+Supply env vars for exactly one auth method. The Infisical Go SDK does not auto-detect; Agent Vault picks the first complete group in this priority order:
+
+1. Universal Auth
+2. Kubernetes Auth
+3. AWS IAM Auth
+4. GCP IAM Auth
+5. GCP ID Token Auth
+6. LDAP Auth
+
+GCP IAM and GCP ID Token both read `INFISICAL_GCP_AUTH_IDENTITY_ID`. Setting `INFISICAL_GCP_IAM_SERVICE_ACCOUNT_KEY_FILE_PATH` alongside the identity ID selects GCP IAM; absent the file path Agent Vault selects GCP ID Token (which pulls a JWT from the GCP metadata server at runtime).
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `INFISICAL_URL` | Required to enable | Base URL of the Infisical instance (e.g., `https://app.infisical.com`). |
+| `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID` | Conditional (Universal Auth) | Universal Auth machine identity client ID. |
+| `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET` | Conditional (Universal Auth) | Universal Auth machine identity client secret. |
+| `INFISICAL_KUBERNETES_IDENTITY_ID` | Conditional (Kubernetes Auth) | Machine identity ID for Kubernetes-mounted service-account tokens. |
+| `INFISICAL_KUBERNETES_SERVICE_ACCOUNT_TOKEN_PATH` | Optional (Kubernetes Auth) | Override path to the projected token (default: SDK default). |
+| `INFISICAL_AWS_IAM_AUTH_IDENTITY_ID` | Conditional (AWS IAM Auth) | Machine identity ID for AWS IAM auth. |
+| `INFISICAL_GCP_AUTH_IDENTITY_ID` | Conditional (GCP IAM or GCP ID Token) | Machine identity ID; shared by both GCP flows. |
+| `INFISICAL_GCP_IAM_SERVICE_ACCOUNT_KEY_FILE_PATH` | Conditional (GCP IAM only) | Path to the GCP service-account JSON key. Its presence selects GCP IAM over GCP ID Token. |
+| `INFISICAL_LDAP_AUTH_IDENTITY_ID` | Conditional (LDAP Auth) | Machine identity ID for LDAP auth. |
+| `INFISICAL_LDAP_AUTH_USERNAME` | Conditional (LDAP Auth) | LDAP bind username. |
+| `INFISICAL_LDAP_AUTH_PASSWORD` | Conditional (LDAP Auth) | LDAP bind password. |
+
+<Tip>
+  The Infisical machine identity should have **read-only** access. Agent Vault never writes back, and a read-only identity caps blast radius if the broker is compromised.
+</Tip>
+

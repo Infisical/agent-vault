@@ -45,9 +45,19 @@ export interface InstanceStatus {
   base_url?: string;
 }
 
+export interface CredentialStoreInfo {
+  kind: string;
+  config?: Record<string, unknown>;
+  poll_interval_seconds?: number;
+  last_sync_status?: string;
+  last_synced_at?: string;
+  last_sync_error?: string;
+}
+
 export interface VaultContext {
   vault_name: string;
   vault_role: string;
+  credential_store?: CredentialStoreInfo;
 }
 
 // --- Root Route ---

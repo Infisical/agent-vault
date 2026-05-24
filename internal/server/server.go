@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/crypto"
+	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/mitm"
 	"github.com/Infisical/agent-vault/internal/netguard"
 	"github.com/Infisical/agent-vault/internal/notify"
@@ -80,6 +82,10 @@ type Server struct {
 	// concurrent upserts can both pass collision checks against the
 	// same pre-state.
 	vaultServiceMu sync.Map // vaultID (string) -> *sync.Mutex
+	// infisicalClient is the optional external credential source. Nil
+	// when INFISICAL_URL is unset; vault-create handlers reject
+	// kind="infisical" requests in that case.
+	infisicalClient *infisical.Client
 }
 
 // lockVaultServices acquires the per-vault mutation lock. Callers MUST
@@ -99,6 +105,22 @@ func (s *Server) RateLimit() *ratelimit.Registry { return s.rateLimit }
 // is bound to this Server: Start launches it, and SIGINT/SIGTERM/Shutdown
 // stops it alongside the HTTP server.
 func (s *Server) AttachMITM(p *mitm.Proxy) { s.mitm = p }
+
+// AttachInfisical registers the Infisical client used for external-store
+// vaults. Nil disables Infisical-backed vault creation but does not affect
+// builtin vaults. Must be called before Start.
+func (s *Server) AttachInfisical(c *infisical.Client) { s.infisicalClient = c }
+
+// CredentialStoresAvailable returns the kinds an operator may pick from at
+// vault-create time. Builtin is always available; infisical only when an
+// authenticated client is attached.
+func (s *Server) CredentialStoresAvailable() []string {
+	out := []string{infisical.KindBuiltin}
+	if s.infisicalClient != nil {
+		out = append(out, infisical.KindInfisical)
+	}
+	return out
+}
 
 // AttachLogSink swaps the per-request log sink. Safe to call once at
 // startup, before the HTTP server begins accepting connections. nil
@@ -244,6 +266,13 @@ type Store interface {
 	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
 	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
 	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
+
+	// External credential stores
+	CreateExternalVault(ctx context.Context, p store.CreateExternalVaultParams) (*store.Vault, error)
+	GetVaultCredentialStore(ctx context.Context, vaultID string) (*store.VaultCredentialStore, error)
+	ListVaultCredentialStores(ctx context.Context) ([]store.VaultCredentialStore, error)
+	UpdateVaultCredentialStoreHealth(ctx context.Context, vaultID, status, errMsg string, syncedAt time.Time) error
+	ReplaceVaultCredentials(ctx context.Context, vaultID string, items []store.EncryptedKV) error
 
 	// Agents
 	CreateAgent(ctx context.Context, name, createdBy, role string) (*store.Agent, error)
@@ -552,6 +581,23 @@ func (s *Server) requireVaultMember(w http.ResponseWriter, r *http.Request, vaul
 	return actor, nil
 }
 
+// assertBuiltinCredentialStore writes a 409 and returns false when the vault
+// is backed by an external credential store. Fails closed on transient lookup
+// errors (returns 500) so a flaky DB can't silently bypass the gate.
+func (s *Server) assertBuiltinCredentialStore(w http.ResponseWriter, ctx context.Context, vaultID, vaultName string) bool {
+	cs, err := s.store.GetVaultCredentialStore(ctx, vaultID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		jsonError(w, http.StatusInternalServerError, "Failed to verify credential store")
+		return false
+	}
+	if cs != nil && cs.Kind != "" {
+		jsonCodedError(w, http.StatusConflict, "external_credential_store",
+			fmt.Sprintf("Vault %q uses an external credential store (%s). Manage credentials in the upstream system.", vaultName, cs.Kind))
+		return false
+	}
+	return true
+}
+
 // requireProposalReview checks proposal approve/reject access.
 // Scoped sessions require admin role (proxy-scoped sessions cannot self-approve).
 // Instance-level sessions require member+ — proxy-role actors are forbidden so
@@ -705,6 +751,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 
 	// Vault management (any auth'd user)
 	mux.HandleFunc("GET /v1/vaults/{name}/context", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultContext))))
+	mux.HandleFunc("GET /v1/instance/credential-stores", s.requireInitialized(s.requireAuth(actorAuthed(s.handleInstanceCredentialStores))))
 	mux.HandleFunc("POST /v1/vaults", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultCreate)))))
 	mux.HandleFunc("GET /v1/vaults", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultList))))
 	mux.HandleFunc("DELETE /v1/vaults/{name}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultDelete))))
@@ -821,6 +868,11 @@ func (s *Server) Start() error {
 	pruneCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go s.runTouchCachePruner(pruneCtx)
+
+	if s.infisicalClient != nil {
+		syncer := infisical.NewSyncer(s.store, s.infisicalClient, s.encKey, s.logger)
+		go syncer.Run(pruneCtx)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {

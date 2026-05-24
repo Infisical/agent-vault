@@ -28,8 +28,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 46 {
-		t.Fatalf("expected migration version 46, got %d", version)
+	if version != 47 {
+		t.Fatalf("expected migration version 47, got %d", version)
 	}
 }
 
@@ -2150,5 +2150,247 @@ func TestNoAccessRoleAcceptedByMigration(t *testing.T) {
 
 	if _, err := s.CreateAgent(ctx, "bad-agent", "system", "bogus-role"); err == nil {
 		t.Fatalf("expected CreateAgent with bogus role to fail CHECK constraint")
+	}
+}
+
+// --- External Credential Stores ---
+
+func TestCreateExternalVault(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, err := s.CreateUser(ctx, "ext@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	params := CreateExternalVaultParams{
+		Name:                "ext-vault",
+		Kind:                "infisical",
+		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+		PollIntervalSeconds: 60,
+		Credentials: []EncryptedKV{
+			{Key: "FOO", Ciphertext: []byte("c1"), Nonce: []byte("n1")},
+			{Key: "BAR", Ciphertext: []byte("c2"), Nonce: []byte("n2")},
+		},
+		CreatorActorID:   u.ID,
+		CreatorActorType: "user",
+	}
+
+	v, err := s.CreateExternalVault(ctx, params)
+	if err != nil {
+		t.Fatalf("CreateExternalVault: %v", err)
+	}
+	if v.Name != "ext-vault" || v.ID == "" {
+		t.Fatalf("bad vault: %+v", v)
+	}
+
+	cs, err := s.GetVaultCredentialStore(ctx, v.ID)
+	if err != nil {
+		t.Fatalf("GetVaultCredentialStore: %v", err)
+	}
+	if cs.Kind != "infisical" || cs.PollIntervalSeconds != 60 || cs.LastSyncStatus != "ok" {
+		t.Fatalf("bad credential store: %+v", cs)
+	}
+	if cs.LastSyncedAt == nil {
+		t.Fatalf("expected last_synced_at populated")
+	}
+
+	creds, err := s.ListCredentials(ctx, v.ID)
+	if err != nil {
+		t.Fatalf("ListCredentials: %v", err)
+	}
+	if len(creds) != 2 {
+		t.Fatalf("expected 2 seeded credentials, got %d", len(creds))
+	}
+
+	role, err := s.GetVaultRole(ctx, u.ID, v.ID)
+	if err != nil {
+		t.Fatalf("GetVaultRole: %v", err)
+	}
+	if role != "admin" {
+		t.Fatalf("expected creator admin grant, got %q", role)
+	}
+
+	bc, err := s.GetBrokerConfig(ctx, v.ID)
+	if err != nil {
+		t.Fatalf("GetBrokerConfig: %v", err)
+	}
+	if bc.ServicesJSON != "[]" {
+		t.Fatalf("expected empty services_json, got %q", bc.ServicesJSON)
+	}
+}
+
+func TestCreateExternalVaultRollbackOnDuplicateName(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "ext-dup@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+
+	params := CreateExternalVaultParams{
+		Name:                "dup-vault",
+		Kind:                "infisical",
+		ConfigJSON:          `{}`,
+		PollIntervalSeconds: 60,
+		Credentials:         []EncryptedKV{{Key: "K", Ciphertext: []byte("c"), Nonce: []byte("n")}},
+		CreatorActorID:      u.ID,
+		CreatorActorType:    "user",
+	}
+
+	if _, err := s.CreateExternalVault(ctx, params); err != nil {
+		t.Fatalf("first CreateExternalVault: %v", err)
+	}
+	// Second attempt with same name must fail and leave no orphan rows.
+	if _, err := s.CreateExternalVault(ctx, params); err == nil {
+		t.Fatalf("expected duplicate-name failure")
+	}
+
+	// Exactly one vault with this name; exactly one credential row across all
+	// of the rejected attempt's keys (the K from the first vault).
+	var vaultCount, credCount int
+	_ = s.db.QueryRow("SELECT COUNT(*) FROM vaults WHERE name = ?", "dup-vault").Scan(&vaultCount)
+	if vaultCount != 1 {
+		t.Fatalf("expected exactly 1 vault, got %d", vaultCount)
+	}
+	_ = s.db.QueryRow("SELECT COUNT(*) FROM credentials WHERE key = ?", "K").Scan(&credCount)
+	if credCount != 1 {
+		t.Fatalf("expected exactly 1 credential row after rollback, got %d", credCount)
+	}
+}
+
+func TestReplaceVaultCredentials(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "replace@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	v, err := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+		Name:                "replace-vault",
+		Kind:                "infisical",
+		ConfigJSON:          `{}`,
+		PollIntervalSeconds: 60,
+		Credentials: []EncryptedKV{
+			{Key: "A", Ciphertext: []byte("c1"), Nonce: []byte("n1")},
+			{Key: "B", Ciphertext: []byte("c2"), Nonce: []byte("n2")},
+		},
+		CreatorActorID:   u.ID,
+		CreatorActorType: "user",
+	})
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Replace: keep A (rotated), drop B, add C.
+	err = s.ReplaceVaultCredentials(ctx, v.ID, []EncryptedKV{
+		{Key: "A", Ciphertext: []byte("c1-new"), Nonce: []byte("n1-new")},
+		{Key: "C", Ciphertext: []byte("c3"), Nonce: []byte("n3")},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceVaultCredentials: %v", err)
+	}
+
+	creds, _ := s.ListCredentials(ctx, v.ID)
+	if len(creds) != 2 {
+		t.Fatalf("expected 2 creds after replace, got %d", len(creds))
+	}
+	keys := map[string]string{}
+	for _, c := range creds {
+		keys[c.Key] = string(c.Ciphertext)
+	}
+	if keys["A"] != "c1-new" {
+		t.Fatalf("A not rotated, got %q", keys["A"])
+	}
+	if _, ok := keys["B"]; ok {
+		t.Fatalf("B should have been deleted")
+	}
+	if keys["C"] != "c3" {
+		t.Fatalf("C not inserted, got %q", keys["C"])
+	}
+}
+
+func TestReplaceVaultCredentialsEmptyWipes(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "wipe@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	v, _ := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+		Name:                "wipe-vault",
+		Kind:                "infisical",
+		ConfigJSON:          `{}`,
+		PollIntervalSeconds: 60,
+		Credentials:         []EncryptedKV{{Key: "ONLY", Ciphertext: []byte("c"), Nonce: []byte("n")}},
+		CreatorActorID:      u.ID,
+		CreatorActorType:    "user",
+	})
+
+	if err := s.ReplaceVaultCredentials(ctx, v.ID, nil); err != nil {
+		t.Fatalf("ReplaceVaultCredentials nil: %v", err)
+	}
+	creds, _ := s.ListCredentials(ctx, v.ID)
+	if len(creds) != 0 {
+		t.Fatalf("expected vault wiped, got %d creds", len(creds))
+	}
+}
+
+func TestUpdateVaultCredentialStoreHealth(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "health@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	v, _ := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+		Name:                "health-vault",
+		Kind:                "infisical",
+		ConfigJSON:          `{}`,
+		PollIntervalSeconds: 60,
+		Credentials:         []EncryptedKV{{Key: "K", Ciphertext: []byte("c"), Nonce: []byte("n")}},
+		CreatorActorID:      u.ID,
+		CreatorActorType:    "user",
+	})
+
+	when := time.Now().UTC().Add(-time.Minute)
+	if err := s.UpdateVaultCredentialStoreHealth(ctx, v.ID, "error", "boom", when); err != nil {
+		t.Fatalf("UpdateVaultCredentialStoreHealth: %v", err)
+	}
+	cs, _ := s.GetVaultCredentialStore(ctx, v.ID)
+	if cs.LastSyncStatus != "error" || cs.LastSyncError != "boom" {
+		t.Fatalf("health not updated: %+v", cs)
+	}
+	// Clear the error on a subsequent ok update.
+	if err := s.UpdateVaultCredentialStoreHealth(ctx, v.ID, "ok", "", time.Now().UTC()); err != nil {
+		t.Fatalf("clear error: %v", err)
+	}
+	cs, _ = s.GetVaultCredentialStore(ctx, v.ID)
+	if cs.LastSyncStatus != "ok" || cs.LastSyncError != "" {
+		t.Fatalf("expected ok with empty error, got %+v", cs)
+	}
+}
+
+func TestListVaultCredentialStoresFiltersBuiltin(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "list@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+
+	// A builtin vault (no row in vault_credential_stores).
+	if _, err := s.CreateVault(ctx, "plain"); err != nil {
+		t.Fatal(err)
+	}
+	// Two external vaults.
+	for _, name := range []string{"ext-a", "ext-b"} {
+		if _, err := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+			Name: name, Kind: "infisical", ConfigJSON: `{}`, PollIntervalSeconds: 60,
+			Credentials:      []EncryptedKV{{Key: "K", Ciphertext: []byte("c"), Nonce: []byte("n")}},
+			CreatorActorID:   u.ID,
+			CreatorActorType: "user",
+		}); err != nil {
+			t.Fatalf("CreateExternalVault %s: %v", name, err)
+		}
+	}
+
+	list, err := s.ListVaultCredentialStores(ctx)
+	if err != nil {
+		t.Fatalf("ListVaultCredentialStores: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected 2 external stores, got %d (%+v)", len(list), list)
 	}
 }

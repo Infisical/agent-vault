@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/spf13/cobra"
@@ -31,9 +32,41 @@ var vaultCreateCmd = &cobra.Command{
 			return err
 		}
 
-		body, err := json.Marshal(map[string]string{
-			"name": name,
-		})
+		credStore, _ := cmd.Flags().GetString("credential-store")
+
+		payload := map[string]interface{}{"name": name}
+
+		switch credStore {
+		case "", infisical.KindBuiltin:
+			// no extra payload
+		case infisical.KindInfisical:
+			projectID, _ := cmd.Flags().GetString("infisical-project-id")
+			environment, _ := cmd.Flags().GetString("infisical-environment")
+			secretPath, _ := cmd.Flags().GetString("infisical-path")
+			recursive, _ := cmd.Flags().GetBool("infisical-recursive")
+			pollSecs, _ := cmd.Flags().GetInt("poll-interval-seconds")
+
+			if projectID == "" || environment == "" {
+				return fmt.Errorf("--infisical-project-id and --infisical-environment are required when --credential-store=%s", infisical.KindInfisical)
+			}
+			if secretPath == "" {
+				secretPath = "/"
+			}
+			payload["credential_store"] = map[string]interface{}{
+				"kind": infisical.KindInfisical,
+				"config": map[string]interface{}{
+					"project_id":  projectID,
+					"environment": environment,
+					"secret_path": secretPath,
+					"recursive":   recursive,
+				},
+				"poll_interval_seconds": pollSecs,
+			}
+		default:
+			return fmt.Errorf("unsupported --credential-store %q (use %s or %s)", credStore, infisical.KindBuiltin, infisical.KindInfisical)
+		}
+
+		body, err := json.Marshal(payload)
 		if err != nil {
 			return err
 		}
@@ -45,12 +78,73 @@ var vaultCreateCmd = &cobra.Command{
 		}
 
 		var resp struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
+			ID              string                 `json:"id"`
+			Name            string                 `json:"name"`
+			CredentialStore map[string]interface{} `json:"credential_store,omitempty"`
 		}
 		_ = json.Unmarshal(respBody, &resp)
 
 		fmt.Fprintf(cmd.OutOrStdout(), "%s Created vault %q (id: %s)\n", successText("✓"), resp.Name, mutedText(resp.ID))
+		if kind, ok := resp.CredentialStore["kind"].(string); ok && kind != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "  Credential store: %s\n", kind)
+		}
+		return nil
+	},
+}
+
+var vaultCredentialStoreCmd = &cobra.Command{
+	Use:   "credential-store",
+	Short: "Inspect the credential store backing a vault",
+}
+
+var vaultCredentialStoreShowCmd = &cobra.Command{
+	Use:   "show <name>",
+	Short: "Show the credential store kind, config, and sync health for a vault",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		sess, err := ensureSession()
+		if err != nil {
+			return err
+		}
+		url := fmt.Sprintf("%s/v1/vaults/%s/context", sess.Address, name)
+		respBody, err := doAdminRequestWithBody("GET", url, sess.Token, nil)
+		if err != nil {
+			return err
+		}
+		var resp struct {
+			VaultName       string                 `json:"vault_name"`
+			VaultRole       string                 `json:"vault_role"`
+			CredentialStore map[string]interface{} `json:"credential_store,omitempty"`
+		}
+		if err := json.Unmarshal(respBody, &resp); err != nil {
+			return fmt.Errorf("parsing response: %w", err)
+		}
+		out := cmd.OutOrStdout()
+		fmt.Fprintf(out, "Vault: %s\n", resp.VaultName)
+		if resp.CredentialStore == nil {
+			fmt.Fprintln(out, "Credential store: builtin")
+			return nil
+		}
+		fmt.Fprintf(out, "Credential store: %v\n", resp.CredentialStore["kind"])
+		if cfg, ok := resp.CredentialStore["config"].(map[string]interface{}); ok {
+			fmt.Fprintf(out, "  Project:     %v\n", cfg["project_id"])
+			fmt.Fprintf(out, "  Environment: %v\n", cfg["environment"])
+			fmt.Fprintf(out, "  Path:        %v\n", cfg["secret_path"])
+			fmt.Fprintf(out, "  Recursive:   %v\n", cfg["recursive"])
+		}
+		if v, ok := resp.CredentialStore["poll_interval_seconds"]; ok {
+			fmt.Fprintf(out, "  Poll:        %vs\n", v)
+		}
+		if v, ok := resp.CredentialStore["last_sync_status"]; ok {
+			fmt.Fprintf(out, "  Last sync:   %v\n", v)
+		}
+		if v, ok := resp.CredentialStore["last_synced_at"]; ok {
+			fmt.Fprintf(out, "  Synced at:   %v\n", v)
+		}
+		if v, ok := resp.CredentialStore["last_sync_error"]; ok {
+			fmt.Fprintf(out, "  Error:       %v\n", v)
+		}
 		return nil
 	},
 }
@@ -341,12 +435,22 @@ func init() {
 
 	vaultDeleteCmd.Flags().Bool("yes", false, "Skip confirmation prompt")
 
+	vaultCreateCmd.Flags().String("credential-store", "", "credential store kind: builtin (default) or infisical")
+	vaultCreateCmd.Flags().String("infisical-project-id", "", "Infisical project ID (required when --credential-store=infisical)")
+	vaultCreateCmd.Flags().String("infisical-environment", "", "Infisical environment slug, e.g. dev/prod")
+	vaultCreateCmd.Flags().String("infisical-path", "/", "Infisical secret path (default /)")
+	vaultCreateCmd.Flags().Bool("infisical-recursive", false, "Pull secrets recursively below the path")
+	vaultCreateCmd.Flags().Int("poll-interval-seconds", 60, "Sync cadence for the external store (min 10)")
+
 	vaultCmd.AddCommand(vaultCreateCmd)
 	vaultCmd.AddCommand(vaultListCmd)
 	vaultCmd.AddCommand(vaultDeleteCmd)
 	vaultCmd.AddCommand(vaultRenameCmd)
 	vaultCmd.AddCommand(vaultUseCmd)
 	vaultCmd.AddCommand(vaultCurrentCmd)
+
+	vaultCredentialStoreCmd.AddCommand(vaultCredentialStoreShowCmd)
+	vaultCmd.AddCommand(vaultCredentialStoreCmd)
 
 	vaultUserAddCmd.Flags().String("role", "member", "role to grant (admin or member)")
 	vaultUserSetRoleCmd.Flags().String("role", "", "role to set (admin or member)")

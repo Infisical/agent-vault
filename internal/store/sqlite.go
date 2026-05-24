@@ -175,6 +175,194 @@ func (s *SQLiteStore) DeleteVaultSetting(ctx context.Context, vaultID, key strin
 	return err
 }
 
+// --- External Credential Stores ---
+
+// CreateExternalVault is the atomic create path for vaults whose credentials
+// come from an external system. It commits the vault row, default broker
+// config, credential-store config, initial encrypted credential snapshot,
+// and the creator's admin grant in a single transaction.
+func (s *SQLiteStore) CreateExternalVault(ctx context.Context, p CreateExternalVaultParams) (*Vault, error) {
+	if p.Name == "" || p.Kind == "" || p.ConfigJSON == "" {
+		return nil, fmt.Errorf("CreateExternalVault: name, kind, and config required")
+	}
+	if p.CreatorActorID == "" || p.CreatorActorType == "" {
+		return nil, fmt.Errorf("CreateExternalVault: creator actor required")
+	}
+
+	vaultID := newUUID()
+	bcID := newUUID()
+	now := time.Now().UTC()
+	nowStr := now.Format(time.DateTime)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO vaults (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+		vaultID, p.Name, nowStr, nowStr,
+	); err != nil {
+		return nil, fmt.Errorf("creating vault: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO broker_configs (id, vault_id, services_json, created_at, updated_at) VALUES (?, ?, '[]', ?, ?)",
+		bcID, vaultID, nowStr, nowStr,
+	); err != nil {
+		return nil, fmt.Errorf("creating broker config: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO vault_credential_stores
+		   (vault_id, kind, config_json, poll_interval_seconds, last_synced_at, last_sync_status, last_sync_error, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, 'ok', NULL, ?, ?)`,
+		vaultID, p.Kind, p.ConfigJSON, p.PollIntervalSeconds, nowStr, nowStr, nowStr,
+	); err != nil {
+		return nil, fmt.Errorf("creating credential store: %w", err)
+	}
+
+	for _, item := range p.Credentials {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO credentials (id, vault_id, key, ciphertext, nonce, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			newUUID(), vaultID, item.Key, item.Ciphertext, item.Nonce, nowStr, nowStr,
+		); err != nil {
+			return nil, fmt.Errorf("inserting credential %q: %w", item.Key, err)
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO vault_grants (actor_id, actor_type, vault_id, role, created_at)
+		 VALUES (?, ?, ?, 'admin', ?)`,
+		p.CreatorActorID, p.CreatorActorType, vaultID, nowStr,
+	); err != nil {
+		return nil, fmt.Errorf("granting admin: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+
+	return &Vault{ID: vaultID, Name: p.Name, CreatedAt: now, UpdatedAt: now}, nil
+}
+
+func (s *SQLiteStore) GetVaultCredentialStore(ctx context.Context, vaultID string) (*VaultCredentialStore, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT vault_id, kind, config_json, poll_interval_seconds,
+		        last_synced_at, last_sync_status, last_sync_error,
+		        created_at, updated_at
+		   FROM vault_credential_stores WHERE vault_id = ?`,
+		vaultID,
+	)
+	return scanVaultCredentialStore(row)
+}
+
+// ListVaultCredentialStores returns every external-store row. The CHECK
+// constraint currently restricts kind to known values, but the explicit
+// query orders by vault_id so callers iterating with their own kind filter
+// always see a stable order.
+func (s *SQLiteStore) ListVaultCredentialStores(ctx context.Context) ([]VaultCredentialStore, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT vault_id, kind, config_json, poll_interval_seconds,
+		        last_synced_at, last_sync_status, last_sync_error,
+		        created_at, updated_at
+		   FROM vault_credential_stores ORDER BY vault_id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing credential stores: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []VaultCredentialStore
+	for rows.Next() {
+		v, err := scanVaultCredentialStore(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *v)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateVaultCredentialStoreHealth(ctx context.Context, vaultID, status, errMsg string, syncedAt time.Time) error {
+	syncedStr := syncedAt.UTC().Format(time.DateTime)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE vault_credential_stores
+		    SET last_synced_at = ?, last_sync_status = ?, last_sync_error = ?, updated_at = ?
+		  WHERE vault_id = ?`,
+		syncedStr, status, nullableString(errMsg), nowUTC(), vaultID,
+	)
+	if err != nil {
+		return fmt.Errorf("updating credential store health: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// ReplaceVaultCredentials atomically replaces the credentials for the vault.
+// Wipes the vault's existing rows and inserts items inside one transaction so
+// concurrent readers never observe a partial state. Empty items wipes the
+// vault entirely.
+func (s *SQLiteStore) ReplaceVaultCredentials(ctx context.Context, vaultID string, items []EncryptedKV) error {
+	nowStr := nowUTC()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM credentials WHERE vault_id = ?", vaultID); err != nil {
+		return fmt.Errorf("clearing credentials: %w", err)
+	}
+	for _, item := range items {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO credentials (id, vault_id, key, ciphertext, nonce, created_at, updated_at)
+			   VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			newUUID(), vaultID, item.Key, item.Ciphertext, item.Nonce, nowStr, nowStr,
+		); err != nil {
+			return fmt.Errorf("inserting credential %q: %w", item.Key, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// rowScanner is the common surface of *sql.Row and *sql.Rows that we need
+// here so the same scan function can serve both single-row Get and Rows iteration.
+type rowScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanVaultCredentialStore(row rowScanner) (*VaultCredentialStore, error) {
+	var v VaultCredentialStore
+	var lastSyncedAt sql.NullString
+	var lastSyncStatus sql.NullString
+	var lastSyncErr sql.NullString
+	var createdAt, updatedAt string
+	if err := row.Scan(&v.VaultID, &v.Kind, &v.ConfigJSON, &v.PollIntervalSeconds,
+		&lastSyncedAt, &lastSyncStatus, &lastSyncErr, &createdAt, &updatedAt); err != nil {
+		return nil, err
+	}
+	if lastSyncedAt.Valid && lastSyncedAt.String != "" {
+		t, _ := time.Parse(time.DateTime, lastSyncedAt.String)
+		v.LastSyncedAt = &t
+	}
+	if lastSyncStatus.Valid {
+		v.LastSyncStatus = lastSyncStatus.String
+	}
+	if lastSyncErr.Valid {
+		v.LastSyncError = lastSyncErr.String
+	}
+	v.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
+	v.UpdatedAt, _ = time.Parse(time.DateTime, updatedAt)
+	return &v, nil
+}
+
 // --- Vaults ---
 
 func (s *SQLiteStore) CreateVault(ctx context.Context, name string) (*Vault, error) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -39,6 +40,7 @@ type mockStore struct {
 	agentVaultGrants   []store.VaultGrant                    // agent vault grants
 	settings           map[string]string                     // instance settings
 	vaultSettings      map[string]map[string]string          // per-vault: vaultID -> key -> value
+	credStores         map[string]*store.VaultCredentialStore // per-vault external credential store config
 	sessionCounter     int
 }
 
@@ -53,6 +55,7 @@ func newMockStore() *mockStore {
 		agents:        make(map[string]*store.Agent),
 		settings:      make(map[string]string),
 		vaultSettings: make(map[string]map[string]string),
+		credStores:    make(map[string]*store.VaultCredentialStore),
 	}
 	// Seed root vault
 	ms.vaults["default"] = &store.Vault{ID: "root-ns-id", Name: "default"}
@@ -1085,6 +1088,27 @@ func (m *mockStore) DeleteVaultSetting(_ context.Context, vaultID, key string) e
 	return nil
 }
 
+// External credential stores — minimal stubs so existing tests link; behavior
+// covered by SQLite-backed tests in internal/store.
+func (m *mockStore) CreateExternalVault(_ context.Context, _ store.CreateExternalVaultParams) (*store.Vault, error) {
+	return nil, errors.New("mockStore.CreateExternalVault: not implemented in this test")
+}
+func (m *mockStore) GetVaultCredentialStore(_ context.Context, vaultID string) (*store.VaultCredentialStore, error) {
+	if cs, ok := m.credStores[vaultID]; ok {
+		return cs, nil
+	}
+	return nil, sql.ErrNoRows
+}
+func (m *mockStore) ListVaultCredentialStores(_ context.Context) ([]store.VaultCredentialStore, error) {
+	return nil, nil
+}
+func (m *mockStore) UpdateVaultCredentialStoreHealth(_ context.Context, _, _, _ string, _ time.Time) error {
+	return nil
+}
+func (m *mockStore) ReplaceVaultCredentials(_ context.Context, _ string, _ []store.EncryptedKV) error {
+	return nil
+}
+
 func TestHealthEndpoint(t *testing.T) {
 	srv := newTestServer()
 
@@ -1644,6 +1668,50 @@ func TestCredentialsSetSuccess(t *testing.T) {
 	// Verify credentials were stored
 	if len(ms.credentials) != 2 {
 		t.Fatalf("expected 2 credentials in store, got %d", len(ms.credentials))
+	}
+}
+
+func TestCredentialsSetRejectedForExternalStore(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
+		VaultID: "root-ns-id", Kind: "infisical",
+	}
+	encKey := make([]byte, 32)
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+
+	body := `{"vault":"default","credentials":{"FOO":"bar"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["code"] != "external_credential_store" {
+		t.Fatalf("expected code=external_credential_store, got %v", resp)
+	}
+}
+
+func TestCredentialsDeleteRejectedForExternalStore(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
+		VaultID: "root-ns-id", Kind: "infisical",
+	}
+	srv := newTestServer(withStore(ms))
+
+	body := `{"vault":"default","keys":["FOO"]}`
+	req := httptest.NewRequest(http.MethodDelete, "/v1/credentials", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

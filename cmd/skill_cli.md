@@ -188,6 +188,15 @@ How it works:
 
 Substitutions are configured via JSON only — no flag form. Place a `substitutions` array under any `services[]` entry in `proposal create -f file.json` or `agent-vault service set -f services.yaml`.
 
+### Vaults backed by an external credential store
+
+Run `agent-vault vault credential-store show <name>` before any credential-mutating command. If the output prints `Credential store: builtin`, credentials are locally writable. Any other kind means the vault is read-only on the Agent Vault side; manage credentials in the upstream system. `vault discover` does not surface the kind, so use the explicit command.
+
+Two consequences for read-only vaults:
+
+- `vault credential set` and `vault credential delete` return `409 external_credential_store`. Add or rotate credentials upstream instead.
+- `vault proposal create` rejects any `--credential ...` flag or `credentials[]` JSON block at both create and approve time. Service-only proposals still work; reference credential keys that already exist in the upstream snapshot.
+
 ### Creating a Proposal
 
 **Flag-driven mode (common cases). When `--host` is provided, `--name` is optional — when omitted, the server slugifies `host`+`path` (e.g. `api.stripe.com` → `api-stripe-com`):**

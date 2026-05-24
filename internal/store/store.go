@@ -178,6 +178,43 @@ type EncryptedCredential struct {
 	Nonce      []byte
 }
 
+// EncryptedKV pairs a credential key with its AES-256-GCM ciphertext+nonce.
+// Used by the external-store syncer to push a fully-encrypted snapshot into
+// the credentials table in a single transaction.
+type EncryptedKV struct {
+	Key        string
+	Ciphertext []byte
+	Nonce      []byte
+}
+
+// VaultCredentialStore captures the per-vault external-source configuration
+// row. Absence of a row means the vault is built-in (kind="").
+type VaultCredentialStore struct {
+	VaultID             string
+	Kind                string // "infisical"
+	ConfigJSON          string // per-kind config blob
+	PollIntervalSeconds int
+	LastSyncedAt        *time.Time
+	LastSyncStatus      string // "ok" | "error" | "pending" | ""
+	LastSyncError       string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+// CreateExternalVaultParams carries the inputs to CreateExternalVault.
+// CreatorActorID/Type are persisted as a vault_grants row with role='admin'
+// inside the same transaction so a fresh external vault is never stranded
+// without an owner.
+type CreateExternalVaultParams struct {
+	Name                string
+	Kind                string
+	ConfigJSON          string
+	PollIntervalSeconds int
+	Credentials         []EncryptedKV
+	CreatorActorID      string
+	CreatorActorType    string // "user" or "agent"
+}
+
 // RequestLog is a persisted record of a single proxied request. Secret-free
 // by construction: no header values, no bodies, no query strings — only
 // metadata already safe to log (see internal/brokercore/logging.go).
@@ -417,6 +454,20 @@ type Store interface {
 	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
 	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
 	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
+
+	// External credential stores (per vault)
+	// CreateExternalVault atomically inserts the vault, its broker_config,
+	// its vault_credential_stores row, the initial encrypted credential
+	// snapshot, and the creator's vault_grants admin row. Any failure leaves
+	// the database untouched.
+	CreateExternalVault(ctx context.Context, p CreateExternalVaultParams) (*Vault, error)
+	GetVaultCredentialStore(ctx context.Context, vaultID string) (*VaultCredentialStore, error)
+	ListVaultCredentialStores(ctx context.Context) ([]VaultCredentialStore, error)
+	UpdateVaultCredentialStoreHealth(ctx context.Context, vaultID, status, errMsg string, syncedAt time.Time) error
+	// ReplaceVaultCredentials atomically rewrites the credentials table for
+	// the vault: every entry in items is upserted, every existing row whose
+	// key is not in items is deleted. Used by the external-store syncer.
+	ReplaceVaultCredentials(ctx context.Context, vaultID string, items []EncryptedKV) error
 
 	// Request logs
 	InsertRequestLogs(ctx context.Context, rows []RequestLog) error

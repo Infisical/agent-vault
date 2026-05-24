@@ -47,6 +47,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `AGENT_VAULT_LOGS_MAX_AGE_HOURS` | Retention ceiling for the per-vault request log. Default `168` (7 days). Rows older than this are trimmed by a background job every 15 minutes. Only non-secret metadata is stored. |
     | `AGENT_VAULT_LOGS_MAX_ROWS_PER_VAULT` | Per-vault row cap for the request log. Default `10000`. Whichever limit (age or rows) fills first wins. Set `0` to disable the cap. |
     | `AGENT_VAULT_LOGS_RETENTION_LOCK` | When `true`, owner-UI overrides for log retention are ignored and env values (or defaults) are pinned. |
+    | `INFISICAL_URL` | Base URL of an Infisical instance. When set, the server constructs a machine-identity client from one of the `INFISICAL_*` env-var groups and enables `--credential-store=infisical` on `vault create`. See [Environment variables: Infisical credential store](/self-hosting/environment-variables) for the full list and priority order. |
   </Accordion>
 
   <Accordion title="agent-vault server stop">
@@ -179,10 +180,21 @@ description: "Complete reference for all Agent Vault CLI commands."
 <AccordionGroup>
   <Accordion title="agent-vault vault create">
     ```bash
-    agent-vault vault create <name>
+    agent-vault vault create <name> [flags]
     ```
 
     Create a new vault. Name must be in slug format (lowercase alphanumeric and hyphens).
+
+    Without flags the vault is "built-in": credentials are stored locally and managed through Agent Vault. With `--credential-store=infisical`, Agent Vault probes Infisical with the supplied config, encrypts the snapshot, and commits the vault, credentials, and your admin grant atomically. If the probe fails nothing is persisted. See [Credential stores](/learn/credential-stores).
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--credential-store` | `builtin` | Credential store kind: `builtin` or `infisical`. Immutable after create. |
+    | `--infisical-project-id` | | Infisical project ID. Required when `--credential-store=infisical`. |
+    | `--infisical-environment` | | Infisical environment slug (e.g., `dev`, `prod`). Required when `--credential-store=infisical`. |
+    | `--infisical-path` | `/` | Infisical secret path (must start with `/`). |
+    | `--infisical-recursive` | `false` | Pull secrets recursively below the path. |
+    | `--poll-interval-seconds` | `60` | How often the broker refreshes the cached secrets. Minimum 10s. |
   </Accordion>
 
   <Accordion title="agent-vault vault list">
@@ -227,6 +239,14 @@ description: "Complete reference for all Agent Vault CLI commands."
     ```
 
     Show the active vault.
+  </Accordion>
+
+  <Accordion title="agent-vault vault credential-store show">
+    ```bash
+    agent-vault vault credential-store show <name>
+    ```
+
+    Print the vault's credential-store kind, full config, poll interval, and last sync health. Prints `Credential store: builtin` for vaults with no external source; otherwise the kind name plus the Infisical project, environment, path, recursive flag, poll cadence, and `last_sync_status` / `last_synced_at` / `last_sync_error`. The kind is fixed at create time; this command is read-only.
   </Accordion>
 
   <Accordion title="agent-vault vault init">

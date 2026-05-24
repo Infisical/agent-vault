@@ -33,6 +33,15 @@ func jsonError(w http.ResponseWriter, status int, message string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
+// jsonCodedError writes a JSON error response carrying both a machine-readable
+// code and a human-readable message. Clients branch on code to keep UX copy
+// out of their error-handling logic.
+func jsonCodedError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "error": message})
+}
+
 // proxyError writes a JSON error response with separate code and message fields.
 // Sets X-Agent-Vault-Proxy-Error so SDK clients can distinguish broker errors
 // from upstream responses that happen to share the same status code.

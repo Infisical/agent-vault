@@ -1,0 +1,11 @@
+CREATE TABLE vault_credential_stores (
+    vault_id              TEXT PRIMARY KEY REFERENCES vaults(id) ON DELETE CASCADE,
+    kind                  TEXT NOT NULL CHECK(kind IN ('infisical')),
+    config_json           TEXT NOT NULL,
+    poll_interval_seconds INTEGER NOT NULL DEFAULT 60 CHECK(poll_interval_seconds >= 10),
+    last_synced_at        TEXT,
+    last_sync_status      TEXT CHECK(last_sync_status IS NULL OR last_sync_status IN ('ok','error','pending')),
+    last_sync_error       TEXT,
+    created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);

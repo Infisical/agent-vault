@@ -76,6 +76,7 @@
         "pages": [
           "learn/vaults",
           "learn/credentials",
+          "learn/credential-stores",
           "learn/services",
           "learn/proposals",
           "learn/permissions",
