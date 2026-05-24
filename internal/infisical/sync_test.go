@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -169,7 +170,10 @@ func TestSyncerRefresh_FailureKeepsStaleAndRecordsError(t *testing.T) {
 		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/"}`,
 		PollIntervalSeconds: 60,
 	})
-	ff := &fakeFetcher{err: errors.New("boom")}
+	// Upstream error embeds the configured INFISICAL_URL — the kind of detail
+	// that should not be reflected to vault members through last_sync_error.
+	upstreamErr := "APIError: CallListSecretsV3Raw [GET https://infisical.internal.corp/api/v3/secrets/raw?workspaceId=p] [status-code=404]"
+	ff := &fakeFetcher{err: errors.New(upstreamErr)}
 	s := &Syncer{Store: fs, Fetcher: ff, DEK: dek, Logger: discardLogger(), Clock: time.Now, inFlight: map[string]struct{}{}}
 
 	s.refresh(context.Background(), fs.rows[0])
@@ -180,8 +184,17 @@ func TestSyncerRefresh_FailureKeepsStaleAndRecordsError(t *testing.T) {
 		t.Fatalf("expected no Replace on failure, got %+v", got)
 	default:
 	}
-	if h := fs.getHealth("v1"); h.Status != "error" || h.Error == "" {
+	h := fs.getHealth("v1")
+	if h.Status != "error" || h.Error == "" {
 		t.Fatalf("expected error health, got %+v", h)
+	}
+	// The persisted message must be the scrubbed public string, not the
+	// raw SDK error — vault members read this via /v1/vaults/{name}/context.
+	if h.Error != syncFailedPublicMessage {
+		t.Fatalf("expected persisted error to be the scrubbed public message; got %q", h.Error)
+	}
+	if strings.Contains(h.Error, "infisical.internal.corp") {
+		t.Fatalf("upstream URL leaked through last_sync_error: %q", h.Error)
 	}
 }
 
