@@ -285,6 +285,10 @@ func (s *SQLiteStore) ListVaultCredentialStores(ctx context.Context) ([]VaultCre
 	return out, rows.Err()
 }
 
+// UpdateVaultCredentialStoreHealth returns sql.ErrNoRows when no
+// vault_credential_stores row matches vaultID (e.g. the vault was deleted
+// between list and update inside the syncer). Callers that race against
+// deletion should treat that as a benign "skip" rather than a hard failure.
 func (s *SQLiteStore) UpdateVaultCredentialStoreHealth(ctx context.Context, vaultID, status, errMsg string, syncedAt time.Time) error {
 	syncedStr := syncedAt.UTC().Format(time.DateTime)
 	res, err := s.db.ExecContext(ctx,

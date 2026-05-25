@@ -16,6 +16,7 @@ import (
 
 	"github.com/Infisical/agent-vault/internal/auth"
 	"github.com/Infisical/agent-vault/internal/crypto"
+	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/notify"
 	"github.com/Infisical/agent-vault/internal/store"
 )
@@ -3079,6 +3080,58 @@ func TestOwnerCannotAccessVaultWithoutGrant(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// GET /v1/instance/credential-stores hides "infisical" until a client is
+// attached. The Web modal and CLI both gate their pickers on this list, so
+// the nil-client contract is load-bearing: if a refactor silently exposed
+// "infisical" without an attached client, users would see a picker option
+// that 503s on submit.
+func TestInstanceCredentialStores_BuiltinOnlyWithoutInfisical(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/instance/credential-stores", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Available []string `json:"available"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Available) != 1 || resp.Available[0] != infisical.KindBuiltin {
+		t.Fatalf("expected [builtin], got %v", resp.Available)
+	}
+}
+
+func TestInstanceCredentialStores_IncludesInfisicalWhenAttached(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+	srv.AttachInfisical(&infisical.Client{})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/instance/credential-stores", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Available []string `json:"available"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Available) != 2 || resp.Available[0] != infisical.KindBuiltin || resp.Available[1] != infisical.KindInfisical {
+		t.Fatalf("expected [builtin, infisical], got %v", resp.Available)
 	}
 }
 
