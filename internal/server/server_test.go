@@ -3159,14 +3159,17 @@ func TestVaultCreateExternalRequiresOwner(t *testing.T) {
 // topology (project_id, environment, secret_path) is only returned to vault
 // admins and instance owners. Proxy/member roles must see only the kind +
 // sync health, otherwise a proxy-role agent can call this endpoint and read
-// the operator's Infisical layout.
+// the operator's Infisical layout. LastSyncError is also redacted because the
+// ErrLayoutConflict carve-out in sync.recordFailure deliberately persists
+// conflicting sub-paths and key names verbatim into last_sync_error.
 func TestVaultContextRedactsConfigForNonAdmin(t *testing.T) {
 	ms, ownerToken := setupMockStoreWithSession(t)
 	memberToken := setupMemberSession(t, ms, "root-ns-id")
 	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
-		VaultID:    "root-ns-id",
-		Kind:       "infisical",
-		ConfigJSON: `{"project_id":"secret-proj","environment":"prod","secret_path":"/svc"}`,
+		VaultID:       "root-ns-id",
+		Kind:          "infisical",
+		ConfigJSON:    `{"project_id":"secret-proj","environment":"prod","secret_path":"/svc"}`,
+		LastSyncError: `duplicate secret key "API_KEY" under both /stripe and /openai; ...`,
 	}
 	srv := newTestServer(withStore(ms))
 
@@ -3195,10 +3198,16 @@ func TestVaultContextRedactsConfigForNonAdmin(t *testing.T) {
 	if asOwner["kind"] != "infisical" {
 		t.Fatalf("owner kind: want infisical, got %v", asOwner["kind"])
 	}
+	if asOwner["last_sync_error"] == nil {
+		t.Fatalf("owner must see last_sync_error, got %+v", asOwner)
+	}
 
 	asMember := hit(memberToken)
 	if _, leaked := asMember["config"]; leaked {
 		t.Fatalf("member must NOT see config, got %+v", asMember)
+	}
+	if _, leaked := asMember["last_sync_error"]; leaked {
+		t.Fatalf("member must NOT see last_sync_error, got %+v", asMember)
 	}
 	if asMember["kind"] != "infisical" {
 		t.Fatalf("member must still see kind, got %v", asMember["kind"])

@@ -172,10 +172,14 @@ var vaultListCmd = &cobra.Command{
 
 		var resp struct {
 			Vaults []struct {
-				ID        string `json:"id"`
-				Name      string `json:"name"`
-				Role      string `json:"role"`
-				CreatedAt string `json:"created_at"`
+				ID              string `json:"id"`
+				Name            string `json:"name"`
+				Role            string `json:"role"`
+				CreatedAt       string `json:"created_at"`
+				CredentialStore *struct {
+					Kind           string `json:"kind"`
+					LastSyncStatus string `json:"last_sync_status,omitempty"`
+				} `json:"credential_store,omitempty"`
 			} `json:"vaults"`
 		}
 		if err := json.Unmarshal(respBody, &resp); err != nil {
@@ -188,7 +192,7 @@ var vaultListCmd = &cobra.Command{
 		}
 
 		t := newTable(cmd.OutOrStdout())
-		t.AppendHeader(table.Row{"ID", "NAME", "ROLE", "CREATED"})
+		t.AppendHeader(table.Row{"ID", "NAME", "ROLE", "KIND", "CREATED"})
 		for _, ns := range resp.Vaults {
 			created := ns.CreatedAt
 			if parsed, err := time.Parse(time.RFC3339, ns.CreatedAt); err == nil {
@@ -198,7 +202,14 @@ var vaultListCmd = &cobra.Command{
 			if role == "" {
 				role = "-"
 			}
-			t.AppendRow(table.Row{ns.ID, ns.Name, role, created})
+			kind := infisical.KindBuiltin
+			if ns.CredentialStore != nil && ns.CredentialStore.Kind != "" {
+				kind = ns.CredentialStore.Kind
+				if ns.CredentialStore.LastSyncStatus != "" {
+					kind = fmt.Sprintf("%s (%s)", ns.CredentialStore.Kind, ns.CredentialStore.LastSyncStatus)
+				}
+			}
+			t.AppendRow(table.Row{ns.ID, ns.Name, role, kind, created})
 		}
 		t.Render()
 		return nil

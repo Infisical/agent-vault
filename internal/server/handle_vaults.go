@@ -99,10 +99,13 @@ func (s *Server) handleVaultContext(w http.ResponseWriter, r *http.Request) {
 	if cs != nil && cs.Kind != "" {
 		summary := credentialStoreSummaryOf(cs, true)
 		// Config holds upstream topology (project_id, environment, secret_path).
-		// Reachable by proxy/member roles, so redact unless the caller can also
+		// LastSyncError can also leak topology for the ErrLayoutConflict carve-out
+		// in sync.recordFailure (conflicting sub-paths + key name). Both are
+		// reachable by proxy/member roles, so redact unless the caller can also
 		// reconfigure the store (same gate as the create path on POST /v1/vaults).
 		if vaultRole != "admin" && !actor.IsOwner() {
 			summary.Config = nil
+			summary.LastSyncError = ""
 		}
 		resp["credential_store"] = summary
 	}

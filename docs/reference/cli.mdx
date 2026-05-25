@@ -47,7 +47,17 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `AGENT_VAULT_LOGS_MAX_AGE_HOURS` | Retention ceiling for the per-vault request log. Default `168` (7 days). Rows older than this are trimmed by a background job every 15 minutes. Only non-secret metadata is stored. |
     | `AGENT_VAULT_LOGS_MAX_ROWS_PER_VAULT` | Per-vault row cap for the request log. Default `10000`. Whichever limit (age or rows) fills first wins. Set `0` to disable the cap. |
     | `AGENT_VAULT_LOGS_RETENTION_LOCK` | When `true`, owner-UI overrides for log retention are ignored and env values (or defaults) are pinned. |
-    | `INFISICAL_URL` | Base URL of an Infisical instance. When set, the server constructs a machine-identity client from one of the `INFISICAL_*` env-var groups and enables `--credential-store=infisical` on `vault create`. See [Environment variables: Infisical credential store](/self-hosting/environment-variables) for the full list and priority order. |
+    | `INFISICAL_URL` | Base URL of an Infisical instance. When set, the server constructs a machine-identity client from one of the `INFISICAL_*` env-var groups below and enables `--credential-store=infisical` on `vault create`. See [Environment variables: Infisical credential store](/self-hosting/environment-variables) for the auth-method detection priority order. |
+    | `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID` | Universal Auth machine identity client ID. |
+    | `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET` | Universal Auth machine identity client secret. |
+    | `INFISICAL_KUBERNETES_IDENTITY_ID` | Machine identity ID for Kubernetes-mounted service-account tokens. |
+    | `INFISICAL_KUBERNETES_SERVICE_ACCOUNT_TOKEN_PATH` | Override path to the projected service-account token (default: SDK default). |
+    | `INFISICAL_AWS_IAM_AUTH_IDENTITY_ID` | Machine identity ID for AWS IAM auth. |
+    | `INFISICAL_GCP_AUTH_IDENTITY_ID` | Machine identity ID for GCP IAM or GCP ID Token auth (shared by both flows). |
+    | `INFISICAL_GCP_IAM_SERVICE_ACCOUNT_KEY_FILE_PATH` | Path to the GCP service-account JSON key. Its presence selects GCP IAM over GCP ID Token. |
+    | `INFISICAL_LDAP_AUTH_IDENTITY_ID` | Machine identity ID for LDAP auth. |
+    | `INFISICAL_LDAP_AUTH_USERNAME` | LDAP bind username. |
+    | `INFISICAL_LDAP_AUTH_PASSWORD` | LDAP bind password. |
   </Accordion>
 
   <Accordion title="agent-vault server stop">
