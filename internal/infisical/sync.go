@@ -205,6 +205,9 @@ func (s *Syncer) refresh(ctx context.Context, cs store.VaultCredentialStore) err
 		return err
 	}
 
+	// Replace + UpdateHealth are intentionally not in one transaction: a rare
+	// failure here leaves fresh credentials with stale last_synced_at, which
+	// the next tick reconciles. Credentials are authoritative.
 	if err := s.store.UpdateVaultCredentialStoreHealth(ctx, cs.VaultID, store.SyncStatusOK, "", s.clock()); err != nil && !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, context.Canceled) {
 		// sql.ErrNoRows = vault deleted mid-sync; ctx.Canceled = shutdown. Skip both.
 		s.logger.Warn("updating health=ok failed",

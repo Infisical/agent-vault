@@ -157,10 +157,9 @@ var serverCmd = &cobra.Command{
 		srv.SetSkills(skillCLI, skillHTTP)
 		shutdownLogs := attachLogSink(srv, db, logger)
 		defer shutdownLogs()
-		if err := attachMITMIfEnabled(srv, host, mitmPort, masterKey.Key()); err != nil {
+		if err := attachServerExtensions(srv, host, mitmPort, masterKey.Key(), logger); err != nil {
 			return err
 		}
-		attachInfisicalIfConfigured(srv, logger)
 		return srv.Start()
 	},
 }
@@ -200,6 +199,16 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 			LogSink:     srv.LogSink(),
 		},
 	))
+	return nil
+}
+
+// attachServerExtensions wires optional subsystems (MITM, Infisical) onto srv.
+// Both bootstrap paths (foreground and detached child) call this.
+func attachServerExtensions(srv *server.Server, host string, mitmPort int, masterKey []byte, logger *slog.Logger) error {
+	if err := attachMITMIfEnabled(srv, host, mitmPort, masterKey); err != nil {
+		return err
+	}
+	attachInfisicalIfConfigured(srv, logger)
 	return nil
 }
 
@@ -510,10 +519,9 @@ func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger) erro
 	srv.SetSkills(skillCLI, skillHTTP)
 	shutdownLogs := attachLogSink(srv, db, logger)
 	defer shutdownLogs()
-	if err := attachMITMIfEnabled(srv, host, mitmPort, key); err != nil {
+	if err := attachServerExtensions(srv, host, mitmPort, key, logger); err != nil {
 		return err
 	}
-	attachInfisicalIfConfigured(srv, logger)
 	return srv.Start()
 }
 

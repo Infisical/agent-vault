@@ -448,7 +448,7 @@ func init() {
 	vaultCreateCmd.Flags().String("infisical-project-id", "", "Infisical project ID (required when --credential-store=infisical)")
 	vaultCreateCmd.Flags().String("infisical-environment", "", "Infisical environment slug, e.g. dev/prod")
 	vaultCreateCmd.Flags().String("infisical-path", "/", "Infisical secret path (default /)")
-	vaultCreateCmd.Flags().Int("poll-interval-seconds", 60, "Sync cadence for the external store (min 10)")
+	vaultCreateCmd.Flags().Int("poll-interval-seconds", 60, "Sync cadence floor for the external store (min 10; server wakes every 10s and refreshes vaults past their interval)")
 
 	vaultCmd.AddCommand(vaultCreateCmd)
 	vaultCmd.AddCommand(vaultListCmd)

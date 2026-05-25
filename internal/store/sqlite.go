@@ -215,8 +215,8 @@ func (s *SQLiteStore) CreateExternalVault(ctx context.Context, p CreateExternalV
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO vault_credential_stores
 		   (vault_id, kind, config_json, poll_interval_seconds, last_synced_at, last_sync_status, last_sync_error, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, 'ok', NULL, ?, ?)`,
-		vaultID, p.Kind, p.ConfigJSON, p.PollIntervalSeconds, nowStr, nowStr, nowStr,
+		 VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+		vaultID, p.Kind, p.ConfigJSON, p.PollIntervalSeconds, nowStr, SyncStatusOK, nowStr, nowStr,
 	); err != nil {
 		return nil, fmt.Errorf("creating credential store: %w", err)
 	}

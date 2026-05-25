@@ -1104,7 +1104,11 @@ func (m *mockStore) GetVaultCredentialStore(_ context.Context, vaultID string) (
 	return nil, sql.ErrNoRows
 }
 func (m *mockStore) ListVaultCredentialStores(_ context.Context) ([]store.VaultCredentialStore, error) {
-	return nil, nil
+	out := make([]store.VaultCredentialStore, 0, len(m.credStores))
+	for _, cs := range m.credStores {
+		out = append(out, *cs)
+	}
+	return out, nil
 }
 func (m *mockStore) UpdateVaultCredentialStoreHealth(_ context.Context, vaultID, status, errMsg string, when time.Time) error {
 	cs, ok := m.credStores[vaultID]
@@ -4828,6 +4832,51 @@ func TestOwnerVaultListShowsAllVaultsWithMembership(t *testing.T) {
 	// orphaned vault: owner has no grant, should be implicit
 	if v, ok := byName["orphaned"]; !ok || v.Membership != "implicit" || v.Role != "" {
 		t.Errorf("orphaned vault: expected implicit/empty role, got %+v", byName["orphaned"])
+	}
+}
+
+// TestVaultListOmitsCredentialStoreForBuiltin locks in that the credential_store
+// field is absent for builtin vaults (json:"omitempty") and present for external
+// ones. Scripts and UI both branch on its presence.
+func TestVaultListOmitsCredentialStoreForBuiltin(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	if _, err := ms.CreateVault(context.Background(), "ext"); err != nil {
+		t.Fatalf("CreateVault ext: %v", err)
+	}
+	extID := ms.vaults["ext"].ID
+	ms.credStores[extID] = &store.VaultCredentialStore{
+		VaultID: extID, Kind: store.CredentialStoreInfisical,
+		ConfigJSON: `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+	}
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults", nil)
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Vaults []map[string]interface{} `json:"vaults"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byName := map[string]map[string]interface{}{}
+	for _, v := range resp.Vaults {
+		byName[v["name"].(string)] = v
+	}
+	if _, leaked := byName["default"]["credential_store"]; leaked {
+		t.Fatalf("builtin vault must omit credential_store, got %+v", byName["default"])
+	}
+	cs, ok := byName["ext"]["credential_store"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("external vault must include credential_store, got %+v", byName["ext"])
+	}
+	if cs["kind"] != "infisical" {
+		t.Fatalf("kind: want infisical, got %v", cs["kind"])
 	}
 }
 

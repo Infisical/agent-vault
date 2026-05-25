@@ -572,7 +572,11 @@ func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context,
 		return
 	}
 
-	configJSON, _ := infisical.MarshalConfigJSON(cfg)
+	configJSON, err := infisical.MarshalConfigJSON(cfg)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to marshal credential store config")
+		return
+	}
 	vault, err := s.store.CreateExternalVault(ctx, store.CreateExternalVaultParams{
 		Name:                req.Name,
 		Kind:                store.CredentialStoreInfisical,
