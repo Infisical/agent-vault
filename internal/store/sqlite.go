@@ -324,7 +324,7 @@ func (s *SQLiteStore) ReplaceVaultCredentials(ctx context.Context, vaultID strin
 		if err != nil {
 			return fmt.Errorf("preparing credential insert: %w", err)
 		}
-		defer stmt.Close()
+		defer func() { _ = stmt.Close() }()
 		for _, item := range items {
 			if _, err := stmt.ExecContext(ctx,
 				newUUID(), vaultID, item.Key, item.Ciphertext, item.Nonce, nowStr, nowStr,
