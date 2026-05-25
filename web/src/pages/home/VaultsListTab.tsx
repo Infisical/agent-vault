@@ -303,8 +303,13 @@ function VaultCard({
 }
 
 function CredentialStorePill({ store }: { store: CredentialStoreSummary }) {
+  // last_synced_at is bumped on every attempt; on failure, the cached snapshot
+  // is whatever the last successful sync left behind, so relabel to avoid
+  // suggesting the credentials themselves are fresh.
   const tooltip = store.last_synced_at
-    ? `Last synced ${timeAgo(store.last_synced_at)}`
+    ? store.last_sync_status === "error"
+      ? `Last attempt ${timeAgo(store.last_synced_at)}`
+      : `Last synced ${timeAgo(store.last_synced_at)}`
     : "Synced from external source";
   return (
     <span

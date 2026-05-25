@@ -110,11 +110,13 @@ func flattenSecrets(in []rawSecret) ([]Secret, error) {
 	return out, nil
 }
 
-// loginWithMethod dispatches to the right SDK auth function. Each branch
-// passes empty arguments so the SDK reads the env vars directly (matches
-// the standard SDK usage pattern documented for each method). The LDAP
-// branch reads three env vars manually because the SDK only env-reads
-// the identity ID for that method.
+// loginWithMethod dispatches to the right SDK auth function. Most branches
+// pass empty arguments so the SDK reads the env vars directly (matches the
+// standard SDK usage pattern documented for each method). The Kubernetes
+// and LDAP branches read env vars manually: the SDK has a typo that looks
+// up the SA-token path under the default-path string instead of the env
+// var name, so the operator-supplied path would otherwise be ignored; the
+// LDAP helper only env-reads the identity ID.
 func loginWithMethod(c sdk.InfisicalClientInterface, method AuthMethod) error {
 	auth := c.Auth()
 	switch method {
@@ -122,7 +124,7 @@ func loginWithMethod(c sdk.InfisicalClientInterface, method AuthMethod) error {
 		_, err := auth.UniversalAuthLogin("", "")
 		return err
 	case AuthKubernetes:
-		_, err := auth.KubernetesAuthLogin("", "")
+		_, err := auth.KubernetesAuthLogin("", os.Getenv("INFISICAL_KUBERNETES_SERVICE_ACCOUNT_TOKEN_PATH"))
 		return err
 	case AuthAWSIAM:
 		_, err := auth.AwsIamAuthLogin("")

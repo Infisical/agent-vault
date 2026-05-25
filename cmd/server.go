@@ -204,21 +204,36 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 }
 
 // attachInfisicalIfConfigured wires the optional Infisical client when
-// INFISICAL_URL is set. Non-fatal: a slow or unhealthy Infisical must not
-// block server startup, so the initial login runs under a 10s deadline.
+// INFISICAL_URL is set. The 10s deadline is wall-clock (via time.After)
+// because the SDK's login methods are synchronous and ignore context, so
+// a context.WithTimeout would only bound the background token refresh.
+// On timeout we proceed without the client; the login goroutine may
+// outlive this call, but srv.infisicalClient stays nil so external vaults
+// cleanly serve-stale until the next restart.
 func attachInfisicalIfConfigured(srv *server.Server, logger *slog.Logger) {
 	if os.Getenv("INFISICAL_URL") == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	client, err := infisical.NewClient(ctx, logger)
-	if err != nil {
-		logger.Warn("infisical client unavailable; external-store vaults will not refresh",
-			slog.String("err", err.Error()))
-		return
+	type result struct {
+		c   *infisical.Client
+		err error
 	}
-	srv.AttachInfisical(client)
+	done := make(chan result, 1)
+	go func() {
+		c, err := infisical.NewClient(context.Background(), logger)
+		done <- result{c, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			logger.Warn("infisical client unavailable; external-store vaults will not refresh",
+				slog.String("err", r.err.Error()))
+			return
+		}
+		srv.AttachInfisical(r.c)
+	case <-time.After(10 * time.Second):
+		logger.Warn("infisical client login exceeded 10s deadline; continuing without external store")
+	}
 }
 
 // attachLogSink wires the request-log pipeline: a SQLiteSink with async

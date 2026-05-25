@@ -197,6 +197,8 @@ Two consequences for read-only vaults:
 - `vault credential set` and `vault credential delete` return `409 external_credential_store`. Add or rotate credentials upstream instead.
 - `vault proposal create` rejects any `--credential ...` flag or `credentials[]` JSON block at both create and approve time. Service-only proposals still work; reference credential keys that already exist in the upstream snapshot.
 
+Creating an external-store vault (`vault create --credential-store=infisical ...`) requires instance-owner role. Non-owners receive `403 Owner role required to create external-store vaults`. The gate exists because the broker's machine identity, not the caller's, authorizes the upstream fetch.
+
 ### Creating a Proposal
 
 **Flag-driven mode (common cases). When `--host` is provided, `--name` is optional — when omitted, the server slugifies `host`+`path` (e.g. `api.stripe.com` → `api-stripe-com`):**

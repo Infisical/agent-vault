@@ -182,7 +182,10 @@ export default function SettingsTab() {
                   </span>
                 )}
                 {credentialStore.last_synced_at && (
-                  <span>{timeAgo(credentialStore.last_synced_at)}</span>
+                  <span>
+                    {credentialStore.last_sync_status === "error" ? "Last attempt " : ""}
+                    {timeAgo(credentialStore.last_synced_at)}
+                  </span>
                 )}
               </div>
               {credentialStore.last_sync_error && (

@@ -187,6 +187,8 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     Without flags the vault is "built-in": credentials are stored locally and managed through Agent Vault. With `--credential-store=infisical`, Agent Vault probes Infisical with the supplied config, encrypts the snapshot, and commits the vault, credentials, and your admin grant atomically. If the probe fails nothing is persisted. See [Credential stores](/learn/credential-stores).
 
+    External-store vault creation requires instance-owner role. Non-owners receive `403 Owner role required to create external-store vaults` because the broker's configured machine identity, not the caller's, authorizes the upstream fetch.
+
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--credential-store` | `builtin` | Credential store kind: `builtin` or `infisical`. Immutable after create. |

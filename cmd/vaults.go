@@ -136,11 +136,16 @@ var vaultCredentialStoreShowCmd = &cobra.Command{
 		if v, ok := resp.CredentialStore["poll_interval_seconds"]; ok {
 			fmt.Fprintf(out, "  Poll:        %vs\n", v)
 		}
-		if v, ok := resp.CredentialStore["last_sync_status"]; ok {
-			fmt.Fprintf(out, "  Last sync:   %v\n", v)
+		status, _ := resp.CredentialStore["last_sync_status"].(string)
+		if status != "" {
+			fmt.Fprintf(out, "  Last sync:   %v\n", status)
 		}
 		if v, ok := resp.CredentialStore["last_synced_at"]; ok {
-			fmt.Fprintf(out, "  Synced at:   %v\n", v)
+			label := "Synced at"
+			if status == infisical.StatusError {
+				label = "Last attempt"
+			}
+			fmt.Fprintf(out, "  %s:   %v\n", label, v)
 		}
 		if v, ok := resp.CredentialStore["last_sync_error"]; ok {
 			fmt.Fprintf(out, "  Error:       %v\n", v)
@@ -435,7 +440,7 @@ func init() {
 
 	vaultDeleteCmd.Flags().Bool("yes", false, "Skip confirmation prompt")
 
-	vaultCreateCmd.Flags().String("credential-store", "", "credential store kind: builtin (default) or infisical")
+	vaultCreateCmd.Flags().String("credential-store", "", "credential store kind: builtin (default) or infisical (owner only)")
 	vaultCreateCmd.Flags().String("infisical-project-id", "", "Infisical project ID (required when --credential-store=infisical)")
 	vaultCreateCmd.Flags().String("infisical-environment", "", "Infisical environment slug, e.g. dev/prod")
 	vaultCreateCmd.Flags().String("infisical-path", "/", "Infisical secret path (default /)")
