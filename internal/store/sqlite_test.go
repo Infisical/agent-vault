@@ -2230,7 +2230,7 @@ func TestCreateExternalVaultRollbackOnDuplicateName(t *testing.T) {
 	params := CreateExternalVaultParams{
 		Name:                "dup-vault",
 		Kind:                "infisical",
-		ConfigJSON:          `{}`,
+		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/"}`,
 		PollIntervalSeconds: 60,
 		Credentials:         []EncryptedKV{{Key: "K", Ciphertext: []byte("c"), Nonce: []byte("n")}},
 		CreatorActorID:      u.ID,

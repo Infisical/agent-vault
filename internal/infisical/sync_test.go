@@ -170,7 +170,7 @@ func TestSyncerRefresh_FailureKeepsStaleAndRecordsError(t *testing.T) {
 		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/"}`,
 		PollIntervalSeconds: 60,
 	})
-	// Upstream error embeds the configured INFISICAL_URL — the kind of detail
+	// Upstream error embeds the configured INFISICAL_URL, the kind of detail
 	// that should not be reflected to vault members through last_sync_error.
 	upstreamErr := "APIError: CallListSecretsV3Raw [GET https://infisical.internal.corp/api/v3/secrets/raw?workspaceId=p] [status-code=404]"
 	ff := &fakeFetcher{err: errors.New(upstreamErr)}
@@ -189,7 +189,7 @@ func TestSyncerRefresh_FailureKeepsStaleAndRecordsError(t *testing.T) {
 		t.Fatalf("expected error health, got %+v", h)
 	}
 	// The persisted message must be the scrubbed public string, not the
-	// raw SDK error — vault members read this via /v1/vaults/{name}/context.
+	// raw SDK error; vault members read this via /v1/vaults/{name}/context.
 	if h.Error != syncFailedPublicMessage {
 		t.Fatalf("expected persisted error to be the scrubbed public message; got %q", h.Error)
 	}
@@ -236,5 +236,74 @@ func TestEncryptSecrets_RoundTrip(t *testing.T) {
 func TestEncryptSecrets_RejectsEmptyKey(t *testing.T) {
 	if _, err := EncryptSecrets([]Secret{{Key: "", Value: "x"}}, makeDEK(t)); err == nil {
 		t.Fatalf("expected error for empty key")
+	}
+}
+
+// blockingFetcher parks FetchSecrets until gate is closed. Lets a test
+// observe an in-flight refresh without racing the fetch to completion.
+type blockingFetcher struct {
+	gate    chan struct{}
+	entered chan struct{} // signals the fetch is parked
+}
+
+func (b *blockingFetcher) FetchSecrets(_ context.Context, _ VaultConfig) ([]Secret, error) {
+	close(b.entered)
+	<-b.gate
+	return nil, errors.New("blocking fetcher canceled")
+}
+
+func (b *blockingFetcher) AuthMethod() AuthMethod { return AuthUniversal }
+
+// TestSyncerWaitGroupDrainsInflightRefreshes locks in the contract that
+// server.go relies on at shutdown: by the time Syncer's WaitGroup is drained,
+// no goroutine is still reading s.DEK. Without this, crypto.WipeBytes(s.encKey)
+// can race an in-flight refresh and produce ciphertext encrypted with a
+// zeroed key (AES-GCM does not error on a zero key, it just silently writes
+// garbage into the credentials table).
+func TestSyncerWaitGroupDrainsInflightRefreshes(t *testing.T) {
+	dek := makeDEK(t)
+	fs := newFakeStore(store.VaultCredentialStore{
+		VaultID:             "v1",
+		Kind:                KindInfisical,
+		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+		PollIntervalSeconds: 60,
+		// LastSyncedAt nil means dueAt returns true.
+	})
+	bf := &blockingFetcher{gate: make(chan struct{}), entered: make(chan struct{})}
+	s := &Syncer{
+		Store: fs, Fetcher: bf, DEK: dek,
+		Logger: discardLogger(), Clock: time.Now,
+		inFlight: map[string]struct{}{},
+	}
+
+	// Spawn one refresh; the fetcher will park.
+	s.tick(context.Background())
+
+	// Wait until the goroutine is actually inside FetchSecrets so the
+	// WaitGroup has registered the in-flight work.
+	select {
+	case <-bf.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("refresh goroutine never entered FetchSecrets")
+	}
+
+	// wg.Wait must block while the refresh is parked.
+	waitDone := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+		t.Fatalf("wg.Wait returned while an in-flight refresh was still parked")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Releasing the fetcher must unblock wg.Wait.
+	close(bf.gate)
+	select {
+	case <-waitDone:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("wg.Wait did not return after the in-flight refresh finished")
 	}
 }

@@ -464,9 +464,10 @@ type Store interface {
 	GetVaultCredentialStore(ctx context.Context, vaultID string) (*VaultCredentialStore, error)
 	ListVaultCredentialStores(ctx context.Context) ([]VaultCredentialStore, error)
 	UpdateVaultCredentialStoreHealth(ctx context.Context, vaultID, status, errMsg string, syncedAt time.Time) error
-	// ReplaceVaultCredentials atomically rewrites the credentials table for
-	// the vault: every entry in items is upserted, every existing row whose
-	// key is not in items is deleted. Used by the external-store syncer.
+	// ReplaceVaultCredentials atomically replaces every credential row for
+	// the vault: existing rows are deleted and items are inserted in a single
+	// transaction. Empty items wipes the vault. Row IDs and created_at are
+	// not preserved across calls. Used by the external-store syncer.
 	ReplaceVaultCredentials(ctx context.Context, vaultID string, items []EncryptedKV) error
 
 	// Request logs

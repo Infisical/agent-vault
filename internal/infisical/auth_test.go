@@ -108,7 +108,7 @@ func TestDetectAuthMethod_GCPIAMNoSpuriousMultipleWarning(t *testing.T) {
 }
 
 func TestDetectAuthMethod_LDAPRequiresAllThree(t *testing.T) {
-	// LDAP needs identity + username + password — the SDK only env-reads the
+	// LDAP needs identity + username + password; the SDK only env-reads the
 	// identity, so the loginWithMethod path consumes all three.
 	got, _ := DetectAuthMethod(envFunc(map[string]string{
 		"INFISICAL_LDAP_AUTH_IDENTITY_ID": "id",

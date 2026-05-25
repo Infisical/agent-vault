@@ -40,8 +40,9 @@ type Syncer struct {
 	Logger  *slog.Logger
 	Clock   func() time.Time
 
-	mu     sync.Mutex
+	mu       sync.Mutex
 	inFlight map[string]struct{}
+	wg       sync.WaitGroup
 }
 
 // NewSyncer constructs a syncer; Clock defaults to time.Now if nil.
@@ -56,7 +57,10 @@ func NewSyncer(s SyncerStore, c *Client, dek []byte, logger *slog.Logger) *Synce
 	}
 }
 
-// Run loops until ctx is cancelled. Safe to call once per server lifetime.
+// Run loops until ctx is cancelled, then waits for in-flight refresh
+// goroutines to finish before returning. The caller relies on Run-has-returned
+// to mean "no goroutine is still reading s.DEK", which lets the server wipe
+// the DEK on shutdown without racing against an in-flight encrypt.
 func (s *Syncer) Run(ctx context.Context) {
 	if s.Fetcher == nil {
 		s.Logger.Info("infisical syncer disabled (no client)")
@@ -65,6 +69,7 @@ func (s *Syncer) Run(ctx context.Context) {
 	s.Logger.Info("infisical syncer started", slog.Duration("tick", tickInterval))
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
+	defer s.wg.Wait()
 	for {
 		select {
 		case <-ctx.Done():
@@ -93,7 +98,9 @@ func (s *Syncer) tick(ctx context.Context) {
 		if !s.markInFlight(cs.VaultID) {
 			continue // a previous refresh for this vault is still running
 		}
+		s.wg.Add(1)
 		go func(cs store.VaultCredentialStore) {
+			defer s.wg.Done()
 			defer s.clearInFlight(cs.VaultID)
 			s.refresh(ctx, cs)
 		}(cs)
@@ -101,7 +108,7 @@ func (s *Syncer) tick(ctx context.Context) {
 }
 
 // dueAt reports whether the vault is past its poll interval. Vaults with a
-// nil last_synced_at are always due (defensive — initial sync runs in the
+// nil last_synced_at are always due (defensive; initial sync runs in the
 // create handler, but a manual DB edit could leave one in this state).
 func (s *Syncer) dueAt(cs store.VaultCredentialStore, now time.Time) bool {
 	if cs.LastSyncedAt == nil {

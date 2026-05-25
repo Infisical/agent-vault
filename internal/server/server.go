@@ -854,13 +854,23 @@ func (s *Server) Start() error {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-	pruneCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	pruneCtx, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
 	go s.runTouchCachePruner(pruneCtx)
 
+	// syncerDone closes once Syncer.Run has returned AND drained its in-flight
+	// refresh goroutines. We block on it before WipeBytes so a refresh mid-
+	// AES-GCM never reads a zeroed s.encKey (silently produces garbage
+	// ciphertext that lands in the credentials table).
+	syncerDone := make(chan struct{})
 	if s.infisicalClient != nil {
 		syncer := infisical.NewSyncer(s.store, s.infisicalClient, s.encKey, s.logger)
-		go syncer.Run(pruneCtx)
+		go func() {
+			defer close(syncerDone)
+			syncer.Run(pruneCtx)
+		}()
+	} else {
+		close(syncerDone)
 	}
 
 	errCh := make(chan error, 1)
@@ -918,6 +928,17 @@ func (s *Server) Start() error {
 	if err := s.httpServer.Shutdown(ctx); err != nil {
 		return fmt.Errorf("server shutdown: %w", err)
 	}
+
+	// Stop background workers (syncer + touch-cache pruner) and wait for the
+	// syncer's in-flight refreshes to drain before zeroing s.encKey.
+	stopWorkers()
+	select {
+	case <-syncerDone:
+	case <-time.After(5 * time.Second):
+		fmt.Fprintln(os.Stderr, "warning: infisical syncer did not stop within 5s; skipping key wipe to avoid racing in-flight encrypts")
+		return nil
+	}
+
 	fmt.Println("server shut down gracefully")
 	crypto.WipeBytes(s.encKey)
 	return nil

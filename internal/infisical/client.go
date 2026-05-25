@@ -68,8 +68,8 @@ func (c *Client) AuthMethod() AuthMethod { return c.method }
 // Returns an error if the upstream returns two secrets with the same key
 // under different paths (common with Recursive=true). Agent Vault's data
 // model is flat key-value per vault, so the operator must restructure
-// their Infisical layout or use a non-recursive vault — silently
-// last-writes-wins would inject a non-deterministic credential.
+// their Infisical layout or use a non-recursive vault. Silent last-write-
+// wins would inject a non-deterministic credential.
 func (c *Client) FetchSecrets(ctx context.Context, cfg VaultConfig) ([]Secret, error) {
 	res, err := c.sdk.Secrets().ListSecrets(sdk.ListSecretsOptions{
 		ProjectID:              cfg.ProjectID,
@@ -82,14 +82,30 @@ func (c *Client) FetchSecrets(ctx context.Context, cfg VaultConfig) ([]Secret, e
 	if err != nil {
 		return nil, err
 	}
-	seen := make(map[string]string, len(res.Secrets))
-	out := make([]Secret, 0, len(res.Secrets))
-	for _, s := range res.Secrets {
-		if prev, dup := seen[s.SecretKey]; dup {
-			return nil, fmt.Errorf("duplicate secret key %q under both %s and %s; Agent Vault vaults are flat key-value and cannot disambiguate", s.SecretKey, prev, s.SecretPath)
+	raw := make([]rawSecret, len(res.Secrets))
+	for i, s := range res.Secrets {
+		raw[i] = rawSecret{Key: s.SecretKey, Value: s.SecretValue, Path: s.SecretPath}
+	}
+	return flattenSecrets(raw)
+}
+
+// rawSecret is the subset of SDK fields flattenSecrets needs; defined here
+// so the dedup logic is testable without standing up a real SDK client.
+type rawSecret struct{ Key, Value, Path string }
+
+// flattenSecrets collapses the SDK's path-scoped secret list into Agent
+// Vault's flat key-value form. Returns an error if any key appears under
+// two paths (common with Recursive=true). Both paths are named in the
+// error so the operator can locate and resolve the conflict.
+func flattenSecrets(in []rawSecret) ([]Secret, error) {
+	seen := make(map[string]string, len(in))
+	out := make([]Secret, 0, len(in))
+	for _, s := range in {
+		if prev, dup := seen[s.Key]; dup {
+			return nil, fmt.Errorf("duplicate secret key %q under both %s and %s; Agent Vault vaults are flat key-value and cannot disambiguate", s.Key, prev, s.Path)
 		}
-		seen[s.SecretKey] = s.SecretPath
-		out = append(out, Secret{Key: s.SecretKey, Value: s.SecretValue})
+		seen[s.Key] = s.Path
+		out = append(out, Secret{Key: s.Key, Value: s.Value})
 	}
 	return out, nil
 }

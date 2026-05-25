@@ -128,7 +128,7 @@ export default function ProposalsTab() {
       {credentialStore && (
         <InfoBanner className="mb-6">
           Proposals on this vault may include service changes only. Credential
-          additions are rejected — manage credentials in{" "}
+          additions are rejected. Manage credentials in{" "}
           <span className="font-medium text-text">{credentialStore.kind}</span>.
         </InfoBanner>
       )}

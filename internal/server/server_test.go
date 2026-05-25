@@ -1090,7 +1090,7 @@ func (m *mockStore) DeleteVaultSetting(_ context.Context, vaultID, key string) e
 	return nil
 }
 
-// External credential stores — minimal stubs so existing tests link; behavior
+// External credential stores: minimal stubs so existing tests link; behavior
 // covered by SQLite-backed tests in internal/store.
 func (m *mockStore) CreateExternalVault(_ context.Context, _ store.CreateExternalVaultParams) (*store.Vault, error) {
 	return nil, errors.New("mockStore.CreateExternalVault: not implemented in this test")
@@ -1714,6 +1714,11 @@ func TestCredentialsDeleteRejectedForExternalStore(t *testing.T) {
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["code"] != "external_credential_store" {
+		t.Fatalf("expected code=external_credential_store, got %v", resp)
 	}
 }
 
@@ -3087,7 +3092,7 @@ func TestOwnerCannotAccessVaultWithoutGrant(t *testing.T) {
 // GET /v1/instance/credential-stores advertises only the kinds the caller
 // can actually create. Two contracts are load-bearing: "infisical" requires
 // a non-nil client (UI 503s otherwise), and "infisical" requires owner role
-// (write path is owner-only — non-owners would see an enabled picker that
+// (write path is owner-only; non-owners would see an enabled picker that
 // 403s on submit).
 func TestInstanceCredentialStores(t *testing.T) {
 	cases := []struct {
@@ -3147,6 +3152,56 @@ func TestVaultCreateExternalRequiresOwner(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for member, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestVaultContextRedactsConfigForNonAdmin locks in that the upstream
+// topology (project_id, environment, secret_path) is only returned to vault
+// admins and instance owners. Proxy/member roles must see only the kind +
+// sync health, otherwise a proxy-role agent can call this endpoint and read
+// the operator's Infisical layout.
+func TestVaultContextRedactsConfigForNonAdmin(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
+		VaultID:    "root-ns-id",
+		Kind:       "infisical",
+		ConfigJSON: `{"project_id":"secret-proj","environment":"prod","secret_path":"/svc"}`,
+	}
+	srv := newTestServer(withStore(ms))
+
+	hit := func(token string) map[string]interface{} {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/context", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			CredentialStore map[string]interface{} `json:"credential_store"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return resp.CredentialStore
+	}
+
+	asOwner := hit(ownerToken)
+	if asOwner["config"] == nil {
+		t.Fatalf("owner must see config, got %+v", asOwner)
+	}
+	if asOwner["kind"] != "infisical" {
+		t.Fatalf("owner kind: want infisical, got %v", asOwner["kind"])
+	}
+
+	asMember := hit(memberToken)
+	if _, leaked := asMember["config"]; leaked {
+		t.Fatalf("member must NOT see config, got %+v", asMember)
+	}
+	if asMember["kind"] != "infisical" {
+		t.Fatalf("member must still see kind, got %v", asMember["kind"])
 	}
 }
 

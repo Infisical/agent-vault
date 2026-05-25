@@ -147,7 +147,7 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// External-store vaults reject credential mutations — Infisical (or the
+	// External-store vaults reject credential mutations; Infisical (or the
 	// future equivalent) is the source of truth. Service-only proposals
 	// remain valid.
 	if len(req.Credentials) > 0 {

@@ -97,7 +97,14 @@ func (s *Server) handleVaultContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if cs != nil && cs.Kind != "" {
-		resp["credential_store"] = credentialStoreSummaryOf(cs, true)
+		summary := credentialStoreSummaryOf(cs, true)
+		// Config holds upstream topology (project_id, environment, secret_path).
+		// Reachable by proxy/member roles, so redact unless the caller can also
+		// reconfigure the store (same gate as the create path on POST /v1/vaults).
+		if vaultRole != "admin" && !actor.IsOwner() {
+			summary.Config = nil
+		}
+		resp["credential_store"] = summary
 	}
 	jsonOK(w, resp)
 }
@@ -134,7 +141,7 @@ func credentialStoreSummaryOf(cs *store.VaultCredentialStore, full bool) *creden
 // handleInstanceCredentialStores reports which credential-store kinds the
 // caller may pick from at vault-create time. Always includes "builtin";
 // includes "infisical" only when the server has a healthy Infisical client
-// AND the caller is an instance owner — the write path requires owner, so
+// AND the caller is an instance owner. The write path requires owner, so
 // advertising "infisical" to a non-owner would render an enabled picker
 // option that 403s on submit.
 func (s *Server) handleInstanceCredentialStores(w http.ResponseWriter, r *http.Request) {
@@ -395,7 +402,7 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// External credential store branch — probe + atomic create. Restricted to
+	// External credential store branch: probe + atomic create. Restricted to
 	// owners so a non-owner member can't use the operator-configured machine
 	// identity as a primitive to extract upstream secrets they'd otherwise
 	// have no access to.
@@ -539,9 +546,9 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 
 	// One query for every vault's credential-store row; built into a map so
 	// the per-vault loop below is a cheap lookup instead of an N+1 fan-out.
-	// On error we keep serving the list — credential-store info is supplemental
-	// enrichment and the mutation gate (assertBuiltinCredentialStore) still
-	// fails closed — but we surface the underlying error to the logs so
+	// On error we keep serving the list (credential-store info is supplemental
+	// enrichment and the mutation gate, assertBuiltinCredentialStore, still
+	// fails closed), but we surface the underlying error to the logs so
 	// operators can see why external vaults briefly lose their kind pill.
 	csByVault := map[string]*store.VaultCredentialStore{}
 	if rows, err := s.store.ListVaultCredentialStores(ctx); err != nil {
