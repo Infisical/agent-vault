@@ -203,13 +203,10 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 	return nil
 }
 
-// attachInfisicalIfConfigured wires the optional Infisical client when
-// INFISICAL_URL is set. The 10s deadline is wall-clock (via time.After)
-// because the SDK's login methods are synchronous and ignore context, so
-// a context.WithTimeout would only bound the background token refresh.
-// On timeout we proceed without the client; the login goroutine may
-// outlive this call, but srv.infisicalClient stays nil so external vaults
-// cleanly serve-stale until the next restart.
+// attachInfisicalIfConfigured wires the Infisical client when INFISICAL_URL
+// is set. The 10s deadline uses time.After because the SDK login is
+// synchronous and ignores ctx; on timeout we proceed without a client so
+// external vaults serve-stale until next restart.
 func attachInfisicalIfConfigured(srv *server.Server, logger *slog.Logger) {
 	if os.Getenv("INFISICAL_URL") == "" {
 		return

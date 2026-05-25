@@ -87,11 +87,8 @@ func TestDetectAuthMethod_GCPIAMRequiresKeyFile(t *testing.T) {
 	}
 }
 
-// GCP IAM and GCP ID Token share INFISICAL_GCP_AUTH_IDENTITY_ID. A correctly
-// configured GCP IAM env (identity_id + key file) used to also satisfy the
-// ID Token probe and emit a spurious "multiple auth methods configured"
-// warning on every startup. Regression: assert no warning when GCP IAM is
-// the only configured method.
+// Regression: a complete GCP IAM env must not also match GCP ID Token
+// (both read INFISICAL_GCP_AUTH_IDENTITY_ID) and warn on startup.
 func TestDetectAuthMethod_GCPIAMNoSpuriousMultipleWarning(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))

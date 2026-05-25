@@ -44,18 +44,11 @@ Configure SMTP to enable Agent Vault to send emails for verification codes, vaul
 
 ## Infisical credential store
 
-Setting `INFISICAL_URL` enables Infisical-backed vaults. When a vault is created with `--credential-store=infisical`, Agent Vault polls Infisical at a per-vault cadence and caches the encrypted secret snapshot in its local DB. Local credential mutations are rejected for those vaults; Infisical is the source of truth. See the [Credential stores](/learn/credential-stores) page for the full mental model.
+Setting `INFISICAL_URL` enables Infisical-backed vaults: Agent Vault polls Infisical and caches the encrypted snapshot locally. Local mutations are rejected. See [Credential stores](/learn/credential-stores).
 
-Supply env vars for exactly one auth method. The Infisical Go SDK does not auto-detect; Agent Vault picks the first complete group in this priority order:
+Supply env vars for one auth method. Detection picks the first complete group in priority order: Universal → Kubernetes → AWS IAM → GCP IAM → GCP ID Token → LDAP.
 
-1. Universal Auth
-2. Kubernetes Auth
-3. AWS IAM Auth
-4. GCP IAM Auth
-5. GCP ID Token Auth
-6. LDAP Auth
-
-GCP IAM and GCP ID Token both read `INFISICAL_GCP_AUTH_IDENTITY_ID`. Setting `INFISICAL_GCP_IAM_SERVICE_ACCOUNT_KEY_FILE_PATH` alongside the identity ID selects GCP IAM; absent the file path Agent Vault selects GCP ID Token (which pulls a JWT from the GCP metadata server at runtime).
+GCP IAM and GCP ID Token share `INFISICAL_GCP_AUTH_IDENTITY_ID`; setting `INFISICAL_GCP_IAM_SERVICE_ACCOUNT_KEY_FILE_PATH` alongside selects IAM, otherwise ID Token (which pulls a JWT from the GCP metadata server).
 
 | Variable | Required | Description |
 |----------|----------|-------------|

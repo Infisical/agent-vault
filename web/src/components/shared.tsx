@@ -47,23 +47,30 @@ export function ErrorBanner({
 
 export function InfoBanner({
   children,
+  action,
   className = "",
 }: {
   children: React.ReactNode;
+  action?: React.ReactNode;
   className?: string;
 }) {
   return (
     <div
       className={`rounded-lg border border-border bg-surface-raised p-4 text-sm text-text-muted ${className}`}
     >
-      {children}
+      {action ? (
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0 flex-1">{children}</div>
+          <div className="flex-shrink-0">{action}</div>
+        </div>
+      ) : (
+        children
+      )}
     </div>
   );
 }
 
-// SyncStatusDot renders the small colored dot used in vault cards and the
-// settings panel. Status values mirror the server's vault_credential_stores
-// last_sync_status enum: "ok", "error", "pending".
+// SyncStatusDot mirrors vault_credential_stores.last_sync_status: ok|error|pending.
 export function SyncStatusDot({ status }: { status?: string }) {
   const color =
     status === "ok"

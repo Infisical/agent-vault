@@ -177,10 +177,8 @@ func (s *SQLiteStore) DeleteVaultSetting(ctx context.Context, vaultID, key strin
 
 // --- External Credential Stores ---
 
-// CreateExternalVault is the atomic create path for vaults whose credentials
-// come from an external system. It commits the vault row, default broker
-// config, credential-store config, initial encrypted credential snapshot,
-// and the creator's admin grant in a single transaction.
+// CreateExternalVault atomically commits the vault, default broker config,
+// credential-store config, initial encrypted snapshot, and admin grant.
 func (s *SQLiteStore) CreateExternalVault(ctx context.Context, p CreateExternalVaultParams) (*Vault, error) {
 	if p.Name == "" || p.Kind == "" || p.ConfigJSON == "" {
 		return nil, fmt.Errorf("CreateExternalVault: name, kind, and config required")
@@ -259,10 +257,8 @@ func (s *SQLiteStore) GetVaultCredentialStore(ctx context.Context, vaultID strin
 	return scanVaultCredentialStore(row)
 }
 
-// ListVaultCredentialStores returns every external-store row. The CHECK
-// constraint currently restricts kind to known values, but the explicit
-// query orders by vault_id so callers iterating with their own kind filter
-// always see a stable order.
+// ListVaultCredentialStores returns every external-store row, ordered by
+// vault_id for stable iteration.
 func (s *SQLiteStore) ListVaultCredentialStores(ctx context.Context) ([]VaultCredentialStore, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT vault_id, kind, config_json, poll_interval_seconds,
@@ -285,10 +281,8 @@ func (s *SQLiteStore) ListVaultCredentialStores(ctx context.Context) ([]VaultCre
 	return out, rows.Err()
 }
 
-// UpdateVaultCredentialStoreHealth returns sql.ErrNoRows when no
-// vault_credential_stores row matches vaultID (e.g. the vault was deleted
-// between list and update inside the syncer). Callers that race against
-// deletion should treat that as a benign "skip" rather than a hard failure.
+// UpdateVaultCredentialStoreHealth returns sql.ErrNoRows when the row is
+// gone (vault deleted mid-sync); callers should treat that as benign.
 func (s *SQLiteStore) UpdateVaultCredentialStoreHealth(ctx context.Context, vaultID, status, errMsg string, syncedAt time.Time) error {
 	syncedStr := syncedAt.UTC().Format(time.DateTime)
 	res, err := s.db.ExecContext(ctx,
@@ -307,10 +301,8 @@ func (s *SQLiteStore) UpdateVaultCredentialStoreHealth(ctx context.Context, vaul
 	return nil
 }
 
-// ReplaceVaultCredentials atomically replaces the credentials for the vault.
-// Wipes the vault's existing rows and inserts items inside one transaction so
-// concurrent readers never observe a partial state. Empty items wipes the
-// vault entirely.
+// ReplaceVaultCredentials atomically wipes and rewrites the vault's credentials
+// in one transaction. Empty items clears the vault.
 func (s *SQLiteStore) ReplaceVaultCredentials(ctx context.Context, vaultID string, items []EncryptedKV) error {
 	nowStr := nowUTC()
 
@@ -336,8 +328,7 @@ func (s *SQLiteStore) ReplaceVaultCredentials(ctx context.Context, vaultID strin
 	return tx.Commit()
 }
 
-// rowScanner is the common surface of *sql.Row and *sql.Rows that we need
-// here so the same scan function can serve both single-row Get and Rows iteration.
+// rowScanner unifies *sql.Row and *sql.Rows so one scan func serves both.
 type rowScanner interface {
 	Scan(dest ...interface{}) error
 }

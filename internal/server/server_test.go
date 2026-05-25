@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -1104,7 +1106,15 @@ func (m *mockStore) GetVaultCredentialStore(_ context.Context, vaultID string) (
 func (m *mockStore) ListVaultCredentialStores(_ context.Context) ([]store.VaultCredentialStore, error) {
 	return nil, nil
 }
-func (m *mockStore) UpdateVaultCredentialStoreHealth(_ context.Context, _, _, _ string, _ time.Time) error {
+func (m *mockStore) UpdateVaultCredentialStoreHealth(_ context.Context, vaultID, status, errMsg string, when time.Time) error {
+	cs, ok := m.credStores[vaultID]
+	if !ok {
+		return sql.ErrNoRows
+	}
+	cs.LastSyncStatus = status
+	cs.LastSyncError = errMsg
+	t := when
+	cs.LastSyncedAt = &t
 	return nil
 }
 func (m *mockStore) ReplaceVaultCredentials(_ context.Context, _ string, _ []store.EncryptedKV) error {
@@ -3202,6 +3212,229 @@ func TestVaultContextRedactsConfigForNonAdmin(t *testing.T) {
 	}
 	if asMember["kind"] != "infisical" {
 		t.Fatalf("member must still see kind, got %v", asMember["kind"])
+	}
+}
+
+// TestVaultContextRedactsLastSyncErrorForNonAdmin locks in that
+// last_sync_error (may carry upstream keys via the invalid-key carve-out)
+// is redacted alongside Config for non-admin/non-owner callers.
+func TestVaultContextRedactsLastSyncErrorForNonAdmin(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
+		VaultID:       "root-ns-id",
+		Kind:          "infisical",
+		ConfigJSON:    `{"project_id":"p","environment":"prod","secret_path":"/"}`,
+		LastSyncError: `duplicate secret key "API_KEY" under both /stripe and /openai; flat key-value cannot disambiguate`,
+	}
+	srv := newTestServer(withStore(ms))
+
+	hit := func(token string) map[string]interface{} {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/context", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			CredentialStore map[string]interface{} `json:"credential_store"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return resp.CredentialStore
+	}
+
+	asOwner := hit(ownerToken)
+	if got, _ := asOwner["last_sync_error"].(string); got == "" {
+		t.Fatalf("owner must see last_sync_error, got %+v", asOwner)
+	}
+
+	asMember := hit(memberToken)
+	if _, leaked := asMember["last_sync_error"]; leaked {
+		t.Fatalf("member must NOT see last_sync_error (may carry upstream paths/keys), got %+v", asMember)
+	}
+}
+
+// stubFetcher satisfies the unexported infisical.secretsFetcher contract
+// via duck typing through NewSyncerForTest. Returns canned results so each
+// branch of POST /v1/vaults/{name}/sync can be exercised in isolation.
+type stubFetcher struct {
+	secrets []infisical.Secret
+	err     error
+}
+
+func (s *stubFetcher) FetchSecrets(_ context.Context, _ infisical.VaultConfig) ([]infisical.Secret, error) {
+	return s.secrets, s.err
+}
+func (s *stubFetcher) AuthMethod() infisical.AuthMethod { return infisical.AuthUniversal }
+
+func TestVaultSyncNow_NotFound(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/does-not-exist/sync", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVaultSyncNow_BuiltinVaultReturns400(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	// No credStores entry → vault is builtin.
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/sync", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for builtin vault, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVaultSyncNow_NoSyncerReturns503(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
+		VaultID: "root-ns-id", Kind: "infisical",
+		ConfigJSON: `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+	}
+	srv := newTestServer(withStore(ms)) // intentionally no AttachInfisicalSyncer
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/sync", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["code"] != "infisical_not_configured" {
+		t.Fatalf("expected code=infisical_not_configured, got %v", resp)
+	}
+}
+
+// attachStubSyncer wires a Syncer driven by `fetcher` onto srv and returns
+// the populated credStores row so the test can assert post-sync state.
+func attachStubSyncer(t *testing.T, srv *Server, ms *mockStore, fetcher interface {
+	FetchSecrets(context.Context, infisical.VaultConfig) ([]infisical.Secret, error)
+	AuthMethod() infisical.AuthMethod
+}) {
+	t.Helper()
+	dek := make([]byte, 32)
+	for i := range dek {
+		dek[i] = byte(i + 1)
+	}
+	srv.encKey = dek
+	syncer := infisical.NewSyncerForTest(ms, fetcher, dek, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv.AttachInfisicalSyncer(syncer)
+	srv.AttachInfisical(&infisical.Client{}) // present so other gates relax; not used by RefreshOnce
+}
+
+func TestVaultSyncNow_Success(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
+		VaultID: "root-ns-id", Kind: "infisical",
+		ConfigJSON:     `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+		LastSyncStatus: "pending",
+	}
+	srv := newTestServer(withStore(ms))
+	attachStubSyncer(t, srv, ms, &stubFetcher{
+		secrets: []infisical.Secret{{Key: "STRIPE_KEY", Value: "sk_1"}},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/sync", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		CredentialStore map[string]interface{} `json:"credential_store"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.CredentialStore["kind"] != "infisical" {
+		t.Fatalf("kind: want infisical, got %v", resp.CredentialStore["kind"])
+	}
+	if resp.CredentialStore["last_sync_status"] != "ok" {
+		t.Fatalf("status: want ok, got %v", resp.CredentialStore["last_sync_status"])
+	}
+	// Owner should see the config.
+	if resp.CredentialStore["config"] == nil {
+		t.Fatalf("owner must see config, got %+v", resp.CredentialStore)
+	}
+}
+
+func TestVaultSyncNow_InvalidKeyReturns400(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
+		VaultID: "root-ns-id", Kind: "infisical",
+		ConfigJSON: `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+	}
+	srv := newTestServer(withStore(ms))
+	attachStubSyncer(t, srv, ms, &stubFetcher{
+		// kebab-case key violates broker.CredentialKeyPattern → ErrInvalidKey.
+		secrets: []infisical.Secret{{Key: "stripe-key", Value: "sk_1"}},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/sync", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["code"] != "external_store_invalid_key" {
+		t.Fatalf("expected code=external_store_invalid_key, got %v", resp)
+	}
+	// The bad key must appear in the message so the operator can fix it upstream.
+	if !strings.Contains(resp["error"], "stripe-key") {
+		t.Fatalf("error must name the offending key; got %q", resp["error"])
+	}
+}
+
+func TestVaultSyncNow_GenericUpstreamFailureReturns502(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
+		VaultID: "root-ns-id", Kind: "infisical",
+		ConfigJSON: `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+	}
+	srv := newTestServer(withStore(ms))
+	// Real SDK error embeds INFISICAL_URL; the handler must scrub it from the response.
+	upstreamErr := errors.New("APIError: CallListSecretsV3Raw [GET https://infisical.internal/api/v3/secrets/raw] [status-code=404]")
+	attachStubSyncer(t, srv, ms, &stubFetcher{err: upstreamErr})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/sync", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["code"] != "infisical_fetch_failed" {
+		t.Fatalf("expected code=infisical_fetch_failed, got %v", resp)
+	}
+	if strings.Contains(resp["error"], "infisical.internal") {
+		t.Fatalf("scrubbed response must not leak the upstream URL; got %q", resp["error"])
 	}
 }
 

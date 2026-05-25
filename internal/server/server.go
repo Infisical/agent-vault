@@ -82,10 +82,11 @@ type Server struct {
 	// concurrent upserts can both pass collision checks against the
 	// same pre-state.
 	vaultServiceMu sync.Map // vaultID (string) -> *sync.Mutex
-	// infisicalClient is the optional external credential source. Nil
-	// when INFISICAL_URL is unset; vault-create handlers reject
-	// kind="infisical" requests in that case.
+	// infisicalClient is nil when INFISICAL_URL is unset; create handlers
+	// reject kind="infisical" then.
 	infisicalClient *infisical.Client
+	// infisicalSyncer is built in Run; exposed for manual-refresh RefreshOnce.
+	infisicalSyncer *infisical.Syncer
 }
 
 // lockVaultServices acquires the per-vault mutation lock. Callers MUST
@@ -106,10 +107,13 @@ func (s *Server) RateLimit() *ratelimit.Registry { return s.rateLimit }
 // stops it alongside the HTTP server.
 func (s *Server) AttachMITM(p *mitm.Proxy) { s.mitm = p }
 
-// AttachInfisical registers the Infisical client used for external-store
-// vaults. Nil disables Infisical-backed vault creation but does not affect
-// builtin vaults. Must be called before Start.
+// AttachInfisical registers the Infisical client. Must be called before Start.
 func (s *Server) AttachInfisical(c *infisical.Client) { s.infisicalClient = c }
+
+// AttachInfisicalSyncer pre-wires a syncer instead of letting Start build one
+// from the attached client. Used by tests to inject a fake fetcher; in prod
+// Start auto-builds one when the field is nil.
+func (s *Server) AttachInfisicalSyncer(syncer *infisical.Syncer) { s.infisicalSyncer = syncer }
 
 // AttachLogSink swaps the per-request log sink. Safe to call once at
 // startup, before the HTTP server begins accepting connections. nil
@@ -570,9 +574,8 @@ func (s *Server) requireVaultMember(w http.ResponseWriter, r *http.Request, vaul
 	return actor, nil
 }
 
-// assertBuiltinCredentialStore writes a 409 and returns false when the vault
-// is backed by an external credential store. Fails closed on transient lookup
-// errors (returns 500) so a flaky DB can't silently bypass the gate.
+// assertBuiltinCredentialStore writes 409 and returns false when the vault
+// is external-backed. Fails closed (500) on transient lookup errors.
 func (s *Server) assertBuiltinCredentialStore(w http.ResponseWriter, ctx context.Context, vaultID, vaultName string) bool {
 	cs, err := s.store.GetVaultCredentialStore(ctx, vaultID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -740,6 +743,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 
 	// Vault management (any auth'd user)
 	mux.HandleFunc("GET /v1/vaults/{name}/context", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultContext))))
+	mux.HandleFunc("POST /v1/vaults/{name}/sync", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultSyncNow))))
 	mux.HandleFunc("GET /v1/instance/credential-stores", s.requireInitialized(s.requireAuth(actorAuthed(s.handleInstanceCredentialStores))))
 	mux.HandleFunc("POST /v1/vaults", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultCreate)))))
 	mux.HandleFunc("GET /v1/vaults", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultList))))
@@ -863,11 +867,13 @@ func (s *Server) Start() error {
 	// AES-GCM never reads a zeroed s.encKey (silently produces garbage
 	// ciphertext that lands in the credentials table).
 	syncerDone := make(chan struct{})
-	if s.infisicalClient != nil {
-		syncer := infisical.NewSyncer(s.store, s.infisicalClient, s.encKey, s.logger)
+	if s.infisicalSyncer == nil && s.infisicalClient != nil {
+		s.infisicalSyncer = infisical.NewSyncer(s.store, s.infisicalClient, s.encKey, s.logger)
+	}
+	if s.infisicalSyncer != nil {
 		go func() {
 			defer close(syncerDone)
-			syncer.Run(pruneCtx)
+			s.infisicalSyncer.Run(pruneCtx)
 		}()
 	} else {
 		close(syncerDone)

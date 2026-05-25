@@ -33,9 +33,8 @@ func jsonError(w http.ResponseWriter, status int, message string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
-// jsonCodedError writes a JSON error response carrying both a machine-readable
-// code and a human-readable message. Clients branch on code to keep UX copy
-// out of their error-handling logic.
+// jsonCodedError writes a JSON error with both a machine-readable code and
+// a human-readable message.
 func jsonCodedError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

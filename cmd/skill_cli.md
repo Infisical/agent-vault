@@ -190,14 +190,13 @@ Substitutions are configured via JSON only — no flag form. Place a `substituti
 
 ### Vaults backed by an external credential store
 
-Run `agent-vault vault credential-store show <name>` before any credential-mutating command. If the output prints `Credential store: builtin`, credentials are locally writable. Any other kind means the vault is read-only on the Agent Vault side; manage credentials in the upstream system. `vault discover` does not surface the kind, so use the explicit command.
+Run `agent-vault vault credential-store show <name>` to check the kind. `builtin` is writable; anything else is read-only on the Agent Vault side (manage credentials upstream).
 
-Two consequences for read-only vaults:
+For read-only vaults:
+- `vault credential set/delete` return `409 external_credential_store`.
+- `vault proposal create` rejects `--credential` / `credentials[]` blocks. Service-only proposals work and may reference existing upstream keys.
 
-- `vault credential set` and `vault credential delete` return `409 external_credential_store`. Add or rotate credentials upstream instead.
-- `vault proposal create` rejects any `--credential ...` flag or `credentials[]` JSON block at both create and approve time. Service-only proposals still work; reference credential keys that already exist in the upstream snapshot.
-
-Creating an external-store vault (`vault create --credential-store=infisical ...`) requires instance-owner role. Non-owners receive `403 Owner role required to create external-store vaults`. The gate exists because the broker's machine identity, not the caller's, authorizes the upstream fetch.
+Creating an external-store vault (`vault create --credential-store=infisical ...`) is owner-only: the broker's machine identity, not the caller's, authorizes the upstream fetch. Upstream secret names must match `^[A-Z][A-Z0-9_]*$` or create/sync fails with `external_store_invalid_key` naming the offending key.
 
 ### Creating a Proposal
 

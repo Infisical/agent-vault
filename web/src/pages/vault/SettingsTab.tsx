@@ -1,7 +1,7 @@
-import { useEffect, useState, Fragment } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useVaultParams, ErrorBanner, timeAgo } from "./shared";
-import { SyncStatusDot } from "../../components/shared";
+import type { CredentialStoreInfo } from "../../router";
 import Button from "../../components/Button";
 import Input from "../../components/Input";
 import FormField from "../../components/FormField";
@@ -145,93 +145,48 @@ export default function SettingsTab() {
         </p>
       </div>
 
-      {/* Credential store (read-only; immutable post-create) */}
+      {/* Vault config (rename + unmatched-host policy + credential store) */}
       <section className="mb-8">
-        <div className="border border-border rounded-xl bg-surface p-5">
-          <h3 className="text-sm font-semibold text-text mb-1">Credential store</h3>
-          {!credentialStore ? (
-            <p className="text-sm text-text-muted">
-              Agent Vault (built-in). Credentials are stored locally and managed through this UI.
-            </p>
-          ) : (
-            <div className="space-y-2 text-sm">
-              <p className="text-text-muted">
-                This vault is backed by{" "}
-                <span className="font-medium text-text">{credentialStore.kind}</span>.
-                Credential mutations from Agent Vault are disabled; manage credentials in the
-                upstream system.
-              </p>
-              {credentialStore.config && (
-                <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-xs text-text-muted">
-                  {Object.entries(credentialStore.config).map(([k, v]) => (
-                    <Fragment key={k}>
-                      <dt className="text-text-dim">{k}</dt>
-                      <dd className="text-text break-all">{String(v)}</dd>
-                    </Fragment>
-                  ))}
-                </dl>
-              )}
-              <div className="flex flex-wrap items-center gap-3 pt-2 text-xs text-text-muted">
-                {credentialStore.poll_interval_seconds && (
-                  <span>Poll every {credentialStore.poll_interval_seconds}s</span>
-                )}
-                {credentialStore.last_sync_status && (
-                  <span className="inline-flex items-center gap-1.5">
-                    <SyncStatusDot status={credentialStore.last_sync_status} />
-                    Last sync: {credentialStore.last_sync_status}
-                  </span>
-                )}
-                {credentialStore.last_synced_at && (
-                  <span>
-                    {credentialStore.last_sync_status === "error" ? "Last attempt " : ""}
-                    {timeAgo(credentialStore.last_synced_at)}
-                  </span>
-                )}
-              </div>
-              {credentialStore.last_sync_error && (
-                <ErrorBanner message={credentialStore.last_sync_error} className="mt-2" />
+        <div className="border border-border rounded-xl bg-surface">
+          <div className="p-5">
+            <div className="max-w-md">
+              <form onSubmit={handleRename} className="flex items-end gap-3">
+                <div className="flex-1 min-w-0">
+                  <FormField label="Vault Name">
+                    <Input
+                      value={newName}
+                      onChange={(e) => {
+                        setNewName(e.target.value);
+                        setRenameError("");
+                        setRenameSuccess("");
+                      }}
+                      disabled={!canManage || isDefault}
+                      placeholder="vault-name"
+                    />
+                  </FormField>
+                </div>
+                <Button
+                  type="submit"
+                  disabled={!canManage || isDefault || !newName || newName === vaultName}
+                  loading={renaming}
+                >
+                  Rename
+                </Button>
+              </form>
+
+              {renameError && <ErrorBanner message={renameError} className="mt-3" />}
+              {renameSuccess && (
+                <div className="mt-3 bg-success-bg border border-success/20 rounded-lg p-4 text-sm text-success">
+                  {renameSuccess}
+                </div>
               )}
             </div>
-          )}
-        </div>
-      </section>
+          </div>
 
-      {/* Vault config (rename + unmatched-host policy) */}
-      <section className="mb-8">
-        <div className="border border-border rounded-xl bg-surface p-5">
-          <div className="max-w-md">
-            <form onSubmit={handleRename} className="flex items-end gap-3">
-              <div className="flex-1 min-w-0">
-                <FormField label="Vault Name">
-                  <Input
-                    value={newName}
-                    onChange={(e) => {
-                      setNewName(e.target.value);
-                      setRenameError("");
-                      setRenameSuccess("");
-                    }}
-                    disabled={!canManage || isDefault}
-                    placeholder="vault-name"
-                  />
-                </FormField>
-              </div>
-              <Button
-                type="submit"
-                disabled={!canManage || isDefault || !newName || newName === vaultName}
-                loading={renaming}
-              >
-                Rename
-              </Button>
-            </form>
+          <div className="border-t border-border mx-5" />
 
-            {renameError && <ErrorBanner message={renameError} className="mt-3" />}
-            {renameSuccess && (
-              <div className="mt-3 bg-success-bg border border-success/20 rounded-lg p-4 text-sm text-success">
-                {renameSuccess}
-              </div>
-            )}
-
-            <div className="mt-5 pt-5 border-t border-border">
+          <div className="p-5">
+            <div className="max-w-md">
               <label className="block text-xs font-semibold uppercase tracking-wider text-text-muted mb-2">
                 Strict deny mode
               </label>
@@ -246,11 +201,13 @@ export default function SettingsTab() {
                   ariaLabel="Strict deny mode"
                 />
               </div>
+              {policyError && (
+                <ErrorBanner message={policyError} className="mt-3" />
+              )}
             </div>
-            {policyError && (
-              <ErrorBanner message={policyError} className="mt-3" />
-            )}
           </div>
+
+          <CredentialStoreSection store={credentialStore} />
         </div>
       </section>
 
@@ -288,3 +245,66 @@ export default function SettingsTab() {
     </div>
   );
 }
+
+function CredentialStoreSection({ store }: { store?: CredentialStoreInfo }) {
+  if (!store) {
+    return (
+      <>
+        <div className="border-t border-border mx-5" />
+        <div className="p-5">
+          <StoreField label="Credential store" value="Built-in" />
+        </div>
+      </>
+    );
+  }
+
+  const config = (store.config ?? {}) as {
+    project_id?: string;
+    environment?: string;
+    secret_path?: string;
+  };
+  const isInfisical = store.kind === "infisical";
+  const kindLabel = isInfisical ? "Infisical" : store.kind;
+
+  return (
+    <>
+      <div className="border-t border-border mx-5" />
+      <div className="p-5 grid grid-cols-2 gap-x-6 gap-y-4">
+        <div className="col-span-2">
+          <StoreField label="Credential store" value={kindLabel} />
+        </div>
+        {isInfisical && store.config && (
+          <>
+            <StoreField label="Project" value={config.project_id ?? "—"} />
+            <StoreField label="Environment" value={config.environment ?? "—"} />
+            <StoreField label="Secret path" value={config.secret_path || "/"} />
+            {store.last_synced_at && (
+              <StoreField
+                label={store.last_sync_status === "error" ? "Last attempt" : "Last sync"}
+                value={timeAgo(store.last_synced_at)}
+              />
+            )}
+          </>
+        )}
+      </div>
+
+      {store.last_sync_error && (
+        <div className="px-5 pb-4">
+          <ErrorBanner message={store.last_sync_error} />
+        </div>
+      )}
+    </>
+  );
+}
+
+function StoreField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-xs font-semibold uppercase tracking-wider text-text-muted mb-2">
+        {label}
+      </div>
+      <div className="text-sm font-mono text-text break-all">{value}</div>
+    </div>
+  );
+}
+

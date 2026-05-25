@@ -6,13 +6,10 @@ import (
 	"strings"
 )
 
-// KindInfisical is the kind value stored in vault_credential_stores.kind for
-// vaults whose credentials come from Infisical.
+// KindInfisical is persisted in vault_credential_stores.kind.
 const KindInfisical = "infisical"
 
-// KindBuiltin is the sentinel returned to clients to mean "no external store"
-// (the value is never persisted; absence of a vault_credential_stores row is
-// the actual builtin discriminator).
+// KindBuiltin is the wire sentinel for "no external store" (never persisted).
 const KindBuiltin = "builtin"
 
 // Sync-status values persisted in vault_credential_stores.last_sync_status.
@@ -22,20 +19,17 @@ const (
 	StatusPending = "pending"
 )
 
-// DefaultPollIntervalSeconds is the cadence the sync worker uses for any
-// new vault that doesn't override it at create time.
+// DefaultPollIntervalSeconds applies when the create call omits the field.
 const DefaultPollIntervalSeconds = 60
 
-// MinPollIntervalSeconds matches the CHECK constraint on the database.
+// MinPollIntervalSeconds mirrors the DB CHECK constraint.
 const MinPollIntervalSeconds = 10
 
-// VaultConfig is the JSON shape persisted in vault_credential_stores.config_json
-// for Infisical-backed vaults.
+// VaultConfig is the JSON shape persisted in vault_credential_stores.config_json.
 type VaultConfig struct {
 	ProjectID   string `json:"project_id"`
 	Environment string `json:"environment"`
 	SecretPath  string `json:"secret_path"`
-	Recursive   bool   `json:"recursive"`
 }
 
 // Validate enforces the structural invariants the SDK and the broker both
@@ -65,12 +59,9 @@ func MarshalConfigJSON(c VaultConfig) (string, error) {
 	return string(b), nil
 }
 
-// ParseConfigJSON inverts MarshalConfigJSON. Trims surrounding whitespace
-// on the string fields so the SDK never sees a value the Web UI would
-// have stripped: Validate's TrimSpace check accepts " abc ", but the
-// untrimmed value would then reach ListSecrets verbatim and 404, and the
-// scrubbed "see server logs" response leaves no hint that whitespace is
-// the cause.
+// ParseConfigJSON inverts MarshalConfigJSON. Trims whitespace so a value
+// the Web UI would strip never reaches ListSecrets verbatim and 404s
+// against the scrubbed "see server logs" response.
 func ParseConfigJSON(raw string) (VaultConfig, error) {
 	var c VaultConfig
 	if err := json.Unmarshal([]byte(raw), &c); err != nil {
@@ -82,8 +73,7 @@ func ParseConfigJSON(raw string) (VaultConfig, error) {
 	return c, nil
 }
 
-// Secret is the broker-facing shape of a key/value pair pulled from
-// Infisical. We don't export the SDK's struct to the rest of the codebase.
+// Secret is the broker-facing key/value pair pulled from Infisical.
 type Secret struct {
 	Key   string
 	Value string

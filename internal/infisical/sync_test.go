@@ -240,33 +240,39 @@ func TestEncryptSecrets_RejectsEmptyKey(t *testing.T) {
 	}
 }
 
-// TestSyncerRecordFailure_LayoutConflictSurfacesPaths covers the carve-out
-// for ErrLayoutConflict: the wrapped error names only caller-supplied paths
-// and the key (no upstream URL or rejection body), so the persisted message
-// is the full err.Error() rather than the scrubbed generic. Without this,
-// an operator with a recursive-mode duplicate sees only "see server logs"
-// in the UI and has to tail the broker to find the conflicting paths.
-func TestSyncerRecordFailure_LayoutConflictSurfacesPaths(t *testing.T) {
+// TestEncryptSecrets_RejectsNonUpperSnakeKey locks in the broker-wide
+// CredentialKeyPattern invariant for synced credentials.
+func TestEncryptSecrets_RejectsNonUpperSnakeKey(t *testing.T) {
+	cases := []string{"database-url", "myApiKey", "api key", "lower_case", "123_KEY"}
+	for _, k := range cases {
+		_, err := EncryptSecrets([]Secret{{Key: k, Value: "x"}}, makeDEK(t))
+		if err == nil {
+			t.Fatalf("key %q must be rejected", k)
+		}
+		if !errors.Is(err, ErrInvalidKey) {
+			t.Fatalf("key %q: expected ErrInvalidKey, got %v", k, err)
+		}
+	}
+}
+
+// TestSyncerRecordFailure_SkipsOnContextCanceled covers the shutdown drain:
+// ctx.Canceled mid-fetch must not relabel health or emit a Warn.
+func TestSyncerRecordFailure_SkipsOnContextCanceled(t *testing.T) {
 	fs := newFakeStore(store.VaultCredentialStore{
-		VaultID:             "v1",
-		Kind:                KindInfisical,
-		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/"}`,
-		PollIntervalSeconds: 60,
+		VaultID: "v1", Kind: KindInfisical,
+		ConfigJSON: `{"project_id":"p","environment":"dev","secret_path":"/"}`,
 	})
-	s := &Syncer{Store: fs, Fetcher: &fakeFetcher{}, DEK: makeDEK(t), Logger: discardLogger(), Clock: time.Now, inFlight: map[string]struct{}{}}
+	buf := &strings.Builder{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	s := &Syncer{Store: fs, Fetcher: &fakeFetcher{}, DEK: makeDEK(t), Logger: logger, Clock: time.Now, inFlight: map[string]struct{}{}}
 
-	layoutErr := errors.Join(ErrLayoutConflict, errors.New(`duplicate secret key "API_KEY" under both /stripe and /openai; flat key-value cannot disambiguate`))
-	s.recordFailure(context.Background(), "v1", layoutErr)
+	s.recordFailure(context.Background(), "v1", context.Canceled)
 
-	h := fs.getHealth("v1")
-	if h.Status != "error" {
-		t.Fatalf("status: want error, got %q", h.Status)
+	if got := fs.getHealth("v1"); got.Status != "" {
+		t.Fatalf("ctx.Canceled must not touch health; got %+v", got)
 	}
-	if h.Error == syncFailedPublicMessage {
-		t.Fatalf("layout conflict must persist its message verbatim, not the scrubbed generic")
-	}
-	if !strings.Contains(h.Error, "/stripe") || !strings.Contains(h.Error, "/openai") {
-		t.Fatalf("persisted error must name both paths so the operator can fix the conflict; got %q", h.Error)
+	if strings.Contains(buf.String(), "infisical sync failed") {
+		t.Fatalf("ctx.Canceled must not log a sync-failure Warn; got %q", buf.String())
 	}
 }
 
@@ -281,12 +287,8 @@ func (e *errStore) UpdateVaultCredentialStoreHealth(_ context.Context, _, _, _ s
 	return e.updateErr
 }
 
-// TestSyncerRecordFailure_BenignNoRowsOnRaceWithDelete covers the
-// documented sqlite.go contract: UpdateVaultCredentialStoreHealth returns
-// sql.ErrNoRows when the row was deleted between list and update (the
-// FK cascade from vaults). The syncer must treat that as a skip rather
-// than a Warn — a deleted vault shouldn't emit a misleading "health
-// update failed" line per in-flight refresh goroutine.
+// TestSyncerRecordFailure_BenignNoRowsOnRaceWithDelete: sql.ErrNoRows
+// (vault deleted mid-sync) must skip, not warn.
 func TestSyncerRecordFailure_BenignNoRowsOnRaceWithDelete(t *testing.T) {
 	es := &errStore{fakeStore: newFakeStore(), updateErr: sql.ErrNoRows}
 	buf := &strings.Builder{}
@@ -315,12 +317,8 @@ func (b *blockingFetcher) FetchSecrets(_ context.Context, _ VaultConfig) ([]Secr
 
 func (b *blockingFetcher) AuthMethod() AuthMethod { return AuthUniversal }
 
-// TestSyncerWaitGroupDrainsInflightRefreshes locks in the contract that
-// server.go relies on at shutdown: by the time Syncer's WaitGroup is drained,
-// no goroutine is still reading s.DEK. Without this, crypto.WipeBytes(s.encKey)
-// can race an in-flight refresh and produce ciphertext encrypted with a
-// zeroed key (AES-GCM does not error on a zero key, it just silently writes
-// garbage into the credentials table).
+// TestSyncerWaitGroupDrainsInflightRefreshes: WaitGroup must drain before
+// the server wipes s.DEK, else AES-GCM silently encrypts under a zero key.
 func TestSyncerWaitGroupDrainsInflightRefreshes(t *testing.T) {
 	dek := makeDEK(t)
 	fs := newFakeStore(store.VaultCredentialStore{

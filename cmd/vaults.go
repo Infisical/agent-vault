@@ -43,7 +43,6 @@ var vaultCreateCmd = &cobra.Command{
 			projectID, _ := cmd.Flags().GetString("infisical-project-id")
 			environment, _ := cmd.Flags().GetString("infisical-environment")
 			secretPath, _ := cmd.Flags().GetString("infisical-path")
-			recursive, _ := cmd.Flags().GetBool("infisical-recursive")
 			pollSecs, _ := cmd.Flags().GetInt("poll-interval-seconds")
 
 			if projectID == "" || environment == "" {
@@ -58,7 +57,6 @@ var vaultCreateCmd = &cobra.Command{
 					"project_id":  projectID,
 					"environment": environment,
 					"secret_path": secretPath,
-					"recursive":   recursive,
 				},
 				"poll_interval_seconds": pollSecs,
 			}
@@ -131,7 +129,6 @@ var vaultCredentialStoreShowCmd = &cobra.Command{
 			fmt.Fprintf(out, "  Project:     %v\n", cfg["project_id"])
 			fmt.Fprintf(out, "  Environment: %v\n", cfg["environment"])
 			fmt.Fprintf(out, "  Path:        %v\n", cfg["secret_path"])
-			fmt.Fprintf(out, "  Recursive:   %v\n", cfg["recursive"])
 		}
 		if v, ok := resp.CredentialStore["poll_interval_seconds"]; ok {
 			fmt.Fprintf(out, "  Poll:        %vs\n", v)
@@ -172,10 +169,13 @@ var vaultListCmd = &cobra.Command{
 
 		var resp struct {
 			Vaults []struct {
-				ID        string `json:"id"`
-				Name      string `json:"name"`
-				Role      string `json:"role"`
-				CreatedAt string `json:"created_at"`
+				ID              string `json:"id"`
+				Name            string `json:"name"`
+				Role            string `json:"role"`
+				CreatedAt       string `json:"created_at"`
+				CredentialStore *struct {
+					Kind string `json:"kind"`
+				} `json:"credential_store,omitempty"`
 			} `json:"vaults"`
 		}
 		if err := json.Unmarshal(respBody, &resp); err != nil {
@@ -188,7 +188,7 @@ var vaultListCmd = &cobra.Command{
 		}
 
 		t := newTable(cmd.OutOrStdout())
-		t.AppendHeader(table.Row{"ID", "NAME", "ROLE", "CREATED"})
+		t.AppendHeader(table.Row{"ID", "NAME", "ROLE", "STORE", "CREATED"})
 		for _, ns := range resp.Vaults {
 			created := ns.CreatedAt
 			if parsed, err := time.Parse(time.RFC3339, ns.CreatedAt); err == nil {
@@ -198,7 +198,11 @@ var vaultListCmd = &cobra.Command{
 			if role == "" {
 				role = "-"
 			}
-			t.AppendRow(table.Row{ns.ID, ns.Name, role, created})
+			store := infisical.KindBuiltin
+			if ns.CredentialStore != nil && ns.CredentialStore.Kind != "" {
+				store = ns.CredentialStore.Kind
+			}
+			t.AppendRow(table.Row{ns.ID, ns.Name, role, store, created})
 		}
 		t.Render()
 		return nil
@@ -444,7 +448,6 @@ func init() {
 	vaultCreateCmd.Flags().String("infisical-project-id", "", "Infisical project ID (required when --credential-store=infisical)")
 	vaultCreateCmd.Flags().String("infisical-environment", "", "Infisical environment slug, e.g. dev/prod")
 	vaultCreateCmd.Flags().String("infisical-path", "/", "Infisical secret path (default /)")
-	vaultCreateCmd.Flags().Bool("infisical-recursive", false, "Pull secrets recursively below the path")
 	vaultCreateCmd.Flags().Int("poll-interval-seconds", 60, "Sync cadence for the external store (min 10)")
 
 	vaultCmd.AddCommand(vaultCreateCmd)

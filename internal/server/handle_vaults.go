@@ -88,9 +88,8 @@ func (s *Server) handleVaultContext(w http.ResponseWriter, r *http.Request) {
 		"vault_name": vault.Name,
 		"vault_role": vaultRole,
 	}
-	// Distinguish a missing row (vault is builtin) from a real DB error.
-	// Failing open here would render an external vault as builtin in the UI,
-	// showing mutation buttons that then 409 against assertBuiltinCredentialStore.
+	// Fail closed on real DB errors: silently treating an external vault as
+	// builtin would expose mutation buttons that then 409 on click.
 	cs, err := s.store.GetVaultCredentialStore(ctx, vault.ID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		jsonError(w, http.StatusInternalServerError, "Failed to read credential store")
@@ -98,21 +97,90 @@ func (s *Server) handleVaultContext(w http.ResponseWriter, r *http.Request) {
 	}
 	if cs != nil && cs.Kind != "" {
 		summary := credentialStoreSummaryOf(cs, true)
-		// Config holds upstream topology (project_id, environment, secret_path).
-		// Reachable by proxy/member roles, so redact unless the caller can also
-		// reconfigure the store (same gate as the create path on POST /v1/vaults).
+		// Config and LastSyncError can both carry upstream topology
+		// (paths/keys); gate on the same role check that gates create.
 		if vaultRole != "admin" && !actor.IsOwner() {
 			summary.Config = nil
+			summary.LastSyncError = ""
 		}
 		resp["credential_store"] = summary
 	}
 	jsonOK(w, resp)
 }
 
-// credentialStoreSummary is the shape the vaults-list and vault-context
-// endpoints share. Fields are populated in two layers: summary only for the
-// list path, full body (config + poll_interval + last_sync_error) for the
-// per-vault context.
+// handleVaultSyncNow forces an immediate refresh and returns the post-refresh
+// credential_store summary. Any vault member; broker identity authorizes upstream.
+func (s *Server) handleVaultSyncNow(w http.ResponseWriter, r *http.Request) {
+	vaultName := r.PathValue("name")
+	ctx := r.Context()
+
+	vault, err := s.store.GetVault(ctx, vaultName)
+	if err != nil || vault == nil {
+		jsonError(w, http.StatusNotFound, "Vault not found")
+		return
+	}
+
+	actor, err := s.requireVaultAccess(w, r, vault.ID)
+	if err != nil {
+		return
+	}
+
+	cs, err := s.store.GetVaultCredentialStore(ctx, vault.ID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		jsonError(w, http.StatusInternalServerError, "Failed to read credential store")
+		return
+	}
+	if cs == nil || cs.Kind == "" {
+		jsonError(w, http.StatusBadRequest, "Vault has no external credential store")
+		return
+	}
+
+	if s.infisicalSyncer == nil {
+		jsonCodedError(w, http.StatusServiceUnavailable, "infisical_not_configured",
+			"Infisical is not configured on this server. Set INFISICAL_URL to enable external-store vaults.")
+		return
+	}
+
+	if err := s.infisicalSyncer.RefreshOnce(ctx, *cs); err != nil {
+		switch {
+		case errors.Is(err, infisical.ErrSyncerDisabled):
+			jsonCodedError(w, http.StatusServiceUnavailable, "infisical_not_configured",
+				"Infisical is not configured on this server.")
+		case errors.Is(err, infisical.ErrNotExternal):
+			jsonError(w, http.StatusBadRequest, "Vault has no external credential store")
+		case errors.Is(err, infisical.ErrSyncInFlight):
+			jsonError(w, http.StatusConflict, "Sync already in flight for this vault")
+		case errors.Is(err, infisical.ErrInvalidKey):
+			jsonCodedError(w, http.StatusBadRequest, "external_store_invalid_key", err.Error())
+		case errors.Is(err, context.Canceled):
+			return // caller went away
+		default:
+			s.logger.Warn("manual infisical sync failed",
+				slog.String("vault_id", vault.ID),
+				slog.String("err", err.Error()))
+			jsonCodedError(w, http.StatusBadGateway, "infisical_fetch_failed",
+				"Infisical sync failed. See server logs for details.")
+		}
+		return
+	}
+
+	// Re-read the row so the response reflects the freshly-written health.
+	cs, err = s.store.GetVaultCredentialStore(ctx, vault.ID)
+	if err != nil || cs == nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to read credential store after sync")
+		return
+	}
+	summary := credentialStoreSummaryOf(cs, true)
+	vaultRole, _ := s.store.GetVaultRole(ctx, actor.ID, vault.ID)
+	if vaultRole != "admin" && !actor.IsOwner() {
+		summary.Config = nil
+		summary.LastSyncError = ""
+	}
+	jsonOK(w, map[string]interface{}{"credential_store": summary})
+}
+
+// credentialStoreSummary is the shared shape for vault list (kind + sync
+// status only) and vault context (full body, when full=true).
 type credentialStoreSummary struct {
 	Kind                string          `json:"kind"`
 	Config              json.RawMessage `json:"config,omitempty"`
@@ -138,12 +206,9 @@ func credentialStoreSummaryOf(cs *store.VaultCredentialStore, full bool) *creden
 	return out
 }
 
-// handleInstanceCredentialStores reports which credential-store kinds the
-// caller may pick from at vault-create time. Always includes "builtin";
-// includes "infisical" only when the server has a healthy Infisical client
-// AND the caller is an instance owner. The write path requires owner, so
-// advertising "infisical" to a non-owner would render an enabled picker
-// option that 403s on submit.
+// handleInstanceCredentialStores lists credential-store kinds the caller
+// may create. Always "builtin"; "infisical" only for owners when the server
+// has an Infisical client (matches the create gate).
 func (s *Server) handleInstanceCredentialStores(w http.ResponseWriter, r *http.Request) {
 	actor, err := s.requireActor(w, r)
 	if err != nil {
@@ -402,10 +467,8 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// External credential store branch: probe + atomic create. Restricted to
-	// owners so a non-owner member can't use the operator-configured machine
-	// identity as a primitive to extract upstream secrets they'd otherwise
-	// have no access to.
+	// External-store branch: probe + atomic create. Owner-only so a member
+	// can't use the broker's machine identity to exfiltrate upstream secrets.
 	if req.CredentialStore != nil && req.CredentialStore.Kind != "" {
 		if !actor.IsOwner() {
 			jsonError(w, http.StatusForbidden, "Owner role required to create external-store vaults")
@@ -435,11 +498,9 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// createExternalVault handles the kind="infisical" branch of POST /v1/vaults:
-// validates the supplied config, probes Infisical for the configured path,
-// encrypts the secret snapshot, and commits the vault + credential-store
-// row + initial credentials + creator admin grant in one SQL transaction.
-// Any failure leaves the database untouched.
+// createExternalVault validates + probes + commits the vault,
+// credential-store row, initial snapshot, and admin grant in one
+// transaction. Any failure leaves the DB untouched.
 func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context, actor *Actor, req vaultCreateRequest) {
 	if s.infisicalClient == nil {
 		jsonCodedError(w, http.StatusServiceUnavailable, "infisical_not_configured",
@@ -473,16 +534,7 @@ func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context,
 
 	secs, err := s.infisicalClient.FetchSecrets(ctx, cfg)
 	if err != nil {
-		// Layout conflict names only caller-supplied paths and the key
-		// (no upstream URL or rejection body), so surface the full message
-		// — operators need it to spot the colliding paths.
-		if errors.Is(err, infisical.ErrLayoutConflict) {
-			jsonCodedError(w, http.StatusBadRequest, "external_store_layout_conflict", err.Error())
-			return
-		}
-		// Don't echo the SDK error: it embeds the configured INFISICAL_URL
-		// and verbatim upstream rejection bodies, turning this endpoint
-		// into an oracle for the operator's Infisical topology.
+		// SDK error embeds INFISICAL_URL + upstream rejection body; scrub it.
 		s.logger.Warn("infisical fetch failed during vault create",
 			slog.String("vault_name", req.Name),
 			slog.String("err", err.Error()))
@@ -493,6 +545,10 @@ func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context,
 
 	items, err := infisical.EncryptSecrets(secs, s.encKey)
 	if err != nil {
+		if errors.Is(err, infisical.ErrInvalidKey) {
+			jsonCodedError(w, http.StatusBadRequest, "external_store_invalid_key", err.Error())
+			return
+		}
 		jsonError(w, http.StatusInternalServerError, "Failed to encrypt fetched secrets")
 		return
 	}
@@ -550,12 +606,8 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 		CredentialStore  *credentialStoreSummary `json:"credential_store,omitempty"`
 	}
 
-	// One query for every vault's credential-store row; built into a map so
-	// the per-vault loop below is a cheap lookup instead of an N+1 fan-out.
-	// On error we keep serving the list (credential-store info is supplemental
-	// enrichment and the mutation gate, assertBuiltinCredentialStore, still
-	// fails closed), but we surface the underlying error to the logs so
-	// operators can see why external vaults briefly lose their kind pill.
+	// Single query → map to avoid N+1 in the per-vault loop. On error we
+	// still serve the list (mutation gate stays closed) and log for ops.
 	csByVault := map[string]*store.VaultCredentialStore{}
 	if rows, err := s.store.ListVaultCredentialStores(ctx); err != nil {
 		s.logger.Warn("listing credential stores failed; vault list will omit credential_store fields",

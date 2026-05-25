@@ -17,6 +17,8 @@ export default function CredentialsTab() {
   const [keys, setKeys] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState("");
 
   // Add/Edit modal state
   const [modalOpen, setModalOpen] = useState(false);
@@ -48,6 +50,27 @@ export default function CredentialsTab() {
       setError("Network error.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleSyncNow() {
+    setSyncing(true);
+    setSyncError("");
+    try {
+      const resp = await apiFetch(
+        `/v1/vaults/${encodeURIComponent(vaultName)}/sync`,
+        { method: "POST" }
+      );
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        setSyncError(data.error || "Sync failed.");
+        return;
+      }
+      await fetchKeys();
+    } catch {
+      setSyncError("Network error.");
+    } finally {
+      setSyncing(false);
     }
   }
 
@@ -247,12 +270,26 @@ export default function CredentialsTab() {
       </div>
 
       {isExternal && (
-        <InfoBanner className="mb-4">
-          Credentials for this vault are synced read-only from{" "}
-          <span className="font-medium text-text">{externalKind}</span>
-          {pollSecs ? ` every ${pollSecs}s` : ""}. Add, edit, or delete them in{" "}
-          {externalKind}; changes appear here on the next sync.
-        </InfoBanner>
+        <>
+          <InfoBanner
+            className={syncError ? "mb-2" : "mb-4"}
+            action={
+              <Button
+                variant="secondary"
+                onClick={handleSyncNow}
+                loading={syncing}
+                disabled={syncing}
+              >
+                Manual sync
+              </Button>
+            }
+          >
+            Credentials for this vault are synced read-only from{" "}
+            <span className="font-medium text-text">{externalKind}</span>
+            {pollSecs ? ` every ${pollSecs}s` : ""}.
+          </InfoBanner>
+          {syncError && <ErrorBanner message={syncError} className="mb-4" />}
+        </>
       )}
 
       {loading ? (

@@ -143,17 +143,18 @@ When you get a `403` for a host not in `/discover` (only happens when the vault 
 
 ### Vaults backed by an external credential store
 
-Some vaults sync credentials read-only from an external system (e.g. Infisical). For these vaults:
+Some vaults sync credentials read-only from an external system (e.g. Infisical):
 
-- `POST /v1/credentials` and `DELETE /v1/credentials` return `409 Conflict` with `{"code": "external_credential_store", "error": "..."}`. Manage credentials in the upstream system; the next sync brings them in.
-- `POST /v1/proposals` rejects any payload that includes `credentials[]` (same shape). Service-only proposals are still accepted; reference credential keys that already exist in the upstream snapshot.
+- `POST`/`DELETE /v1/credentials` return `409 {"code":"external_credential_store"}`; manage upstream.
+- `POST /v1/proposals` rejects `credentials[]`. Service-only proposals work and may reference existing upstream keys.
 
-`GET /v1/vaults/{name}/context` includes a `credential_store: { kind, config, poll_interval_seconds, last_sync_status, last_synced_at, last_sync_error }` field when the vault is external. `config` (upstream topology: `project_id`, `environment`, `secret_path`) is only returned to vault admins and instance owners; other roles see the field omitted. If `credential_store` is absent or `kind` is empty, the vault is built-in.
+`GET /v1/vaults/{name}/context` adds `credential_store: { kind, config, poll_interval_seconds, last_sync_status, last_synced_at, last_sync_error }` for external vaults. `config` and `last_sync_error` (upstream topology) are returned only to admins/owners. Absent or empty `kind` means built-in.
 
-Operator-facing endpoints (informational, not used in the agent hot path):
+Operator-only endpoints (not on the agent hot path):
 
-- `GET /v1/instance/credential-stores` returns `{"available": ["builtin"]}` for non-owners, or `{"available": ["builtin", "infisical"]}` for instance owners when the server has INFISICAL_URL configured. The list mirrors what the caller is allowed to create.
-- `POST /v1/vaults` with `credential_store: { kind: "infisical", config: {...}, poll_interval_seconds: N }` creates an external-store vault. Requires instance-owner role; non-owners receive `403 Owner role required to create external-store vaults` because the broker's machine identity (not the caller's) authorizes the upstream fetch. Other errors: `{"code": "infisical_not_configured", ...}` (503, when INFISICAL_URL is unset) and `{"code": "infisical_fetch_failed", ...}` (502, when the initial probe fails).
+- `GET /v1/instance/credential-stores` → `{"available": [...]}`. Lists `"infisical"` only for owners when `INFISICAL_URL` is configured.
+- `POST /v1/vaults` with `credential_store: { kind, config, poll_interval_seconds }` creates an external-store vault. Owner-only. Errors: `503 infisical_not_configured`, `502 infisical_fetch_failed`, `400 external_store_invalid_key` (upstream key fails `^[A-Z][A-Z0-9_]*$`).
+- `POST /v1/vaults/{name}/sync` forces a refresh (any vault member; reuses the syncer's in-flight guard). Returns `{"credential_store": {...}}` with the post-refresh summary. Errors: `400` (not external), `409` (refresh in flight), plus the create errors.
 
 ## Choosing the Right Auth Method
 

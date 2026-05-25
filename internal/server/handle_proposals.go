@@ -147,9 +147,7 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// External-store vaults reject credential mutations; Infisical (or the
-	// future equivalent) is the source of truth. Service-only proposals
-	// remain valid.
+	// External-store vaults reject credential mutations; service-only proposals still work.
 	if len(req.Credentials) > 0 {
 		if !s.assertBuiltinCredentialStore(w, ctx, vaultID, resolvedVault.Name) {
 			return
@@ -425,8 +423,7 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Defense-in-depth: if the vault was converted to an external store
-	// after this proposal was raised, refuse to apply credential mutations.
+	// Defense-in-depth: re-check at apply time in case the vault flipped to external.
 	if len(credentialSlots) > 0 {
 		if !s.assertBuiltinCredentialStore(w, ctx, ns.ID, ns.Name) {
 			return

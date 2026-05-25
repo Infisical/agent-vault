@@ -29,11 +29,9 @@ type authProbe struct {
 	required []string // all required to consider this method "configured"
 }
 
-// authProbes is the deterministic priority order. The first complete row
-// wins; if more than one is complete, the caller logs a warning.
-//
-// GCP IAM and GCP ID Token share INFISICAL_GCP_AUTH_IDENTITY_ID; IAM is
-// listed first so that adding the IAM-only key file path tips the selection.
+// authProbes is the priority order; first complete row wins. GCP IAM and
+// GCP ID Token share INFISICAL_GCP_AUTH_IDENTITY_ID — IAM ranks first so
+// its IAM-only key-file path tips selection.
 var authProbes = []authProbe{
 	{AuthUniversal, []string{"INFISICAL_UNIVERSAL_AUTH_CLIENT_ID", "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"}},
 	{AuthKubernetes, []string{"INFISICAL_KUBERNETES_IDENTITY_ID"}},
@@ -43,19 +41,14 @@ var authProbes = []authProbe{
 	{AuthLDAP, []string{"INFISICAL_LDAP_AUTH_IDENTITY_ID", "INFISICAL_LDAP_AUTH_USERNAME", "INFISICAL_LDAP_AUTH_PASSWORD"}},
 }
 
-// DetectAuthMethod inspects getenv (typically os.Getenv) and returns the
-// first complete auth method in priority order. Returns ("", nil) when no
-// method is fully configured; the caller treats that as "Infisical
-// integration disabled." Logs a warning via logger when multiple methods
-// are complete and falls back to the highest-priority one.
+// DetectAuthMethod returns the first complete auth method per authProbes.
+// ("", nil) means no method configured (Infisical disabled). Warns when
+// multiple methods are complete and falls back to highest priority.
 func DetectAuthMethod(getenv func(string) string, logger *slog.Logger) (AuthMethod, error) {
 	var matches []AuthMethod
 	for _, probe := range authProbes {
-		// GCP IAM and GCP ID Token are mutually-exclusive interpretations
-		// of the same INFISICAL_GCP_AUTH_IDENTITY_ID var; a correctly
-		// configured GCP IAM env (identity_id + key file) would otherwise
-		// also satisfy the ID Token probe and trigger a spurious "multiple
-		// auth methods configured" warning on every startup.
+		// GCP IAM and GCP ID Token share INFISICAL_GCP_AUTH_IDENTITY_ID;
+		// skip ID Token when IAM already matched so we don't warn spuriously.
 		if probe.method == AuthGCPIDToken && slices.Contains(matches, AuthGCPIAM) {
 			continue
 		}
