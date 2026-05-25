@@ -116,7 +116,7 @@ func TestSyncerRefresh_SuccessReplacesCredentials(t *testing.T) {
 	pastSynced := time.Now().Add(-time.Hour)
 	fs := newFakeStore(store.VaultCredentialStore{
 		VaultID:             "v1",
-		Kind:                KindInfisical,
+		Kind:                store.CredentialStoreInfisical,
 		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/"}`,
 		PollIntervalSeconds: 60,
 		LastSyncedAt:        &pastSynced,
@@ -126,7 +126,7 @@ func TestSyncerRefresh_SuccessReplacesCredentials(t *testing.T) {
 		{Key: "ALPHA", Value: "a"},
 		{Key: "BETA", Value: "b"},
 	}}
-	s := &Syncer{Store: fs, Fetcher: ff, DEK: dek, Logger: discardLogger(), Clock: time.Now, inFlight: map[string]struct{}{}}
+	s := &Syncer{store: fs, fetcher: ff, dek: dek, logger: discardLogger(), clock: time.Now, inFlight: map[string]struct{}{}}
 
 	s.refresh(context.Background(), fs.rows[0])
 
@@ -167,7 +167,7 @@ func TestSyncerRefresh_FailureKeepsStaleAndRecordsError(t *testing.T) {
 	dek := makeDEK(t)
 	fs := newFakeStore(store.VaultCredentialStore{
 		VaultID:             "v1",
-		Kind:                KindInfisical,
+		Kind:                store.CredentialStoreInfisical,
 		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/"}`,
 		PollIntervalSeconds: 60,
 	})
@@ -175,7 +175,7 @@ func TestSyncerRefresh_FailureKeepsStaleAndRecordsError(t *testing.T) {
 	// that should not be reflected to vault members through last_sync_error.
 	upstreamErr := "APIError: CallListSecretsV3Raw [GET https://infisical.internal.corp/api/v3/secrets/raw?workspaceId=p] [status-code=404]"
 	ff := &fakeFetcher{err: errors.New(upstreamErr)}
-	s := &Syncer{Store: fs, Fetcher: ff, DEK: dek, Logger: discardLogger(), Clock: time.Now, inFlight: map[string]struct{}{}}
+	s := &Syncer{store: fs, fetcher: ff, dek: dek, logger: discardLogger(), clock: time.Now, inFlight: map[string]struct{}{}}
 
 	s.refresh(context.Background(), fs.rows[0])
 
@@ -259,12 +259,12 @@ func TestEncryptSecrets_RejectsNonUpperSnakeKey(t *testing.T) {
 // ctx.Canceled mid-fetch must not relabel health or emit a Warn.
 func TestSyncerRecordFailure_SkipsOnContextCanceled(t *testing.T) {
 	fs := newFakeStore(store.VaultCredentialStore{
-		VaultID: "v1", Kind: KindInfisical,
+		VaultID: "v1", Kind: store.CredentialStoreInfisical,
 		ConfigJSON: `{"project_id":"p","environment":"dev","secret_path":"/"}`,
 	})
 	buf := &strings.Builder{}
 	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	s := &Syncer{Store: fs, Fetcher: &fakeFetcher{}, DEK: makeDEK(t), Logger: logger, Clock: time.Now, inFlight: map[string]struct{}{}}
+	s := &Syncer{store: fs, fetcher: &fakeFetcher{}, dek: makeDEK(t), logger: logger, clock: time.Now, inFlight: map[string]struct{}{}}
 
 	s.recordFailure(context.Background(), "v1", context.Canceled)
 
@@ -293,7 +293,7 @@ func TestSyncerRecordFailure_BenignNoRowsOnRaceWithDelete(t *testing.T) {
 	es := &errStore{fakeStore: newFakeStore(), updateErr: sql.ErrNoRows}
 	buf := &strings.Builder{}
 	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	s := &Syncer{Store: es, Fetcher: &fakeFetcher{}, DEK: makeDEK(t), Logger: logger, Clock: time.Now, inFlight: map[string]struct{}{}}
+	s := &Syncer{store: es, fetcher: &fakeFetcher{}, dek: makeDEK(t), logger: logger, clock: time.Now, inFlight: map[string]struct{}{}}
 
 	s.recordFailure(context.Background(), "deleted-vault", errors.New("upstream fail"))
 
@@ -323,15 +323,15 @@ func TestSyncerWaitGroupDrainsInflightRefreshes(t *testing.T) {
 	dek := makeDEK(t)
 	fs := newFakeStore(store.VaultCredentialStore{
 		VaultID:             "v1",
-		Kind:                KindInfisical,
+		Kind:                store.CredentialStoreInfisical,
 		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/"}`,
 		PollIntervalSeconds: 60,
 		// LastSyncedAt nil means dueAt returns true.
 	})
 	bf := &blockingFetcher{gate: make(chan struct{}), entered: make(chan struct{})}
 	s := &Syncer{
-		Store: fs, Fetcher: bf, DEK: dek,
-		Logger: discardLogger(), Clock: time.Now,
+		store: fs, fetcher: bf, dek: dek,
+		logger: discardLogger(), clock: time.Now,
 		inFlight: map[string]struct{}{},
 	}
 

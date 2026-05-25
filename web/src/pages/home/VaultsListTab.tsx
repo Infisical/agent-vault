@@ -185,7 +185,6 @@ function VaultCard({
 }) {
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState("");
-  const navigate = useNavigate();
 
   async function handleJoin(e: React.MouseEvent) {
     e.preventDefault();
@@ -219,7 +218,6 @@ function VaultCard({
   const card = (
     <div
       className={`bg-surface border border-border rounded-xl p-5 transition-colors ${isImplicit ? "" : "hover:border-border-focus/40 cursor-pointer"}`}
-      onClick={isImplicit ? undefined : () => navigate({ to: "/vaults/$name", params: { name: vault.name } })}
     >
       <div className="flex items-start justify-between mb-3">
         <h3 className="text-base font-semibold text-text tracking-tight">

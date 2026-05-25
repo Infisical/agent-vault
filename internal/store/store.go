@@ -185,14 +185,28 @@ type EncryptedKV struct {
 	Nonce      []byte
 }
 
+// Wire-protocol values for VaultCredentialStore.Kind. KindBuiltin is the
+// API sentinel for "no external store" and is never persisted.
+const (
+	CredentialStoreBuiltin   = "builtin"
+	CredentialStoreInfisical = "infisical"
+)
+
+// Wire-protocol values for VaultCredentialStore.LastSyncStatus.
+const (
+	SyncStatusOK      = "ok"
+	SyncStatusError   = "error"
+	SyncStatusPending = "pending"
+)
+
 // VaultCredentialStore is the per-vault external-source row; absence means built-in.
 type VaultCredentialStore struct {
 	VaultID             string
-	Kind                string // "infisical"
+	Kind                string // CredentialStoreInfisical
 	ConfigJSON          string // per-kind config blob
 	PollIntervalSeconds int
 	LastSyncedAt        *time.Time
-	LastSyncStatus      string // "ok" | "error" | "pending" | ""
+	LastSyncStatus      string // SyncStatus*
 	LastSyncError       string
 	CreatedAt           time.Time
 	UpdatedAt           time.Time

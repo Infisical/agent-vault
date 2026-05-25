@@ -302,7 +302,9 @@ func (s *SQLiteStore) UpdateVaultCredentialStoreHealth(ctx context.Context, vaul
 }
 
 // ReplaceVaultCredentials atomically wipes and rewrites the vault's credentials
-// in one transaction. Empty items clears the vault.
+// in one transaction. Empty items clears the vault. A single prepared INSERT
+// is reused so a 50-key vault doesn't pay 50× parse cost while holding the
+// SQLite writer slot (MaxOpenConns=1).
 func (s *SQLiteStore) ReplaceVaultCredentials(ctx context.Context, vaultID string, items []EncryptedKV) error {
 	nowStr := nowUTC()
 
@@ -315,13 +317,20 @@ func (s *SQLiteStore) ReplaceVaultCredentials(ctx context.Context, vaultID strin
 	if _, err := tx.ExecContext(ctx, "DELETE FROM credentials WHERE vault_id = ?", vaultID); err != nil {
 		return fmt.Errorf("clearing credentials: %w", err)
 	}
-	for _, item := range items {
-		if _, err := tx.ExecContext(ctx,
+	if len(items) > 0 {
+		stmt, err := tx.PrepareContext(ctx,
 			`INSERT INTO credentials (id, vault_id, key, ciphertext, nonce, created_at, updated_at)
-			   VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			newUUID(), vaultID, item.Key, item.Ciphertext, item.Nonce, nowStr, nowStr,
-		); err != nil {
-			return fmt.Errorf("inserting credential %q: %w", item.Key, err)
+			   VALUES (?, ?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return fmt.Errorf("preparing credential insert: %w", err)
+		}
+		defer stmt.Close()
+		for _, item := range items {
+			if _, err := stmt.ExecContext(ctx,
+				newUUID(), vaultID, item.Key, item.Ciphertext, item.Nonce, nowStr, nowStr,
+			); err != nil {
+				return fmt.Errorf("inserting credential %q: %w", item.Key, err)
+			}
 		}
 	}
 

@@ -42,25 +42,25 @@ var (
 // Syncer pulls Infisical secrets into the local credentials table at each
 // vault's configured cadence.
 type Syncer struct {
-	Store   SyncerStore
-	Fetcher secretsFetcher
-	DEK     []byte
-	Logger  *slog.Logger
-	Clock   func() time.Time
+	store   SyncerStore
+	fetcher secretsFetcher
+	dek     []byte
+	logger  *slog.Logger
+	clock   func() time.Time
 
 	mu       sync.Mutex
 	inFlight map[string]struct{}
 	wg       sync.WaitGroup
 }
 
-// NewSyncer constructs a syncer; Clock defaults to time.Now if nil.
+// NewSyncer constructs a syncer.
 func NewSyncer(s SyncerStore, c *Client, dek []byte, logger *slog.Logger) *Syncer {
 	return &Syncer{
-		Store:    s,
-		Fetcher:  c,
-		DEK:      dek,
-		Logger:   logger,
-		Clock:    time.Now,
+		store:    s,
+		fetcher:  c,
+		dek:      dek,
+		logger:   logger,
+		clock:    time.Now,
 		inFlight: make(map[string]struct{}),
 	}
 }
@@ -73,31 +73,31 @@ func NewSyncerForTest(s SyncerStore, fetcher interface {
 	AuthMethod() AuthMethod
 }, dek []byte, logger *slog.Logger) *Syncer {
 	return &Syncer{
-		Store:    s,
-		Fetcher:  fetcher,
-		DEK:      dek,
-		Logger:   logger,
-		Clock:    time.Now,
+		store:    s,
+		fetcher:  fetcher,
+		dek:      dek,
+		logger:   logger,
+		clock:    time.Now,
 		inFlight: make(map[string]struct{}),
 	}
 }
 
 // Run loops until ctx is cancelled, then waits for in-flight refreshes to
-// finish. Return implies no goroutine is still reading s.DEK, so the server
+// finish. Return implies no goroutine is still reading s.dek, so the server
 // can safely wipe it on shutdown.
 func (s *Syncer) Run(ctx context.Context) {
-	if s.Fetcher == nil {
-		s.Logger.Info("infisical syncer disabled (no client)")
+	if s.fetcher == nil {
+		s.logger.Info("infisical syncer disabled (no client)")
 		return
 	}
-	s.Logger.Info("infisical syncer started", slog.Duration("tick", tickInterval))
+	s.logger.Info("infisical syncer started", slog.Duration("tick", tickInterval))
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 	defer s.wg.Wait()
 	for {
 		select {
 		case <-ctx.Done():
-			s.Logger.Info("infisical syncer stopped")
+			s.logger.Info("infisical syncer stopped")
 			return
 		case <-ticker.C:
 			s.tick(ctx)
@@ -106,14 +106,14 @@ func (s *Syncer) Run(ctx context.Context) {
 }
 
 func (s *Syncer) tick(ctx context.Context) {
-	stores, err := s.Store.ListVaultCredentialStores(ctx)
+	stores, err := s.store.ListVaultCredentialStores(ctx)
 	if err != nil {
-		s.Logger.Warn("listing credential stores failed", slog.String("err", err.Error()))
+		s.logger.Warn("listing credential stores failed", slog.String("err", err.Error()))
 		return
 	}
-	now := s.Clock()
+	now := s.clock()
 	for _, cs := range stores {
-		if cs.Kind != KindInfisical {
+		if cs.Kind != store.CredentialStoreInfisical {
 			continue
 		}
 		if !s.dueAt(cs, now) {
@@ -135,10 +135,10 @@ func (s *Syncer) tick(ctx context.Context) {
 // syncer's in-flight guard. On failure refresh updates the row's health
 // and returns the error so the caller can map it to an HTTP status.
 func (s *Syncer) RefreshOnce(ctx context.Context, cs store.VaultCredentialStore) error {
-	if s.Fetcher == nil {
+	if s.fetcher == nil {
 		return ErrSyncerDisabled
 	}
-	if cs.Kind != KindInfisical {
+	if cs.Kind != store.CredentialStoreInfisical {
 		return ErrNotExternal
 	}
 	if !s.markInFlight(cs.VaultID) {
@@ -151,15 +151,12 @@ func (s *Syncer) RefreshOnce(ctx context.Context, cs store.VaultCredentialStore)
 }
 
 // dueAt reports whether the vault is past its poll interval. Nil
-// last_synced_at is always due (defensive against manual DB edits).
+// last_synced_at is always due. The floor guards against manual DB edits.
 func (s *Syncer) dueAt(cs store.VaultCredentialStore, now time.Time) bool {
 	if cs.LastSyncedAt == nil {
 		return true
 	}
-	interval := time.Duration(cs.PollIntervalSeconds) * time.Second
-	if interval < time.Duration(MinPollIntervalSeconds)*time.Second {
-		interval = time.Duration(MinPollIntervalSeconds) * time.Second
-	}
+	interval := max(time.Duration(cs.PollIntervalSeconds), time.Duration(MinPollIntervalSeconds)) * time.Second
 	return now.Sub(*cs.LastSyncedAt) >= interval
 }
 
@@ -191,30 +188,30 @@ func (s *Syncer) refresh(ctx context.Context, cs store.VaultCredentialStore) err
 		return err
 	}
 
-	secs, err := s.Fetcher.FetchSecrets(ctx, cfg)
+	secs, err := s.fetcher.FetchSecrets(ctx, cfg)
 	if err != nil {
 		s.recordFailure(ctx, cs.VaultID, err)
 		return err
 	}
 
-	items, err := EncryptSecrets(secs, s.DEK)
+	items, err := EncryptSecrets(secs, s.dek)
 	if err != nil {
 		s.recordFailure(ctx, cs.VaultID, err)
 		return err
 	}
 
-	if err := s.Store.ReplaceVaultCredentials(ctx, cs.VaultID, items); err != nil {
+	if err := s.store.ReplaceVaultCredentials(ctx, cs.VaultID, items); err != nil {
 		s.recordFailure(ctx, cs.VaultID, err)
 		return err
 	}
 
-	if err := s.Store.UpdateVaultCredentialStoreHealth(ctx, cs.VaultID, StatusOK, "", s.Clock()); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		// sql.ErrNoRows = vault deleted between list and update; treat as skip.
-		s.Logger.Warn("updating health=ok failed",
+	if err := s.store.UpdateVaultCredentialStoreHealth(ctx, cs.VaultID, store.SyncStatusOK, "", s.clock()); err != nil && !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, context.Canceled) {
+		// sql.ErrNoRows = vault deleted mid-sync; ctx.Canceled = shutdown. Skip both.
+		s.logger.Warn("updating health=ok failed",
 			slog.String("vault_id", cs.VaultID),
 			slog.String("err", err.Error()))
 	}
-	s.Logger.Info("infisical sync ok",
+	s.logger.Info("infisical sync ok",
 		slog.String("vault_id", cs.VaultID),
 		slog.Int("keys", len(items)))
 	return nil
@@ -249,7 +246,7 @@ func (s *Syncer) recordFailure(ctx context.Context, vaultID string, err error) {
 	if errors.Is(err, context.Canceled) {
 		return
 	}
-	s.Logger.Warn("infisical sync failed",
+	s.logger.Warn("infisical sync failed",
 		slog.String("vault_id", vaultID),
 		slog.String("err", err.Error()))
 	// ErrInvalidKey is caller-supplied topology; surface verbatim.
@@ -257,8 +254,8 @@ func (s *Syncer) recordFailure(ctx context.Context, vaultID string, err error) {
 	if errors.Is(err, ErrInvalidKey) {
 		publicMsg = err.Error()
 	}
-	if uerr := s.Store.UpdateVaultCredentialStoreHealth(ctx, vaultID, StatusError, publicMsg, s.Clock()); uerr != nil && !errors.Is(uerr, sql.ErrNoRows) {
-		s.Logger.Warn("updating health=error failed",
+	if uerr := s.store.UpdateVaultCredentialStoreHealth(ctx, vaultID, store.SyncStatusError, publicMsg, s.clock()); uerr != nil && !errors.Is(uerr, sql.ErrNoRows) && !errors.Is(uerr, context.Canceled) {
+		s.logger.Warn("updating health=error failed",
 			slog.String("vault_id", vaultID),
 			slog.String("err", uerr.Error()))
 	}

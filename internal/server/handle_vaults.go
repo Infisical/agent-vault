@@ -96,7 +96,7 @@ func (s *Server) handleVaultContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if cs != nil && cs.Kind != "" {
-		summary := credentialStoreSummaryOf(cs, true)
+		summary := credentialStoreDetailSummary(cs)
 		// Config and LastSyncError can both carry upstream topology
 		// (paths/keys); gate on the same role check that gates create.
 		if vaultRole != "admin" && !actor.IsOwner() {
@@ -120,9 +120,17 @@ func (s *Server) handleVaultSyncNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actor, err := s.requireVaultAccess(w, r, vault.ID)
+	// requireVaultMember enforces member+ and returns the actor for instance
+	// sessions; scoped sessions return (nil, nil) and we resolve via requireActor.
+	actor, err := s.requireVaultMember(w, r, vault.ID)
 	if err != nil {
 		return
+	}
+	if actor == nil {
+		actor, err = s.requireActor(w, r)
+		if err != nil {
+			return
+		}
 	}
 
 	cs, err := s.store.GetVaultCredentialStore(ctx, vault.ID)
@@ -170,8 +178,13 @@ func (s *Server) handleVaultSyncNow(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusInternalServerError, "Failed to read credential store after sync")
 		return
 	}
-	summary := credentialStoreSummaryOf(cs, true)
-	vaultRole, _ := s.store.GetVaultRole(ctx, actor.ID, vault.ID)
+	summary := credentialStoreDetailSummary(cs)
+	var vaultRole string
+	if sess := sessionFromContext(ctx); sess != nil && sess.VaultID != "" {
+		vaultRole = sess.VaultRole
+	} else {
+		vaultRole, _ = s.store.GetVaultRole(ctx, actor.ID, vault.ID)
+	}
 	if vaultRole != "admin" && !actor.IsOwner() {
 		summary.Config = nil
 		summary.LastSyncError = ""
@@ -190,14 +203,21 @@ type credentialStoreSummary struct {
 	LastSyncError       string          `json:"last_sync_error,omitempty"`
 }
 
-func credentialStoreSummaryOf(cs *store.VaultCredentialStore, full bool) *credentialStoreSummary {
+// credentialStoreListSummary is the slim shape returned in GET /v1/vaults:
+// only kind + sync health, no config or error detail.
+func credentialStoreListSummary(cs *store.VaultCredentialStore) *credentialStoreSummary {
 	out := &credentialStoreSummary{Kind: cs.Kind, LastSyncStatus: cs.LastSyncStatus}
 	if cs.LastSyncedAt != nil {
 		out.LastSyncedAt = cs.LastSyncedAt.Format(time.RFC3339)
 	}
-	if !full {
-		return out
-	}
+	return out
+}
+
+// credentialStoreDetailSummary is the full shape for vault context and
+// post-sync responses. Callers must redact Config and LastSyncError for
+// non-admin/non-owner viewers (upstream topology leak).
+func credentialStoreDetailSummary(cs *store.VaultCredentialStore) *credentialStoreSummary {
+	out := credentialStoreListSummary(cs)
 	out.PollIntervalSeconds = cs.PollIntervalSeconds
 	out.LastSyncError = cs.LastSyncError
 	if cs.ConfigJSON != "" {
@@ -214,9 +234,9 @@ func (s *Server) handleInstanceCredentialStores(w http.ResponseWriter, r *http.R
 	if err != nil {
 		return
 	}
-	available := []string{infisical.KindBuiltin}
+	available := []string{store.CredentialStoreBuiltin}
 	if actor.IsOwner() && s.infisicalClient != nil {
-		available = append(available, infisical.KindInfisical)
+		available = append(available, store.CredentialStoreInfisical)
 	}
 	jsonOK(w, map[string]interface{}{
 		"available": available,
@@ -508,7 +528,7 @@ func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context,
 		return
 	}
 	cs := req.CredentialStore
-	if cs.Kind != infisical.KindInfisical {
+	if cs.Kind != store.CredentialStoreInfisical {
 		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Unknown credential store kind %q", cs.Kind))
 		return
 	}
@@ -526,8 +546,7 @@ func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context,
 	pollInterval := cs.PollIntervalSeconds
 	if pollInterval == 0 {
 		pollInterval = infisical.DefaultPollIntervalSeconds
-	}
-	if pollInterval < infisical.MinPollIntervalSeconds {
+	} else if pollInterval < infisical.MinPollIntervalSeconds {
 		jsonError(w, http.StatusBadRequest, fmt.Sprintf("poll_interval_seconds must be at least %d", infisical.MinPollIntervalSeconds))
 		return
 	}
@@ -556,7 +575,7 @@ func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context,
 	configJSON, _ := infisical.MarshalConfigJSON(cfg)
 	vault, err := s.store.CreateExternalVault(ctx, store.CreateExternalVaultParams{
 		Name:                req.Name,
-		Kind:                infisical.KindInfisical,
+		Kind:                store.CredentialStoreInfisical,
 		ConfigJSON:          configJSON,
 		PollIntervalSeconds: pollInterval,
 		Credentials:         items,
@@ -578,10 +597,10 @@ func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context,
 		"name":       vault.Name,
 		"created_at": now.Format(time.RFC3339),
 		"credential_store": &credentialStoreSummary{
-			Kind:                infisical.KindInfisical,
+			Kind:                store.CredentialStoreInfisical,
 			Config:              json.RawMessage(configJSON),
 			PollIntervalSeconds: pollInterval,
-			LastSyncStatus:      infisical.StatusOK,
+			LastSyncStatus:      store.SyncStatusOK,
 			LastSyncedAt:        now.Format(time.RFC3339),
 		},
 	})
@@ -622,7 +641,7 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 		if cs == nil || cs.Kind == "" {
 			return nil
 		}
-		return credentialStoreSummaryOf(cs, false)
+		return credentialStoreListSummary(cs)
 	}
 
 	var items []nsItem

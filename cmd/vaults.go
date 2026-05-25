@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/session"
+	"github.com/Infisical/agent-vault/internal/store"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/spf13/cobra"
 )
@@ -37,22 +37,22 @@ var vaultCreateCmd = &cobra.Command{
 		payload := map[string]interface{}{"name": name}
 
 		switch credStore {
-		case "", infisical.KindBuiltin:
+		case "", store.CredentialStoreBuiltin:
 			// no extra payload
-		case infisical.KindInfisical:
+		case store.CredentialStoreInfisical:
 			projectID, _ := cmd.Flags().GetString("infisical-project-id")
 			environment, _ := cmd.Flags().GetString("infisical-environment")
 			secretPath, _ := cmd.Flags().GetString("infisical-path")
 			pollSecs, _ := cmd.Flags().GetInt("poll-interval-seconds")
 
 			if projectID == "" || environment == "" {
-				return fmt.Errorf("--infisical-project-id and --infisical-environment are required when --credential-store=%s", infisical.KindInfisical)
+				return fmt.Errorf("--infisical-project-id and --infisical-environment are required when --credential-store=%s", store.CredentialStoreInfisical)
 			}
 			if secretPath == "" {
 				secretPath = "/"
 			}
 			payload["credential_store"] = map[string]interface{}{
-				"kind": infisical.KindInfisical,
+				"kind": store.CredentialStoreInfisical,
 				"config": map[string]interface{}{
 					"project_id":  projectID,
 					"environment": environment,
@@ -61,7 +61,7 @@ var vaultCreateCmd = &cobra.Command{
 				"poll_interval_seconds": pollSecs,
 			}
 		default:
-			return fmt.Errorf("unsupported --credential-store %q (use %s or %s)", credStore, infisical.KindBuiltin, infisical.KindInfisical)
+			return fmt.Errorf("unsupported --credential-store %q (use %s or %s)", credStore, store.CredentialStoreBuiltin, store.CredentialStoreInfisical)
 		}
 
 		body, err := json.Marshal(payload)
@@ -139,7 +139,7 @@ var vaultCredentialStoreShowCmd = &cobra.Command{
 		}
 		if v, ok := resp.CredentialStore["last_synced_at"]; ok {
 			label := "Synced at"
-			if status == infisical.StatusError {
+			if status == store.SyncStatusError {
 				label = "Last attempt"
 			}
 			fmt.Fprintf(out, "  %s:   %v\n", label, v)
@@ -198,11 +198,11 @@ var vaultListCmd = &cobra.Command{
 			if role == "" {
 				role = "-"
 			}
-			store := infisical.KindBuiltin
+			kind := store.CredentialStoreBuiltin
 			if ns.CredentialStore != nil && ns.CredentialStore.Kind != "" {
-				store = ns.CredentialStore.Kind
+				kind = ns.CredentialStore.Kind
 			}
-			t.AppendRow(table.Row{ns.ID, ns.Name, role, store, created})
+			t.AppendRow(table.Row{ns.ID, ns.Name, role, kind, created})
 		}
 		t.Render()
 		return nil

@@ -6,19 +6,6 @@ import (
 	"strings"
 )
 
-// KindInfisical is persisted in vault_credential_stores.kind.
-const KindInfisical = "infisical"
-
-// KindBuiltin is the wire sentinel for "no external store" (never persisted).
-const KindBuiltin = "builtin"
-
-// Sync-status values persisted in vault_credential_stores.last_sync_status.
-const (
-	StatusOK      = "ok"
-	StatusError   = "error"
-	StatusPending = "pending"
-)
-
 // DefaultPollIntervalSeconds applies when the create call omits the field.
 const DefaultPollIntervalSeconds = 60
 

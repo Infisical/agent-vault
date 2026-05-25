@@ -247,24 +247,13 @@ export default function SettingsTab() {
 }
 
 function CredentialStoreSection({ store }: { store?: CredentialStoreInfo }) {
-  if (!store) {
-    return (
-      <>
-        <div className="border-t border-border mx-5" />
-        <div className="p-5">
-          <StoreField label="Credential store" value="Built-in" />
-        </div>
-      </>
-    );
-  }
-
-  const config = (store.config ?? {}) as {
+  const config = (store?.config ?? {}) as {
     project_id?: string;
     environment?: string;
     secret_path?: string;
   };
-  const isInfisical = store.kind === "infisical";
-  const kindLabel = isInfisical ? "Infisical" : store.kind;
+  const isInfisical = store?.kind === "infisical";
+  const kindLabel = !store ? "Built-in" : isInfisical ? "Infisical" : store.kind;
 
   return (
     <>
@@ -273,7 +262,7 @@ function CredentialStoreSection({ store }: { store?: CredentialStoreInfo }) {
         <div className="col-span-2">
           <StoreField label="Credential store" value={kindLabel} />
         </div>
-        {isInfisical && store.config && (
+        {isInfisical && store?.config && (
           <>
             <StoreField label="Project" value={config.project_id ?? "—"} />
             <StoreField label="Environment" value={config.environment ?? "—"} />
@@ -288,7 +277,7 @@ function CredentialStoreSection({ store }: { store?: CredentialStoreInfo }) {
         )}
       </div>
 
-      {store.last_sync_error && (
+      {store?.last_sync_error && (
         <div className="px-5 pb-4">
           <ErrorBanner message={store.last_sync_error} />
         </div>

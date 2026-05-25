@@ -3111,9 +3111,9 @@ func TestInstanceCredentialStores(t *testing.T) {
 		attachInfisical bool
 		want            []string
 	}{
-		{"owner sees builtin only when no infisical client", false, false, []string{infisical.KindBuiltin}},
-		{"owner sees both when client attached", false, true, []string{infisical.KindBuiltin, infisical.KindInfisical}},
-		{"member sees builtin only even when client attached", true, true, []string{infisical.KindBuiltin}},
+		{"owner sees builtin only when no infisical client", false, false, []string{store.CredentialStoreBuiltin}},
+		{"owner sees both when client attached", false, true, []string{store.CredentialStoreBuiltin, store.CredentialStoreInfisical}},
+		{"member sees builtin only even when client attached", true, true, []string{store.CredentialStoreBuiltin}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

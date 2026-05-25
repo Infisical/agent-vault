@@ -70,17 +70,6 @@ export function InfoBanner({
   );
 }
 
-// SyncStatusDot mirrors vault_credential_stores.last_sync_status: ok|error|pending.
-export function SyncStatusDot({ status }: { status?: string }) {
-  const color =
-    status === "ok"
-      ? "bg-success"
-      : status === "error"
-      ? "bg-danger"
-      : "bg-text-dim";
-  return <span className={`inline-block w-1.5 h-1.5 rounded-full ${color}`} />;
-}
-
 export function EmptyState({ message }: { message: string }) {
   return (
     <div className="text-center py-20 text-text-muted text-sm">{message}</div>
