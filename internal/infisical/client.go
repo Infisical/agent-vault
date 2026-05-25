@@ -64,6 +64,12 @@ func (c *Client) AuthMethod() AuthMethod { return c.method }
 // FetchSecrets pulls the secret set for the given vault config. The SDK
 // returns values in plaintext; callers are responsible for encrypting
 // before persistence and clearing plaintext after use.
+//
+// Returns an error if the upstream returns two secrets with the same key
+// under different paths (common with Recursive=true). Agent Vault's data
+// model is flat key-value per vault, so the operator must restructure
+// their Infisical layout or use a non-recursive vault — silently
+// last-writes-wins would inject a non-deterministic credential.
 func (c *Client) FetchSecrets(ctx context.Context, cfg VaultConfig) ([]Secret, error) {
 	res, err := c.sdk.Secrets().ListSecrets(sdk.ListSecretsOptions{
 		ProjectID:              cfg.ProjectID,
@@ -76,8 +82,13 @@ func (c *Client) FetchSecrets(ctx context.Context, cfg VaultConfig) ([]Secret, e
 	if err != nil {
 		return nil, err
 	}
+	seen := make(map[string]string, len(res.Secrets))
 	out := make([]Secret, 0, len(res.Secrets))
 	for _, s := range res.Secrets {
+		if prev, dup := seen[s.SecretKey]; dup {
+			return nil, fmt.Errorf("duplicate secret key %q under both %s and %s; Agent Vault vaults are flat key-value and cannot disambiguate", s.SecretKey, prev, s.SecretPath)
+		}
+		seen[s.SecretKey] = s.SecretPath
 		out = append(out, Secret{Key: s.SecretKey, Value: s.SecretValue})
 	}
 	return out, nil

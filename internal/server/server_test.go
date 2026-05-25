@@ -3084,23 +3084,29 @@ func TestOwnerCannotAccessVaultWithoutGrant(t *testing.T) {
 	}
 }
 
-// GET /v1/instance/credential-stores hides "infisical" until a client is
-// attached. The Web modal and CLI both gate their pickers on this list, so
-// the nil-client contract is load-bearing: if a refactor silently exposed
-// "infisical" without an attached client, users would see a picker option
-// that 503s on submit.
+// GET /v1/instance/credential-stores advertises only the kinds the caller
+// can actually create. Two contracts are load-bearing: "infisical" requires
+// a non-nil client (UI 503s otherwise), and "infisical" requires owner role
+// (write path is owner-only — non-owners would see an enabled picker that
+// 403s on submit).
 func TestInstanceCredentialStores(t *testing.T) {
 	cases := []struct {
-		name           string
+		name            string
+		asMember        bool
 		attachInfisical bool
-		want           []string
+		want            []string
 	}{
-		{"builtin only when no infisical client", false, []string{infisical.KindBuiltin}},
-		{"includes infisical when client attached", true, []string{infisical.KindBuiltin, infisical.KindInfisical}},
+		{"owner sees builtin only when no infisical client", false, false, []string{infisical.KindBuiltin}},
+		{"owner sees both when client attached", false, true, []string{infisical.KindBuiltin, infisical.KindInfisical}},
+		{"member sees builtin only even when client attached", true, true, []string{infisical.KindBuiltin}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ms, token := setupMockStoreWithSession(t)
+			ms, ownerToken := setupMockStoreWithSession(t)
+			token := ownerToken
+			if tc.asMember {
+				token = setupMemberSession(t, ms)
+			}
 			srv := newTestServer(withStore(ms))
 			if tc.attachInfisical {
 				srv.AttachInfisical(&infisical.Client{})

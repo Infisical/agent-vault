@@ -131,15 +131,23 @@ func credentialStoreSummaryOf(cs *store.VaultCredentialStore, full bool) *creden
 	return out
 }
 
-// handleInstanceCredentialStores reports which credential-store kinds an
-// operator may pick from at vault-create time. Always includes "builtin";
-// includes "infisical" only when the server has a healthy Infisical client.
+// handleInstanceCredentialStores reports which credential-store kinds the
+// caller may pick from at vault-create time. Always includes "builtin";
+// includes "infisical" only when the server has a healthy Infisical client
+// AND the caller is an instance owner — the write path requires owner, so
+// advertising "infisical" to a non-owner would render an enabled picker
+// option that 403s on submit.
 func (s *Server) handleInstanceCredentialStores(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.requireActor(w, r); err != nil {
+	actor, err := s.requireActor(w, r)
+	if err != nil {
 		return
 	}
+	available := []string{infisical.KindBuiltin}
+	if actor.IsOwner() && s.infisicalClient != nil {
+		available = append(available, infisical.KindInfisical)
+	}
 	jsonOK(w, map[string]interface{}{
-		"available": s.CredentialStoresAvailable(),
+		"available": available,
 	})
 }
 

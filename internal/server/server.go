@@ -111,17 +111,6 @@ func (s *Server) AttachMITM(p *mitm.Proxy) { s.mitm = p }
 // builtin vaults. Must be called before Start.
 func (s *Server) AttachInfisical(c *infisical.Client) { s.infisicalClient = c }
 
-// CredentialStoresAvailable returns the kinds an operator may pick from at
-// vault-create time. Builtin is always available; infisical only when an
-// authenticated client is attached.
-func (s *Server) CredentialStoresAvailable() []string {
-	out := []string{infisical.KindBuiltin}
-	if s.infisicalClient != nil {
-		out = append(out, infisical.KindInfisical)
-	}
-	return out
-}
-
 // AttachLogSink swaps the per-request log sink. Safe to call once at
 // startup, before the HTTP server begins accepting connections. nil
 // resets to a Nop sink.

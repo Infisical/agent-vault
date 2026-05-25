@@ -7,6 +7,7 @@ package infisical
 import (
 	"fmt"
 	"log/slog"
+	"slices"
 )
 
 // AuthMethod identifies which Infisical machine-identity flow the SDK
@@ -50,6 +51,14 @@ var authProbes = []authProbe{
 func DetectAuthMethod(getenv func(string) string, logger *slog.Logger) (AuthMethod, error) {
 	var matches []AuthMethod
 	for _, probe := range authProbes {
+		// GCP IAM and GCP ID Token are mutually-exclusive interpretations
+		// of the same INFISICAL_GCP_AUTH_IDENTITY_ID var; a correctly
+		// configured GCP IAM env (identity_id + key file) would otherwise
+		// also satisfy the ID Token probe and trigger a spurious "multiple
+		// auth methods configured" warning on every startup.
+		if probe.method == AuthGCPIDToken && slices.Contains(matches, AuthGCPIAM) {
+			continue
+		}
 		complete := true
 		for _, key := range probe.required {
 			if getenv(key) == "" {

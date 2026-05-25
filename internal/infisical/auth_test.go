@@ -1,8 +1,10 @@
 package infisical
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -82,6 +84,26 @@ func TestDetectAuthMethod_GCPIAMRequiresKeyFile(t *testing.T) {
 	}), newDiscardLogger())
 	if got != AuthGCPIAM {
 		t.Fatalf("expected gcp-iam, got %q", got)
+	}
+}
+
+// GCP IAM and GCP ID Token share INFISICAL_GCP_AUTH_IDENTITY_ID. A correctly
+// configured GCP IAM env (identity_id + key file) used to also satisfy the
+// ID Token probe and emit a spurious "multiple auth methods configured"
+// warning on every startup. Regression: assert no warning when GCP IAM is
+// the only configured method.
+func TestDetectAuthMethod_GCPIAMNoSpuriousMultipleWarning(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	got, _ := DetectAuthMethod(envFunc(map[string]string{
+		"INFISICAL_GCP_AUTH_IDENTITY_ID":                  "id",
+		"INFISICAL_GCP_IAM_SERVICE_ACCOUNT_KEY_FILE_PATH": "/tmp/k.json",
+	}), logger)
+	if got != AuthGCPIAM {
+		t.Fatalf("expected gcp-iam, got %q", got)
+	}
+	if strings.Contains(buf.String(), "multiple Infisical auth methods configured") {
+		t.Fatalf("unexpected multi-method warning: %s", buf.String())
 	}
 }
 
