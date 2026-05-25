@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -3088,56 +3089,44 @@ func TestOwnerCannotAccessVaultWithoutGrant(t *testing.T) {
 // the nil-client contract is load-bearing: if a refactor silently exposed
 // "infisical" without an attached client, users would see a picker option
 // that 503s on submit.
-func TestInstanceCredentialStores_BuiltinOnlyWithoutInfisical(t *testing.T) {
-	ms, token := setupMockStoreWithSession(t)
-	srv := newTestServer(withStore(ms))
+func TestInstanceCredentialStores(t *testing.T) {
+	cases := []struct {
+		name           string
+		attachInfisical bool
+		want           []string
+	}{
+		{"builtin only when no infisical client", false, []string{infisical.KindBuiltin}},
+		{"includes infisical when client attached", true, []string{infisical.KindBuiltin, infisical.KindInfisical}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ms, token := setupMockStoreWithSession(t)
+			srv := newTestServer(withStore(ms))
+			if tc.attachInfisical {
+				srv.AttachInfisical(&infisical.Client{})
+			}
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/instance/credential-stores", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
+			req := httptest.NewRequest(http.MethodGet, "/v1/instance/credential-stores", nil)
+			req.Header.Set("Authorization", "Bearer "+token)
+			rec := httptest.NewRecorder()
+			srv.httpServer.Handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var resp struct {
-		Available []string `json:"available"`
-	}
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(resp.Available) != 1 || resp.Available[0] != infisical.KindBuiltin {
-		t.Fatalf("expected [builtin], got %v", resp.Available)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+			var resp struct {
+				Available []string `json:"available"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if !slices.Equal(resp.Available, tc.want) {
+				t.Fatalf("available: want %v, got %v", tc.want, resp.Available)
+			}
+		})
 	}
 }
 
-func TestInstanceCredentialStores_IncludesInfisicalWhenAttached(t *testing.T) {
-	ms, token := setupMockStoreWithSession(t)
-	srv := newTestServer(withStore(ms))
-	srv.AttachInfisical(&infisical.Client{})
-
-	req := httptest.NewRequest(http.MethodGet, "/v1/instance/credential-stores", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var resp struct {
-		Available []string `json:"available"`
-	}
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(resp.Available) != 2 || resp.Available[0] != infisical.KindBuiltin || resp.Available[1] != infisical.KindInfisical {
-		t.Fatalf("expected [builtin, infisical], got %v", resp.Available)
-	}
-}
-
-// External-store vault creation is owner-only: a non-owner instance member
-// must not be able to use the operator-configured machine identity as a
-// primitive to extract upstream secrets they have no other access to.
 func TestVaultCreateExternalRequiresOwner(t *testing.T) {
 	ms, _ := setupMockStoreWithSession(t)
 	memberToken := setupMemberSession(t, ms)
