@@ -1,6 +1,7 @@
 package infisical
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -54,6 +55,11 @@ func TestFlattenSecretsRejectsDuplicateKeyAcrossPaths(t *testing.T) {
 				// and fix the conflict. Both paths must appear in the error.
 				if !strings.Contains(err.Error(), "/stripe") || !strings.Contains(err.Error(), "/openai") {
 					t.Fatalf("error must name both conflicting paths; got %q", err.Error())
+				}
+				// The error must be discoverable as a layout conflict so the
+				// handler can return 400 instead of the catch-all 502.
+				if !errors.Is(err, ErrLayoutConflict) {
+					t.Fatalf("error must wrap ErrLayoutConflict; got %q", err.Error())
 				}
 				return
 			}

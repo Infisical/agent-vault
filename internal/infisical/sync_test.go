@@ -3,6 +3,7 @@ package infisical
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"errors"
 	"io"
 	"log/slog"
@@ -236,6 +237,66 @@ func TestEncryptSecrets_RoundTrip(t *testing.T) {
 func TestEncryptSecrets_RejectsEmptyKey(t *testing.T) {
 	if _, err := EncryptSecrets([]Secret{{Key: "", Value: "x"}}, makeDEK(t)); err == nil {
 		t.Fatalf("expected error for empty key")
+	}
+}
+
+// TestSyncerRecordFailure_LayoutConflictSurfacesPaths covers the carve-out
+// for ErrLayoutConflict: the wrapped error names only caller-supplied paths
+// and the key (no upstream URL or rejection body), so the persisted message
+// is the full err.Error() rather than the scrubbed generic. Without this,
+// an operator with a recursive-mode duplicate sees only "see server logs"
+// in the UI and has to tail the broker to find the conflicting paths.
+func TestSyncerRecordFailure_LayoutConflictSurfacesPaths(t *testing.T) {
+	fs := newFakeStore(store.VaultCredentialStore{
+		VaultID:             "v1",
+		Kind:                KindInfisical,
+		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+		PollIntervalSeconds: 60,
+	})
+	s := &Syncer{Store: fs, Fetcher: &fakeFetcher{}, DEK: makeDEK(t), Logger: discardLogger(), Clock: time.Now, inFlight: map[string]struct{}{}}
+
+	layoutErr := errors.Join(ErrLayoutConflict, errors.New(`duplicate secret key "API_KEY" under both /stripe and /openai; flat key-value cannot disambiguate`))
+	s.recordFailure(context.Background(), "v1", layoutErr)
+
+	h := fs.getHealth("v1")
+	if h.Status != "error" {
+		t.Fatalf("status: want error, got %q", h.Status)
+	}
+	if h.Error == syncFailedPublicMessage {
+		t.Fatalf("layout conflict must persist its message verbatim, not the scrubbed generic")
+	}
+	if !strings.Contains(h.Error, "/stripe") || !strings.Contains(h.Error, "/openai") {
+		t.Fatalf("persisted error must name both paths so the operator can fix the conflict; got %q", h.Error)
+	}
+}
+
+// errStore wraps fakeStore to inject an UpdateVaultCredentialStoreHealth
+// error of the caller's choosing.
+type errStore struct {
+	*fakeStore
+	updateErr error
+}
+
+func (e *errStore) UpdateVaultCredentialStoreHealth(_ context.Context, _, _, _ string, _ time.Time) error {
+	return e.updateErr
+}
+
+// TestSyncerRecordFailure_BenignNoRowsOnRaceWithDelete covers the
+// documented sqlite.go contract: UpdateVaultCredentialStoreHealth returns
+// sql.ErrNoRows when the row was deleted between list and update (the
+// FK cascade from vaults). The syncer must treat that as a skip rather
+// than a Warn — a deleted vault shouldn't emit a misleading "health
+// update failed" line per in-flight refresh goroutine.
+func TestSyncerRecordFailure_BenignNoRowsOnRaceWithDelete(t *testing.T) {
+	es := &errStore{fakeStore: newFakeStore(), updateErr: sql.ErrNoRows}
+	buf := &strings.Builder{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	s := &Syncer{Store: es, Fetcher: &fakeFetcher{}, DEK: makeDEK(t), Logger: logger, Clock: time.Now, inFlight: map[string]struct{}{}}
+
+	s.recordFailure(context.Background(), "deleted-vault", errors.New("upstream fail"))
+
+	if strings.Contains(buf.String(), "updating health=error failed") {
+		t.Fatalf("sql.ErrNoRows on a deleted-vault race must not log a Warn; got %q", buf.String())
 	}
 }
 

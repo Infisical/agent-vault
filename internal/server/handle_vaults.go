@@ -473,10 +473,16 @@ func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context,
 
 	secs, err := s.infisicalClient.FetchSecrets(ctx, cfg)
 	if err != nil {
+		// Layout conflict names only caller-supplied paths and the key
+		// (no upstream URL or rejection body), so surface the full message
+		// — operators need it to spot the colliding paths.
+		if errors.Is(err, infisical.ErrLayoutConflict) {
+			jsonCodedError(w, http.StatusBadRequest, "external_store_layout_conflict", err.Error())
+			return
+		}
 		// Don't echo the SDK error: it embeds the configured INFISICAL_URL
 		// and verbatim upstream rejection bodies, turning this endpoint
-		// (open to any instance member) into an oracle for the operator's
-		// Infisical topology.
+		// into an oracle for the operator's Infisical topology.
 		s.logger.Warn("infisical fetch failed during vault create",
 			slog.String("vault_name", req.Name),
 			slog.String("err", err.Error()))

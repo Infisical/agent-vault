@@ -2,12 +2,21 @@ package infisical
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 
 	sdk "github.com/infisical/go-sdk"
 )
+
+// ErrLayoutConflict marks a flatten failure caused by the upstream secret
+// set carrying the same key under more than one path. The wrapped error
+// names the conflicting paths and key; all are caller-supplied topology
+// (not upstream secrets or URLs), so callers may surface the full message
+// in operator responses without the leak risk that motivates scrubbing
+// other Infisical errors.
+var ErrLayoutConflict = errors.New("infisical: external store layout conflict")
 
 // secretsFetcher is the slice of the SDK the syncer actually uses. Defining
 // it here lets tests fake the SDK without standing up the real client.
@@ -65,28 +74,52 @@ func (c *Client) AuthMethod() AuthMethod { return c.method }
 // returns values in plaintext; callers are responsible for encrypting
 // before persistence and clearing plaintext after use.
 //
-// Returns an error if the upstream returns two secrets with the same key
-// under different paths (common with Recursive=true). Agent Vault's data
-// model is flat key-value per vault, so the operator must restructure
-// their Infisical layout or use a non-recursive vault. Silent last-write-
-// wins would inject a non-deterministic credential.
+// The SDK's ListSecrets is context-unaware (resty has no SetContext or
+// SetTimeout configured), so the call runs in a goroutine and we select
+// on ctx.Done() to honor the caller's deadline. On cancellation the
+// orphan goroutine continues until the SDK gives up (~225s worst case
+// on Linux TCP defaults); the result channel is buffered so the orphan
+// never blocks on the send. Without this wrap, createExternalVault would
+// hold a handler goroutine for the full SDK retry budget even after the
+// HTTP client disconnected, and Syncer.refresh goroutines would stay
+// in-flight past server shutdown.
+//
+// Returns ErrLayoutConflict (via flattenSecrets) when two secrets share
+// a key across paths (idiomatic for --infisical-recursive=true layouts).
+// Agent Vault's data model is flat key-value per vault; silent
+// last-write-wins would inject a non-deterministic credential.
 func (c *Client) FetchSecrets(ctx context.Context, cfg VaultConfig) ([]Secret, error) {
-	res, err := c.sdk.Secrets().ListSecrets(sdk.ListSecretsOptions{
-		ProjectID:              cfg.ProjectID,
-		Environment:            cfg.Environment,
-		SecretPath:             cfg.SecretPath,
-		Recursive:              cfg.Recursive,
-		ExpandSecretReferences: true,
-		AttachToProcessEnv:     false,
-	})
-	if err != nil {
-		return nil, err
+	type result struct {
+		secs []Secret
+		err  error
 	}
-	raw := make([]rawSecret, len(res.Secrets))
-	for i, s := range res.Secrets {
-		raw[i] = rawSecret{Key: s.SecretKey, Value: s.SecretValue, Path: s.SecretPath}
+	done := make(chan result, 1)
+	go func() {
+		res, err := c.sdk.Secrets().ListSecrets(sdk.ListSecretsOptions{
+			ProjectID:              cfg.ProjectID,
+			Environment:            cfg.Environment,
+			SecretPath:             cfg.SecretPath,
+			Recursive:              cfg.Recursive,
+			ExpandSecretReferences: true,
+			AttachToProcessEnv:     false,
+		})
+		if err != nil {
+			done <- result{nil, err}
+			return
+		}
+		raw := make([]rawSecret, len(res.Secrets))
+		for i, s := range res.Secrets {
+			raw[i] = rawSecret{Key: s.SecretKey, Value: s.SecretValue, Path: s.SecretPath}
+		}
+		out, err := flattenSecrets(raw)
+		done <- result{out, err}
+	}()
+	select {
+	case r := <-done:
+		return r.secs, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	return flattenSecrets(raw)
 }
 
 // rawSecret is the subset of SDK fields flattenSecrets needs; defined here
@@ -102,7 +135,7 @@ func flattenSecrets(in []rawSecret) ([]Secret, error) {
 	out := make([]Secret, 0, len(in))
 	for _, s := range in {
 		if prev, dup := seen[s.Key]; dup {
-			return nil, fmt.Errorf("duplicate secret key %q under both %s and %s; Agent Vault vaults are flat key-value and cannot disambiguate", s.Key, prev, s.Path)
+			return nil, fmt.Errorf("%w: duplicate secret key %q under both %s and %s; Agent Vault vaults are flat key-value and cannot disambiguate", ErrLayoutConflict, s.Key, prev, s.Path)
 		}
 		seen[s.Key] = s.Path
 		out = append(out, Secret{Key: s.Key, Value: s.Value})

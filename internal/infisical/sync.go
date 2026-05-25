@@ -2,6 +2,7 @@ package infisical
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -165,7 +166,9 @@ func (s *Syncer) refresh(ctx context.Context, cs store.VaultCredentialStore) {
 		return
 	}
 
-	if err := s.Store.UpdateVaultCredentialStoreHealth(ctx, cs.VaultID, StatusOK, "", s.Clock()); err != nil {
+	if err := s.Store.UpdateVaultCredentialStoreHealth(ctx, cs.VaultID, StatusOK, "", s.Clock()); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		// sql.ErrNoRows is the documented benign signal that the vault was
+		// deleted between list and update; treat as a skip.
 		s.Logger.Warn("updating health=ok failed",
 			slog.String("vault_id", cs.VaultID),
 			slog.String("err", err.Error()))
@@ -197,7 +200,14 @@ func (s *Syncer) recordFailure(ctx context.Context, vaultID string, err error) {
 	s.Logger.Warn("infisical sync failed",
 		slog.String("vault_id", vaultID),
 		slog.String("err", err.Error()))
-	if uerr := s.Store.UpdateVaultCredentialStoreHealth(ctx, vaultID, StatusError, syncFailedPublicMessage, s.Clock()); uerr != nil {
+	// Layout conflicts name only caller-supplied paths and the key, so we
+	// surface the full message; other errors stay scrubbed to avoid leaking
+	// INFISICAL_URL or upstream rejection bodies into last_sync_error.
+	publicMsg := syncFailedPublicMessage
+	if errors.Is(err, ErrLayoutConflict) {
+		publicMsg = err.Error()
+	}
+	if uerr := s.Store.UpdateVaultCredentialStoreHealth(ctx, vaultID, StatusError, publicMsg, s.Clock()); uerr != nil && !errors.Is(uerr, sql.ErrNoRows) {
 		s.Logger.Warn("updating health=error failed",
 			slog.String("vault_id", vaultID),
 			slog.String("err", uerr.Error()))

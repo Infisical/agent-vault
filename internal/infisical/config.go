@@ -65,12 +65,20 @@ func MarshalConfigJSON(c VaultConfig) (string, error) {
 	return string(b), nil
 }
 
-// ParseConfigJSON inverts MarshalConfigJSON.
+// ParseConfigJSON inverts MarshalConfigJSON. Trims surrounding whitespace
+// on the string fields so the SDK never sees a value the Web UI would
+// have stripped: Validate's TrimSpace check accepts " abc ", but the
+// untrimmed value would then reach ListSecrets verbatim and 404, and the
+// scrubbed "see server logs" response leaves no hint that whitespace is
+// the cause.
 func ParseConfigJSON(raw string) (VaultConfig, error) {
 	var c VaultConfig
 	if err := json.Unmarshal([]byte(raw), &c); err != nil {
 		return VaultConfig{}, err
 	}
+	c.ProjectID = strings.TrimSpace(c.ProjectID)
+	c.Environment = strings.TrimSpace(c.Environment)
+	c.SecretPath = strings.TrimSpace(c.SecretPath)
 	return c, nil
 }
 
