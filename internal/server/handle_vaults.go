@@ -387,8 +387,15 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// External credential store branch — probe + atomic create.
+	// External credential store branch — probe + atomic create. Restricted to
+	// owners so a non-owner member can't use the operator-configured machine
+	// identity as a primitive to extract upstream secrets they'd otherwise
+	// have no access to.
 	if req.CredentialStore != nil && req.CredentialStore.Kind != "" {
+		if !actor.IsOwner() {
+			jsonError(w, http.StatusForbidden, "Owner role required to create external-store vaults")
+			return
+		}
 		s.createExternalVault(w, r.Context(), actor, req)
 		return
 	}

@@ -3082,6 +3082,26 @@ func TestOwnerCannotAccessVaultWithoutGrant(t *testing.T) {
 	}
 }
 
+// External-store vault creation is owner-only: a non-owner instance member
+// must not be able to use the operator-configured machine identity as a
+// primitive to extract upstream secrets they have no other access to.
+func TestVaultCreateExternalRequiresOwner(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	body := `{"name":"loot","credential_store":{"kind":"infisical","config":{"project_id":"p","environment":"prod","secret_path":"/"},"poll_interval_seconds":60}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for member, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestVaultCreateSlugValidation(t *testing.T) {
 	ms, ownerToken := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))

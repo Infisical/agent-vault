@@ -501,6 +501,7 @@ func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger) erro
 	if err := attachMITMIfEnabled(srv, host, mitmPort, key); err != nil {
 		return err
 	}
+	attachInfisicalIfConfigured(srv, logger)
 	return srv.Start()
 }
 
