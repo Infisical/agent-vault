@@ -3413,6 +3413,40 @@ func TestVaultSyncNow_InvalidKeyReturns400(t *testing.T) {
 	}
 }
 
+// TestVaultSyncNow_InvalidKeyRedactedForNonAdmin locks the contract that a
+// non-admin/non-owner caller hitting ErrInvalidKey receives a generic message —
+// the offending key name is upstream topology and is redacted on every other
+// surface (last_sync_error in handleVaultContext, the post-sync summary).
+func TestVaultSyncNow_InvalidKeyRedactedForNonAdmin(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
+		VaultID: "root-ns-id", Kind: "infisical",
+		ConfigJSON: `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+	}
+	srv := newTestServer(withStore(ms))
+	attachStubSyncer(t, srv, ms, &stubFetcher{
+		secrets: []infisical.Secret{{Key: "stripe-key", Value: "sk_1"}},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/sync", nil)
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["code"] != "external_store_invalid_key" {
+		t.Fatalf("expected code=external_store_invalid_key, got %v", resp)
+	}
+	if strings.Contains(resp["error"], "stripe-key") {
+		t.Fatalf("non-admin response must not leak the offending key name; got %q", resp["error"])
+	}
+}
+
 func TestVaultSyncNow_GenericUpstreamFailureReturns502(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{

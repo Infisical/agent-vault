@@ -159,7 +159,17 @@ func (s *Server) handleVaultSyncNow(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, infisical.ErrSyncInFlight):
 			jsonError(w, http.StatusConflict, "Sync already in flight for this vault")
 		case errors.Is(err, infisical.ErrInvalidKey):
-			jsonCodedError(w, http.StatusBadRequest, "external_store_invalid_key", err.Error())
+			// Upstream key name is topology; redact for non-admin/non-owner
+			// viewers, mirroring handleVaultContext's last_sync_error gate.
+			if s.callerCanSeeVaultUpstream(ctx, actor, vault.ID) {
+				jsonCodedError(w, http.StatusBadRequest, "external_store_invalid_key", err.Error())
+			} else {
+				s.logger.Warn("manual infisical sync rejected invalid upstream key",
+					slog.String("vault_id", vault.ID),
+					slog.String("err", err.Error()))
+				jsonCodedError(w, http.StatusBadRequest, "external_store_invalid_key",
+					"Upstream secret key does not match the required UPPER_SNAKE_CASE pattern. See server logs for the offending key.")
+			}
 		case errors.Is(err, context.Canceled):
 			return // caller went away
 		default:
@@ -179,17 +189,26 @@ func (s *Server) handleVaultSyncNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	summary := credentialStoreDetailSummary(cs)
-	var vaultRole string
-	if sess := sessionFromContext(ctx); sess != nil && sess.VaultID != "" {
-		vaultRole = sess.VaultRole
-	} else {
-		vaultRole, _ = s.store.GetVaultRole(ctx, actor.ID, vault.ID)
-	}
-	if vaultRole != "admin" && !actor.IsOwner() {
+	if !s.callerCanSeeVaultUpstream(ctx, actor, vault.ID) {
 		summary.Config = nil
 		summary.LastSyncError = ""
 	}
 	jsonOK(w, map[string]interface{}{"credential_store": summary})
+}
+
+// callerCanSeeVaultUpstream reports whether the caller is allowed to see
+// upstream topology (credential_store.config, last_sync_error, ErrInvalidKey
+// messages). Instance owners always qualify; otherwise the vault grant must
+// be admin. Reads sess.VaultRole first to avoid a DB hit on scoped sessions.
+func (s *Server) callerCanSeeVaultUpstream(ctx context.Context, actor *Actor, vaultID string) bool {
+	if actor.IsOwner() {
+		return true
+	}
+	if sess := sessionFromContext(ctx); sess != nil && sess.VaultID != "" {
+		return sess.VaultRole == "admin"
+	}
+	role, _ := s.store.GetVaultRole(ctx, actor.ID, vaultID)
+	return role == "admin"
 }
 
 // credentialStoreSummary is the shared shape for vault list (kind + sync

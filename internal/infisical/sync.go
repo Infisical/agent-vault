@@ -156,8 +156,8 @@ func (s *Syncer) dueAt(cs store.VaultCredentialStore, now time.Time) bool {
 	if cs.LastSyncedAt == nil {
 		return true
 	}
-	interval := max(time.Duration(cs.PollIntervalSeconds), time.Duration(MinPollIntervalSeconds)) * time.Second
-	return now.Sub(*cs.LastSyncedAt) >= interval
+	secs := max(cs.PollIntervalSeconds, MinPollIntervalSeconds)
+	return now.Sub(*cs.LastSyncedAt) >= time.Duration(secs)*time.Second
 }
 
 func (s *Syncer) markInFlight(vaultID string) bool {

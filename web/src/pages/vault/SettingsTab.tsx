@@ -262,18 +262,22 @@ function CredentialStoreSection({ store }: { store?: CredentialStoreInfo }) {
         <div className="col-span-2">
           <StoreField label="Credential store" value={kindLabel} />
         </div>
+        {/* Config fields are upstream topology and only render when the server
+            chooses to send them (admin/owner viewers). Sync status renders for
+            every viewer; the server intentionally keeps last_sync_status and
+            last_synced_at populated even when config is redacted. */}
         {isInfisical && store?.config && (
           <>
             <StoreField label="Project" value={config.project_id ?? "—"} />
             <StoreField label="Environment" value={config.environment ?? "—"} />
             <StoreField label="Secret path" value={config.secret_path || "/"} />
-            {store.last_synced_at && (
-              <StoreField
-                label={store.last_sync_status === "error" ? "Last attempt" : "Last sync"}
-                value={timeAgo(store.last_synced_at)}
-              />
-            )}
           </>
+        )}
+        {isInfisical && store?.last_synced_at && (
+          <StoreField
+            label={store.last_sync_status === "error" ? "Last attempt" : "Last sync"}
+            value={timeAgo(store.last_synced_at)}
+          />
         )}
       </div>
 

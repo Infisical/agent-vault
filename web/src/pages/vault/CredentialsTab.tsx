@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useRouter } from "@tanstack/react-router";
 import { useVaultParams, LoadingSpinner, ErrorBanner } from "./shared";
 import { InfoBanner } from "../../components/shared";
 import DropdownMenu from "../../components/DropdownMenu";
@@ -10,6 +11,7 @@ import FormField from "../../components/FormField";
 import { apiFetch } from "../../lib/api";
 
 export default function CredentialsTab() {
+  const router = useRouter();
   const { vaultName, vaultRole, credentialStore } = useVaultParams();
   const externalKind = credentialStore?.kind;
   const isExternal = !!externalKind;
@@ -66,7 +68,14 @@ export default function CredentialsTab() {
         setSyncError(data.error || "Sync failed.");
         return;
       }
-      await fetchKeys();
+      // Re-run the vault layout loader so SettingsTab and the vault pill
+      // pick up the post-refresh last_synced_at / last_sync_status /
+      // last_sync_error. Scoped to the vault subtree to avoid refetching
+      // the unrelated auth/status loaders on the parent route.
+      await Promise.all([
+        fetchKeys(),
+        router.invalidate({ filter: (m) => m.routeId.startsWith("/vaults/") }),
+      ]);
     } catch {
       setSyncError("Network error.");
     } finally {
