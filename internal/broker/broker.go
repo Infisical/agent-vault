@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -22,11 +23,8 @@ type Config struct {
 // MatchService. JSON callers see a single Host field carrying the
 // joined inline form (`slack.com/api/*` or `localhost:8080/api/*`);
 // ingest splits it back into Host + Port + Path before validation.
-// YAML retains the split form.
-//
-// Port is empty-string (match any port) for backward compatibility.
-// Services persisted before this field existed have Port="" which
-// matches traffic on any port.
+// YAML retains the split form. Empty Port matches any target port; see
+// matchPort.
 //
 // Enabled is nullable so persisted services from before the field
 // existed stay live after upgrade — use IsEnabled() rather than
@@ -46,10 +44,7 @@ type Service struct {
 func (s Service) MatcherPattern() string {
 	host := s.Host
 	if s.Port != "" {
-		host = host + ":" + s.Port
-	}
-	if s.Path == "" {
-		return host
+		host = net.JoinHostPort(host, s.Port)
 	}
 	return host + s.Path
 }
@@ -379,10 +374,11 @@ func Validate(cfg *Config) error {
 		if err := ValidatePath(s.Path); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
-		if err := ValidatePort(s.Port); err != nil {
+		normPort, err := ParsePort(s.Port)
+		if err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
-		s.Port = NormalizePort(s.Port)
+		cfg.Services[i].Port = normPort
 		if err := s.Auth.Validate(); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
@@ -393,39 +389,18 @@ func Validate(cfg *Config) error {
 	return nil
 }
 
-// ValidatePort enforces the port format and normalizes to canonical
-// decimal form so that "0080" becomes "80". Empty is accepted (match
-// any port). Non-empty must be 1–65535 digits-only.
-func ValidatePort(p string) error {
+// ParsePort returns p in canonical decimal form ("0080" → "80") and an
+// error if p is not a valid port. Empty input is valid (means "match any
+// port") and returns the empty string.
+func ParsePort(p string) (string, error) {
 	if p == "" {
-		return nil
+		return "", nil
 	}
-	for _, c := range p {
-		if c < '0' || c > '9' {
-			return fmt.Errorf("port %q must be numeric (1–65535)", p)
-		}
+	n, err := strconv.ParseUint(p, 10, 16)
+	if err != nil || n == 0 {
+		return "", fmt.Errorf("port %q must be 1–65535", p)
 	}
-	val := 0
-	for _, c := range p {
-		val = val*10 + int(c-'0')
-	}
-	if val < 1 || val > 65535 {
-		return fmt.Errorf("port %q out of range (must be 1–65535)", p)
-	}
-	return nil
-}
-
-// NormalizePort converts a port string to its canonical decimal form
-// ("0080" → "80"). Returns the empty string unchanged.
-func NormalizePort(p string) string {
-	if p == "" {
-		return p
-	}
-	val := 0
-	for _, c := range p {
-		val = val*10 + int(c-'0')
-	}
-	return fmt.Sprintf("%d", val)
+	return strconv.FormatUint(n, 10), nil
 }
 
 // ValidateSubstitutions checks each substitution for length, character
@@ -600,9 +575,8 @@ const (
 // path; (2) longest literal path prefix wins within a host tier; (3) port-
 // matched service beats non-port-matched when host+path specificity is equal;
 // (4) earlier declaration order breaks ties. host and service Host patterns
-// are both port-stripped. A service with Port set matches only traffic on
-// that port; a service with no Port matches any port. The MatchScore is
-// meaningful only when the returned *Service is non-nil.
+// are both port-stripped. See matchPort for port-matching semantics. The
+// MatchScore is meaningful only when the returned *Service is non-nil.
 func MatchService(host, port, path string, services []Service) (*Service, MatchScore) {
 	var best *Service
 	var bestScore MatchScore
@@ -618,7 +592,7 @@ func MatchService(host, port, path string, services []Service) (*Service, MatchS
 		if !matchPort(services[i].Port, port) {
 			continue
 		}
-		score := MatchScore{HostTier: hostTier, PathLiteralLen: pathLen, PortMatch: services[i].Port != "" || port == "", DeclOrder: i}
+		score := MatchScore{HostTier: hostTier, PathLiteralLen: pathLen, PortMatch: services[i].Port != "", DeclOrder: i}
 		if best == nil || score.Better(bestScore) {
 			best = &services[i]
 			bestScore = score
@@ -650,11 +624,10 @@ func matchHostPattern(pattern, host string) (tier int, ok bool) {
 }
 
 // matchPort reports whether the service's configured port matches the
-// target's port. Empty service port matches any target port (backward
-// compatible). Non-empty service port must equal the target port.
+// target's port. Empty service port matches any target port.
 func matchPort(servicePort, targetPort string) bool {
 	if servicePort == "" {
-		return true // empty = match any port
+		return true
 	}
 	return servicePort == targetPort
 }
@@ -957,35 +930,15 @@ func SplitInlineHost(host, path string) (string, string) {
 	return host, path
 }
 
-// SplitInlineHostWithPort splits `localhost:8080/api/*` into bare host +
-// port + path. The host portion is port-stripped, so `localhost:8080` →
-// host=`localhost`, port=`8080`. When path is already populated, only the
-// host portion is examined for an embedded port.
-//
-// Returns the inputs unchanged when host has no `:` or path is already
-// populated, so callers can pipeline split-form and inline-form alike.
+// SplitInlineHostWithPort extends SplitInlineHost by also extracting an
+// embedded port from the host portion, so `localhost:8080/api/*` returns
+// host=`localhost`, port=`8080`, path=`/api/*`.
 func SplitInlineHostWithPort(host, path string) (string, string, string) {
-	if path != "" {
-		// Path already set — only extract port from host.
-		if h, p, err := net.SplitHostPort(host); err == nil {
-			return h, p, path
-		}
-		return host, "", path
-	}
-	// Path not set — split at first '/' then extract port from host portion.
-	if i := strings.IndexByte(host, '/'); i > 0 {
-		hostPart := host[:i]
-		pathPart := host[i:]
-		if h, p, err := net.SplitHostPort(hostPart); err == nil {
-			return h, p, pathPart
-		}
-		return hostPart, "", pathPart
-	}
-	// No path — check if host has embedded port.
+	host, path = SplitInlineHost(host, path)
 	if h, p, err := net.SplitHostPort(host); err == nil {
-		return h, p, ""
+		return h, p, path
 	}
-	return host, "", ""
+	return host, "", path
 }
 
 

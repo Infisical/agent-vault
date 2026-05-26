@@ -220,16 +220,30 @@ func TestMatchServiceWildcardHostWithPort(t *testing.T) {
 	}
 }
 
-// TestValidatePort tests the port validation function.
-func TestValidatePortHappyPath(t *testing.T) {
-	for _, p := range []string{"", "80", "443", "8080", "65535"} {
-		if err := ValidatePort(p); err != nil {
-			t.Errorf("ValidatePort(%q) unexpected error: %v", p, err)
+func TestParsePortHappyPath(t *testing.T) {
+	cases := []struct{ input, want string }{
+		{"", ""},
+		{"80", "80"},
+		{"443", "443"},
+		{"8080", "8080"},
+		{"65535", "65535"},
+		{"0080", "80"},
+		{"0443", "443"},
+		{"00001", "1"},
+	}
+	for _, tc := range cases {
+		got, err := ParsePort(tc.input)
+		if err != nil {
+			t.Errorf("ParsePort(%q) unexpected error: %v", tc.input, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("ParsePort(%q) = %q, want %q", tc.input, got, tc.want)
 		}
 	}
 }
 
-func TestValidatePortRejectsInvalid(t *testing.T) {
+func TestParsePortRejectsInvalid(t *testing.T) {
 	cases := []struct {
 		name, port string
 	}{
@@ -237,38 +251,35 @@ func TestValidatePortRejectsInvalid(t *testing.T) {
 		{"zero", "0"},
 		{"too large", "65536"},
 		{"negative", "-1"},
+		{"plus sign", "+80"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := ValidatePort(tc.port); err == nil {
+			if _, err := ParsePort(tc.port); err == nil {
 				t.Fatalf("expected error for port %q", tc.port)
 			}
 		})
 	}
 }
 
-// TestNormalizePort tests that leading-zero ports are canonicalized.
-func TestNormalizePort(t *testing.T) {
-	cases := []struct {
-		input    string
-		expected string
-	}{
-		{"", ""},
-		{"80", "80"},
-		{"0080", "80"},
-		{"0443", "443"},
-		{"8080", "8080"},
-		{"00001", "1"},
+// TestValidatePersistsNormalizedPort pins that Validate writes the
+// canonical port form back to cfg.Services so persisted configs stay
+// canonical (regression: loop-variable mutation that didn't persist).
+func TestValidatePersistsNormalizedPort(t *testing.T) {
+	cfg := &Config{
+		Vault: "default",
+		Services: []Service{
+			{Name: "svc", Host: "api.example.com", Port: "0080", Auth: Auth{Type: "bearer", Token: "T"}},
+		},
 	}
-	for _, tc := range cases {
-		result := NormalizePort(tc.input)
-		if result != tc.expected {
-			t.Errorf("NormalizePort(%q) = %q, want %q", tc.input, result, tc.expected)
-		}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if cfg.Services[0].Port != "80" {
+		t.Fatalf("expected Port=\"80\" after Validate, got %q", cfg.Services[0].Port)
 	}
 }
 
-// TestSplitInlineHostWithPort tests the inline host:port/path parser.
 func TestSplitInlineHostWithPort(t *testing.T) {
 	cases := []struct {
 		name      string

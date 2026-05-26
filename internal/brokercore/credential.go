@@ -103,11 +103,9 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 		}
 	}
 	// MarshalJSON persists Host in joined-inline form; the matcher
-	// requires Host without "/", so split before matching. Port is
-	// extracted from the inline form as well.
-	// Only split when Port is empty (the JSON-deserialized path).
-	// If Port is already set (e.g. in-memory construction), the host
-	// may not carry the inline form and we'd lose the pre-set value.
+	// requires Host without "/", so split before matching. Skip when
+	// Port is already set (in-memory construction) so we don't overwrite
+	// a pre-set value with one re-parsed from a non-inline host.
 	for i := range services {
 		if services[i].Port == "" {
 			services[i].Host, services[i].Port, services[i].Path = broker.SplitInlineHostWithPort(services[i].Host, services[i].Path)
@@ -121,9 +119,9 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 
 	matchHost := targetHost
 	matchPort := ""
-	if h, p, err := net.SplitHostPort(targetHost); err == nil {
+	if h, port, err := net.SplitHostPort(targetHost); err == nil {
 		matchHost = h
-		matchPort = p
+		matchPort = port
 	}
 	if targetPath == "" {
 		targetPath = "/"
