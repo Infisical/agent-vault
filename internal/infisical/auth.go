@@ -1,7 +1,5 @@
-// Package infisical wraps the Infisical Go SDK so the rest of the broker
-// can fetch secrets without depending on the SDK's surface directly. The
-// package owns auth-method detection (from env vars), client construction,
-// and the per-vault sync worker.
+// Package infisical wraps the Infisical Go SDK: auth-method detection,
+// client construction, and the per-vault sync worker.
 package infisical
 
 import (
@@ -30,8 +28,8 @@ type authProbe struct {
 }
 
 // authProbes is the priority order; first complete row wins. GCP IAM and
-// GCP ID Token share INFISICAL_GCP_AUTH_IDENTITY_ID — IAM ranks first so
-// its IAM-only key-file path tips selection.
+// GCP ID Token share INFISICAL_GCP_AUTH_IDENTITY_ID; IAM ranks first so its
+// IAM-only key-file path tips selection.
 var authProbes = []authProbe{
 	{AuthUniversal, []string{"INFISICAL_UNIVERSAL_AUTH_CLIENT_ID", "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"}},
 	{AuthKubernetes, []string{"INFISICAL_KUBERNETES_IDENTITY_ID"}},
@@ -41,9 +39,8 @@ var authProbes = []authProbe{
 	{AuthLDAP, []string{"INFISICAL_LDAP_AUTH_IDENTITY_ID", "INFISICAL_LDAP_AUTH_USERNAME", "INFISICAL_LDAP_AUTH_PASSWORD"}},
 }
 
-// DetectAuthMethod returns the first complete auth method per authProbes.
-// ("", nil) means no method configured (Infisical disabled). Warns when
-// multiple methods are complete and falls back to highest priority.
+// DetectAuthMethod returns the first complete auth method per authProbes,
+// or "" when none is configured (Infisical disabled).
 func DetectAuthMethod(getenv func(string) string, logger *slog.Logger) (AuthMethod, error) {
 	var matches []AuthMethod
 	for _, probe := range authProbes {

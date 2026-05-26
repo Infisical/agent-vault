@@ -262,10 +262,8 @@ function CredentialStoreSection({ store }: { store?: CredentialStoreInfo }) {
         <div className="col-span-2">
           <StoreField label="Credential store" value={kindLabel} />
         </div>
-        {/* Config fields are upstream topology and only render when the server
-            chooses to send them (admin/owner viewers). Sync status renders for
-            every viewer; the server intentionally keeps last_sync_status and
-            last_synced_at populated even when config is redacted. */}
+        {/* Config is redacted server-side for non-admin viewers; sync status
+            stays populated for everyone. */}
         {isInfisical && store?.config && (
           <>
             <StoreField label="Project" value={config.project_id ?? "—"} />

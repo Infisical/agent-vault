@@ -107,10 +107,6 @@ func makeDEK(t *testing.T) []byte {
 	return dek
 }
 
-func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
-
 func TestSyncerRefresh_SuccessReplacesCredentials(t *testing.T) {
 	dek := makeDEK(t)
 	pastSynced := time.Now().Add(-time.Hour)
@@ -126,7 +122,7 @@ func TestSyncerRefresh_SuccessReplacesCredentials(t *testing.T) {
 		{Key: "ALPHA", Value: "a"},
 		{Key: "BETA", Value: "b"},
 	}}
-	s := &Syncer{store: fs, fetcher: ff, dek: dek, logger: discardLogger(), clock: time.Now, inFlight: map[string]struct{}{}}
+	s := &Syncer{store: fs, fetcher: ff, dek: dek, logger: newDiscardLogger(), clock: time.Now, inFlight: map[string]struct{}{}}
 
 	s.refresh(context.Background(), fs.rows[0])
 
@@ -175,7 +171,7 @@ func TestSyncerRefresh_FailureKeepsStaleAndRecordsError(t *testing.T) {
 	// that should not be reflected to vault members through last_sync_error.
 	upstreamErr := "APIError: CallListSecretsV3Raw [GET https://infisical.internal.corp/api/v3/secrets/raw?workspaceId=p] [status-code=404]"
 	ff := &fakeFetcher{err: errors.New(upstreamErr)}
-	s := &Syncer{store: fs, fetcher: ff, dek: dek, logger: discardLogger(), clock: time.Now, inFlight: map[string]struct{}{}}
+	s := &Syncer{store: fs, fetcher: ff, dek: dek, logger: newDiscardLogger(), clock: time.Now, inFlight: map[string]struct{}{}}
 
 	s.refresh(context.Background(), fs.rows[0])
 
@@ -331,7 +327,7 @@ func TestSyncerWaitGroupDrainsInflightRefreshes(t *testing.T) {
 	bf := &blockingFetcher{gate: make(chan struct{}), entered: make(chan struct{})}
 	s := &Syncer{
 		store: fs, fetcher: bf, dek: dek,
-		logger: discardLogger(), clock: time.Now,
+		logger: newDiscardLogger(), clock: time.Now,
 		inFlight: map[string]struct{}{},
 	}
 

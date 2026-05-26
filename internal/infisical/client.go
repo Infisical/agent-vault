@@ -9,9 +9,9 @@ import (
 	sdk "github.com/infisical/go-sdk"
 )
 
-// secretsFetcher is the slice of the SDK the syncer actually uses. Defining
-// it here lets tests fake the SDK without standing up the real client.
-type secretsFetcher interface {
+// SecretsFetcher is the slice of the SDK the syncer actually uses; tests
+// substitute their own implementation without standing up the real client.
+type SecretsFetcher interface {
 	FetchSecrets(ctx context.Context, cfg VaultConfig) ([]Secret, error)
 	AuthMethod() AuthMethod
 }
@@ -23,10 +23,9 @@ type Client struct {
 	logger *slog.Logger
 }
 
-// NewClient builds and authenticates an Infisical client. Returns
-// ErrNotConfigured when INFISICAL_URL is unset (so callers can keep the
-// rest of the server alive) or ErrNoAuthMethod when the URL is set but no
-// machine-identity env vars are present.
+// NewClient returns ErrNotConfigured when INFISICAL_URL is unset (callers
+// keep the server alive) or ErrNoAuthMethod when set but no machine-identity
+// env vars are present.
 func NewClient(ctx context.Context, logger *slog.Logger) (*Client, error) {
 	siteURL := os.Getenv("INFISICAL_URL")
 	if siteURL == "" {
@@ -61,11 +60,9 @@ func NewClient(ctx context.Context, logger *slog.Logger) (*Client, error) {
 // AuthMethod returns the detected machine-identity flow this client uses.
 func (c *Client) AuthMethod() AuthMethod { return c.method }
 
-// FetchSecrets pulls the secret set for the given vault config. SDK's
-// ListSecrets is context-unaware, so we wrap it in a goroutine and select
-// on ctx.Done() to honor the caller's deadline. On cancellation the orphan
-// goroutine runs to completion (~225s worst case); the buffered channel
-// keeps it from blocking on send.
+// FetchSecrets honors ctx.Done() by selecting against a goroutine wrapping
+// the context-unaware SDK call; on cancel the orphan runs to completion
+// (up to the SDK's internal timeout) and sends to the buffered channel.
 func (c *Client) FetchSecrets(ctx context.Context, cfg VaultConfig) ([]Secret, error) {
 	type result struct {
 		secs []Secret
@@ -98,10 +95,9 @@ func (c *Client) FetchSecrets(ctx context.Context, cfg VaultConfig) ([]Secret, e
 	}
 }
 
-// loginWithMethod dispatches to the SDK auth function for method. Most
-// branches let the SDK read env vars directly; Kubernetes and LDAP read
-// manually because the SDK looks up the SA-token path under the wrong
-// string (typo) and the LDAP helper only env-reads the identity ID.
+// loginWithMethod dispatches to the SDK. Kubernetes and LDAP read env vars
+// manually because the SDK looks up the SA-token path under the wrong key
+// (typo) and the LDAP helper only env-reads the identity ID.
 func loginWithMethod(c sdk.InfisicalClientInterface, method AuthMethod) error {
 	auth := c.Auth()
 	switch method {

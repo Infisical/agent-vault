@@ -68,10 +68,8 @@ export default function CredentialsTab() {
         setSyncError(data.error || "Sync failed.");
         return;
       }
-      // Re-run the vault layout loader so SettingsTab and the vault pill
-      // pick up the post-refresh last_synced_at / last_sync_status /
-      // last_sync_error. Scoped to the vault subtree to avoid refetching
-      // the unrelated auth/status loaders on the parent route.
+      // Invalidate the vault subtree so SettingsTab picks up the updated
+      // sync health without refetching the parent route's loaders.
       await Promise.all([
         fetchKeys(),
         router.invalidate({ filter: (m) => m.routeId.startsWith("/vaults/") }),
@@ -283,14 +281,16 @@ export default function CredentialsTab() {
           <InfoBanner
             className={syncError ? "mb-2" : "mb-4"}
             action={
-              <Button
-                variant="secondary"
-                onClick={handleSyncNow}
-                loading={syncing}
-                disabled={syncing}
-              >
-                Manual sync
-              </Button>
+              canReveal ? (
+                <Button
+                  variant="secondary"
+                  onClick={handleSyncNow}
+                  loading={syncing}
+                  disabled={syncing}
+                >
+                  Manual sync
+                </Button>
+              ) : undefined
             }
           >
             Credentials for this vault are synced read-only from{" "}

@@ -332,6 +332,7 @@ Content-Type: application/json
 - 403 `forbidden`: Host not allowed (only fires under `unmatched_host_policy=deny`) -- create a proposal
 - 403 `service_disabled`: Host is configured but currently disabled by an operator. Don't create a new proposal; surface the error to the user so they can re-enable it
 - 403 `Instance member role required`: Your instance role is `no-access` and you tried an instance-scoped endpoint (create vault, create agents, list users/agents). You can still operate within vaults you've been granted -- stay on `/v1/vaults/{name}/...` endpoints and proxied calls. If you genuinely need to take an instance-scoped action, surface this to the user; an instance owner must change your role.
+- 409 `external_credential_store`: `POST`/`DELETE /v1/credentials` was called on a vault whose credentials are sourced from an external system (e.g. Infisical). Those credentials are read-only from Agent Vault's side; manage them in the upstream system. Don't retry.
 - 429: Rate limited. The response carries a `Retry-After` header (seconds) and a JSON body `{"error":"too_many_requests", ...}`. Respect `Retry-After` — wait that many seconds before retrying. Do **not** tight-loop. If the limit trips repeatedly on normal work, ask the instance owner to raise the limit in **Manage Instance → Settings → Rate Limiting**.
 - 502: Missing credential or upstream unreachable, tell user a credential may need to be added
 

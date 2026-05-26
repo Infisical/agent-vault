@@ -196,10 +196,8 @@ func (s *Server) handleVaultSyncNow(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"credential_store": summary})
 }
 
-// callerCanSeeVaultUpstream reports whether the caller is allowed to see
-// upstream topology (credential_store.config, last_sync_error, ErrInvalidKey
-// messages). Instance owners always qualify; otherwise the vault grant must
-// be admin. Reads sess.VaultRole first to avoid a DB hit on scoped sessions.
+// callerCanSeeVaultUpstream gates upstream topology (config, last_sync_error,
+// ErrInvalidKey messages) on instance owner or vault-admin grant.
 func (s *Server) callerCanSeeVaultUpstream(ctx context.Context, actor *Actor, vaultID string) bool {
 	if actor.IsOwner() {
 		return true
@@ -513,7 +511,7 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, http.StatusForbidden, "Owner role required to create external-store vaults")
 			return
 		}
-		s.createExternalVault(w, r.Context(), actor, req)
+		s.createExternalVault(w, ctx, actor, req)
 		return
 	}
 

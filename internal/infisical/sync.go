@@ -14,16 +14,13 @@ import (
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
-// SyncerStore is the slice of the application store the syncer needs.
 type SyncerStore interface {
 	ListVaultCredentialStores(ctx context.Context) ([]store.VaultCredentialStore, error)
 	ReplaceVaultCredentials(ctx context.Context, vaultID string, items []store.EncryptedKV) error
 	UpdateVaultCredentialStoreHealth(ctx context.Context, vaultID, status, errMsg string, syncedAt time.Time) error
 }
 
-// tickInterval is how often the syncer wakes to scan for due vaults.
-// Per-vault refresh cadence comes from `poll_interval_seconds` on the
-// credential-store row.
+// tickInterval scans for due vaults; per-vault cadence is `poll_interval_seconds`.
 const tickInterval = 10 * time.Second
 
 // syncFailedPublicMessage is persisted to last_sync_error; the real error
@@ -43,7 +40,7 @@ var (
 // vault's configured cadence.
 type Syncer struct {
 	store   SyncerStore
-	fetcher secretsFetcher
+	fetcher SecretsFetcher
 	dek     []byte
 	logger  *slog.Logger
 	clock   func() time.Time
@@ -53,25 +50,9 @@ type Syncer struct {
 	wg       sync.WaitGroup
 }
 
-// NewSyncer constructs a syncer.
-func NewSyncer(s SyncerStore, c *Client, dek []byte, logger *slog.Logger) *Syncer {
-	return &Syncer{
-		store:    s,
-		fetcher:  c,
-		dek:      dek,
-		logger:   logger,
-		clock:    time.Now,
-		inFlight: make(map[string]struct{}),
-	}
-}
-
-// NewSyncerForTest builds a Syncer wired to an arbitrary fetcher. The
-// duck-typed fetcher param lets tests in sibling packages stand up a fake
-// without exporting the internal secretsFetcher interface.
-func NewSyncerForTest(s SyncerStore, fetcher interface {
-	FetchSecrets(context.Context, VaultConfig) ([]Secret, error)
-	AuthMethod() AuthMethod
-}, dek []byte, logger *slog.Logger) *Syncer {
+// NewSyncer constructs a syncer. A nil fetcher disables the run loop so the
+// rest of the server stays up when Infisical isn't configured.
+func NewSyncer(s SyncerStore, fetcher SecretsFetcher, dek []byte, logger *slog.Logger) *Syncer {
 	return &Syncer{
 		store:    s,
 		fetcher:  fetcher,
@@ -209,7 +190,6 @@ func (s *Syncer) refresh(ctx context.Context, cs store.VaultCredentialStore) err
 	// failure here leaves fresh credentials with stale last_synced_at, which
 	// the next tick reconciles. Credentials are authoritative.
 	if err := s.store.UpdateVaultCredentialStoreHealth(ctx, cs.VaultID, store.SyncStatusOK, "", s.clock()); err != nil && !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, context.Canceled) {
-		// sql.ErrNoRows = vault deleted mid-sync; ctx.Canceled = shutdown. Skip both.
 		s.logger.Warn("updating health=ok failed",
 			slog.String("vault_id", cs.VaultID),
 			slog.String("err", err.Error()))
@@ -257,6 +237,7 @@ func (s *Syncer) recordFailure(ctx context.Context, vaultID string, err error) {
 	if errors.Is(err, ErrInvalidKey) {
 		publicMsg = err.Error()
 	}
+	// Bumping last_synced_at on failure makes dueAt act as retry backoff.
 	if uerr := s.store.UpdateVaultCredentialStoreHealth(ctx, vaultID, store.SyncStatusError, publicMsg, s.clock()); uerr != nil && !errors.Is(uerr, sql.ErrNoRows) && !errors.Is(uerr, context.Canceled) {
 		s.logger.Warn("updating health=error failed",
 			slog.String("vault_id", vaultID),

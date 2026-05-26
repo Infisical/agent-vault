@@ -3262,9 +3262,8 @@ func TestVaultContextRedactsLastSyncErrorForNonAdmin(t *testing.T) {
 	}
 }
 
-// stubFetcher satisfies the unexported infisical.secretsFetcher contract
-// via duck typing through NewSyncerForTest. Returns canned results so each
-// branch of POST /v1/vaults/{name}/sync can be exercised in isolation.
+// stubFetcher returns canned results so each branch of
+// POST /v1/vaults/{name}/sync can be exercised in isolation.
 type stubFetcher struct {
 	secrets []infisical.Secret
 	err     error
@@ -3339,7 +3338,7 @@ func attachStubSyncer(t *testing.T, srv *Server, ms *mockStore, fetcher interfac
 		dek[i] = byte(i + 1)
 	}
 	srv.encKey = dek
-	syncer := infisical.NewSyncerForTest(ms, fetcher, dek, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	syncer := infisical.NewSyncer(ms, fetcher, dek, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	srv.AttachInfisicalSyncer(syncer)
 	srv.AttachInfisical(&infisical.Client{}) // present so other gates relax; not used by RefreshOnce
 }

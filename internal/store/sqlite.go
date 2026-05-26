@@ -302,9 +302,7 @@ func (s *SQLiteStore) UpdateVaultCredentialStoreHealth(ctx context.Context, vaul
 }
 
 // ReplaceVaultCredentials atomically wipes and rewrites the vault's credentials
-// in one transaction. Empty items clears the vault. A single prepared INSERT
-// is reused so a 50-key vault doesn't pay 50× parse cost while holding the
-// SQLite writer slot (MaxOpenConns=1).
+// in one transaction; empty items clears the vault.
 func (s *SQLiteStore) ReplaceVaultCredentials(ctx context.Context, vaultID string, items []EncryptedKV) error {
 	nowStr := nowUTC()
 

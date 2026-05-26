@@ -48,6 +48,9 @@ var vaultCreateCmd = &cobra.Command{
 			if projectID == "" || environment == "" {
 				return fmt.Errorf("--infisical-project-id and --infisical-environment are required when --credential-store=%s", store.CredentialStoreInfisical)
 			}
+			if pollSecs < 10 {
+				return fmt.Errorf("--poll-interval-seconds must be at least 10")
+			}
 			if secretPath == "" {
 				secretPath = "/"
 			}

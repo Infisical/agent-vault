@@ -335,12 +335,18 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
           setSubmitting(false);
           return;
         }
+        const trimmedPath = secretPath.trim() || "/";
+        if (!trimmedPath.startsWith("/")) {
+          setError('Secret path must start with "/".');
+          setSubmitting(false);
+          return;
+        }
         body.credential_store = {
           kind: "infisical",
           config: {
             project_id: projectID.trim(),
             environment: environment.trim(),
-            secret_path: secretPath.trim() || "/",
+            secret_path: trimmedPath,
           },
         };
       }
@@ -395,7 +401,10 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
             <Button
               onClick={handleCreate}
               loading={submitting}
-              disabled={!name.trim()}
+              disabled={
+                !name.trim() ||
+                (kind === "infisical" && (!projectID.trim() || !environment.trim()))
+              }
             >
               Create
             </Button>
@@ -415,7 +424,7 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && kind === "builtin") handleCreate();
+              if (e.key === "Enter") handleCreate();
             }}
             error={!!error && kind === "builtin"}
             autoFocus

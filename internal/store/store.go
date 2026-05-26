@@ -194,9 +194,8 @@ const (
 
 // Wire-protocol values for VaultCredentialStore.LastSyncStatus.
 const (
-	SyncStatusOK      = "ok"
-	SyncStatusError   = "error"
-	SyncStatusPending = "pending"
+	SyncStatusOK    = "ok"
+	SyncStatusError = "error"
 )
 
 // VaultCredentialStore is the per-vault external-source row; absence means built-in.

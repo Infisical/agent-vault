@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 )
@@ -2255,6 +2256,46 @@ func TestCreateExternalVaultRollbackOnDuplicateName(t *testing.T) {
 	_ = s.db.QueryRow("SELECT COUNT(*) FROM credentials WHERE key = ?", "K").Scan(&credCount)
 	if credCount != 1 {
 		t.Fatalf("expected exactly 1 credential row after rollback, got %d", credCount)
+	}
+}
+
+func TestCreateExternalVaultRejectsBelowMinPollInterval(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "min-poll@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	_, err := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+		Name:                "spin-vault",
+		Kind:                "infisical",
+		ConfigJSON:          `{}`,
+		PollIntervalSeconds: 5,
+		CreatorActorID:      u.ID,
+		CreatorActorType:    "user",
+	})
+	if err == nil {
+		t.Fatalf("expected CHECK constraint failure for poll_interval_seconds=5, got nil")
+	}
+}
+
+func TestCascadeDeleteVaultRemovesCredentialStore(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "cascade-cs@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	v, err := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+		Name:                "cascade-cs-vault",
+		Kind:                "infisical",
+		ConfigJSON:          `{}`,
+		PollIntervalSeconds: 60,
+		CreatorActorID:      u.ID,
+		CreatorActorType:    "user",
+	})
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := s.DeleteVault(ctx, v.Name); err != nil {
+		t.Fatalf("DeleteVault: %v", err)
+	}
+	if _, err := s.GetVaultCredentialStore(ctx, v.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows after cascade delete, got %v", err)
 	}
 }
 
