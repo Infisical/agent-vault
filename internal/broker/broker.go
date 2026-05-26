@@ -18,10 +18,15 @@ type Config struct {
 }
 
 // Service defines a credential-attachment rule. Name is the canonical
-// per-vault identifier; Host + Path are the matcher key consumed by
+// per-vault identifier; Host + Port + Path are the matcher key consumed by
 // MatchService. JSON callers see a single Host field carrying the
-// joined inline form (`slack.com/api/*`); ingest splits it back into
-// Host + Path before validation. YAML retains the split form.
+// joined inline form (`slack.com/api/*` or `localhost:8080/api/*`);
+// ingest splits it back into Host + Port + Path before validation.
+// YAML retains the split form.
+//
+// Port is empty-string (match any port) for backward compatibility.
+// Services persisted before this field existed have Port="" which
+// matches traffic on any port.
 //
 // Enabled is nullable so persisted services from before the field
 // existed stay live after upgrade — use IsEnabled() rather than
@@ -30,18 +35,23 @@ type Service struct {
 	Name          string         `yaml:"name" json:"name"`
 	Host          string         `yaml:"host" json:"host"`
 	Path          string         `yaml:"path,omitempty" json:"path,omitempty"`
+	Port          string         `yaml:"port,omitempty" json:"port,omitempty"`
 	Enabled       *bool          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Auth          Auth           `yaml:"auth" json:"auth"`
 	Substitutions []Substitution `yaml:"substitutions,omitempty" json:"substitutions,omitempty"`
 }
 
-// MatcherPattern returns the joined inline form (`slack.com/api/*`),
-// or just Host when Path is empty.
+// MatcherPattern returns the joined inline form (`slack.com/api/*` or
+// `localhost:8080/api/*`), or just Host[:Port] when Path is empty.
 func (s Service) MatcherPattern() string {
-	if s.Path == "" {
-		return s.Host
+	host := s.Host
+	if s.Port != "" {
+		host = host + ":" + s.Port
 	}
-	return s.Host + s.Path
+	if s.Path == "" {
+		return host
+	}
+	return host + s.Path
 }
 
 func (s Service) MarshalJSON() ([]byte, error) {
@@ -49,6 +59,7 @@ func (s Service) MarshalJSON() ([]byte, error) {
 	a := alias(s)
 	a.Host = s.MatcherPattern()
 	a.Path = ""
+	a.Port = ""
 	return json.Marshal(a)
 }
 
@@ -363,12 +374,36 @@ func Validate(cfg *Config) error {
 		if err := ValidatePath(s.Path); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
+		if err := ValidatePort(s.Port); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
+		}
 		if err := s.Auth.Validate(); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
 		if err := s.ValidateSubstitutions(); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
+	}
+	return nil
+}
+
+// ValidatePort enforces the port format. Empty is accepted (match any
+// port). Non-empty must be 1–65535 digits-only.
+func ValidatePort(p string) error {
+	if p == "" {
+		return nil
+	}
+	for _, c := range p {
+		if c < '0' || c > '9' {
+			return fmt.Errorf("port %q must be numeric (1–65535)", p)
+		}
+	}
+	val := 0
+	for _, c := range p {
+		val = val*10 + int(c-'0')
+	}
+	if val < 1 || val > 65535 {
+		return fmt.Errorf("port %q out of range (must be 1–65535)", p)
 	}
 	return nil
 }
@@ -502,18 +537,26 @@ var CredentialRef = regexp.MustCompile(`\{\{\s*(\w+)\s*\}\}`)
 // MatchScore is the deterministic priority tuple emitted by MatchService,
 // returned alongside the match so callers can log which rule won.
 type MatchScore struct {
-	HostTier       int // 2 = exact host, 1 = "*.x.y" wildcard, 0 = no match
-	PathLiteralLen int // characters in Path before the first '*'; empty Path scores 0
-	DeclOrder      int // index of the matched service in the input slice
+	HostTier       int  // 2 = exact host, 1 = "*.x.y" wildcard, 0 = no match
+	PathLiteralLen int  // characters in Path before the first '*'; empty Path scores 0
+	PortMatch      bool // true when the service's Port matched the target's port
+	DeclOrder      int  // index of the matched service in the input slice
 }
 
-// Better compares HostTier then PathLiteralLen; DeclOrder is excluded so
-// MatchService's iteration order provides the final tiebreak.
+// Better compares HostTier, then PathLiteralLen, then PortMatch; DeclOrder is
+// excluded so MatchService's iteration order provides the final tiebreak.
 func (s MatchScore) Better(other MatchScore) bool {
 	if s.HostTier != other.HostTier {
 		return s.HostTier > other.HostTier
 	}
-	return s.PathLiteralLen > other.PathLiteralLen
+	if s.PathLiteralLen != other.PathLiteralLen {
+		return s.PathLiteralLen > other.PathLiteralLen
+	}
+	// Port-matched service beats non-port-matched when host+path specificity is equal.
+	if s.PortMatch != other.PortMatch {
+		return s.PortMatch
+	}
+	return false
 }
 
 func (s MatchScore) HostTierName() string {
@@ -532,13 +575,15 @@ const (
 	HostTierExact    = 2
 )
 
-// MatchService returns the most specific service matching (host, path).
-// Selection: (1) exact host beats wildcard, even if wildcard has a
-// longer path; (2) longest literal path prefix wins within a host tier;
-// (3) earlier declaration order breaks ties. host and service Host
-// patterns are both port-stripped. The MatchScore is meaningful only
-// when the returned *Service is non-nil.
-func MatchService(host, path string, services []Service) (*Service, MatchScore) {
+// MatchService returns the most specific service matching (host, port, path).
+// Selection: (1) exact host beats wildcard, even if wildcard has a longer
+// path; (2) longest literal path prefix wins within a host tier; (3) port-
+// matched service beats non-port-matched when host+path specificity is equal;
+// (4) earlier declaration order breaks ties. host and service Host patterns
+// are both port-stripped. A service with Port set matches only traffic on
+// that port; a service with no Port matches any port. The MatchScore is
+// meaningful only when the returned *Service is non-nil.
+func MatchService(host, port, path string, services []Service) (*Service, MatchScore) {
 	var best *Service
 	var bestScore MatchScore
 	for i := range services {
@@ -550,7 +595,10 @@ func MatchService(host, path string, services []Service) (*Service, MatchScore) 
 		if !pathOK {
 			continue
 		}
-		score := MatchScore{HostTier: hostTier, PathLiteralLen: pathLen, DeclOrder: i}
+		if !matchPort(services[i].Port, port) {
+			continue
+		}
+		score := MatchScore{HostTier: hostTier, PathLiteralLen: pathLen, PortMatch: services[i].Port != "" || port == "", DeclOrder: i}
 		if best == nil || score.Better(bestScore) {
 			best = &services[i]
 			bestScore = score
@@ -579,6 +627,16 @@ func matchHostPattern(pattern, host string) (tier int, ok bool) {
 		}
 	}
 	return 0, false
+}
+
+// matchPort reports whether the service's configured port matches the
+// target's port. Empty service port matches any target port (backward
+// compatible). Non-empty service port must equal the target port.
+func matchPort(servicePort, targetPort string) bool {
+	if servicePort == "" {
+		return true // empty = match any port
+	}
+	return servicePort == targetPort
 }
 
 // matchPathGlob reports whether pattern matches path and returns the
@@ -613,10 +671,10 @@ func matchPathGlob(pattern, path string) (literalLen int, ok bool) {
 	return literalLen, true
 }
 
-// Slugify derives a ValidateSlug-conformant identifier from host+path.
+// Slugify derives a ValidateSlug-conformant identifier from host+port+path.
 // Distinct inputs can collide (e.g. `*.github.com` and `github.com` both
 // yield `github-com`); callers dedupe via DisambiguateSlug.
-func Slugify(host, path string) string {
+func Slugify(host, port, path string) string {
 	var b strings.Builder
 	write := func(s string) {
 		for _, r := range strings.ToLower(s) {
@@ -629,6 +687,7 @@ func Slugify(host, path string) string {
 		}
 	}
 	write(host)
+	write(port)
 	write(path)
 	raw := b.String()
 	for strings.Contains(raw, "--") {
@@ -685,11 +744,11 @@ func AssignSlugNamesAvoiding(services, existing []Service) {
 		return
 	}
 
-	type hp struct{ host, path string }
+	type hp struct{ host, port, path string }
 	hpCount := make(map[hp]int, len(existing))
 	hpName := make(map[hp]string, len(existing))
 	for _, e := range existing {
-		k := hp{e.Host, e.Path}
+		k := hp{e.Host, e.Port, e.Path}
 		hpCount[k]++
 		if hpCount[k] == 1 {
 			hpName[k] = e.Name
@@ -700,7 +759,7 @@ func AssignSlugNamesAvoiding(services, existing []Service) {
 		if svc.Name != "" {
 			continue
 		}
-		k := hp{svc.Host, svc.Path}
+		k := hp{svc.Host, svc.Port, svc.Path}
 		if hpCount[k] == 1 {
 			svc.Name = hpName[k]
 		}
@@ -722,7 +781,7 @@ func AssignSlugNamesAvoiding(services, existing []Service) {
 		if svc.Name != "" {
 			continue
 		}
-		svc.Name = DisambiguateSlug(Slugify(svc.Host, svc.Path), taken)
+		svc.Name = DisambiguateSlug(Slugify(svc.Host, svc.Port, svc.Path), taken)
 		taken[svc.Name] = true
 	}
 }
@@ -876,6 +935,37 @@ func SplitInlineHost(host, path string) (string, string) {
 		return host[:i], host[i:]
 	}
 	return host, path
+}
+
+// SplitInlineHostWithPort splits `localhost:8080/api/*` into bare host +
+// port + path. The host portion is port-stripped, so `localhost:8080` →
+// host=`localhost`, port=`8080`. When path is already populated, only the
+// host portion is examined for an embedded port.
+//
+// Returns the inputs unchanged when host has no `:` or path is already
+// populated, so callers can pipeline split-form and inline-form alike.
+func SplitInlineHostWithPort(host, path string) (string, string, string) {
+	if path != "" {
+		// Path already set — only extract port from host.
+		if h, p, err := net.SplitHostPort(host); err == nil {
+			return h, p, path
+		}
+		return host, "", path
+	}
+	// Path not set — split at first '/' then extract port from host portion.
+	if i := strings.IndexByte(host, '/'); i > 0 {
+		hostPart := host[:i]
+		pathPart := host[i:]
+		if h, p, err := net.SplitHostPort(hostPart); err == nil {
+			return h, p, pathPart
+		}
+		return hostPart, "", pathPart
+	}
+	// No path — check if host has embedded port.
+	if h, p, err := net.SplitHostPort(host); err == nil {
+		return h, p, ""
+	}
+	return host, "", ""
 }
 
 
