@@ -358,7 +358,12 @@ func Validate(cfg *Config) error {
 		if strings.Contains(s.Host, "/") {
 			return fmt.Errorf("service %d: host %q must not contain %q after ingest (entry should have been split into host + path)", i, s.Host, "/")
 		}
-		if err := ValidateHost(s.Host); err != nil {
+		// Strip port before host validation so "merlin.home:3000" is accepted.
+		valHost := s.Host
+		if h, _, err := net.SplitHostPort(valHost); err == nil {
+			valHost = h
+		}
+		if err := ValidateHost(valHost); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
 		if s.Name == "" {
