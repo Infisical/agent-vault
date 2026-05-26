@@ -247,6 +247,27 @@ func TestValidatePortRejectsInvalid(t *testing.T) {
 	}
 }
 
+// TestNormalizePort tests that leading-zero ports are canonicalized.
+func TestNormalizePort(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{"", ""},
+		{"80", "80"},
+		{"0080", "80"},
+		{"0443", "443"},
+		{"8080", "8080"},
+		{"00001", "1"},
+	}
+	for _, tc := range cases {
+		result := NormalizePort(tc.input)
+		if result != tc.expected {
+			t.Errorf("NormalizePort(%q) = %q, want %q", tc.input, result, tc.expected)
+		}
+	}
+}
+
 // TestSplitInlineHostWithPort tests the inline host:port/path parser.
 func TestSplitInlineHostWithPort(t *testing.T) {
 	cases := []struct {

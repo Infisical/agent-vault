@@ -173,7 +173,7 @@ export default function ServicesTab() {
       render: (service) => (
         <div>
           <div className="text-sm font-semibold text-text">{service.name}</div>
-          <div className="text-xs text-text-muted mt-0.5">{service.host}{service.port ? `:${service.port}` : ""}</div>
+          <div className="text-xs text-text-muted mt-0.5">{service.host}</div>
         </div>
       ),
     },

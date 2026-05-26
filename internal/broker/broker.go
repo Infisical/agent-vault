@@ -382,6 +382,7 @@ func Validate(cfg *Config) error {
 		if err := ValidatePort(s.Port); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
+		s.Port = NormalizePort(s.Port)
 		if err := s.Auth.Validate(); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
@@ -392,8 +393,9 @@ func Validate(cfg *Config) error {
 	return nil
 }
 
-// ValidatePort enforces the port format. Empty is accepted (match any
-// port). Non-empty must be 1–65535 digits-only.
+// ValidatePort enforces the port format and normalizes to canonical
+// decimal form so that "0080" becomes "80". Empty is accepted (match
+// any port). Non-empty must be 1–65535 digits-only.
 func ValidatePort(p string) error {
 	if p == "" {
 		return nil
@@ -411,6 +413,19 @@ func ValidatePort(p string) error {
 		return fmt.Errorf("port %q out of range (must be 1–65535)", p)
 	}
 	return nil
+}
+
+// NormalizePort converts a port string to its canonical decimal form
+// ("0080" → "80"). Returns the empty string unchanged.
+func NormalizePort(p string) string {
+	if p == "" {
+		return p
+	}
+	val := 0
+	for _, c := range p {
+		val = val*10 + int(c-'0')
+	}
+	return fmt.Sprintf("%d", val)
 }
 
 // ValidateSubstitutions checks each substitution for length, character
