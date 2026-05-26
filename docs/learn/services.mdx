@@ -8,7 +8,7 @@ A `Service` is a per-[vault](/learn/vaults) configuration that defines which ups
 Each service contains:
 
 - **Name**: A canonical per-vault identifier (slug, 3–64 lowercase alphanumeric/hyphen chars, no leading/trailing hyphen, no consecutive hyphens). **Required on write** for new services — pick a deliberate name like `stripe`, `slack-bot`, or `internal-billing`. `name` may be omitted only when `host` + `path` uniquely matches an existing service (the server adopts that service's name, the same pattern as host-based delete). Legacy services persisted without a name before this contract are auto-slugified from `host` + `path` on read so they remain addressable; the slug becomes durable on the next write.
-- **Host**: The single matcher field. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). Reads and writes use the same shape: writes accept any of those forms; reads return the joined inline form so you see exactly what you wrote.
+- **Host**: The single matcher field. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), an inline path-scoped form (`slack.com/api/*`), or an inline port-scoped form (`localhost:8080/api/*`). Reads and writes use the same shape: writes accept any of those forms; reads return the joined inline form so you see exactly what you wrote.
 - **Auth config**: How Agent Vault authenticates. Five types are supported: `bearer`, `basic`, `api-key`, `custom`, and `passthrough` (opt out of injection).
 
 <Tip>
@@ -234,14 +234,16 @@ Substitutions and auth are independent. A service can use either, both, or neith
 
 ## Matching rules
 
-The `host` pattern is the single matcher knob. It can carry just a hostname (`api.stripe.com`), a wildcard host (`*.github.com`), or an inline path glob (`slack.com/api/*`).
+The `host` pattern is the single matcher knob. It can carry just a hostname (`api.stripe.com`), a wildcard host (`*.github.com`), an inline path glob (`slack.com/api/*`), or an inline port (`localhost:8080/api/*`).
 
 **Host portion** supports two modes:
 
 - **Exact match**: `api.stripe.com` matches only `api.stripe.com`.
 - **Wildcard**: `*.github.com` matches `api.github.com`, `uploads.github.com`, etc. The `*` replaces exactly one subdomain segment.
 
-**Path portion** (optional, follows the host with a `/`) is a URL glob. A bare host with no path matches any path; a non-empty path must start with `/` and may use `*` as a greedy glob (cross-`/`). `**`, `?`, regex, and a bare `*` are rejected.
+**Port portion** (optional, follows the host with `:`) restricts the rule to traffic on that port. `localhost:8080` matches only traffic to port 8080; omitting the port matches any port (the legacy behavior). Use this when the same host serves different services on different ports.
+
+**Path portion** (optional, follows the host or `host:port` with a `/`) is a URL glob. A bare host with no path matches any path; a non-empty path must start with `/` and may use `*` as a greedy glob (cross-`/`). `**`, `?`, regex, and a bare `*` are rejected.
 
 ### Matching priority
 
@@ -249,7 +251,8 @@ When two `host` patterns could match a request, the winner is chosen determinist
 
 1. **Host tier first.** A pattern whose host portion is an **exact match** of the request host always beats one with a **wildcard** host (`*.example.com`) — even when the wildcard rule has a more specific path portion.
 2. **Path specificity within a host tier.** Among patterns in the same host tier, the rule with the **longest literal path prefix** wins (characters in the path portion before the first `*`). A bare-host pattern (no path) scores 0 (catch-all).
-3. **Declaration order on tie.** If two rules tie on host tier and literal path-prefix length, the rule appearing first in the configured service list wins.
+3. **Port-matched beats no-port on tie.** When host tier and literal path-prefix length are equal, a port-scoped rule (`localhost:8080`) beats a no-port rule (`localhost`) for traffic to that port. The no-port rule still serves any other port.
+4. **Declaration order on tie.** If two rules tie on the rules above, the rule appearing first in the configured service list wins.
 
 Worked example — Slack with two credentials at the same host:
 

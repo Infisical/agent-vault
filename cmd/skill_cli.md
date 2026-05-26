@@ -86,7 +86,7 @@ The token is either a vault-scoped session token (mint via `agent-vault vault to
 agent-vault vault discover --json
 ```
 
-Response includes `vault`, `services` (each with `name` and `host`), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots. `host` is the single matcher field on every surface (read and write): it returns the joined inline form, so a path-scoped service shows up as e.g. `slack.com/api/*`. When two services share the same bare host but scope to different paths (e.g. `slack.com/api/*` vs `slack.com/api/apps.connections.*`), distinguish them by `name` in subsequent operations.
+Response includes `vault`, `services` (each with `name` and `host`), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots. `host` is the single matcher field on every surface (read and write): it returns the joined inline form, so a path-scoped service shows up as e.g. `slack.com/api/*` and a port-scoped service as e.g. `localhost:8080/api/*`. When two services share the same bare host but scope to different paths or ports (e.g. `slack.com/api/*` vs `slack.com/api/apps.connections.*`, or `localhost:8080` vs `localhost:9090`), distinguish them by `name` in subsequent operations.
 
 **Browse service templates:** `agent-vault catalog --json` lists built-in service templates with suggested credential keys and auth types. No auth needed.
 
@@ -99,6 +99,7 @@ Most agents should raise a [proposal](#proposals----requesting-and-storing-crede
 # when omitted the server slugifies host+path, e.g. api.stripe.com → api-stripe-com)
 agent-vault vault service add --name stripe --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY
 agent-vault vault service add --name slack-bot --host 'slack.com/api/*' --auth-type bearer --token-key SLACK_BOT_TOKEN
+agent-vault vault service add --name app-8080 --host 'localhost:8080/api/*' --auth-type bearer --token-key APP_8080_TOKEN
 
 # Toggle enabled/disabled (accepts service name OR host)
 agent-vault vault service enable <name-or-host>
@@ -272,7 +273,7 @@ Other flags: `--user-message` (shown on browser approval page), `--credential KE
 Key fields (JSON mode):
 - `services[].action` -- `"set"` (upsert, needs `host` + `auth` **or** an `enabled` change) or `"delete"`
 - `services[].name` -- canonical identifier (slug, 3–64 lowercase alphanumeric/hyphen chars). **Required for `"set"`** when creating a new service — pick a deliberate name. May be omitted only when `host` + `path` uniquely matches an existing service in the vault: the server adopts that entry's name, the same pattern as `"delete"` by host. `"delete"` may also omit `name` to fall back to host-based resolution: when the host is shared by multiple services the server returns 409 with the candidate names so the caller can retry by `name`.
-- `services[].host` -- single matcher field. Accepts a bare hostname (e.g. `api.stripe.com`), a one-level wildcard (e.g. `*.github.com`), or an inline path-scoped form (e.g. `slack.com/api/*`). The server splits the path off the host on ingest and resolves overlapping rules deterministically (exact-host beats wildcard, then longer literal path prefix wins, then declaration order). Path globs use `*` as a greedy glob (cross-`/`); `**`, `?`, regex, and bare `*` are rejected.
+- `services[].host` -- single matcher field. Accepts a bare hostname (e.g. `api.stripe.com`), a one-level wildcard (e.g. `*.github.com`), an inline path-scoped form (e.g. `slack.com/api/*`), or an inline port-scoped form (e.g. `localhost:8080/api/*`). The server splits the path and port off the host on ingest and resolves overlapping rules deterministically (exact-host beats wildcard, then longer literal path prefix wins, then port-matched beats no-port, then declaration order). A service with a port matches only traffic to that port; a service without a port matches any port. Path globs use `*` as a greedy glob (cross-`/`); `**`, `?`, regex, and bare `*` are rejected.
 - `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates), `passthrough` (no credential fields)
 - `services[].substitutions` -- optional list of URL/header rewrites. Each entry has `key` (UPPER_SNAKE_CASE credential reference), `placeholder` (the exact wire string the broker matches case-sensitively, e.g. `__account_sid__`), and optional `in` (subset of `["path", "query", "header"]`; defaults to `["path", "query"]`). Surfaces not in `in` are not scanned. Must be paired with an `auth` change in the same proposal — substitutions cannot be added on an enable/disable-only update.
 - `services[].enabled` -- optional boolean. Omitted means "enabled" for new services. A `"set"` proposal may supply `enabled` alone (no `auth`) to toggle an existing service's state without replacing its auth config -- useful for staged rollouts
