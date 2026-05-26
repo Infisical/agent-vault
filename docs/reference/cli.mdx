@@ -260,6 +260,14 @@ description: "Complete reference for all Agent Vault CLI commands."
     Print the vault's credential-store kind, full config, poll interval, and last sync health. Prints `Credential store: builtin` for vaults with no external source; otherwise the kind name plus the Infisical project, environment, path, poll cadence, and `last_sync_status` / `last_synced_at` / `last_sync_error`. The kind is fixed at create time; this command is read-only.
   </Accordion>
 
+  <Accordion title="agent-vault vault credential-store sync">
+    ```bash
+    agent-vault vault credential-store sync <name>
+    ```
+
+    Force an immediate refresh of an external-store vault and print the post-refresh credential-store summary. Available to any vault member. Returns an error if the vault is built-in (no external source), if Infisical is not configured on the server, or if another refresh is already in flight (409). The periodic syncer keeps the vault fresh on its own; use this when a secret has just been rotated upstream and you don't want to wait for the next tick.
+  </Accordion>
+
   <Accordion title="agent-vault vault init">
     ```bash
     agent-vault vault init [flags]

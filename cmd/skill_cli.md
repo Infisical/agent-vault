@@ -198,7 +198,7 @@ For read-only vaults:
 
 Creating an external-store vault (`vault create --credential-store=infisical ...`) is owner-only: the broker's machine identity, not the caller's, authorizes the upstream fetch. Upstream secret names must match `^[A-Z][A-Z0-9_]*$` or create/sync fails with `external_store_invalid_key` naming the offending key.
 
-Refresh on demand with `POST {AGENT_VAULT_ADDR}/v1/vaults/{name}/sync` (any vault member). Returns the post-refresh `credential_store` summary; conflicts with an in-flight refresh return `409`. The periodic syncer keeps the vault fresh otherwise, so manual sync is for "I just rotated a secret upstream" cases.
+Refresh on demand with `agent-vault vault credential-store sync <name>` (or `POST {AGENT_VAULT_ADDR}/v1/vaults/{name}/sync`; any vault member). Returns the post-refresh `credential_store` summary; conflicts with an in-flight refresh return `409`. The periodic syncer keeps the vault fresh otherwise, so manual sync is for "I just rotated a secret upstream" cases.
 
 ### Creating a Proposal
 

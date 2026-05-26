@@ -1,3 +1,5 @@
+-- kind values mirror the CredentialStore* constants in internal/store/store.go;
+-- extend both together when adding a new external store.
 CREATE TABLE vault_credential_stores (
     vault_id              TEXT PRIMARY KEY REFERENCES vaults(id) ON DELETE CASCADE,
     kind                  TEXT NOT NULL CHECK(kind IN ('infisical')),

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"strings"
@@ -123,35 +124,67 @@ var vaultCredentialStoreShowCmd = &cobra.Command{
 		}
 		out := cmd.OutOrStdout()
 		fmt.Fprintf(out, "Vault: %s\n", resp.VaultName)
-		if resp.CredentialStore == nil {
-			fmt.Fprintln(out, "Credential store: builtin")
-			return nil
-		}
-		fmt.Fprintf(out, "Credential store: %v\n", resp.CredentialStore["kind"])
-		if cfg, ok := resp.CredentialStore["config"].(map[string]interface{}); ok {
-			fmt.Fprintf(out, "  Project:     %v\n", cfg["project_id"])
-			fmt.Fprintf(out, "  Environment: %v\n", cfg["environment"])
-			fmt.Fprintf(out, "  Path:        %v\n", cfg["secret_path"])
-		}
-		if v, ok := resp.CredentialStore["poll_interval_seconds"]; ok {
-			fmt.Fprintf(out, "  Poll:        %vs\n", v)
-		}
-		status, _ := resp.CredentialStore["last_sync_status"].(string)
-		if status != "" {
-			fmt.Fprintf(out, "  Last sync:   %v\n", status)
-		}
-		if v, ok := resp.CredentialStore["last_synced_at"]; ok {
-			label := "Synced at"
-			if status == store.SyncStatusError {
-				label = "Last attempt"
-			}
-			fmt.Fprintf(out, "  %s:   %v\n", label, v)
-		}
-		if v, ok := resp.CredentialStore["last_sync_error"]; ok {
-			fmt.Fprintf(out, "  Error:       %v\n", v)
-		}
+		printCredentialStore(out, resp.CredentialStore)
 		return nil
 	},
+}
+
+var vaultCredentialStoreSyncCmd = &cobra.Command{
+	Use:   "sync <name>",
+	Short: "Force an immediate refresh of an external-store vault",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		sess, err := ensureSession()
+		if err != nil {
+			return err
+		}
+		url := fmt.Sprintf("%s/v1/vaults/%s/sync", sess.Address, name)
+		respBody, err := doAdminRequestWithBody("POST", url, sess.Token, nil)
+		if err != nil {
+			return err
+		}
+		var resp struct {
+			CredentialStore map[string]interface{} `json:"credential_store,omitempty"`
+		}
+		if err := json.Unmarshal(respBody, &resp); err != nil {
+			return fmt.Errorf("parsing response: %w", err)
+		}
+		out := cmd.OutOrStdout()
+		fmt.Fprintf(out, "%s Synced vault %q\n", successText("✓"), name)
+		printCredentialStore(out, resp.CredentialStore)
+		return nil
+	},
+}
+
+func printCredentialStore(out io.Writer, cs map[string]interface{}) {
+	if cs == nil {
+		fmt.Fprintf(out, "Credential store: %s\n", store.CredentialStoreBuiltin)
+		return
+	}
+	fmt.Fprintf(out, "Credential store: %v\n", cs["kind"])
+	if cfg, ok := cs["config"].(map[string]interface{}); ok {
+		fmt.Fprintf(out, "  Project:     %v\n", cfg["project_id"])
+		fmt.Fprintf(out, "  Environment: %v\n", cfg["environment"])
+		fmt.Fprintf(out, "  Path:        %v\n", cfg["secret_path"])
+	}
+	if v, ok := cs["poll_interval_seconds"]; ok {
+		fmt.Fprintf(out, "  Poll:        %vs\n", v)
+	}
+	status, _ := cs["last_sync_status"].(string)
+	if status != "" {
+		fmt.Fprintf(out, "  Last sync:   %v\n", status)
+	}
+	if v, ok := cs["last_synced_at"]; ok {
+		label := "Synced at"
+		if status == store.SyncStatusError {
+			label = "Last attempt"
+		}
+		fmt.Fprintf(out, "  %s:   %v\n", label, v)
+	}
+	if v, ok := cs["last_sync_error"]; ok {
+		fmt.Fprintf(out, "  Error:       %v\n", v)
+	}
 }
 
 var vaultListCmd = &cobra.Command{
@@ -461,6 +494,7 @@ func init() {
 	vaultCmd.AddCommand(vaultCurrentCmd)
 
 	vaultCredentialStoreCmd.AddCommand(vaultCredentialStoreShowCmd)
+	vaultCredentialStoreCmd.AddCommand(vaultCredentialStoreSyncCmd)
 	vaultCmd.AddCommand(vaultCredentialStoreCmd)
 
 	vaultUserAddCmd.Flags().String("role", "member", "role to grant (admin or member)")
