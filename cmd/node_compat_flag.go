@@ -134,16 +134,22 @@ func nodeCompatEnabled(mode NodeCompatMode, args []string) bool {
 // appendNodeOptionsRequire appends "--require=<path>" to whatever
 // NODE_OPTIONS value already exists in env, preserving operator-set
 // preloads so layered patches still load. If NODE_OPTIONS isn't set,
-// the key is appended fresh. Idempotent: a second call with the same
-// path is a no-op (defensive against repeat-injection across forked
-// child processes that re-invoke agent-vault).
+// the key is appended fresh.
+//
+// Idempotency check is tokenized (split on whitespace + exact match)
+// rather than substring-based. A raw strings.Contains would
+// false-positive on prefix-overlapping paths — e.g. an operator-set
+// "NODE_OPTIONS=--require=/x/preload.js.bak" would mask a new
+// "--require=/x/preload.js" injection, silently disabling the preload.
 func appendNodeOptionsRequire(env []string, path string) []string {
 	addition := "--require=" + path
 	for i, kv := range env {
 		if strings.HasPrefix(kv, "NODE_OPTIONS=") {
 			existing := kv[len("NODE_OPTIONS="):]
-			if strings.Contains(existing, addition) {
-				return env
+			for _, tok := range strings.Fields(existing) {
+				if tok == addition {
+					return env
+				}
 			}
 			env[i] = "NODE_OPTIONS=" + strings.TrimSpace(existing+" "+addition)
 			return env

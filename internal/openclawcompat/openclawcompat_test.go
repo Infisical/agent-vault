@@ -115,14 +115,3 @@ func TestPreloadContainsAxiosHook(t *testing.T) {
 	}
 }
 
-func TestPreloadHashStable(t *testing.T) {
-	// Run twice to assert hashing is deterministic.
-	h1 := PreloadHash()
-	h2 := PreloadHash()
-	if h1 != h2 {
-		t.Errorf("PreloadHash inconsistent: %q vs %q", h1, h2)
-	}
-	if len(h1) != 64 { // sha256 hex = 64 chars
-		t.Errorf("PreloadHash len = %d, want 64", len(h1))
-	}
-}

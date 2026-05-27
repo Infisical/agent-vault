@@ -16,9 +16,7 @@ package openclawcompat
 
 import (
 	"bytes"
-	"crypto/sha256"
 	_ "embed"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -96,18 +94,3 @@ func EnsurePreload() (string, error) {
 	return path, nil
 }
 
-// PreloadHash returns the SHA-256 of the embedded preload as a hex
-// string. Used by tests to assert content stability and by debug logs
-// to give operators a fingerprint when comparing across hosts.
-func PreloadHash() string {
-	sum := sha256.Sum256(preloadJS)
-	return hex.EncodeToString(sum[:])
-}
-
-// PreloadBytes returns a copy of the embedded preload content. Exposed
-// for tests; callers in production code should use EnsurePreload.
-func PreloadBytes() []byte {
-	out := make([]byte, len(preloadJS))
-	copy(out, preloadJS)
-	return out
-}
