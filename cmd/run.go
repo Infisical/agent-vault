@@ -213,7 +213,7 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	//      internal/openclawcompat). Append-mode preserves operator-set
 	//      NODE_OPTIONS so custom preloads still load.
 	ncMode := *cmd.Flags().Lookup("node-compat").Value.(*NodeCompatMode)
-	if nodeCompatEnabled(ncMode, args[0]) {
+	if nodeCompatEnabled(ncMode, args) {
 		preloadPath, err := openclawcompat.EnsurePreload()
 		if err != nil {
 			return fmt.Errorf("write openclaw compat preload: %w", err)

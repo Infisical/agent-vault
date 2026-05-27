@@ -38,27 +38,104 @@ func TestNodeCompatEnabled(t *testing.T) {
 	cases := []struct {
 		name string
 		mode NodeCompatMode
-		cmd  string
+		args []string
 		want bool
 	}{
-		{"on/openclaw", NodeCompatOn, "openclaw", true},
-		{"on/node", NodeCompatOn, "node", true},
-		{"on/any-bin", NodeCompatOn, "/opt/weird/bin", true},
-		{"off/openclaw", NodeCompatOff, "openclaw", false},
-		{"off/node", NodeCompatOff, "node", false},
-		{"auto/openclaw bare", NodeCompatAuto, "openclaw", true},
-		{"auto/openclaw absolute", NodeCompatAuto, "/usr/local/bin/openclaw", true},
-		{"auto/openclaw nested", NodeCompatAuto, "/root/.openclaw/bin/openclaw", true},
-		{"auto/node", NodeCompatAuto, "node", false},
-		{"auto/codex (TLS-bridge concern, not Node compat)", NodeCompatAuto, "codex", false},
-		{"auto/claude", NodeCompatAuto, "claude", false},
-		{"empty mode falls back to auto", NodeCompatMode(""), "openclaw", true},
-		{"empty mode + non-openclaw is false", NodeCompatMode(""), "node", false},
+		// ---- explicit modes ----
+		{"on/openclaw", NodeCompatOn, []string{"openclaw"}, true},
+		{"on/node", NodeCompatOn, []string{"node", "foo.js"}, true},
+		{"on/any-bin", NodeCompatOn, []string{"/opt/weird/bin"}, true},
+		{"off/openclaw", NodeCompatOff, []string{"openclaw"}, false},
+		{"off/node-wrapping-openclaw", NodeCompatOff, []string{"/usr/bin/node", "/usr/lib/node_modules/openclaw/dist/index.js"}, false},
+
+		// ---- auto: bare openclaw binary ----
+		{"auto/openclaw bare", NodeCompatAuto, []string{"openclaw"}, true},
+		{"auto/openclaw absolute", NodeCompatAuto, []string{"/usr/local/bin/openclaw"}, true},
+		{"auto/openclaw nested", NodeCompatAuto, []string{"/root/.openclaw/bin/openclaw"}, true},
+		{"auto/openclaw with args", NodeCompatAuto, []string{"openclaw", "gateway", "start"}, true},
+
+		// ---- auto: node-wrapped openclaw (the systemd-unit shape) ----
+		{
+			"auto/node /usr/lib/node_modules/openclaw/dist/index.js (linux global npm)",
+			NodeCompatAuto,
+			[]string{"/usr/bin/node", "/usr/lib/node_modules/openclaw/dist/index.js", "gateway", "--port", "18789"},
+			true,
+		},
+		{
+			"auto/node /opt/homebrew/lib/node_modules/openclaw/dist/index.js (macOS Homebrew)",
+			NodeCompatAuto,
+			[]string{"/usr/local/bin/node", "/opt/homebrew/lib/node_modules/openclaw/dist/index.js"},
+			true,
+		},
+		{
+			"auto/node /root/.openclaw/npm/node_modules/openclaw/dist/index.js (per-user npm)",
+			NodeCompatAuto,
+			[]string{"node", "/root/.openclaw/npm/node_modules/openclaw/dist/index.js"},
+			true,
+		},
+		{
+			"auto/nodejs /path/to/openclaw/cli.js (Debian-style nodejs binary)",
+			NodeCompatAuto,
+			[]string{"nodejs", "/some/path/openclaw/cli.js"},
+			true,
+		},
+		{
+			"auto/node /path/to/@openclaw/cli/dist/index.js (scoped package)",
+			NodeCompatAuto,
+			[]string{"node", "/usr/lib/node_modules/@openclaw/cli/dist/index.js"},
+			true,
+		},
+		{
+			"auto/node with flags before script",
+			NodeCompatAuto,
+			[]string{"node", "--enable-source-maps", "--max-old-space-size=4096", "/usr/lib/node_modules/openclaw/dist/index.js"},
+			true,
+		},
+
+		// ---- auto: node WITHOUT openclaw — must NOT inject ----
+		{
+			"auto/node random.js",
+			NodeCompatAuto,
+			[]string{"node", "/usr/local/bin/random.js"},
+			false,
+		},
+		{
+			"auto/node -e inline",
+			NodeCompatAuto,
+			[]string{"node", "-e", "console.log('hi')"},
+			false,
+		},
+		{
+			"auto/node hermes.js (other agent, no openclaw)",
+			NodeCompatAuto,
+			[]string{"node", "/usr/lib/node_modules/hermes-agent/dist/index.js"},
+			false,
+		},
+		{
+			"auto/node with substring openclawpaths (no slash-bounded match)",
+			NodeCompatAuto,
+			// "/foo/openclawish/bar.js" must NOT match — hint requires "/openclaw/"
+			[]string{"node", "/foo/openclawish/bar.js"},
+			false,
+		},
+
+		// ---- auto: other binaries ----
+		{"auto/codex (TLS-bridge concern, not Node compat)", NodeCompatAuto, []string{"codex"}, false},
+		{"auto/claude", NodeCompatAuto, []string{"claude"}, false},
+		{"auto/bash", NodeCompatAuto, []string{"bash", "-c", "echo hi"}, false},
+
+		// ---- zero-value mode = auto ----
+		{"empty mode falls back to auto/openclaw", NodeCompatMode(""), []string{"openclaw"}, true},
+		{"empty mode + non-openclaw is false", NodeCompatMode(""), []string{"node", "/tmp/random.js"}, false},
+		{"empty mode + node-wrapped openclaw is true", NodeCompatMode(""), []string{"node", "/usr/lib/node_modules/openclaw/dist/index.js"}, true},
+
+		// ---- edge cases ----
+		{"empty args", NodeCompatAuto, []string{}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := nodeCompatEnabled(tc.mode, tc.cmd); got != tc.want {
-				t.Errorf("nodeCompatEnabled(%q, %q) = %v, want %v", tc.mode, tc.cmd, got, tc.want)
+			if got := nodeCompatEnabled(tc.mode, tc.args); got != tc.want {
+				t.Errorf("nodeCompatEnabled(%q, %v) = %v, want %v", tc.mode, tc.args, got, tc.want)
 			}
 		})
 	}
