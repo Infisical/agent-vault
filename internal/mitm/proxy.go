@@ -33,6 +33,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -75,6 +76,23 @@ type Options struct {
 	LogSink     requestlog.Sink // nil → Nop
 }
 
+// responseHeaderTimeout returns how long the upstream transport waits for
+// a response's headers after the request is fully written. The default is
+// deliberately generous (5m, not Go's usual short value): agents proxy LLM
+// APIs, and reasoning / "thinking" models routinely withhold response
+// headers for tens of seconds — sometimes minutes — while they think, so a
+// short cap aborts otherwise-healthy streaming completions with a 502.
+// Override with AGENT_VAULT_RESPONSE_HEADER_TIMEOUT (Go duration; "0"
+// disables the timeout entirely).
+func responseHeaderTimeout() time.Duration {
+	if v := os.Getenv("AGENT_VAULT_RESPONSE_HEADER_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return 5 * time.Minute
+}
+
 // New builds a Proxy bound to addr. The returned Proxy does not begin
 // listening until ListenAndServe is called.
 func New(addr string, opts Options) *Proxy {
@@ -85,7 +103,7 @@ func New(addr string, opts Options) *Proxy {
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		ResponseHeaderTimeout: responseHeaderTimeout(),
 	}
 
 	sink := opts.LogSink
