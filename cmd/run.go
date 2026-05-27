@@ -17,6 +17,7 @@ import (
 	"syscall"
 
 	"github.com/Infisical/agent-vault/internal/isolation"
+	"github.com/Infisical/agent-vault/internal/openclawcompat"
 	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/Infisical/agent-vault/internal/store"
 	"github.com/charmbracelet/huh"
@@ -77,6 +78,9 @@ Example:
 
 	var iso IsolationMode
 	c.Flags().Var(&iso, "isolation", "Isolation mode: host (default) or container")
+
+	nc := NodeCompatAuto
+	c.Flags().Var(&nc, "node-compat", "Inject Node compatibility preload: auto (detect openclaw and similar), on, off")
 
 	c.Flags().String("address", "", "Agent Vault server address (defaults to session address)")
 	c.Flags().Int("ttl", 0, "Session TTL in seconds (300–604800; default: server default 24h)")
@@ -203,6 +207,21 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		maybeInstallSkills(name, dir)
 	}
 
+	// 7.5. Inject the OpenClaw Node compatibility preload when wrapping
+	//      a binary whose Node deps are known to mishandle TLS-wrapped
+	//      HTTPS_PROXY URLs and/or body-surface credentials (see
+	//      internal/openclawcompat). Append-mode preserves operator-set
+	//      NODE_OPTIONS so custom preloads still load.
+	ncMode := *cmd.Flags().Lookup("node-compat").Value.(*NodeCompatMode)
+	if nodeCompatEnabled(ncMode, args[0]) {
+		preloadPath, err := openclawcompat.EnsurePreload()
+		if err != nil {
+			return fmt.Errorf("write openclaw compat preload: %w", err)
+		}
+		env = appendNodeOptionsRequire(env, preloadPath)
+		fmt.Fprintf(os.Stderr, "%s openclaw compat preload active (%s)\n", successText("agent-vault:"), preloadPath)
+	}
+
 	// 8. Confirm, then exec — replaces this process entirely so the child
 	//    (e.g. Claude Code) gets direct terminal control.
 	fmt.Fprintf(os.Stderr, "%s agent-vault connected. Starting %s...\n\n", successText("agent-vault:"), boldText(args[0]))
@@ -225,6 +244,7 @@ var knownAgents = []struct {
 	{[]string{"codex"}, "Codex", ".agents"},
 	{[]string{"hermes"}, "Hermes", ".hermes"},
 	{[]string{"opencode"}, "OpenCode", ".opencode"},
+	{[]string{"openclaw"}, "OpenClaw", ".openclaw"},
 }
 
 // agentSkillDir returns the display name and skills base directory for a
