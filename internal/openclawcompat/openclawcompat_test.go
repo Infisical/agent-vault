@@ -69,7 +69,7 @@ func TestEnsurePreload_RecoversFromStaleContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Simulate an old AV version having written different content.
-	if err := os.WriteFile(path, []byte("stale content from older agent-vault"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("stale content from older agent-vault"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

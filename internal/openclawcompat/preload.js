@@ -16,6 +16,14 @@
 //      Fix: disable axios's built-in proxy logic; Node's
 //      NODE_USE_ENV_PROXY=1 path via undici handles TLS proxies correctly.
 //
+//      Requires Node.js >= 22.7.0 — that's when `NODE_USE_ENV_PROXY`
+//      was added and Node's http/https globalAgent started honoring
+//      HTTPS_PROXY natively. On older Node, axios with `proxy: false`
+//      falls through to a direct https.globalAgent connection,
+//      bypassing the broker entirely. We hard-fail at preload time
+//      below if the runtime is too old so the operator sees a clear
+//      error instead of silently-unbrokered traffic.
+//
 //   2. @slack/web-api puts the bot token in the form body when called
 //      with a method-arg shape (`client.auth.test({token})`), which is
 //      exactly how Bolt's per-event `buildAuthorizeResult` invokes it.
@@ -38,6 +46,24 @@
 // that isn't axios.
 
 'use strict';
+
+// Node.js runtime guard — see note (1) above. NODE_USE_ENV_PROXY landed
+// in Node 22.7.0; without it, disabling axios's proxy logic silently
+// causes a direct upstream connection that bypasses Agent Vault. Fail
+// loudly at preload time so the operator can upgrade Node (or set
+// --node-compat=off and accept that brokering won't apply to axios).
+(function checkNodeVersion() {
+  const v = (process.versions && process.versions.node) || '0.0.0';
+  const [maj, min] = v.split('.').map((s) => parseInt(s, 10));
+  if (Number.isNaN(maj) || Number.isNaN(min) || maj < 22 || (maj === 22 && min < 7)) {
+    throw new Error(
+      'agent-vault openclaw compat: requires Node.js >= 22.7.0 ' +
+      '(NODE_USE_ENV_PROXY support). Current runtime: v' + v + '. ' +
+      'Upgrade Node, or pass --node-compat=off to skip the preload ' +
+      '(note: axios outbound calls will then bypass the broker).'
+    );
+  }
+})();
 
 const Module = require('module');
 const origLoad = Module._load;

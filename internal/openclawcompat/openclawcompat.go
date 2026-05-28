@@ -74,8 +74,14 @@ func EnsurePreload() (string, error) {
 		return "", fmt.Errorf("create temp: %w", err)
 	}
 	tmpName := tmp.Name()
-	// Best-effort cleanup if anything below fails.
-	defer func() { _ = os.Remove(tmpName) }()
+	// Best-effort cleanup if anything below fails. Skipped on the
+	// happy path after Rename consumes the temp.
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = os.Remove(tmpName)
+		}
+	}()
 
 	if _, err := tmp.Write(preloadJS); err != nil {
 		_ = tmp.Close()
@@ -91,6 +97,7 @@ func EnsurePreload() (string, error) {
 	if err := os.Rename(tmpName, path); err != nil {
 		return "", fmt.Errorf("rename temp into place: %w", err)
 	}
+	renamed = true
 	return path, nil
 }
 
