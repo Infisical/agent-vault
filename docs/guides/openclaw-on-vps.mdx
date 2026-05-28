@@ -51,7 +51,7 @@ This guide installs Agent Vault as a native binary via the install script, the p
                 Operator
 ```
 
-Only `av-broker` holds real credentials, encrypted at rest behind your master password. `openclaw-box` holds placeholder strings (`__anthropic_api_key__`, `__github_token__`, `__notion_token__`, `__slack_bot_token__`, `__slack_app_token__`) and one revocable [agent token](/agents/overview).
+Only `av-broker` holds real credentials, encrypted at rest behind your master password. `openclaw-box` holds placeholder strings (`__anthropic_api_key__`, etc.) and one revocable [agent token](/agents/overview).
 
 ## 1. Provision the VPS boxes
 
@@ -182,14 +182,23 @@ Every command in this section runs on `av-broker` until you exit.
 
 </Step>
 
-<Step title="Install Agent Vault and tmux">
+<Step title="Install Agent Vault">
 
 ```bash
 curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | sh
+```
+
+The script detects your architecture, verifies the signed release, and drops the binary at `/usr/local/bin/agent-vault`.
+
+</Step>
+
+<Step title="Install tmux">
+
+```bash
 apt update && apt install -y tmux
 ```
 
-The script detects your architecture, verifies the signed release, and drops the binary at `/usr/local/bin/agent-vault`. You'll run Agent Vault inside a `tmux` session so it survives your SSH disconnect.
+You'll run Agent Vault inside a `tmux` session so it survives your SSH disconnect.
 
 </Step>
 
@@ -197,10 +206,10 @@ The script detects your architecture, verifies the signed release, and drops the
 
 ```bash
 tmux new -s av
-agent-vault server --host 10.108.0.3 --log-level debug
+agent-vault server --host 10.108.0.3 --port 14321 --mitm-port 14322
 ```
 
-`--host 10.108.0.3` binds both listeners to the private NIC, keeping Agent Vault unreachable from the public internet. `--log-level debug` emits a per-request proxy event log; the default `info` level hides credential substitutions.
+`--host 10.108.0.3` binds both listeners to the private NIC, keeping Agent Vault unreachable from the public internet.
 
 First-run prompts: master password, admin email, admin password.
 
@@ -277,8 +286,8 @@ In the `prod` vault, **Credentials tab → Add credential** for each row below.
 | `ANTHROPIC_API_KEY` | Anthropic API key (`sk-ant-...`) |
 | `GITHUB_TOKEN` | GitHub PAT with `repo` scope (`ghp_...`) |
 | `NOTION_TOKEN` | Notion internal integration token (`ntn_...`) |
-| `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) |
-| `SLACK_APP_TOKEN` | Slack app-level token (`xapp-...`) |
+| `SLACK_BOT_TOKEN` | Placeholder; you create the Slack app in the next section |
+| `SLACK_APP_TOKEN` | Placeholder; you create the Slack app in the next section |
 
 </Step>
 
@@ -356,6 +365,8 @@ At every token prompt, type the placeholder, not the real value. Exact strings m
 | **Skills** | Skip |
 | **Hatch agent in terminal?** | **No** |
 
+When the wizard reaches the Slack step it prints a Slack app manifest JSON. You'll use it in the next section, so leave the terminal open or scroll back later. The wizard accepts placeholders for the bot and app tokens because the real values live in Agent Vault, not here.
+
 </Step>
 
 <Step title="Sanity-check the placeholders landed">
@@ -370,7 +381,59 @@ You should see hits in `~/.openclaw/openclaw.json` (Slack tokens) and `~/.opencl
 
 </Steps>
 
-## 6. Connect openclaw-box to Agent Vault
+## 6. Create the Slack app from OpenClaw's manifest
+
+OpenClaw ships a Slack app manifest that pre-configures every scope, event subscription, and feature its Slack plugin needs (Socket Mode, the `app_mention` event, the `/openclaw` slash command, assistant view, file/reaction/pin scopes, and more). Pasting it into Slack's "Create from manifest" flow provisions a fully-configured app in one shot.
+
+<Steps>
+
+<Step title="Dump the manifest to a file">
+
+On `openclaw-box`:
+
+```bash
+SETUP_CORE=$(ls /root/.openclaw/npm/node_modules/@openclaw/slack/dist/setup-core-*.js | head -1)
+node -e "console.log(JSON.stringify(require('$SETUP_CORE').buildSlackManifest('openclaw'), null, 2))" > /tmp/slack-manifest.json
+cat /tmp/slack-manifest.json
+```
+
+The hashed filename changes between OpenClaw versions, so the `ls` glob keeps this future-proof. Copy the JSON output to your clipboard.
+
+</Step>
+
+<Step title="Create the app in Slack from the manifest">
+
+Go to [api.slack.com/apps](https://api.slack.com/apps), click **Create New App → From a manifest**, pick your workspace, and paste the JSON from `/tmp/slack-manifest.json`. Slack shows a summary of what it'll create. Click **Create** to confirm.
+
+</Step>
+
+<Step title="Install to your workspace and copy the bot token">
+
+In the new app's sidebar: **OAuth & Permissions → Install to Workspace**. Approve the scopes. Copy the **Bot User OAuth Token** (`xoxb-...`).
+
+</Step>
+
+<Step title="Generate the App-Level Token">
+
+Manifests don't include App-Level Tokens, so generate one separately. **Basic Information → App-Level Tokens → Generate Token and Scopes**, give it a name, add the `connections:write` scope, click **Generate**, and copy the `xapp-...` token.
+
+</Step>
+
+<Step title="Paste the real tokens into Agent Vault">
+
+In the AV UI: `prod` → **Credentials** → `SLACK_BOT_TOKEN` → edit → paste the `xoxb-...` token → save. Then `SLACK_APP_TOKEN` → edit → paste the `xapp-...` token → save.
+
+</Step>
+
+<Step title="Invite the bot to your channel">
+
+In Slack, open the channel you want OpenClaw to listen in. Type `/invite @<your-bot-name>`.
+
+</Step>
+
+</Steps>
+
+## 7. Connect openclaw-box to Agent Vault
 
 One env file plus one systemd drop-in is the entire operator surface. `agent-vault run` auto-detects the OpenClaw gateway invocation and injects an embedded Node compatibility preload, so no shim files are needed.
 
@@ -469,7 +532,7 @@ Other healthy log lines:
 The OpenClaw compat preload requires **Node.js 22.21.0+, 24.5.0+, or 25+** in the wrapped child. Earlier versions lack the `NODE_USE_ENV_PROXY` support the preload relies on for axios's outbound requests. The preload fails loudly at boot if the runtime is too old; upgrade Node, or pass `--node-compat=off` to skip the preload (note: axios outbound calls will then bypass the broker).
 </Note>
 
-## 7. Lock down egress (optional)
+## 8. Lock down egress (optional)
 
 Restrict `openclaw-box` outbound to `av-broker` only. A compromised OpenClaw then has nowhere to exfiltrate.
 
@@ -497,24 +560,25 @@ That should time out. Proxied calls through `10.108.0.3:14322` still work.
 
 </Steps>
 
-## 8. Try it end-to-end
+## 9. Try it end-to-end
 
-In your target Slack channel, @-mention the bot with a prompt that exercises all four brokered services in one round-trip:
+In your target Slack channel, @-mention the bot. OpenClaw replies, with every outbound call routed through `10.108.0.3:14322`.
+
+To exercise all four brokered services in one prompt:
 
 > @openclaw summarize the last 5 PRs in `<owner>/<repo>` and create a Notion page with the summary. Reply with the new page's URL.
 
-Replace `<owner>/<repo>` with a repo your `GITHUB_TOKEN` has read access to. OpenClaw reads PRs from GitHub, summarizes them with Anthropic, creates a Notion page, and replies in Slack with the URL.
+Replace `<owner>/<repo>` with a repo your `GITHUB_TOKEN` has read access to.
 
-To watch brokered traffic in real time, tail the AV log on `av-broker`:
+To watch brokered traffic in real time, tail the gateway journal on `openclaw-box`:
 
 ```bash
-ssh -i ~/.ssh/digital-ocean-1 root@<av-broker-public-ip>
-tmux attach -t av
+journalctl --user -u openclaw-gateway -f
 ```
 
-You should see `proxy_request` lines for all four services, each with `passthrough=false` (meaning the substitution fired). Open **Logs** in the AV UI for the same information rendered as a table.
+Open **Logs** in the AV UI to see each request's matched service and substituted credential.
 
-## 9. Revoke and recover
+## 10. Revoke and recover
 
 <Steps>
 
