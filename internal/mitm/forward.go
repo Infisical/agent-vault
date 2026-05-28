@@ -30,6 +30,46 @@ func actorFromScope(scope *brokercore.ProxyScope) (string, string) {
 	return "", ""
 }
 
+// copyRequestHeaders copies headers from src to dst, skipping hop-by-hop
+// and broker-scoped headers. Used by the pass-through path so the proxy
+// stays well-behaved without modifying the request content.
+func copyRequestHeaders(src, dst http.Header) {
+	for k, vv := range src {
+		ck := http.CanonicalHeaderKey(k)
+		if brokercore.IsHopByHop(ck) || brokercore.IsBrokerScopedRequestHeader(ck) {
+			continue
+		}
+		for _, v := range vv {
+			dst.Add(ck, v)
+		}
+	}
+}
+
+// copyRequestHeadersWithConnectionStrip copies headers from src to dst,
+// stripping hop-by-hop (static + headers named in the Connection field),
+// and broker-scoped headers. Used by the pass-through path so that
+// Connection: X-Custom,close is respected (RFC 7230 §6.1).
+func copyRequestHeadersWithConnectionStrip(src, dst http.Header) {
+	// Collect headers named in Connection.
+	extraStrip := make(map[string]bool)
+	for _, c := range src.Values("Connection") {
+		for _, f := range strings.Split(c, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				extraStrip[http.CanonicalHeaderKey(f)] = true
+			}
+		}
+	}
+	for k, vv := range src {
+		ck := http.CanonicalHeaderKey(k)
+		if brokercore.IsHopByHop(ck) || brokercore.IsBrokerScopedRequestHeader(ck) || extraStrip[ck] {
+			continue
+		}
+		for _, v := range vv {
+			dst.Add(ck, v)
+		}
+	}
+}
+
 // isAbsoluteForwardProxyRequest reports whether r is a well-formed
 // absolute-form forward-proxy request that handleForward can serve.
 //
@@ -193,8 +233,6 @@ func (p *Proxy) forwardRequest(
 	}
 	defer enf.Release()
 
-	r.Body = http.MaxBytesReader(w, r.Body, brokercore.MaxProxyBodyBytes)
-
 	scheme := "http"
 	if useTLSUpstream {
 		scheme = "https"
@@ -207,23 +245,9 @@ func (p *Proxy) forwardRequest(
 		RawQuery: r.URL.RawQuery,
 	}
 
-	body, contentLength, err := brokercore.MaterializeRequestBody(r.Body)
-	if err != nil {
-		status, code := brokercore.RequestBodyErrorCode(err)
-		http.Error(w, http.StatusText(status), status)
-		emit(status, code)
-		return
-	}
-
-	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, outURL.String(), body)
-	if err != nil {
-		http.Error(w, "bad gateway", http.StatusBadGateway)
-		emit(http.StatusBadGateway, "internal")
-		return
-	}
-	outReq.Host = hostHeaderForScheme(scheme, target)
-	outReq.ContentLength = contentLength
-
+	// Match the target against configured services to decide injection +
+	// pass-through behaviour. Must happen before the first body read so
+	// we can skip unnecessary work for unknown services.
 	inject, err := p.creds.Inject(r.Context(), scope.VaultID, target, r.URL.Path)
 	if inject != nil {
 		event.MatchedService = inject.MatchedName
@@ -244,6 +268,32 @@ func (p *Proxy) forwardRequest(
 		emit(status, errCode)
 		return
 	}
+
+	// --- Pass-through fast path: no service matched, just forward. ---
+	if inject.Passthrough {
+		p.forwardPassthrough(w, r, outURL, scheme, target, emit)
+		return
+	}
+
+	// --- Known service path: full injection + substitution. ---
+	r.Body = http.MaxBytesReader(w, r.Body, brokercore.MaxProxyBodyBytes)
+
+	body, contentLength, err := brokercore.MaterializeRequestBody(r.Body)
+	if err != nil {
+		status, code := brokercore.RequestBodyErrorCode(err)
+		http.Error(w, http.StatusText(status), status)
+		emit(status, code)
+		return
+	}
+
+	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, outURL.String(), body)
+	if err != nil {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+		emit(http.StatusBadGateway, "internal")
+		return
+	}
+	outReq.Host = hostHeaderForScheme(scheme, target)
+	outReq.ContentLength = contentLength
 
 	wsUpgrade := isWebSocketUpgrade(r)
 
@@ -301,5 +351,106 @@ func (p *Proxy) forwardRequest(
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, io.LimitReader(resp.Body, brokercore.MaxResponseBytes))
+	emit(resp.StatusCode, "")
+}
+
+// forwardPassthrough forwards the request to the target upstream with
+// no credential injection, no substitution, no body limit, no
+// response body limit, and no logging. Hop-by-hop and broker-scoped
+// headers are still stripped so the proxy stays well-behaved. This
+// is the fast path for services not configured in the vault.
+func (p *Proxy) forwardPassthrough(
+	w http.ResponseWriter,
+	r *http.Request,
+	outURL *url.URL,
+	scheme, target string,
+	emit func(status int, errCode string),
+) {
+	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, outURL.String(), r.Body)
+	if err != nil {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+		emit(http.StatusBadGateway, "internal")
+		return
+	}
+	outReq.Host = hostHeaderForScheme(scheme, target)
+
+	wsUpgrade := isWebSocketUpgrade(r)
+	if wsUpgrade {
+		// Copy WebSocket handshake headers first so they survive the
+		// hop-by-hop strip below.
+		copyWebSocketHandshakeHeaders(r.Header, outReq.Header)
+	}
+	// Strip hop-by-hop (static + Connection-named) and broker-scoped
+	// headers so the proxy stays well-behaved. Copy everything else.
+	copyRequestHeadersWithConnectionStrip(r.Header, outReq.Header)
+
+	// WebSocket: open a raw connection, write the request, read the
+	// response, then pipe frames. RoundTrip can't handle the protocol
+	// switch so we use the same dial path as the known-service branch.
+	if wsUpgrade {
+		upstreamConn, upstreamReader, resp, err := p.dialWebSocketUpstream(r.Context(), outReq)
+		if err != nil {
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			emit(http.StatusBadGateway, "upstream_error")
+			return
+		}
+		defer func() {
+			if resp == nil || resp.StatusCode != http.StatusSwitchingProtocols {
+				_ = upstreamConn.Close()
+			}
+		}()
+		if resp.StatusCode != http.StatusSwitchingProtocols {
+			defer func() { _ = resp.Body.Close() }()
+			for k, vv := range resp.Header {
+				for _, v := range vv {
+					w.Header().Add(k, v)
+				}
+			}
+			w.WriteHeader(resp.StatusCode)
+			_, _ = io.Copy(w, resp.Body)
+			emit(resp.StatusCode, "")
+			return
+		}
+
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			_ = upstreamConn.Close()
+			http.Error(w, "hijacking not supported", http.StatusInternalServerError)
+			return
+		}
+		clientConn, clientBuf, err := hj.Hijack()
+		if err != nil {
+			_ = upstreamConn.Close()
+			http.Error(w, "hijack failed", http.StatusInternalServerError)
+			return
+		}
+		_ = clientConn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		if err := writeWebSocketSwitchingResponse(clientConn, resp); err != nil {
+			_ = clientConn.Close()
+			_ = upstreamConn.Close()
+			return
+		}
+		_ = clientConn.SetWriteDeadline(time.Time{})
+		emit(http.StatusSwitchingProtocols, "")
+		pipeWebSocket(clientConn, clientBuf.Reader, upstreamConn, upstreamReader)
+		return
+	}
+
+	resp, err := p.upstream.RoundTrip(outReq)
+	if err != nil {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+		emit(http.StatusBadGateway, "upstream_error")
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Copy all response headers untouched.
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 	emit(resp.StatusCode, "")
 }
