@@ -17,6 +17,7 @@ import (
 	"syscall"
 
 	"github.com/Infisical/agent-vault/internal/isolation"
+	"github.com/Infisical/agent-vault/internal/openclawcompat"
 	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/Infisical/agent-vault/internal/store"
 	"github.com/charmbracelet/huh"
@@ -78,6 +79,9 @@ Example:
 	var iso IsolationMode
 	c.Flags().Var(&iso, "isolation", "Isolation mode: host (default) or container")
 
+	nc := NodeCompatAuto
+	c.Flags().Var(&nc, "node-compat", "Inject Node compatibility preload: auto (detect openclaw and similar), on, off")
+
 	c.Flags().String("address", "", "Agent Vault server address (defaults to session address)")
 	c.Flags().Int("ttl", 0, "Session TTL in seconds (300–604800; default: server default 24h)")
 
@@ -111,6 +115,20 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	}
 	if err := validateIsolationFlagConflicts(cmd, mode); err != nil {
 		return err
+	}
+
+	// 0b. Resolve --node-compat the same way as --isolation — flag wins
+	//     if explicitly set, AGENT_VAULT_NODE_COMPAT env var as fallback,
+	//     NodeCompatAuto as the final default. Done up front so the
+	//     container-mode warning below and the step 7.5 injection later
+	//     read the same resolved value.
+	ncMode := *cmd.Flags().Lookup("node-compat").Value.(*NodeCompatMode)
+	if !cmd.Flag("node-compat").Changed {
+		if v := os.Getenv("AGENT_VAULT_NODE_COMPAT"); v != "" {
+			if err := ncMode.Set(v); err != nil {
+				return fmt.Errorf("AGENT_VAULT_NODE_COMPAT: %w", err)
+			}
+		}
 	}
 
 	// 1. Resolve session: env-supplied token (agent mode) or on-disk admin
@@ -163,6 +181,17 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	}
 
 	if mode == IsolationContainer {
+		// The openclaw compat preload is host-mode-only today. The
+		// preload file lives at ~/.agent-vault/openclaw-compat.js on
+		// the host, and BuildContainerEnv doesn't bind-mount that
+		// directory or set NODE_OPTIONS inside the container. Auto
+		// mode silently skips here — that's fine, the operator didn't
+		// ask for it. But if --node-compat=on was passed explicitly,
+		// the operator believes they're getting the preload; warn
+		// them so they can switch to host isolation or accept the gap.
+		if ncMode == NodeCompatOn {
+			fmt.Fprintf(os.Stderr, "agent-vault: warning: --node-compat=on has no effect with --isolation=container; the openclaw compat preload is not injected into the container.\n")
+		}
 		return runContainer(cmd, args, token, addr, vault)
 	}
 
@@ -203,6 +232,22 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		maybeInstallSkills(name, dir)
 	}
 
+	// 7.5. Inject the OpenClaw Node compatibility preload when wrapping
+	//      a binary whose Node deps are known to mishandle TLS-wrapped
+	//      HTTPS_PROXY URLs and/or body-surface credentials (see
+	//      internal/openclawcompat). ncMode was resolved in step 0b
+	//      with --node-compat / AGENT_VAULT_NODE_COMPAT precedence.
+	//      Append-mode preserves operator-set NODE_OPTIONS so custom
+	//      preloads still load.
+	if nodeCompatEnabled(ncMode, args) {
+		preloadPath, err := openclawcompat.EnsurePreload()
+		if err != nil {
+			return fmt.Errorf("write openclaw compat preload: %w", err)
+		}
+		env = appendNodeOptionsRequire(env, preloadPath)
+		fmt.Fprintf(os.Stderr, "%s openclaw compat preload active (%s)\n", successText("agent-vault:"), preloadPath)
+	}
+
 	// 8. Confirm, then exec — replaces this process entirely so the child
 	//    (e.g. Claude Code) gets direct terminal control.
 	fmt.Fprintf(os.Stderr, "%s agent-vault connected. Starting %s...\n\n", successText("agent-vault:"), boldText(args[0]))
@@ -225,6 +270,12 @@ var knownAgents = []struct {
 	{[]string{"codex"}, "Codex", ".agents"},
 	{[]string{"hermes"}, "Hermes", ".hermes"},
 	{[]string{"opencode"}, "OpenCode", ".opencode"},
+	// OpenClaw reads user-level skills from ~/.agents/skills/ (same
+	// convention Codex uses), NOT ~/.openclaw/skills/ — that path
+	// is OpenClaw-owned but only loads symlinks under plugin-skills/,
+	// not arbitrary SKILL.md files. Pointing here keeps the skills
+	// discoverable by OpenClaw's loadSkillEntries.
+	{[]string{"openclaw"}, "OpenClaw", ".agents"},
 }
 
 // agentSkillDir returns the display name and skills base directory for a
