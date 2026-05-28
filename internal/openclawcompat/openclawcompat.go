@@ -100,4 +100,3 @@ func EnsurePreload() (string, error) {
 	renamed = true
 	return path, nil
 }
-

@@ -16,13 +16,16 @@
 //      Fix: disable axios's built-in proxy logic; Node's
 //      NODE_USE_ENV_PROXY=1 path via undici handles TLS proxies correctly.
 //
-//      Requires Node.js >= 22.7.0, the release where
-//      `NODE_USE_ENV_PROXY` was added and Node's http/https globalAgent
-//      started honoring HTTPS_PROXY natively. On older Node, axios with
-//      `proxy: false` falls through to a direct https.globalAgent
-//      connection, bypassing the broker entirely. We hard-fail at
-//      preload time below if the runtime is too old so the operator
-//      sees a clear error instead of silently-unbrokered traffic.
+//      Requires Node.js 22.21.0+, 24.5.0+, or 25+. Those are the
+//      releases where `node:http`/`node:https` globalAgent honor
+//      HTTPS_PROXY via NODE_USE_ENV_PROXY (per
+//      https://nodejs.org/learn/http/enterprise-network-configuration).
+//      Earlier 22.x and 24.x, all of 23.x, etc. lack the backport: on
+//      those runtimes axios with `proxy: false` falls through to a
+//      direct https.globalAgent connection, bypassing the broker
+//      entirely. We hard-fail at preload time below if the runtime
+//      is too old so the operator sees a clear error instead of
+//      silently-unbrokered traffic.
 //
 //   2. @slack/web-api puts the bot token in the form body when called
 //      with a method-arg shape (`client.auth.test({token})`), which is
@@ -47,18 +50,21 @@
 
 'use strict';
 
-// Node.js runtime guard (see note (1) above). NODE_USE_ENV_PROXY landed
-// in Node 22.7.0; without it, disabling axios's proxy logic silently
-// causes a direct upstream connection that bypasses Agent Vault. Fail
-// loudly at preload time so the operator can upgrade Node (or set
+// Node.js runtime guard (see note (1) above). NODE_USE_ENV_PROXY for
+// node:http/node:https landed in 22.21.0 and 24.5.0; on earlier 22.x,
+// any 23.x, and 24.0-24.4, disabling axios's proxy logic causes a
+// direct upstream connection that bypasses Agent Vault. Fail loudly at
+// preload time so the operator can upgrade Node (or set
 // --node-compat=off and accept that brokering won't apply to axios).
 (function checkNodeVersion() {
   const v = (process.versions && process.versions.node) || '0.0.0';
   const [maj, min] = v.split('.').map((s) => parseInt(s, 10));
-  if (Number.isNaN(maj) || Number.isNaN(min) || maj < 22 || (maj === 22 && min < 7)) {
+  const ok = (maj === 22 && min >= 21) || (maj === 24 && min >= 5) || maj >= 25;
+  if (Number.isNaN(maj) || Number.isNaN(min) || !ok) {
     throw new Error(
-      'agent-vault openclaw compat: requires Node.js >= 22.7.0 ' +
-      '(NODE_USE_ENV_PROXY support). Current runtime: v' + v + '. ' +
+      'agent-vault openclaw compat: requires Node.js with NODE_USE_ENV_PROXY ' +
+      'support for node:http/node:https (22.21.0+, 24.5.0+, or 25+). ' +
+      'Current runtime: v' + v + '. ' +
       'Upgrade Node, or pass --node-compat=off to skip the preload ' +
       '(note: axios outbound calls will then bypass the broker).'
     );

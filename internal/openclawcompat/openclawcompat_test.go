@@ -114,4 +114,3 @@ func TestPreloadContainsAxiosHook(t *testing.T) {
 		t.Error("preload no longer hooks Module._load; the in-process patch is gone")
 	}
 }
-
