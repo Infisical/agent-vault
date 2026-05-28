@@ -16,13 +16,13 @@
 //      Fix: disable axios's built-in proxy logic; Node's
 //      NODE_USE_ENV_PROXY=1 path via undici handles TLS proxies correctly.
 //
-//      Requires Node.js >= 22.7.0 — that's when `NODE_USE_ENV_PROXY`
-//      was added and Node's http/https globalAgent started honoring
-//      HTTPS_PROXY natively. On older Node, axios with `proxy: false`
-//      falls through to a direct https.globalAgent connection,
-//      bypassing the broker entirely. We hard-fail at preload time
-//      below if the runtime is too old so the operator sees a clear
-//      error instead of silently-unbrokered traffic.
+//      Requires Node.js >= 22.7.0, the release where
+//      `NODE_USE_ENV_PROXY` was added and Node's http/https globalAgent
+//      started honoring HTTPS_PROXY natively. On older Node, axios with
+//      `proxy: false` falls through to a direct https.globalAgent
+//      connection, bypassing the broker entirely. We hard-fail at
+//      preload time below if the runtime is too old so the operator
+//      sees a clear error instead of silently-unbrokered traffic.
 //
 //   2. @slack/web-api puts the bot token in the form body when called
 //      with a method-arg shape (`client.auth.test({token})`), which is
@@ -47,7 +47,7 @@
 
 'use strict';
 
-// Node.js runtime guard — see note (1) above. NODE_USE_ENV_PROXY landed
+// Node.js runtime guard (see note (1) above). NODE_USE_ENV_PROXY landed
 // in Node 22.7.0; without it, disabling axios's proxy logic silently
 // causes a direct upstream connection that bypasses Agent Vault. Fail
 // loudly at preload time so the operator can upgrade Node (or set
