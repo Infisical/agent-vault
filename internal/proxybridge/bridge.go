@@ -24,7 +24,13 @@ import (
 	"io"
 	"net"
 	"os"
+	"sync"
+	"time"
 )
+
+// dialTimeout bounds the TCP connect + TLS handshake to the broker so an
+// unreachable or hung upstream can't wedge a handler goroutine forever.
+const dialTimeout = 10 * time.Second
 
 // Bridge accepts plain TCP on loopback and splices each connection to a
 // TLS upstream. Callers point the child's HTTPS_PROXY/HTTP_PROXY at
@@ -33,13 +39,20 @@ type Bridge struct {
 	listener net.Listener
 	upstream string
 	tlsCfg   *tls.Config
+	logw     io.Writer
+	logOnce  sync.Once
 }
 
 // Start binds 127.0.0.1:0 and returns a Bridge running its accept loop in
 // a goroutine. upstreamHostPort is the host:port of agent-vault's MITM
 // listener; caPath is a PEM file the bridge trusts when dialing the
-// upstream; sniHost is the ServerName used for the TLS handshake.
-func Start(ctx context.Context, upstreamHostPort, caPath, sniHost string) (*Bridge, error) {
+// upstream; sniHost is the ServerName used for the TLS handshake. logw
+// receives a one-time diagnostic if the upstream dial/handshake fails
+// (pass nil to discard).
+func Start(ctx context.Context, upstreamHostPort, caPath, sniHost string, logw io.Writer) (*Bridge, error) {
+	if logw == nil {
+		logw = io.Discard
+	}
 	pem, err := os.ReadFile(caPath) //nolint:gosec // caPath comes from the same trusted source as the existing CA write path
 	if err != nil {
 		return nil, fmt.Errorf("read CA %s: %w", caPath, err)
@@ -60,6 +73,7 @@ func Start(ctx context.Context, upstreamHostPort, caPath, sniHost string) (*Brid
 			ServerName: sniHost,
 			MinVersion: tls.VersionTLS12,
 		},
+		logw: logw,
 	}
 	go b.acceptLoop(ctx)
 	return b, nil
@@ -85,9 +99,18 @@ func (b *Bridge) acceptLoop(ctx context.Context) {
 func (b *Bridge) handle(ctx context.Context, client net.Conn) {
 	defer func() { _ = client.Close() }()
 
+	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+	defer cancel()
 	d := &tls.Dialer{Config: b.tlsCfg}
-	upstream, err := d.DialContext(ctx, "tcp", b.upstream)
+	upstream, err := d.DialContext(dialCtx, "tcp", b.upstream)
 	if err != nil {
+		// A down broker or a cert/SNI mismatch fails every request
+		// identically, so log only the first to avoid flooding while
+		// still breaking the silence (e.g. a leaf cert missing the
+		// broker's hostname SAN surfaces here).
+		b.logOnce.Do(func() {
+			fmt.Fprintf(b.logw, "agent-vault: loopback bridge could not reach the broker at %s: %v\n", b.upstream, err)
+		})
 		return
 	}
 	defer func() { _ = upstream.Close() }()

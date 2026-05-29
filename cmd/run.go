@@ -241,30 +241,33 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		mitmHost := resolveMITMHost(addr)
 		mitmHostPort := net.JoinHostPort(mitmHost, strconv.Itoa(mitmPort))
 
-		bridge, err = proxybridge.Start(ctx, mitmHostPort, caPath, mitmHost)
+		bridge, err = proxybridge.Start(ctx, mitmHostPort, caPath, mitmHost, os.Stderr)
 		if err != nil {
 			return fmt.Errorf("start TLS bridge: %w", err)
 		}
 		defer func() { _ = bridge.Close() }()
 
-		proxyURL := (&url.URL{
-			Scheme: "http",
-			User:   url.UserPassword(token, vault),
-			Host:   bridge.Addr(),
-		}).String()
+		bridgeHost, bridgePortStr, err := net.SplitHostPort(bridge.Addr())
+		if err != nil {
+			return fmt.Errorf("parse bridge addr %q: %w", bridge.Addr(), err)
+		}
+		bridgePort, err := strconv.Atoi(bridgePortStr)
+		if err != nil {
+			return fmt.Errorf("parse bridge port %q: %w", bridgePortStr, err)
+		}
+		// MITMTLS:false — the child speaks plain HTTP to the loopback
+		// bridge, which does the TLS hop to the broker itself. Routed
+		// through BuildProxyEnv so NO_PROXY/CA-trust can't drift from
+		// the non-bridge path.
 		env = stripEnvKeys(env, mitmInjectedKeys)
-		env = append(env,
-			"HTTPS_PROXY="+proxyURL,
-			"HTTP_PROXY="+proxyURL,
-			"NO_PROXY=localhost",
-			"NODE_USE_ENV_PROXY=1",
-			"SSL_CERT_FILE="+caPath,
-			"NODE_EXTRA_CA_CERTS="+caPath,
-			"REQUESTS_CA_BUNDLE="+caPath,
-			"CURL_CA_BUNDLE="+caPath,
-			"GIT_SSL_CAINFO="+caPath,
-			"DENO_CERT="+caPath,
-		)
+		env = append(env, isolation.BuildProxyEnv(isolation.ProxyEnvParams{
+			Host:    bridgeHost,
+			Port:    bridgePort,
+			Token:   token,
+			Vault:   vault,
+			CAPath:  caPath,
+			MITMTLS: false,
+		})...)
 		fmt.Fprintf(os.Stderr, "%s routing through loopback TLS bridge at %s\n", successText("agent-vault:"), bridge.Addr())
 	}
 
@@ -275,11 +278,9 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	}
 
 	// 8. Launch the child. When the TLS bridge is active we can't use
-	//    syscall.Exec because it would replace this process and kill the
-	//    bridge goroutine. Use os/exec instead, with stdin/stdout/stderr
-	//    inherited, signal forwarding, and exit-code propagation so the
-	//    UX matches an exec wrapper as closely as possible. When the
-	//    bridge is disabled we keep the original syscall.Exec path so
+	//    syscall.Exec — it would replace this process and kill the bridge
+	//    goroutine — so we fork+wait via os/exec (runBridgedChild). When
+	//    the bridge is disabled we keep the original syscall.Exec path so
 	//    existing agents (Claude, Cursor, Hermes, OpenCode) see zero
 	//    behavior change.
 	fmt.Fprintf(os.Stderr, "%s agent-vault connected. Starting %s...\n\n", successText("agent-vault:"), boldText(args[0]))
@@ -289,7 +290,7 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		// rationale for the G204 exclusion in .golangci.yml.
 		return syscall.Exec(binary, args, env) //nolint:gosec
 	}
-	return runChildWithSignals(binary, args, env)
+	return runBridgedChild(cmd, binary, args, env)
 }
 
 // resolveTLSBridgeMode reads --tls-bridge, falling back to
@@ -305,43 +306,44 @@ func resolveTLSBridgeMode(cmd *cobra.Command) string {
 	return ""
 }
 
-// runChildWithSignals is the non-exec launch path used when the TLS
-// bridge is active. The bridge runs in a goroutine in this process, so
-// we can't replace the process via syscall.Exec — we have to start the
-// child, forward signals to it, wait for it to exit, and propagate its
-// exit code.
-func runChildWithSignals(binary string, args, env []string) error {
+// runBridgedChild is the launch path used when the loopback TLS bridge is
+// active. The bridge lives in this process's goroutines, so we fork+wait
+// via os/exec instead of syscall.Exec (which would replace the image and
+// kill the bridge). It mirrors runContainer: the child shares our
+// foreground process group, so the kernel delivers TTY signals
+// (SIGINT/SIGQUIT) to it directly; the parent drains its own copy instead
+// of re-forwarding (which would double-deliver) and stays alive so the
+// bridge survives the call. A non-zero exit returns *ExitCodeError so
+// deferred cleanup runs before Execute() exits with the child's status.
+func runBridgedChild(cmd *cobra.Command, binary string, args, env []string) error {
 	// gosec G204: same rationale as the syscall.Exec branch.
 	child := exec.Command(binary, args[1:]...) //nolint:gosec
+	child.Args = args // argv[0] = args[0], matching the syscall.Exec path
 	child.Env = env
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
-	if err := child.Start(); err != nil {
-		return fmt.Errorf("start %s: %w", binary, err)
-	}
 
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigs)
 	go func() {
-		for s := range sigs {
-			if child.Process != nil {
-				_ = child.Process.Signal(s)
-			}
+		for range sigs {
 		}
 	}()
 
-	err := child.Wait()
-	signal.Stop(sigs)
-	close(sigs)
-
-	if err == nil {
-		return nil
+	if err := child.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			// The child already wrote its own output; silence cobra's
+			// error + usage block so it isn't appended as noise.
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+			return &ExitCodeError{Code: exitErr.ExitCode()}
+		}
+		return fmt.Errorf("run %s: %w", binary, err)
 	}
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		os.Exit(exitErr.ExitCode())
-	}
-	return err
+	return nil
 }
 
 // knownAgents maps CLI binary base-names to the (agentName, skillsDir)

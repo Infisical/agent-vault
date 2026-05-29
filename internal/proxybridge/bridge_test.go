@@ -34,7 +34,7 @@ func TestBridgeSplicesBytesBidirectionally(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bridge, err := Start(ctx, upstreamAddr, caPath, "localhost")
+	bridge, err := Start(ctx, upstreamAddr, caPath, "localhost", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestBridgeRejectsTrustFailureFromBadCA(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bridge, err := Start(ctx, upstreamAddr, caPath, "localhost")
+	bridge, err := Start(ctx, upstreamAddr, caPath, "localhost", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestBridgeRejectsMissingCAFile(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	_, err := Start(ctx, "127.0.0.1:1", "/nonexistent/path/to/ca.pem", "localhost")
+	_, err := Start(ctx, "127.0.0.1:1", "/nonexistent/path/to/ca.pem", "localhost", nil)
 	if err == nil {
 		t.Fatal("Start with missing CA returned nil error, want failure")
 	}
@@ -148,7 +148,7 @@ func TestBridgeRejectsEmptyCAFile(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	_, err := Start(ctx, "127.0.0.1:1", caPath, "localhost")
+	_, err := Start(ctx, "127.0.0.1:1", caPath, "localhost", nil)
 	if err == nil {
 		t.Fatal("Start with empty CA returned nil error, want failure")
 	}
@@ -165,7 +165,7 @@ func TestBridgeCloseStopsAcceptingNewConnections(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bridge, err := Start(ctx, upstreamAddr, caPath, "localhost")
+	bridge, err := Start(ctx, upstreamAddr, caPath, "localhost", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestBridgeBindsLoopbackOnly(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bridge, err := Start(ctx, upstreamAddr, caPath, "localhost")
+	bridge, err := Start(ctx, upstreamAddr, caPath, "localhost", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
