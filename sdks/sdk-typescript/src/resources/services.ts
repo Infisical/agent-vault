@@ -113,19 +113,18 @@ export interface ServiceInput {
 /**
  * Read shape for a vault service.
  *
- * Mirrors {@link ServiceInput} symmetrically: `host` carries the joined
- * inline form on reads (`slack.com/api/*` or `localhost:8080/api/*`) just as
- * it does on writes, so callers see the same single-field matcher pattern
- * they sent. Composed (not extended) from `ServiceInput` so a read value
- * can't be passed to a write method without an explicit conversion.
+ * `host` carries the joined inline form on reads (`slack.com/api/*` or
+ * `localhost:8080/api/*`) — the single matcher field. Port is embedded
+ * inline; there is no separate `port` field on reads even when the write
+ * used `ServiceInput.port`. Composed (not extended) from `ServiceInput`
+ * so a read value can't be passed to a write method without an explicit
+ * conversion.
  */
 export interface Service {
   /** Service name (slug). Server populates this on reads. */
   name?: string;
   /** Host pattern. Joined inline form: `api.stripe.com`, `*.github.com`, `slack.com/api/*`, or `localhost:8080/api/*`. */
   host: string;
-  /** Port number for matching (e.g. "8080"). Omitted or empty means match any port. */
-  port?: string;
   /** Whether the service is active. Omitted/undefined is treated as enabled. */
   enabled?: boolean;
   /** Authentication configuration. */

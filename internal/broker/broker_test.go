@@ -127,10 +127,12 @@ func TestMatchServiceEmptyPathIsCatchAll(t *testing.T) {
 	}
 }
 
+// TestMatchServicePortStripped pins matchHostPattern's defensive
+// port-stripping for legacy stored services that carry the port inline
+// in Host (e.g. "api.stripe.com:443" with no separate Port field).
 func TestMatchServicePortStripped(t *testing.T) {
-	// Service hosts with a port are still matched by bare hostname.
 	services := []Service{
-		{Name: "legacy", Host: "api.stripe.com", Port: "443", Auth: Auth{Type: "bearer", Token: "T"}},
+		{Name: "legacy", Host: "api.stripe.com:443", Auth: Auth{Type: "bearer", Token: "T"}},
 	}
 	r, _ := MatchService("api.stripe.com", "443", "/v1/charges", services)
 	if r == nil {
@@ -198,8 +200,7 @@ func TestMatchServicePortBeatsNoPort(t *testing.T) {
 }
 
 // TestMatchServiceWildcardHostWithPort pins that wildcard host matching
-// still works with port — *.github.com:8080 matches api.github.com:8080
-// but not api.github.com:443.
+// composes with port — wildcard host + port matches only on that port.
 func TestMatchServiceWildcardHostWithPort(t *testing.T) {
 	services := []Service{
 		{Name: "wildcard-port", Host: "*.github.com", Port: "8080", Auth: Auth{Type: "bearer", Token: "T"}},
@@ -263,8 +264,7 @@ func TestParsePortRejectsInvalid(t *testing.T) {
 }
 
 // TestValidatePersistsNormalizedPort pins that Validate writes the
-// canonical port form back to cfg.Services so persisted configs stay
-// canonical (regression: loop-variable mutation that didn't persist).
+// canonical port form back to cfg.Services.
 func TestValidatePersistsNormalizedPort(t *testing.T) {
 	cfg := &Config{
 		Vault: "default",
@@ -294,6 +294,7 @@ func TestSplitInlineHostWithPort(t *testing.T) {
 		{"host/path no port", "api.example.com/api/*", "", "api.example.com", "", "/api/*"},
 		{"host with explicit path", "api.example.com", "/api/*", "api.example.com", "", "/api/*"},
 		{"host:port with explicit path", "api.example.com:8080", "/api/*", "api.example.com", "8080", "/api/*"},
+		{"host:port leading zero canonicalized", "localhost:0080/api/*", "", "localhost", "80", "/api/*"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -322,6 +323,21 @@ func TestValidateConfigPortValidation(t *testing.T) {
 	}
 	if err := Validate(cfg); err == nil {
 		t.Fatal("expected Validate to reject port 99999")
+	}
+}
+
+// TestValidateRejectsInlinePortWithPortField pins that supplying a port
+// both inline in Host and via the Port field is rejected — accepting it
+// produces a bracketed "[host:port]:port" pattern via MarshalJSON.
+func TestValidateRejectsInlinePortWithPortField(t *testing.T) {
+	cfg := &Config{
+		Vault: "default",
+		Services: []Service{
+			{Name: "svc", Host: "localhost:8080", Port: "9090", Auth: Auth{Type: "bearer", Token: "T"}},
+		},
+	}
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected Validate to reject inline port + Port field")
 	}
 }
 

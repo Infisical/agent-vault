@@ -102,10 +102,9 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 			return nil, fmt.Errorf("brokercore: parsing broker services: %w", err)
 		}
 	}
-	// MarshalJSON persists Host in joined-inline form; the matcher
-	// requires Host without "/", so split before matching. Skip when
-	// Port is already set (in-memory construction) so we don't overwrite
-	// a pre-set value with one re-parsed from a non-inline host.
+	// MarshalJSON persists Host in joined-inline form; split back to
+	// (host, port, path) for matching. Skip if Port is already set to
+	// preserve in-memory constructions.
 	for i := range services {
 		if services[i].Port == "" {
 			services[i].Host, services[i].Port, services[i].Path = broker.SplitInlineHostWithPort(services[i].Host, services[i].Path)

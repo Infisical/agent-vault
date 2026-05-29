@@ -102,14 +102,12 @@ export interface WireSubstitution {
   in?: string[];
 }
 
-/** @internal Wire format for a service entry. */
+/** @internal Wire format for a service entry (read shape). Port is embedded inline in `host` (e.g. `localhost:8080/api/*`). */
 export interface WireService {
   /** Canonical service name (slug). Required on write — pick deliberately; the server does not derive it from `host`. */
   name?: string;
-  /** Host pattern (joined inline form: `slack.com/api/*` or `localhost:8080/api/*`). Single matcher field on the wire. Port is included when set. */
+  /** Host pattern (joined inline form: `slack.com/api/*` or `localhost:8080/api/*`). Single matcher field on the wire. */
   host: string;
-  /** Port number for matching (e.g. "8080"). Empty string or omitted means match any port. */
-  port?: string;
   enabled?: boolean;
   auth: WireServiceAuth;
   substitutions?: WireSubstitution[];

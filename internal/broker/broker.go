@@ -354,8 +354,13 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("service %d: host %q must not contain %q after ingest (entry should have been split into host + path)", i, s.Host, "/")
 		}
 		// Strip port before host validation so "merlin.home:3000" is accepted.
+		// Reject inline-port + separate Port to prevent MarshalJSON producing
+		// a bracketed "[host:port1]:port2" pattern.
 		valHost := s.Host
-		if h, _, err := net.SplitHostPort(valHost); err == nil {
+		if h, _, err := net.SplitHostPort(s.Host); err == nil {
+			if s.Port != "" {
+				return fmt.Errorf("service %d: host %q has embedded port; remove it from host or omit the port field", i, s.Host)
+			}
 			valHost = h
 		}
 		if err := ValidateHost(valHost); err != nil {
@@ -547,7 +552,6 @@ func (s MatchScore) Better(other MatchScore) bool {
 	if s.PathLiteralLen != other.PathLiteralLen {
 		return s.PathLiteralLen > other.PathLiteralLen
 	}
-	// Port-matched service beats non-port-matched when host+path specificity is equal.
 	if s.PortMatch != other.PortMatch {
 		return s.PortMatch
 	}
@@ -571,12 +575,9 @@ const (
 )
 
 // MatchService returns the most specific service matching (host, port, path).
-// Selection: (1) exact host beats wildcard, even if wildcard has a longer
-// path; (2) longest literal path prefix wins within a host tier; (3) port-
-// matched service beats non-port-matched when host+path specificity is equal;
-// (4) earlier declaration order breaks ties. host and service Host patterns
-// are both port-stripped. See matchPort for port-matching semantics. The
-// MatchScore is meaningful only when the returned *Service is non-nil.
+// Ordering is host tier > path-prefix length > port match > declaration order
+// (see MatchScore.Better). The MatchScore is meaningful only when the returned
+// *Service is non-nil.
 func MatchService(host, port, path string, services []Service) (*Service, MatchScore) {
 	var best *Service
 	var bestScore MatchScore
@@ -932,15 +933,18 @@ func SplitInlineHost(host, path string) (string, string) {
 
 // SplitInlineHostWithPort extends SplitInlineHost by also extracting an
 // embedded port from the host portion, so `localhost:8080/api/*` returns
-// host=`localhost`, port=`8080`, path=`/api/*`.
+// host=`localhost`, port=`8080`, path=`/api/*`. Port is canonicalized via
+// ParsePort to match the form Validate writes for the separate Port field.
 func SplitInlineHostWithPort(host, path string) (string, string, string) {
 	host, path = SplitInlineHost(host, path)
 	if h, p, err := net.SplitHostPort(host); err == nil {
+		if canon, perr := ParsePort(p); perr == nil {
+			p = canon
+		}
 		return h, p, path
 	}
 	return host, "", path
 }
-
 
 // resolveHeaders renders {{ credential_name }} placeholders in header values
 // by calling getCredential for each referenced name. Returns a new map with

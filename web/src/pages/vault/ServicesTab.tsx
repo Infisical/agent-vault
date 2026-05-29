@@ -25,7 +25,6 @@ import { apiFetch, apiRequest } from "../../lib/api";
 interface Service {
   name: string;
   host: string;
-  port?: string;
   enabled?: boolean;
   auth: Auth;
   substitutions?: Substitution[];
