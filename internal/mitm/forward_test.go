@@ -656,3 +656,126 @@ func TestMITMForwardIPv6PreservesHostHeader(t *testing.T) {
 		t.Errorf("upstream Host = %q, want %q (IPv6 brackets must round-trip)", sawHost, wantHost)
 	}
 }
+
+// TestMITMForwardPassthroughWebSocketHandshakeNotDuplicated: the
+// passthrough WS path must forward each handshake header exactly
+// once. RFC 6455 §4.1 treats Sec-WebSocket-Key et al. as singular and
+// strict upstreams reject duplicates; r.Header.Get returns only the
+// first value, so this test counts via Values().
+func TestMITMForwardPassthroughWebSocketHandshakeNotDuplicated(t *testing.T) {
+	var sawKey, sawOrigin, sawVersion []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawKey = append([]string{}, r.Header.Values("Sec-WebSocket-Key")...)
+		sawOrigin = append([]string{}, r.Header.Values("Origin")...)
+		sawVersion = append([]string{}, r.Header.Values("Sec-WebSocket-Version")...)
+
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "no hijacker", http.StatusInternalServerError)
+			return
+		}
+		conn, buf, err := hijacker.Hijack()
+		if err != nil {
+			t.Errorf("upstream hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		acc := websocketAccept(r.Header.Get("Sec-WebSocket-Key"))
+		fmt.Fprintf(buf,
+			"HTTP/1.1 101 Switching Protocols\r\n"+
+				"Upgrade: websocket\r\n"+
+				"Connection: Upgrade\r\n"+
+				"Sec-WebSocket-Accept: %s\r\n\r\n",
+			acc)
+		_ = buf.Flush()
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{Passthrough: true}},
+	}}
+	proxyURL, clientRoots, _ := setupProxy(t, sr, cp)
+
+	conn := dialProxyTLS(t, proxyURL, clientRoots)
+	defer conn.Close()
+
+	keyBytes := make([]byte, 16)
+	for i := range keyBytes {
+		keyBytes[i] = byte(i + 1)
+	}
+	clientKey := base64.StdEncoding.EncodeToString(keyBytes)
+	auth := base64.StdEncoding.EncodeToString([]byte("av_sess_ok:"))
+	fmt.Fprintf(conn,
+		"GET %s/ws HTTP/1.1\r\n"+
+			"Host: %s\r\n"+
+			"Proxy-Authorization: Basic %s\r\n"+
+			"Upgrade: websocket\r\n"+
+			"Connection: Upgrade\r\n"+
+			"Origin: https://client.example\r\n"+
+			"Sec-WebSocket-Key: %s\r\n"+
+			"Sec-WebSocket-Version: 13\r\n\r\n",
+		upstream.URL, upstreamHost, auth, clientKey)
+
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read switching response: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", resp.StatusCode)
+	}
+
+	if len(sawKey) != 1 {
+		t.Errorf("upstream Sec-WebSocket-Key values = %d, want 1 (got %v)", len(sawKey), sawKey)
+	}
+	if len(sawOrigin) != 1 {
+		t.Errorf("upstream Origin values = %d, want 1 (got %v)", len(sawOrigin), sawOrigin)
+	}
+	if len(sawVersion) != 1 {
+		t.Errorf("upstream Sec-WebSocket-Version values = %d, want 1 (got %v)", len(sawVersion), sawVersion)
+	}
+}
+
+// TestMITMForwardPassthroughStripsHopByHopResponseHeaders: passthrough
+// must strip hop-by-hop response headers (RFC 7230 §6.1) while
+// preserving end-to-end headers including Set-Cookie (left intact so
+// arbitrary browsing through the proxy keeps working).
+func TestMITMForwardPassthroughStripsHopByHopResponseHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Proxy-Authenticate", "Basic realm=upstream") // hop-by-hop
+		w.Header().Set("Set-Cookie", "sid=abc; Path=/")              // end-to-end, intentionally forwarded
+		w.Header().Set("X-Custom", "keep")                           // end-to-end
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{Passthrough: true}},
+	}}
+	proxyURL, clientRoots, _ := setupProxy(t, sr, cp)
+
+	client := newTrustingClient(proxyURL, url.User("av_sess_ok"), clientRoots)
+	resp, err := client.Get(upstream.URL + "/x")
+	if err != nil {
+		t.Fatalf("client.Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("Proxy-Authenticate"); got != "" {
+		t.Errorf("client saw Proxy-Authenticate = %q; must be stripped (hop-by-hop)", got)
+	}
+	if got := resp.Header.Get("Set-Cookie"); got == "" {
+		t.Errorf("client Set-Cookie = empty; passthrough must forward it untouched")
+	}
+	if got := resp.Header.Get("X-Custom"); got != "keep" {
+		t.Errorf("client X-Custom = %q, want %q (end-to-end must pass)", got, "keep")
+	}
+}

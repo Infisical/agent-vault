@@ -31,37 +31,23 @@ func actorFromScope(scope *brokercore.ProxyScope) (string, string) {
 }
 
 // copyRequestHeaders copies headers from src to dst, skipping hop-by-hop
-// and broker-scoped headers. Used by the pass-through path so the proxy
-// stays well-behaved without modifying the request content.
-func copyRequestHeaders(src, dst http.Header) {
-	for k, vv := range src {
-		ck := http.CanonicalHeaderKey(k)
-		if brokercore.IsHopByHop(ck) || brokercore.IsBrokerScopedRequestHeader(ck) {
-			continue
-		}
-		for _, v := range vv {
-			dst.Add(ck, v)
-		}
-	}
+// (static set plus names listed in the client's Connection field per
+// RFC 7230 §6.1), broker-scoped headers, and any names in extraStrip.
+// Used by the pass-through path; delegates to ApplyInjection with an
+// empty InjectResult so the strip rules stay single-sourced.
+func copyRequestHeaders(src, dst http.Header, extraStrip ...string) {
+	brokercore.ApplyInjection(src, dst, &brokercore.InjectResult{}, extraStrip...)
 }
 
-// copyRequestHeadersWithConnectionStrip copies headers from src to dst,
-// stripping hop-by-hop (static + headers named in the Connection field),
-// and broker-scoped headers. Used by the pass-through path so that
-// Connection: X-Custom,close is respected (RFC 7230 §6.1).
-func copyRequestHeadersWithConnectionStrip(src, dst http.Header) {
-	// Collect headers named in Connection.
-	extraStrip := make(map[string]bool)
-	for _, c := range src.Values("Connection") {
-		for _, f := range strings.Split(c, ",") {
-			if f = strings.TrimSpace(f); f != "" {
-				extraStrip[http.CanonicalHeaderKey(f)] = true
-			}
-		}
-	}
+// copyResponseHeaders copies upstream response headers to the client,
+// stripping hop-by-hop headers per RFC 7230 §6.1. When stripSetCookie
+// is true, Set-Cookie is also dropped so the upstream can't plant
+// cookies in the agent's jar; passthrough leaves Set-Cookie intact so
+// arbitrary browsing through the proxy still works.
+func copyResponseHeaders(src, dst http.Header, stripSetCookie bool) {
 	for k, vv := range src {
 		ck := http.CanonicalHeaderKey(k)
-		if brokercore.IsHopByHop(ck) || brokercore.IsBrokerScopedRequestHeader(ck) || extraStrip[ck] {
+		if brokercore.IsHopByHop(ck) || (stripSetCookie && ck == "Set-Cookie") {
 			continue
 		}
 		for _, v := range vv {
@@ -341,24 +327,19 @@ func (p *Proxy) forwardRequest(
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	for k, vv := range resp.Header {
-		if brokercore.ShouldStripResponseHeader(k) {
-			continue
-		}
-		for _, v := range vv {
-			w.Header().Add(k, v)
-		}
-	}
+	copyResponseHeaders(resp.Header, w.Header(), true)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, io.LimitReader(resp.Body, brokercore.MaxResponseBytes))
 	emit(resp.StatusCode, "")
 }
 
 // forwardPassthrough forwards the request to the target upstream with
-// no credential injection, no substitution, no body limit, no
-// response body limit, and no logging. Hop-by-hop and broker-scoped
-// headers are still stripped so the proxy stays well-behaved. This
-// is the fast path for services not configured in the vault.
+// no credential injection, no substitution, no request body limit,
+// and no response body limit. Hop-by-hop (both directions) and
+// broker-scoped request headers are stripped per RFC 7230 §6.1;
+// Set-Cookie is left intact so arbitrary browsing through the proxy
+// keeps working. Audit rows are still emitted via emit. This is the
+// fast path for hosts not configured in the vault.
 func (p *Proxy) forwardPassthrough(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -376,13 +357,14 @@ func (p *Proxy) forwardPassthrough(
 
 	wsUpgrade := isWebSocketUpgrade(r)
 	if wsUpgrade {
-		// Copy WebSocket handshake headers first so they survive the
-		// hop-by-hop strip below.
+		// Pass handshake names as extraStrip so Origin/Sec-* aren't
+		// added twice; strict WS upstreams reject duplicate
+		// Sec-WebSocket-Key (RFC 6455 §4.1).
 		copyWebSocketHandshakeHeaders(r.Header, outReq.Header)
+		copyRequestHeaders(r.Header, outReq.Header, websocketHandshakeHeaderNames...)
+	} else {
+		copyRequestHeaders(r.Header, outReq.Header)
 	}
-	// Strip hop-by-hop (static + Connection-named) and broker-scoped
-	// headers so the proxy stays well-behaved. Copy everything else.
-	copyRequestHeadersWithConnectionStrip(r.Header, outReq.Header)
 
 	// WebSocket: open a raw connection, write the request, read the
 	// response, then pipe frames. RoundTrip can't handle the protocol
@@ -401,11 +383,7 @@ func (p *Proxy) forwardPassthrough(
 		}()
 		if resp.StatusCode != http.StatusSwitchingProtocols {
 			defer func() { _ = resp.Body.Close() }()
-			for k, vv := range resp.Header {
-				for _, v := range vv {
-					w.Header().Add(k, v)
-				}
-			}
+			copyResponseHeaders(resp.Header, w.Header(), false)
 			w.WriteHeader(resp.StatusCode)
 			_, _ = io.Copy(w, resp.Body)
 			emit(resp.StatusCode, "")
@@ -444,12 +422,9 @@ func (p *Proxy) forwardPassthrough(
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// Copy all response headers untouched.
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			w.Header().Add(k, v)
-		}
-	}
+	// Strip hop-by-hop response headers per RFC 7230 §6.1; leave
+	// Set-Cookie intact so arbitrary browsing through the proxy works.
+	copyResponseHeaders(resp.Header, w.Header(), false)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
 	emit(resp.StatusCode, "")

@@ -68,14 +68,7 @@ func (p *Proxy) forwardWebSocket(
 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		defer func() { _ = resp.Body.Close() }()
-		for k, vv := range resp.Header {
-			if brokercore.ShouldStripResponseHeader(k) {
-				continue
-			}
-			for _, v := range vv {
-				w.Header().Add(k, v)
-			}
-		}
+		copyResponseHeaders(resp.Header, w.Header(), true)
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, io.LimitReader(resp.Body, brokercore.MaxResponseBytes))
 		emit(resp.StatusCode, "")
