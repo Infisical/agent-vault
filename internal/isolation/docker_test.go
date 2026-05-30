@@ -17,7 +17,7 @@ func baseConfig(t *testing.T) Config {
 		WorkDir:     t.TempDir(),
 		HostCAPath:  filepath.Join(t.TempDir(), "ca.pem"),
 		NetworkName: "agent-vault-abcd1234ef567890",
-		Env:         []string{"HTTPS_PROXY=https://tok:v@host.docker.internal:14322", "VAULT_MITM_PORT=14322"},
+		Env:         []string{"HTTPS_PROXY=http://tok:v@host.docker.internal:14322", "VAULT_MITM_PORT=14322"},
 		CommandArgs: []string{"claude", "--version"},
 	}
 }
