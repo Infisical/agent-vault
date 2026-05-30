@@ -101,7 +101,7 @@ describe("SessionsResource", () => {
       expect(session.address).toBe("http://my-server:14321");
 
       expect(session.containerConfig).not.toBeNull();
-      expect(session.containerConfig!.env.HTTPS_PROXY).toMatch(/^https:\/\//);
+      expect(session.containerConfig!.env.HTTPS_PROXY).toMatch(/^http:\/\//);
       expect(session.containerConfig!.env.HTTPS_PROXY).toContain("scoped-token-123");
       expect(session.containerConfig!.env.HTTPS_PROXY).toContain("test");
       expect(session.containerConfig!.env.HTTPS_PROXY).toContain("14322");
