@@ -19,7 +19,7 @@ describe("SessionsResource", () => {
         },
         "/v1/mitm/ca.pem": {
           body: FAKE_PEM,
-          headers: { "X-MITM-Port": "14322", "X-MITM-TLS": "1" },
+          headers: { "X-MITM-Port": "14322", },
         },
       });
 
@@ -85,7 +85,7 @@ describe("SessionsResource", () => {
         },
         "/v1/mitm/ca.pem": {
           body: FAKE_PEM,
-          headers: { "X-MITM-Port": "14322", "X-MITM-TLS": "1" },
+          headers: { "X-MITM-Port": "14322", },
         },
       });
 
@@ -147,7 +147,7 @@ describe("SessionsResource", () => {
         },
         "/v1/mitm/ca.pem": {
           body: FAKE_PEM,
-          headers: { "X-MITM-Port": "9999", "X-MITM-TLS": "1" },
+          headers: { "X-MITM-Port": "9999", },
         },
       });
 
@@ -223,8 +223,8 @@ describe("buildProxyEnv()", () => {
   it("builds complete env with cert path variables", () => {
     const config: ContainerConfig = {
       env: {
-        HTTPS_PROXY: "https://tok:vault@127.0.0.1:14322",
-        HTTP_PROXY: "https://tok:vault@127.0.0.1:14322",
+        HTTPS_PROXY: "http://tok:vault@127.0.0.1:14322",
+        HTTP_PROXY: "http://tok:vault@127.0.0.1:14322",
         NO_PROXY: "localhost,127.0.0.1",
       },
       caCertificate: FAKE_PEM,
@@ -232,8 +232,8 @@ describe("buildProxyEnv()", () => {
 
     const env = buildProxyEnv(config, "/etc/ssl/agent-vault-ca.pem");
 
-    expect(env.HTTPS_PROXY).toBe("https://tok:vault@127.0.0.1:14322");
-    expect(env.HTTP_PROXY).toBe("https://tok:vault@127.0.0.1:14322");
+    expect(env.HTTPS_PROXY).toBe("http://tok:vault@127.0.0.1:14322");
+    expect(env.HTTP_PROXY).toBe("http://tok:vault@127.0.0.1:14322");
     expect(env.NO_PROXY).toBe("localhost,127.0.0.1");
     expect(env.NODE_USE_ENV_PROXY).toBe("1");
     expect(env.SSL_CERT_FILE).toBe("/etc/ssl/agent-vault-ca.pem");

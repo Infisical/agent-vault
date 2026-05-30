@@ -78,7 +78,7 @@ Subsequent users can self-register via `agent-vault auth register`, the web regi
 
 ## Transparent proxy
 
-Agent Vault exposes a transparent HTTP/HTTPS proxy listener on port `14322` — the canonical ingress agents use. Any standard HTTP client that honors `HTTPS_PROXY`/`HTTP_PROXY` (curl, fetch, requests, axios, the Go stdlib, SDKs, CLIs) transparently routes through the broker. The listener is TLS-encrypted (cert signed by the MITM CA) so the CONNECT handshake (for `https://` upstreams) and the absolute-form forward-proxy request line (for `http://` upstreams) both carry session tokens encrypted on the wire.
+Agent Vault exposes a transparent HTTP/HTTPS proxy listener on port `14322` — the canonical ingress agents use. Any standard HTTP client that honors `HTTPS_PROXY`/`HTTP_PROXY` (curl, fetch, requests, axios, the Go stdlib, SDKs, CLIs) transparently routes through the broker. The listener is plain HTTP, handling both CONNECT (for `https://` upstreams) and absolute-form forward-proxy requests (for `http://` upstreams) on the same port.
 
 ```bash
 agent-vault server               # transparent proxy on 14322 (default)

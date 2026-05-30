@@ -88,11 +88,11 @@ The agent writes this line unchanged. No URL rewriting. No `Authorization` heade
 
 | Variable | Purpose |
 |---|---|
-| `HTTPS_PROXY` | Points at the MITM listener (`https://{token}:{vault}@host:14322`) — the listener is TLS-wrapped, so the proxy URL itself is HTTPS |
-| `HTTP_PROXY` | Same URL as `HTTPS_PROXY` — plain `http://` upstreams route through the same TLS-wrapped listener via absolute-form forward-proxy requests |
+| `HTTPS_PROXY` | Points at the MITM listener (`http://{token}:{vault}@host:14322`) — plain HTTP, deploy on a trusted/private network |
+| `HTTP_PROXY` | Same URL as `HTTPS_PROXY` — plain `http://` upstreams route through the same listener via absolute-form forward-proxy requests |
 | `NO_PROXY` | `localhost,127.0.0.1` — so agent-to-vault traffic skips the proxy |
 | `NODE_USE_ENV_PROXY` | `1` — enables Node.js v22.21+ built-in proxy support for `fetch()` and `http.get()`/`https.get()` |
-| `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT` | Point standard HTTP libraries at the Agent Vault root CA so the proxied TLS handshake validates |
+| `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT` | Point standard HTTP libraries at the Agent Vault root CA so the re-signed upstream TLS certificates validate |
 
 <Tip>
 The MITM listener accepts both `CONNECT host:port` (HTTPS upstreams) and absolute-form forward-proxy requests (`POST http://host/path HTTP/1.1`) on the same port. Plain-HTTP upstreams are intercepted, audited, and credential-injected just like HTTPS upstreams.
