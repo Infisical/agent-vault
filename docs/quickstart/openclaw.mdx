@@ -75,7 +75,7 @@ Install the Agent Vault CLI on the host or in the container image where OpenClaw
 
     ### 3. Pass environment variables at runtime
 
-    Inject the env vars when you run the container so the token never gets baked into the image.
+    Inject the env vars when you run the container so the token never gets baked into the image. The CLI reads them on launch to authenticate with Agent Vault and scope its session to the right vault.
 
     ```bash
     docker run --rm -it \
