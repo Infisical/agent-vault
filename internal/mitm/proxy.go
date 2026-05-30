@@ -1,7 +1,7 @@
-// Package mitm implements a TLS-wrapped HTTP/1.1 proxy ingress for
-// agent traffic.
+// Package mitm implements an HTTP/1.1 forward-proxy ingress for agent
+// traffic.
 //
-// A Proxy accepts two request shapes on the same TLS-wrapped listener:
+// A Proxy accepts two request shapes on the same listener:
 //
 //   - CONNECT host:port — for HTTPS upstreams. The proxy hijacks the
 //     connection, terminates client-side TLS using a leaf minted on
@@ -16,11 +16,10 @@
 //     to the upstream over plain HTTP, and applies the same credential
 //     injection, host policy, and request logging as the CONNECT path.
 //
-// The listener itself is TLS-wrapped so that the CONNECT handshake and
-// the absolute-form request line (both of which carry session tokens
-// in Proxy-Authorization) are encrypted. Clients use HTTPS_PROXY and
-// HTTP_PROXY pointing at https://... and trust the same CA that signs
-// the per-host MITM leaves.
+// The listener is plain HTTP (standard forward-proxy convention).
+// Clients use HTTPS_PROXY and HTTP_PROXY pointing at http://... and
+// trust the CA that signs the per-host MITM leaves for upstream
+// certificate verification.
 //
 // v1 scope: HTTP/1.1 only (ALPN pinned). HTTPS upstreams must use
 // CONNECT — the forward-proxy path rejects https:// URLs to avoid

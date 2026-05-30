@@ -15,9 +15,9 @@ import (
 //   - Basic base64(<token>:<vault-name>)    — token + vault hint
 //
 // The Basic form maps directly to HTTPS_PROXY / HTTP_PROXY URLs (both
-// env vars take the same TLS-wrapped proxy URL — the listener accepts
-// CONNECT for https:// upstreams and absolute-form forward-proxy
-// requests for http:// upstreams on the same port):
+// env vars take the same proxy URL — the listener accepts CONNECT for
+// https:// upstreams and absolute-form forward-proxy requests for
+// http:// upstreams on the same port):
 //
 //	HTTPS_PROXY=http://<token>@host:port          (scoped session)
 //	HTTPS_PROXY=http://<token>:<vault>@host:port  (instance-level agent token)

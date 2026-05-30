@@ -17,15 +17,15 @@ func envMap(env []string) map[string]string {
 }
 
 func TestBuildContainerEnv_ProxyURL(t *testing.T) {
-	env := BuildContainerEnv("av_sess_abc", "myvault", 14321, 14322, true)
+	env := BuildContainerEnv("av_sess_abc", "myvault", 14321, 14322)
 	vars := envMap(env)
 
 	u, err := url.Parse(vars["HTTPS_PROXY"])
 	if err != nil {
 		t.Fatalf("parse HTTPS_PROXY: %v", err)
 	}
-	if u.Scheme != "https" {
-		t.Errorf("scheme = %q, want https", u.Scheme)
+	if u.Scheme != "http" {
+		t.Errorf("scheme = %q, want http", u.Scheme)
 	}
 	if u.Hostname() != ContainerProxyHost {
 		t.Errorf("host = %q, want %q (container view, not 127.0.0.1)", u.Hostname(), ContainerProxyHost)
@@ -41,17 +41,8 @@ func TestBuildContainerEnv_ProxyURL(t *testing.T) {
 	}
 }
 
-func TestBuildContainerEnv_OldServerScheme(t *testing.T) {
-	env := BuildContainerEnv("tok", "v", 14321, 14322, false)
-	vars := envMap(env)
-	u, _ := url.Parse(vars["HTTPS_PROXY"])
-	if u.Scheme != "http" {
-		t.Errorf("scheme = %q, want http (pre-TLS server)", u.Scheme)
-	}
-}
-
 func TestBuildContainerEnv_CAPathsAllPointAtBindMount(t *testing.T) {
-	env := BuildContainerEnv("tok", "v", 14321, 14322, true)
+	env := BuildContainerEnv("tok", "v", 14321, 14322)
 	vars := envMap(env)
 	for _, k := range []string{
 		"SSL_CERT_FILE",
@@ -68,7 +59,7 @@ func TestBuildContainerEnv_CAPathsAllPointAtBindMount(t *testing.T) {
 }
 
 func TestBuildContainerEnv_AgentVaultAddrUsesContainerHost(t *testing.T) {
-	env := BuildContainerEnv("tok", "v", 14321, 14322, true)
+	env := BuildContainerEnv("tok", "v", 14321, 14322)
 	vars := envMap(env)
 	want := "http://" + ContainerProxyHost + ":14321"
 	if vars["AGENT_VAULT_ADDR"] != want {
@@ -82,10 +73,8 @@ func TestBuildContainerEnv_AgentVaultAddrUsesContainerHost(t *testing.T) {
 	}
 }
 
-// Internal helpers for init-firewall.sh — stripped from claude's env by
-// entrypoint.sh, but we emit them so the init script sees them.
 func TestBuildContainerEnv_FirewallPortsEmitted(t *testing.T) {
-	env := BuildContainerEnv("tok", "v", 14321, 14322, true)
+	env := BuildContainerEnv("tok", "v", 14321, 14322)
 	vars := envMap(env)
 	if vars["VAULT_HTTP_PORT"] != "14321" {
 		t.Errorf("VAULT_HTTP_PORT = %q", vars["VAULT_HTTP_PORT"])
@@ -95,17 +84,13 @@ func TestBuildContainerEnv_FirewallPortsEmitted(t *testing.T) {
 	}
 }
 
-// IPv6 literals must be bracketed in the proxy URL authority so
-// net.SplitHostPort and downstream HTTP clients accept them. The bare
-// "::1:port" form is rejected as "too many colons".
 func TestBuildProxyEnv_IPv6HostIsBracketed(t *testing.T) {
 	env := BuildProxyEnv(ProxyEnvParams{
-		Host:    "::1",
-		Port:    14322,
-		Token:   "tok",
-		Vault:   "v",
-		CAPath:  "/tmp/ca.pem",
-		MITMTLS: true,
+		Host:   "::1",
+		Port:   14322,
+		Token:  "tok",
+		Vault:  "v",
+		CAPath: "/tmp/ca.pem",
 	})
 	vars := envMap(env)
 	u, err := url.Parse(vars["HTTPS_PROXY"])
@@ -123,11 +108,11 @@ func TestBuildProxyEnv_IPv6HostIsBracketed(t *testing.T) {
 	}
 }
 
-// HTTP_PROXY mirrors HTTPS_PROXY: both point at the same TLS-wrapped
-// MITM ingress so plain http:// upstreams route through the broker via
-// absolute-form forward-proxy requests.
+// HTTP_PROXY mirrors HTTPS_PROXY: both point at the same MITM ingress
+// so plain http:// upstreams route through the broker via absolute-form
+// forward-proxy requests.
 func TestBuildContainerEnv_HTTPProxyMatchesHTTPS(t *testing.T) {
-	env := BuildContainerEnv("tok", "v", 14321, 14322, true)
+	env := BuildContainerEnv("tok", "v", 14321, 14322)
 	vars := envMap(env)
 	if vars["HTTP_PROXY"] == "" {
 		t.Fatal("HTTP_PROXY not set; expected to mirror HTTPS_PROXY")

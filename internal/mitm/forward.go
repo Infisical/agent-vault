@@ -62,8 +62,8 @@ func isAbsoluteForwardProxyRequest(r *http.Request) bool {
 
 // handleForward serves an absolute-form forward-proxy request for an
 // http:// upstream. Compared to the CONNECT path: no hijack (the
-// response is a normal HTTP/1.1 reply over the existing TLS-wrapped
-// connection), and the scope is resolved per request rather than once
+// response is a normal HTTP/1.1 reply over the existing connection),
+// and the scope is resolved per request rather than once
 // per tunnel.
 func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 	// Per-IP flood gate before ParseProxyAuth + session lookup so a

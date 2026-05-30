@@ -65,7 +65,7 @@ Node.js built-in proxy support (v22.21.0+) so fetch() and
 http.get()/https.get() honor the proxy env natively. OPENCLAW_PROXY_URL
 feeds OpenClaw's Proxyline managed proxy (OpenClaw requires this in
 addition to proxy.enabled in its config). HTTPS_PROXY and HTTP_PROXY
-both point at the same TLS-wrapped proxy URL — the listener accepts
+both point at the same proxy URL — the listener accepts
 CONNECT for https:// upstreams and absolute-form forward-proxy requests
 for http:// on the same port. The root CA PEM is written to
 ~/.agent-vault/mitm-ca.pem.
@@ -527,10 +527,10 @@ func requireMITMEnv(env []string, addr, token, vault, caPath string) ([]string, 
 // default location.
 //
 // Both HTTPS_PROXY and HTTP_PROXY are injected, pointing at the same
-// TLS-wrapped proxy URL. The listener handles CONNECT for https://
+// proxy URL. The listener handles CONNECT for https://
 // upstreams and absolute-form forward-proxy requests for http://.
 func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]string, int, bool, error) {
-	pem, port, enabled, mitmTLS, err := fetchMITMCA(addr)
+	pem, port, enabled, err := fetchMITMCA(addr)
 	if err != nil {
 		return env, 0, false, err
 	}
@@ -566,12 +566,11 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 
 	env = stripEnvKeys(env, mitmInjectedKeys)
 	env = append(env, isolation.BuildProxyEnv(isolation.ProxyEnvParams{
-		Host:    resolveMITMHost(addr),
-		Port:    port,
-		Token:   token,
-		Vault:   vault,
-		CAPath:  caPath,
-		MITMTLS: mitmTLS,
+		Host:   resolveMITMHost(addr),
+		Port:   port,
+		Token:  token,
+		Vault:  vault,
+		CAPath: caPath,
 	})...)
 	return env, port, true, nil
 }

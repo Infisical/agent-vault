@@ -19,7 +19,7 @@ export interface ContainerConfig {
   env: {
     /** MITM proxy URL with embedded credentials. */
     HTTPS_PROXY: string;
-    /** Same TLS-wrapped MITM proxy URL — used for plain http:// upstreams via absolute-form forward-proxy requests. */
+    /** Same MITM proxy URL — used for plain http:// upstreams via absolute-form forward-proxy requests. */
     HTTP_PROXY: string;
     /** Hosts to bypass the proxy. */
     NO_PROXY: string;
@@ -78,12 +78,11 @@ export function buildProxyEnv(
   };
 }
 
-/** Cached MITM metadata (CA cert, host, port, TLS) — static for the server's lifetime. */
+/** Cached MITM metadata (CA cert, host, port) — static for the server's lifetime. */
 interface MitmInfo {
   caCertificate: string;
   host: string;
   port: number;
-  tls: boolean;
 }
 
 /**
@@ -121,8 +120,7 @@ export class SessionsResource {
 
     let containerConfig: ContainerConfig | null = null;
     if (mitmInfo) {
-      const scheme = mitmInfo.tls ? "https" : "http";
-      const proxyUrl = `${scheme}://${encodeURIComponent(res.token)}:${encodeURIComponent(this.vaultName)}@${mitmInfo.host}:${mitmInfo.port}`;
+      const proxyUrl = `http://${encodeURIComponent(res.token)}:${encodeURIComponent(this.vaultName)}@${mitmInfo.host}:${mitmInfo.port}`;
       containerConfig = {
         env: {
           HTTPS_PROXY: proxyUrl,
@@ -181,8 +179,6 @@ export class SessionsResource {
       // fall back to 127.0.0.1
     }
 
-    const tls = resp.headers.get("X-MITM-TLS") === "1";
-
-    return { caCertificate, host, port, tls };
+    return { caCertificate, host, port };
   }
 }

@@ -24,8 +24,7 @@ type ProxyEnvParams struct {
 	Port    int
 	Token   string
 	Vault   string
-	CAPath  string // path the child reads the CA PEM from
-	MITMTLS bool   // true → HTTPS_PROXY uses https://, false → http://
+	CAPath string // path the child reads the CA PEM from
 }
 
 // BuildProxyEnv returns the env vars that point an HTTP/HTTPS client at
@@ -33,18 +32,15 @@ type ProxyEnvParams struct {
 // Canonical source for both the process path (augmentEnvWithMITM) and
 // the container path (BuildContainerEnv) so the list can't drift.
 //
-// HTTPS_PROXY and HTTP_PROXY both point at the same TLS-wrapped proxy
-// URL so the client uses the same listener for https:// and http://
-// upstreams; the proxy listener accepts CONNECT and absolute-form
-// forward-proxy requests on the same port.
+// HTTPS_PROXY and HTTP_PROXY both point at the same proxy URL so the
+// client uses the same listener for https:// and http:// upstreams;
+// the proxy listener accepts CONNECT and absolute-form forward-proxy
+// requests on the same port.
 //
 // NB: keep in sync with buildProxyEnv() in
 // sdks/sdk-typescript/src/resources/sessions.ts.
 func BuildProxyEnv(p ProxyEnvParams) []string {
 	scheme := "http"
-	if p.MITMTLS {
-		scheme = "https"
-	}
 	proxyURL := (&url.URL{
 		Scheme: scheme,
 		User:   url.UserPassword(p.Token, p.Vault),
@@ -85,14 +81,13 @@ var ProxyEnvKeys = []string{
 // BuildContainerEnv returns the KEY=VALUE entries to pass to `docker
 // run` via -e flags. Produces a fresh list rather than augmenting
 // os.Environ() — the container should not inherit the host's env.
-func BuildContainerEnv(token, vault string, httpPort, mitmPort int, mitmTLS bool) []string {
+func BuildContainerEnv(token, vault string, httpPort, mitmPort int) []string {
 	env := BuildProxyEnv(ProxyEnvParams{
-		Host:    ContainerProxyHost,
-		Port:    mitmPort,
-		Token:   token,
-		Vault:   vault,
-		CAPath:  ContainerCAPath,
-		MITMTLS: mitmTLS,
+		Host:   ContainerProxyHost,
+		Port:   mitmPort,
+		Token:  token,
+		Vault:  vault,
+		CAPath: ContainerCAPath,
 	})
 	return append(env,
 		"AGENT_VAULT_TOKEN="+token,
