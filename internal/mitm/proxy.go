@@ -85,7 +85,7 @@ func New(addr string, opts Options) *Proxy {
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Minute,
 	}
 
 	sink := opts.LogSink
