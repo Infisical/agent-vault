@@ -81,7 +81,7 @@ func writeRawRequestLine(t *testing.T, conn net.Conn, line string, headers map[s
 
 // TestMITMForwardPlainHTTPInjectsCredentials is the flagship test for
 // the plain-HTTP forward-proxy path. A standard Go client with
-// HTTPS_PROXY pointing at the TLS-wrapped proxy sends an absolute-form
+// HTTPS_PROXY pointing at the proxy sends an absolute-form
 // request to a plain-HTTP upstream; the proxy authenticates, injects
 // the configured credential, strips broker-scoped headers, and returns
 // the upstream response.

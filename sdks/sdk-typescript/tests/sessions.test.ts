@@ -161,32 +161,6 @@ describe("SessionsResource", () => {
       expect(session.containerConfig!.env.HTTPS_PROXY).toContain(":9999");
     });
 
-    it("falls back to http:// scheme when server omits X-MITM-TLS", async () => {
-      const mockFetch = createRoutedMockFetch({
-        "/v1/sessions": {
-          body: {
-            token: "tok",
-            expires_at: "2026-04-16T00:00:00Z",
-            av_addr: "http://localhost:14321",
-          },
-        },
-        "/v1/mitm/ca.pem": {
-          body: FAKE_PEM,
-          headers: { "X-MITM-Port": "14322" },
-        },
-      });
-
-      const av = new AgentVault({
-        token: "agent-token",
-        address: "http://localhost:14321",
-        fetch: mockFetch,
-      });
-      const session = await av.vault("default").sessions!.create();
-
-      expect(session.containerConfig).not.toBeNull();
-      expect(session.containerConfig!.env.HTTPS_PROXY).toMatch(/^http:\/\//);
-    });
-
     it("includes X-Vault header in the request", async () => {
       const mockFetch = createRoutedMockFetch({
         "/v1/sessions": {
