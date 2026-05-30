@@ -14,14 +14,12 @@ primary_region = "sjc"
   auto_start_machines = true
   min_machines_running = 0  # Set to 1 to avoid cold-start latency
 
-# TCP passthrough for the TLS-wrapped MITM proxy. No Fly TLS termination —
-# the proxy handles its own TLS with certs signed by the MITM CA.
-[[services]]
-  internal_port = 14322
-  protocol = "tcp"
+# The MITM proxy on 14322 is reachable only via Fly's private networking
+# (.internal DNS over IPv6). The CMD override below binds to :: so the
+# proxy listens on both IPv4 and IPv6 (required for Fly's 6PN mesh).
 
-  [[services.ports]]
-    port = 14322
+[experimental]
+  cmd = ["server", "--host", "::", "--port", "14321"]
 
 [[vm]]
   size = "shared-cpu-1x"
