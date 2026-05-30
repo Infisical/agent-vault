@@ -168,6 +168,7 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 		"HTTP_PROXY":          "", // checked separately below
 		"NO_PROXY":            "localhost,127.0.0.1",
 		"NODE_USE_ENV_PROXY":  "1",
+		"OPENCLAW_PROXY_URL":  "", // checked separately below (equals HTTPS_PROXY)
 		"SSL_CERT_FILE":       caPath,
 		"NODE_EXTRA_CA_CERTS": caPath,
 		"REQUESTS_CA_BUNDLE":  caPath,
@@ -187,11 +188,14 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 		}
 	}
 
-	// HTTP_PROXY must equal HTTPS_PROXY — both point at the same TLS-
-	// wrapped MITM ingress so plain http:// upstreams route through the
-	// broker via absolute-form forward-proxy requests.
+	// HTTP_PROXY and OPENCLAW_PROXY_URL must equal HTTPS_PROXY — all
+	// point at the same TLS-wrapped MITM ingress so plain http:// upstreams
+	// and OpenClaw's Proxyline route through the broker.
 	if vars["HTTP_PROXY"] != vars["HTTPS_PROXY"] {
 		t.Errorf("HTTP_PROXY = %q, want it to equal HTTPS_PROXY = %q", vars["HTTP_PROXY"], vars["HTTPS_PROXY"])
+	}
+	if vars["OPENCLAW_PROXY_URL"] != vars["HTTPS_PROXY"] {
+		t.Errorf("OPENCLAW_PROXY_URL = %q, want it to equal HTTPS_PROXY = %q", vars["OPENCLAW_PROXY_URL"], vars["HTTPS_PROXY"])
 	}
 
 	// Proxy URL must parse cleanly and carry token:vault userinfo.
@@ -281,7 +285,7 @@ func TestAugmentEnvWithMITM_DedupesParentEnv(t *testing.T) {
 			counts[kv[:i]]++
 		}
 	}
-	for _, k := range []string{"HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "DENO_CERT"} {
+	for _, k := range []string{"HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY", "OPENCLAW_PROXY_URL", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "DENO_CERT"} {
 		if counts[k] != 1 {
 			t.Errorf("%s appears %d times in env, want exactly 1 (POSIX getenv returns first match)", k, counts[k])
 		}

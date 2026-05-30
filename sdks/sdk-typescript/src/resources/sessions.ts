@@ -68,6 +68,7 @@ export function buildProxyEnv(
     HTTP_PROXY: config.env.HTTP_PROXY,
     NO_PROXY: config.env.NO_PROXY,
     NODE_USE_ENV_PROXY: "1",
+    OPENCLAW_PROXY_URL: config.env.HTTPS_PROXY,
     SSL_CERT_FILE: certPath,
     NODE_EXTRA_CA_CERTS: certPath,
     REQUESTS_CA_BUNDLE: certPath,
