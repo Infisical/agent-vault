@@ -336,9 +336,13 @@ func maybeWriteCurlrc(caPath string) {
 		if strings.Contains(string(existing), "proxy-cacert") {
 			return
 		}
-		line = string(existing) + line
+		s := string(existing)
+		if len(s) > 0 && s[len(s)-1] != '\n' {
+			s += "\n"
+		}
+		line = s + line
 	}
-	_ = os.WriteFile(curlrc, []byte(line), 0o600)
+	_ = os.WriteFile(curlrc, []byte(line), 0o600) //nolint:gosec
 }
 
 // resolveVaultForAgentMode picks the vault when the token is supplied via env
