@@ -116,7 +116,7 @@ This means:
 
 ### Transparent proxy transport
 
-The MITM listener that backs `HTTPS_PROXY` and `HTTP_PROXY` is a plain HTTP forward proxy (standard convention — same as Squid, Zscaler, etc.). The `Proxy-Authorization` header carrying the session token travels in cleartext between agent and broker. Deploy Agent Vault on a trusted or private network (localhost, VPN, private subnet). CONNECT tunnels to upstream HTTPS destinations are end-to-end encrypted inside the proxy connection.
+The MITM listener that backs `HTTPS_PROXY` and `HTTP_PROXY` is a plain HTTP forward proxy. The `Proxy-Authorization` header carrying the session token travels in cleartext between agent and broker. Deploy Agent Vault on a trusted or private network (localhost, VPN, private subnet). CONNECT tunnels to upstream HTTPS destinations are end-to-end encrypted inside the proxy connection.
 
 - **Root CA private key** is encrypted at rest with the DEK (same key that wraps credentials). See [Encryption at rest](#encryption-at-rest).
 - **DNS rebinding protection** and **[netguard](#network-security)** — every outbound connection is resolved and validated against the IP blocklist before Agent Vault dials the upstream.
