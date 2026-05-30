@@ -127,7 +127,7 @@ func setupProxy(t *testing.T, sr brokercore.SessionResolver, cp brokercore.Crede
 		_ = p.Shutdown(ctx)
 	})
 
-	proxyURL = &url.URL{Scheme: "https", Host: l.Addr().String()}
+	proxyURL = &url.URL{Scheme: "http", Host: l.Addr().String()}
 	return proxyURL, clientRoots, p
 }
 
@@ -1053,10 +1053,7 @@ func TestMITMBearerForwardsArbitraryClientHeaders(t *testing.T) {
 
 func openMITMTunnel(t *testing.T, proxyURL *url.URL, roots *x509.CertPool, target, token string) net.Conn {
 	t.Helper()
-	conn, err := tls.Dial("tcp", proxyURL.Host, &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		RootCAs:    roots,
-	})
+	conn, err := net.Dial("tcp", proxyURL.Host)
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
@@ -1152,12 +1149,12 @@ func readWebSocketTextFrame(r io.Reader) (string, error) {
 	return string(payload), nil
 }
 
-// rawConnect dials the proxy over TLS, sends a CONNECT request with the
+// rawConnect dials the proxy over plain TCP, sends a CONNECT request with the
 // given extra headers (e.g. Proxy-Authorization), and returns the response.
 // Callers assert on the returned status code and body.
 func rawConnect(t *testing.T, proxyURL *url.URL, roots *x509.CertPool, extraHeaders string) *http.Response {
 	t.Helper()
-	conn, err := tls.Dial("tcp", proxyURL.Host, &tls.Config{RootCAs: roots})
+	conn, err := net.Dial("tcp", proxyURL.Host)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -1212,7 +1209,7 @@ func TestMITMAmbiguousAgentVault(t *testing.T) {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "HTTPS_PROXY=https://<token>:<vault>@") {
+	if !strings.Contains(string(body), "HTTPS_PROXY=http://<token>:<vault>@") {
 		t.Fatalf("body = %q, missing vault-hint message", body)
 	}
 }

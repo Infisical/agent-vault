@@ -320,31 +320,6 @@ func maybeConfigureOpenClaw() {
 	fmt.Fprintf(os.Stderr, "%s Configured OpenClaw proxy settings (revert with: openclaw config set proxy.enabled false && openclaw config set tools.web.fetch.useTrustedEnvProxy false).\n", successText("agent-vault:"))
 }
 
-// maybeWriteCurlrc writes a .curlrc file that sets proxy-cacert so curl
-// trusts the MITM proxy's TLS certificate without requiring --proxy-cacert
-// on every invocation or installing the CA into the system trust store.
-func maybeWriteCurlrc(caPath string) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-	curlrc := filepath.Join(home, ".curlrc")
-	line := "proxy-cacert = " + caPath + "\n"
-
-	existing, err := os.ReadFile(curlrc) //nolint:gosec
-	if err == nil {
-		if strings.Contains(string(existing), "proxy-cacert") {
-			return
-		}
-		s := string(existing)
-		if len(s) > 0 && s[len(s)-1] != '\n' {
-			s += "\n"
-		}
-		line = s + line
-	}
-	_ = os.WriteFile(curlrc, []byte(line), 0o600) //nolint:gosec
-}
-
 // resolveVaultForAgentMode picks the vault when the token is supplied via env
 // (agent / containerized run). No project-file or interactive-picker fallback
 // — neither makes sense in an unattended container, and silently defaulting
@@ -588,9 +563,6 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 		return env, 0, false, fmt.Errorf("write CA: %w", err)
 	}
 
-	if mitmTLS {
-		maybeWriteCurlrc(caPath)
-	}
 
 	env = stripEnvKeys(env, mitmInjectedKeys)
 	env = append(env, isolation.BuildProxyEnv(isolation.ProxyEnvParams{

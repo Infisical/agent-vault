@@ -19,8 +19,8 @@ import (
 // CONNECT for https:// upstreams and absolute-form forward-proxy
 // requests for http:// upstreams on the same port):
 //
-//	HTTPS_PROXY=https://<token>@host:port          (scoped session)
-//	HTTPS_PROXY=https://<token>:<vault>@host:port  (instance-level agent token)
+//	HTTPS_PROXY=http://<token>@host:port          (scoped session)
+//	HTTPS_PROXY=http://<token>:<vault>@host:port  (instance-level agent token)
 //
 // Vault names are config-validated as UPPER/lowercase alphanumeric + hyphens,
 // so they cannot contain a colon; splitting on the first colon in the decoded

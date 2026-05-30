@@ -85,8 +85,6 @@ Install the Agent Vault CLI on the host or in the container image where OpenClaw
       your-image
     ```
 
-    If the agent runs child processes that use `curl`, see [Proxy CA trust for curl](/agents/protocol#proxy-ca-trust-for-curl).
-
   </Tab>
   <Tab title="Manual config (systemd / launchd)">
     If OpenClaw is managed by a service supervisor and you cannot wrap it with `agent-vault run`, configure the proxy directly in `openclaw.json`:

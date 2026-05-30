@@ -98,12 +98,6 @@ The agent writes this line unchanged. No URL rewriting. No `Authorization` heade
 The MITM listener accepts both `CONNECT host:port` (HTTPS upstreams) and absolute-form forward-proxy requests (`POST http://host/path HTTP/1.1`) on the same port. Plain-HTTP upstreams are intercepted, audited, and credential-injected just like HTTPS upstreams.
 </Tip>
 
-### Proxy CA trust for curl
-
-`curl` verifies the HTTPS proxy's TLS certificate separately from upstream certificates, and has no env var for it. `agent-vault run` handles this by writing a `~/.curlrc` with `proxy-cacert` pointing at the MITM CA, so child processes that invoke `curl` work without extra flags.
-
-If `.curlrc` doesn't work in your environment, pass `--proxy-cacert ~/.agent-vault/mitm-ca.pem` per command, or install the CA into the system trust store (`update-ca-certificates` on Debian/Ubuntu/Alpine, `update-ca-trust extract` on RHEL/Fedora).
-
 ## Propose changes
 
 When an agent needs access to a service that is not in the vault's services, it creates a [proposal](/learn/proposals). Each proposal bundles services (host access) and credential slots (credentials the human provides at approval time).

@@ -29,8 +29,8 @@ package mitm
 
 import (
 	"context"
-	"crypto/tls"
 	"log/slog"
+	"crypto/tls"
 	"net"
 	"net/http"
 	"sync/atomic"
@@ -50,7 +50,6 @@ type Proxy struct {
 	sessions    brokercore.SessionResolver
 	creds       brokercore.CredentialProvider
 	httpServer  *http.Server
-	tlsConfig   *tls.Config
 	upstream    *http.Transport
 	isListening atomic.Bool
 	baseURL     string // externally-reachable control-plane URL for help links
@@ -103,24 +102,6 @@ func New(addr string, opts Options) *Proxy {
 		logSink:   sink,
 	}
 
-	p.tlsConfig = &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			sni := hello.ServerName
-			if sni == "" {
-				// No SNI (IP-literal connection per RFC 6066). Use the
-				// local address the client connected to so the cert
-				// SAN matches regardless of IPv4/IPv6 or wildcard bind.
-				if host, _, err := net.SplitHostPort(hello.Conn.LocalAddr().String()); err == nil && host != "" {
-					sni = host
-				} else {
-					sni = "127.0.0.1"
-				}
-			}
-			return opts.CA.MintLeaf(sni)
-		},
-	}
-
 	p.httpServer = &http.Server{
 		Addr:              addr,
 		Handler:           http.HandlerFunc(p.dispatch),
@@ -156,14 +137,16 @@ func (p *Proxy) ListenAndServe() error {
 	return p.Serve(l)
 }
 
-// Serve accepts connections on the provided listener, wrapping it in
-// TLS so the CONNECT handshake is encrypted. It blocks until Shutdown
-// is called, returning http.ErrServerClosed in that case.
+// Serve accepts connections on the provided listener. The listener
+// itself is plain HTTP (standard forward-proxy convention); TLS is
+// only used inside CONNECT tunnels where the MITM presents a leaf
+// cert to the client. It blocks until Shutdown is called, returning
+// http.ErrServerClosed in that case.
 // Useful for tests that need to bind :0 and learn the resulting port.
 func (p *Proxy) Serve(l net.Listener) error {
 	p.isListening.Store(true)
 	defer p.isListening.Store(false)
-	return p.httpServer.Serve(tls.NewListener(l, p.tlsConfig))
+	return p.httpServer.Serve(l)
 }
 
 // Shutdown gracefully stops the listener. In-flight CONNECT tunnels are

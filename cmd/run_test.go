@@ -140,7 +140,7 @@ func fakeMITMServer(t *testing.T, pem string, advertisedPort int, advertiseTLS b
 
 func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 	const fakePEM = "-----BEGIN CERTIFICATE-----\nMIIFAKE\n-----END CERTIFICATE-----\n"
-	srv := fakeMITMServer(t, fakePEM, 9001, true)
+	srv := fakeMITMServer(t, fakePEM, 9001, false)
 	defer srv.Close()
 
 	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
@@ -207,8 +207,8 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse HTTPS_PROXY: %v", err)
 	}
-	if u.Scheme != "https" {
-		t.Errorf("proxy scheme = %q, want https", u.Scheme)
+	if u.Scheme != "http" {
+		t.Errorf("proxy scheme = %q, want http", u.Scheme)
 	}
 	if u.User == nil {
 		t.Fatal("proxy URL missing userinfo")
