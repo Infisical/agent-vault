@@ -125,7 +125,7 @@ export class SessionsResource {
         env: {
           HTTPS_PROXY: proxyUrl,
           HTTP_PROXY: proxyUrl,
-          NO_PROXY: "localhost,127.0.0.1",
+          NO_PROXY: `localhost,127.0.0.1,${mitmInfo.host}`,
         },
         caCertificate: mitmInfo.caCertificate,
       };
