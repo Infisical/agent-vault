@@ -49,7 +49,7 @@ func BuildProxyEnv(p ProxyEnvParams) []string {
 	return []string{
 		"HTTPS_PROXY=" + proxyURL,
 		"HTTP_PROXY=" + proxyURL,
-		"NO_PROXY=localhost,127.0.0.1",
+		"NO_PROXY=localhost,127.0.0.1," + p.Host,
 		"NODE_USE_ENV_PROXY=1",
 		"OPENCLAW_PROXY_URL=" + proxyURL,
 		"SSL_CERT_FILE=" + p.CAPath,

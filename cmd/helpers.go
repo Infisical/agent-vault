@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"syscall"
@@ -53,8 +54,25 @@ const (
 	hostingSelfHosting = "self-hosting"
 )
 
-// httpClient is used for setup-flow HTTP calls with a reasonable timeout.
-var httpClient = &http.Client{Timeout: 10 * time.Second}
+// httpClient is used for control-plane HTTP calls (discover, proposals,
+// sessions) with a reasonable timeout. The custom proxy function skips
+// the proxy for calls to AGENT_VAULT_ADDR (the broker's own server) so
+// control-plane traffic goes direct even when the child process inherits
+// MITM proxy env vars. All other destinations fall through to the
+// system proxy, so corporate proxies still work for direct CLI usage.
+var httpClient = &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		Proxy: func(r *http.Request) (*url.URL, error) {
+			if avAddr := os.Getenv("AGENT_VAULT_ADDR"); avAddr != "" {
+				if u, err := url.Parse(avAddr); err == nil && r.URL.Host == u.Host {
+					return nil, nil
+				}
+			}
+			return http.ProxyFromEnvironment(r)
+		},
+	},
+}
 
 // selectAddress prompts the user to pick a hosting option interactively.
 // Returns the server address to use.
@@ -642,7 +660,7 @@ func doVaultScopedRequestWithBody(method, url, token, vault string, body []byte)
 		req.Header.Set("X-Vault", vault)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("could not reach server: %w", err)
 	}

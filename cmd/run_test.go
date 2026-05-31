@@ -162,7 +162,7 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 	want := map[string]string{
 		"HTTPS_PROXY":         "", // checked separately below
 		"HTTP_PROXY":          "", // checked separately below
-		"NO_PROXY":            "localhost,127.0.0.1",
+		"NO_PROXY":            "", // checked separately — includes AV host
 		"NODE_USE_ENV_PROXY":  "1",
 		"OPENCLAW_PROXY_URL":  "", // checked separately below (equals HTTPS_PROXY)
 		"SSL_CERT_FILE":       caPath,

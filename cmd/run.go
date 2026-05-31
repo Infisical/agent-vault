@@ -411,7 +411,7 @@ func fetchUserVaults(addr, token string) ([]string, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -622,7 +622,7 @@ func requestScopedSession(addr, adminToken, vault string, ttlSeconds int) (strin
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+adminToken)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("could not reach server at %s: %w", addr, err)
 	}
