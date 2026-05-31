@@ -121,7 +121,7 @@ jobs:
           printf '<!doctype html><title>ci-stub</title>' > internal/server/webdist/index.html
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v6.5.0
+        uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v6.5.0
         with:
           version: v2.11
 
