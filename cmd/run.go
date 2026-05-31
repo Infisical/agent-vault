@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"time"
 	"fmt"
 	"net"
 	"net/http"
@@ -311,13 +313,20 @@ func maybeConfigureOpenClaw() {
 		{"proxy.enabled", "true"},
 		{"tools.web.fetch.useTrustedEnvProxy", "true"},
 	}
+	var ok int
 	for _, s := range settings {
-		out, err := exec.Command(openclawBin, "config", "set", s.key, s.value).CombinedOutput()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		out, err := exec.CommandContext(ctx, openclawBin, "config", "set", s.key, s.value).CombinedOutput()
+		cancel()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not set OpenClaw config %s: %s\n", s.key, strings.TrimSpace(string(out)))
+		} else {
+			ok++
 		}
 	}
-	fmt.Fprintf(os.Stderr, "%s Configured OpenClaw proxy settings (revert with: openclaw config set proxy.enabled false && openclaw config set tools.web.fetch.useTrustedEnvProxy false).\n", successText("agent-vault:"))
+	if ok > 0 {
+		fmt.Fprintf(os.Stderr, "%s Configured OpenClaw proxy settings (revert with: openclaw config set proxy.enabled false && openclaw config set tools.web.fetch.useTrustedEnvProxy false).\n", successText("agent-vault:"))
+	}
 }
 
 // resolveVaultForAgentMode picks the vault when the token is supplied via env

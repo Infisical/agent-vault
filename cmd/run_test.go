@@ -194,6 +194,12 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 		t.Errorf("OPENCLAW_PROXY_URL = %q, want it to equal HTTPS_PROXY = %q", vars["OPENCLAW_PROXY_URL"], vars["HTTPS_PROXY"])
 	}
 
+	// NO_PROXY must include the AV host so control-plane calls bypass the proxy.
+	noProxy := vars["NO_PROXY"]
+	if !strings.Contains(noProxy, "localhost") || !strings.Contains(noProxy, "127.0.0.1") {
+		t.Errorf("NO_PROXY = %q, want localhost and 127.0.0.1", noProxy)
+	}
+
 	// Proxy URL must parse cleanly and carry token:vault userinfo.
 	proxyURL := vars["HTTPS_PROXY"]
 	if proxyURL == "" {
