@@ -510,20 +510,6 @@ The unit needs Agent Vault's environment wired explicitly, since systemd doesn't
 
 <Steps>
 
-<Step title="Disable rate limiting">
-
-In the AV UI tab on your laptop: click your email (top right) → **Manage Instance** → scroll to **Rate Limiting**. Set **Profile** to **off (disable all limits)** and click **Save Rate Limits**.
-
-![Instance Settings page with Rate Limiting Profile set to off](/images/hermes-on-vps/hermes-on-vps-rate-limits.png)
-
-The gateway daemon opens fresh CONNECTs every time `httpx` resets its connection pool (startup, retries, network blips), which trips the per-IP auth limit within seconds. Disabling rate limits is the cleanest fix; see [Instance settings](/guides/instance-settings) for the per-tier alternative.
-
-<Note>
-Rate limits throttle brute force at the login endpoint and the proxy. Agent Vault is bound to `10.0.0.2` and only `hermes-vps` can reach it, so the per-IP gates aren't load-bearing here. Re-enable rate limiting if you ever bind Agent Vault to `0.0.0.0`.
-</Note>
-
-</Step>
-
 <Step title="Paste 1: write /root/.hermes/gateway.env">
 
 In the SSH shell on `hermes-vps` where `$AGENT_VAULT_TOKEN` is still set:
