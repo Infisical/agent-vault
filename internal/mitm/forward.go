@@ -2,6 +2,7 @@ package mitm
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -271,8 +272,33 @@ func (p *Proxy) forwardRequest(
 		return
 	}
 
+	if ce := outReq.Header.Get("Content-Encoding"); ce != "" {
+		p.logger.Debug("skipping body substitution for compressed request",
+			slog.String("content_encoding", ce),
+			slog.String("host", host),
+		)
+	} else {
+		newBody, newLen, modified, bErr := brokercore.ApplyBodySubstitutions(
+			outReq.Body, outReq.ContentLength,
+			outReq.Header.Get("Content-Type"), inject.Substitutions)
+		if bErr != nil {
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			emit(http.StatusBadGateway, "substitution_error")
+			return
+		}
+		if modified {
+			outReq.Body = newBody
+			outReq.ContentLength = newLen
+			outReq.Header.Set("Content-Length", fmt.Sprintf("%d", newLen))
+		}
+	}
+
 	if wsUpgrade {
-		p.forwardWebSocket(w, r, outReq, emit)
+		wsSubs := filterWebSocketSubs(inject.Substitutions)
+		if len(wsSubs) > 0 {
+			outReq.Header.Del("Sec-Websocket-Extensions")
+		}
+		p.forwardWebSocket(w, r, outReq, wsSubs, emit)
 		return
 	}
 

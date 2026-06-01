@@ -17,7 +17,7 @@ export interface Substitution {
   in?: string[];
 }
 
-export const SUBSTITUTION_SURFACES = ["path", "query", "header"] as const;
+export const SUBSTITUTION_SURFACES = ["path", "query", "header", "body", "websocket"] as const;
 // Mutable-typed so callers can spread directly into Substitution.in
 // state. Treat as the source-of-truth default — do not push/splice.
 export const DEFAULT_SUBSTITUTION_SURFACES: string[] = ["path", "query"];
