@@ -293,24 +293,24 @@ In the `prod` vault, **Credentials tab → Add credential** for each row below.
 
 <Step title="Add services">
 
-**Services tab → + Add service.** For each row below: fill **Name** and **Host**, set **Authentication** to **Passthrough**, then scroll to **URL Substitutions** and click **+ Add substitution**. Paste the placeholder, tick `header` as the surface (untick path and query), select the credential. Save.
+**Services tab → + Add service.** For each row below: fill **Name** and **Host**, set **Authentication** to **Passthrough**, then scroll to **URL Substitutions** and click **+ Add substitution**. Paste the placeholder, tick the surface boxes the row lists (untick the others), select the credential. Save.
 
-Each substitution rule tells Agent Vault to scan the header in outbound requests for the placeholder string and swap it for the credential's value before forwarding. OpenClaw emits placeholders on the wire; the real keys never leave `av-broker`.
+Each substitution rule tells Agent Vault to scan the matched surfaces in outbound requests for the placeholder string and swap it for the credential's value before forwarding. OpenClaw emits placeholders on the wire; the real keys never leave `av-broker`.
 
 | Name | Host | Placeholder | Surface | Credential |
 | --- | --- | --- | --- | --- |
 | `anthropic` | `api.anthropic.com` | `__anthropic_api_key__` | `header` | `ANTHROPIC_API_KEY` |
 | `github` | `api.github.com` | `__github_token__` | `header` | `GITHUB_TOKEN` |
 | `notion` | `api.notion.com` | `__notion_token__` | `header` | `NOTION_TOKEN` |
-| `slack` | `slack.com/*` | `__slack_bot_token__` | `header` | `SLACK_BOT_TOKEN` |
+| `slack` | `slack.com/*` | `__slack_bot_token__` | `header, body` | `SLACK_BOT_TOKEN` |
 
 The `slack` service carries a second substitution on the same service for the app token. After saving the first rule, click **+ Add substitution** again on the same service:
 
 | Placeholder | Surface | Credential |
 | --- | --- | --- |
-| `__slack_app_token__` | `header` | `SLACK_APP_TOKEN` |
+| `__slack_app_token__` | `header, body` | `SLACK_APP_TOKEN` |
 
-The `slack.com/*` wildcard covers all Slack API paths, so one service rule handles every Slack request OpenClaw makes.
+The `slack.com/*` wildcard covers all Slack API paths, so one service rule handles every Slack request OpenClaw makes. Slack uses both surfaces because `@slack/web-api` puts the bot token in the request body on its method-arg shape (`client.auth.test({token})`); without `body` ticked, Bolt's `auth.test` validation fails at boot and the bot stops responding to mentions.
 
 </Step>
 
@@ -435,7 +435,7 @@ In Slack, open the channel you want OpenClaw to listen in. Type `/invite @<your-
 
 ## 7. Connect openclaw-box to Agent Vault
 
-One env file plus one systemd drop-in is the entire operator surface. `agent-vault run` auto-detects the OpenClaw gateway invocation and injects an embedded Node compatibility preload, so no shim files are needed.
+One env file plus one systemd drop-in is the entire operator surface. `agent-vault run` detects the OpenClaw invocation and runs `openclaw config set` to enable OpenClaw's managed proxy and trusted env proxy settings, so outbound calls from the gateway flow through `av-broker` automatically.
 
 <Steps>
 
@@ -510,27 +510,18 @@ sleep 3
 journalctl --user -u openclaw-gateway -n 30 --no-pager
 ```
 
-In the journal output, look for this line within the first ~2 seconds:
+Healthy log lines to look for in the first few seconds:
 
-```
-agent-vault: openclaw compat preload active (/root/.agent-vault/openclaw-compat.js)
-```
-
-That's `agent-vault run` detecting it's wrapping the OpenClaw gateway and injecting the embedded Node compat preload via `NODE_OPTIONS=--require=...`. The preload patches axios in-process to fix two OpenClaw-specific bugs (axios v1.x mis-parsing TLS-wrapped `HTTPS_PROXY` URLs, and `@slack/web-api` placing the bot token in the request body where header-surface substitution can't see it). Without it, Slack auth fails with `invalid_auth` at boot.
-
-Other healthy log lines:
-
+- `agent-vault: routing HTTP/HTTPS through MITM proxy (10.108.0.3:14322)`: the wrap is live.
 - `[slack] socket mode connected`: bot is on Slack via Socket Mode.
 - `[gateway] provider auth state pre-warmed in <N>ms`: Anthropic API key brokered successfully.
 - `[gateway] ready`: gateway accepting traffic.
 
+You should NOT see `[slack] auth.test failed at boot (... invalid_auth)`. If you do, the `body` surface on the Slack service substitutions in section 4 is missing.
+
 </Step>
 
 </Steps>
-
-<Note>
-The OpenClaw compat preload requires **Node.js 22.21.0+, 24.5.0+, or 25+** in the wrapped child. Earlier versions lack the `NODE_USE_ENV_PROXY` support the preload relies on for axios's outbound requests. The preload fails loudly at boot if the runtime is too old; upgrade Node, or pass `--node-compat=off` to skip the preload (note: axios outbound calls will then bypass the broker).
-</Note>
 
 ## 8. Lock down egress (optional)
 
