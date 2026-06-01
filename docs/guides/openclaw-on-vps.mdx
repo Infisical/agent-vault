@@ -365,7 +365,9 @@ At every token prompt, type the placeholder, not the real value. Exact strings m
 | **Skills** | Skip |
 | **Hatch agent in terminal?** | **No** |
 
-When the wizard reaches the Slack step it prints a Slack app manifest JSON. You'll use it in the next section, so leave the terminal open or scroll back later. The wizard accepts placeholders for the bot and app tokens because the real values live in Agent Vault, not here.
+When the wizard reaches the Slack step (right after you pick **Slack (Socket Mode)** as the messaging platform), it prints a block of JSON labelled `Slack manifest JSON` before asking for the bot token. **Stop, select that JSON block, and copy it to your clipboard.** You'll paste it into Slack in the next section to create the app. Then keep going through the wizard; it accepts the placeholders for the bot and app tokens because the real values live in Agent Vault.
+
+If you miss the manifest (or you're re-running the wizard after Slack was partially configured), the wizard's manifest step is skipped on subsequent runs. Recover with `openclaw channels remove slack` followed by re-running `openclaw crestodian`; the manifest reappears.
 
 </Step>
 
@@ -383,27 +385,13 @@ You should see hits in `~/.openclaw/openclaw.json` (Slack tokens) and `~/.opencl
 
 ## 6. Create the Slack app from OpenClaw's manifest
 
-OpenClaw ships a Slack app manifest that pre-configures every scope, event subscription, and feature its Slack plugin needs (Socket Mode, the `app_mention` event, the `/openclaw` slash command, assistant view, file/reaction/pin scopes, and more). Pasting it into Slack's "Create from manifest" flow provisions a fully-configured app in one shot.
+OpenClaw ships a Slack app manifest that pre-configures every scope, event subscription, and feature its Slack plugin needs (Socket Mode, the `app_mention` event, the `/openclaw` slash command, assistant view, file/reaction/pin scopes, and more). Pasting it into Slack's "Create from manifest" flow provisions a fully-configured app in one shot. You already have the manifest on your clipboard from section 5's wizard.
 
 <Steps>
 
-<Step title="Dump the manifest to a file">
-
-On `openclaw-box`:
-
-```bash
-SETUP_CORE=$(ls /root/.openclaw/npm/node_modules/@openclaw/slack/dist/setup-core-*.js | head -1)
-node -e "console.log(JSON.stringify(require('$SETUP_CORE').buildSlackManifest('openclaw'), null, 2))" > /tmp/slack-manifest.json
-cat /tmp/slack-manifest.json
-```
-
-The hashed filename changes between OpenClaw versions, so the `ls` glob keeps this future-proof. Copy the JSON output to your clipboard.
-
-</Step>
-
 <Step title="Create the app in Slack from the manifest">
 
-Go to [api.slack.com/apps](https://api.slack.com/apps), click **Create New App → From a manifest**, pick your workspace, and paste the JSON from `/tmp/slack-manifest.json`. Slack shows a summary of what it'll create. Click **Create** to confirm.
+Go to [api.slack.com/apps](https://api.slack.com/apps), click **Create New App → From a manifest**, pick your workspace, and paste the JSON from your clipboard. Slack shows a summary of what it'll create. Click **Create** to confirm.
 
 </Step>
 
