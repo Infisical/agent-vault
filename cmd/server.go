@@ -81,6 +81,8 @@ var serverCmd = &cobra.Command{
 		mitmPort, _ := cmd.Flags().GetInt("mitm-port")
 		logLevelFlag, _ := cmd.Flags().GetString("log-level")
 		logLevelChanged := cmd.Flags().Changed("log-level")
+		maxRespBytes, _ := cmd.Flags().GetInt64("max-response-bytes")
+		maxReqBytes, _ := cmd.Flags().GetInt64("max-request-bytes")
 		addr := fmt.Sprintf("%s:%d", host, port)
 
 		logLevel, err := resolveLogLevel(logLevelFlag, logLevelChanged)
@@ -91,7 +93,7 @@ var serverCmd = &cobra.Command{
 
 		// --- Detached child path: read master key + initialized flag from stdin pipe ---
 		if os.Getenv("_AGENT_VAULT_DETACHED") == "1" {
-			return runDetachedChild(host, addr, mitmPort, logger)
+			return runDetachedChild(host, addr, mitmPort, logger, maxRespBytes, maxReqBytes)
 		}
 
 		// Pre-flight before unlocking the vault: don't make the user type a
@@ -144,7 +146,7 @@ var serverCmd = &cobra.Command{
 			if logLevelChanged {
 				explicitLogLevel = &logLevelFlag
 			}
-			return spawnDetached(cmd, masterKey, initialized, host, port, mitmPort, addr, explicitLogLevel)
+			return spawnDetached(cmd, masterKey, initialized, host, port, mitmPort, addr, explicitLogLevel, maxRespBytes, maxReqBytes)
 		}
 
 		// --- Foreground path ---
@@ -157,7 +159,7 @@ var serverCmd = &cobra.Command{
 		srv.SetSkills(skillCLI, skillHTTP)
 		shutdownLogs := attachLogSink(srv, db, logger)
 		defer shutdownLogs()
-		if err := attachServerExtensions(srv, host, mitmPort, masterKey.Key(), logger); err != nil {
+		if err := attachServerExtensions(srv, host, mitmPort, masterKey.Key(), logger, maxRespBytes, maxReqBytes); err != nil {
 			return err
 		}
 		return srv.Start()
@@ -172,7 +174,7 @@ var serverCmd = &cobra.Command{
 // in server.Start: since the MITM proxy is default-on, environments that
 // cannot create ~/.agent-vault/ca/ (read-only FS, containers without HOME,
 // corrupted state) must still be able to run the core HTTP server.
-func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKey []byte) error {
+func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKey []byte, maxRespBytes, maxReqBytes int64) error {
 	if mitmPort <= 0 {
 		return nil
 	}
@@ -190,13 +192,15 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 	srv.AttachMITM(mitm.New(
 		net.JoinHostPort(host, strconv.Itoa(mitmPort)),
 		mitm.Options{
-			CA:          caProv,
-			Sessions:    srv.SessionResolver(),
-			Credentials: srv.CredentialProvider(),
-			BaseURL:     srv.BaseURL(),
-			Logger:      srv.Logger(),
-			RateLimit:   srv.RateLimit(),
-			LogSink:     srv.LogSink(),
+			CA:               caProv,
+			Sessions:         srv.SessionResolver(),
+			Credentials:      srv.CredentialProvider(),
+			BaseURL:          srv.BaseURL(),
+			Logger:           srv.Logger(),
+			RateLimit:        srv.RateLimit(),
+			LogSink:          srv.LogSink(),
+			MaxResponseBytes: maxRespBytes,
+			MaxRequestBytes:  maxReqBytes,
 		},
 	))
 	return nil
@@ -204,8 +208,8 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 
 // attachServerExtensions wires optional subsystems (MITM, Infisical) onto srv.
 // Both bootstrap paths (foreground and detached child) call this.
-func attachServerExtensions(srv *server.Server, host string, mitmPort int, masterKey []byte, logger *slog.Logger) error {
-	if err := attachMITMIfEnabled(srv, host, mitmPort, masterKey); err != nil {
+func attachServerExtensions(srv *server.Server, host string, mitmPort int, masterKey []byte, logger *slog.Logger, maxRespBytes, maxReqBytes int64) error {
+	if err := attachMITMIfEnabled(srv, host, mitmPort, masterKey, maxRespBytes, maxReqBytes); err != nil {
 		return err
 	}
 	attachInfisicalIfConfigured(srv, logger)
@@ -492,7 +496,7 @@ func readPasswordFromStdin() ([]byte, error) {
 
 // runDetachedChild is the entry point for the detached child process.
 // It reads 33 bytes from stdin: 32-byte master key + 1-byte initialized flag.
-func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger) error {
+func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger, maxRespBytes, maxReqBytes int64) error {
 	buf := make([]byte, 33)
 	if _, err := io.ReadFull(os.Stdin, buf); err != nil {
 		return fmt.Errorf("reading master key from pipe: %w", err)
@@ -519,7 +523,7 @@ func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger) erro
 	srv.SetSkills(skillCLI, skillHTTP)
 	shutdownLogs := attachLogSink(srv, db, logger)
 	defer shutdownLogs()
-	if err := attachServerExtensions(srv, host, mitmPort, key, logger); err != nil {
+	if err := attachServerExtensions(srv, host, mitmPort, key, logger, maxRespBytes, maxReqBytes); err != nil {
 		return err
 	}
 	return srv.Start()
@@ -528,7 +532,7 @@ func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger) erro
 // spawnDetached re-execs the server as a background process, passing the master key + initialized flag via a pipe.
 // explicitLogLevel, when non-nil, forwards the parent's --log-level flag to the child so a flag-only
 // invocation (no env var) still takes effect after re-exec.
-func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bool, host string, port, mitmPort int, addr string, explicitLogLevel *string) error {
+func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bool, host string, port, mitmPort int, addr string, explicitLogLevel *string, maxRespBytes, maxReqBytes int64) error {
 	defer masterKey.Wipe()
 
 	exe, err := os.Executable()
@@ -556,6 +560,8 @@ func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bo
 	if explicitLogLevel != nil {
 		childArgs = append(childArgs, "--log-level", *explicitLogLevel)
 	}
+	childArgs = append(childArgs, "--max-response-bytes", strconv.FormatInt(maxRespBytes, 10))
+	childArgs = append(childArgs, "--max-request-bytes", strconv.FormatInt(maxReqBytes, 10))
 	child := exec.Command(exe, childArgs...)
 	child.Stdin = pr
 	child.Stdout = logFile
@@ -663,6 +669,8 @@ func init() {
 	serverCmd.Flags().Bool("password-stdin", false, "read master password from stdin (for non-interactive use)")
 	serverCmd.Flags().Int("mitm-port", DefaultMITMPort, "port for the transparent MITM proxy (0 = disabled)")
 	serverCmd.Flags().String("log-level", "info", "log level: info (default) or debug (per-request proxy logs)")
+	serverCmd.Flags().Int64("max-response-bytes", defaultMaxResponseBytes(), "max response body bytes streamed to agents (default: unlimited; also respects AGENT_VAULT_MAX_RESPONSE_BYTES)")
+	serverCmd.Flags().Int64("max-request-bytes", defaultMaxRequestBytes(), "max request body bytes forwarded to upstreams (default: 1 GiB; also respects AGENT_VAULT_MAX_REQUEST_BYTES)")
 	serverCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(serverCmd)
 }

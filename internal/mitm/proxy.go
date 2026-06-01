@@ -45,16 +45,18 @@ import (
 // Proxy is a transparent MITM proxy. It is safe to start at most once;
 // reuse across Shutdown is not supported.
 type Proxy struct {
-	ca          ca.Provider
-	sessions    brokercore.SessionResolver
-	creds       brokercore.CredentialProvider
-	httpServer  *http.Server
-	upstream    *http.Transport
-	isListening atomic.Bool
-	baseURL     string // externally-reachable control-plane URL for help links
-	logger      *slog.Logger
-	rateLimit   *ratelimit.Registry // shared with the HTTP server; nil = no-op
-	logSink     requestlog.Sink     // never nil (Nop default); shared with the HTTP server
+	ca               ca.Provider
+	sessions         brokercore.SessionResolver
+	creds            brokercore.CredentialProvider
+	httpServer       *http.Server
+	upstream         *http.Transport
+	isListening      atomic.Bool
+	baseURL          string // externally-reachable control-plane URL for help links
+	logger           *slog.Logger
+	rateLimit        *ratelimit.Registry // shared with the HTTP server; nil = no-op
+	logSink          requestlog.Sink     // never nil (Nop default); shared with the HTTP server
+	maxResponseBytes int64               // 0 = unlimited
+	maxRequestBytes  int64
 }
 
 // Options carries the dependencies a Proxy needs. BaseURL is the
@@ -64,13 +66,15 @@ type Proxy struct {
 // server so proxy limits and control-plane limits live in one registry;
 // nil disables rate limiting on the MITM path.
 type Options struct {
-	CA          ca.Provider
-	Sessions    brokercore.SessionResolver
-	Credentials brokercore.CredentialProvider
-	BaseURL     string
-	Logger      *slog.Logger
-	RateLimit   *ratelimit.Registry
-	LogSink     requestlog.Sink // nil → Nop
+	CA               ca.Provider
+	Sessions         brokercore.SessionResolver
+	Credentials      brokercore.CredentialProvider
+	BaseURL          string
+	Logger           *slog.Logger
+	RateLimit        *ratelimit.Registry
+	LogSink          requestlog.Sink // nil → Nop
+	MaxResponseBytes int64           // 0 = unlimited (default); >0 = cap in bytes
+	MaxRequestBytes  int64           // 0 → DefaultMaxRequestBytes (1 GiB)
 }
 
 // New builds a Proxy bound to addr. The returned Proxy does not begin
@@ -90,15 +94,23 @@ func New(addr string, opts Options) *Proxy {
 	if sink == nil {
 		sink = requestlog.Nop{}
 	}
+
+	maxReq := opts.MaxRequestBytes
+	if maxReq <= 0 {
+		maxReq = brokercore.DefaultMaxRequestBytes
+	}
+
 	p := &Proxy{
-		ca:        opts.CA,
-		sessions:  opts.Sessions,
-		creds:     opts.Credentials,
-		upstream:  upstream,
-		baseURL:   opts.BaseURL,
-		logger:    opts.Logger,
-		rateLimit: opts.RateLimit,
-		logSink:   sink,
+		ca:               opts.CA,
+		sessions:         opts.Sessions,
+		creds:            opts.Credentials,
+		upstream:         upstream,
+		baseURL:          opts.BaseURL,
+		logger:           opts.Logger,
+		rateLimit:        opts.RateLimit,
+		logSink:          sink,
+		maxResponseBytes: opts.MaxResponseBytes, // 0 = unlimited
+		maxRequestBytes:  maxReq,
 	}
 
 	p.httpServer = &http.Server{

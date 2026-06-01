@@ -23,3 +23,21 @@ func defaultPort() int {
 	}
 	return DefaultPort
 }
+
+func defaultMaxResponseBytes() int64 {
+	if v := os.Getenv("AGENT_VAULT_MAX_RESPONSE_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+func defaultMaxRequestBytes() int64 {
+	if v := os.Getenv("AGENT_VAULT_MAX_REQUEST_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 1 << 30 // 1 GiB — matches brokercore.DefaultMaxRequestBytes
+}

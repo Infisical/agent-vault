@@ -1639,3 +1639,196 @@ func TestIsValidHost(t *testing.T) {
 		}
 	}
 }
+
+// --- Response / request body size limit tests ---
+
+func TestResponseLimitRejectsKnownOversizeWith502(t *testing.T) {
+	body := strings.Repeat("X", 2048)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	sr := validTokenResolver("tok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp, func(o *Options) {
+		o.MaxResponseBytes = 1024
+	})
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+
+	resp, err := newTrustingClient(proxyURL, url.User("tok"), clientRoots).Get(upstream.URL + "/big")
+	if err != nil {
+		t.Fatalf("client.Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	if resp.Header.Get(brokercore.ProxyErrorHeader) != "true" {
+		t.Fatal("missing X-Agent-Vault-Proxy-Error header")
+	}
+	var errBody map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if errBody["error"] != "response_too_large" {
+		t.Fatalf("error code = %q, want response_too_large", errBody["error"])
+	}
+}
+
+func TestResponseLimitAbortsChunkedMidStream(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f, _ := w.(http.Flusher)
+		for i := 0; i < 20; i++ {
+			_, _ = w.Write(make([]byte, 128))
+			if f != nil {
+				f.Flush()
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	sr := validTokenResolver("tok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp, func(o *Options) {
+		o.MaxResponseBytes = 1024
+	})
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+
+	resp, err := newTrustingClient(proxyURL, url.User("tok"), clientRoots).Get(upstream.URL + "/chunked")
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if len(data) >= 2560 {
+		t.Fatalf("got %d bytes, expected incomplete response (limit 1024)", len(data))
+	}
+}
+
+func TestResponseExactFitNoAbort(t *testing.T) {
+	body := strings.Repeat("X", 1024)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, body)
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	sr := validTokenResolver("tok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp, func(o *Options) {
+		o.MaxResponseBytes = 1024
+	})
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+
+	resp, err := newTrustingClient(proxyURL, url.User("tok"), clientRoots).Get(upstream.URL + "/exact")
+	if err != nil {
+		t.Fatalf("client.Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	if string(data) != body {
+		t.Fatalf("got %d bytes, want %d", len(data), len(body))
+	}
+}
+
+func TestResponseUnlimitedByDefault(t *testing.T) {
+	body := strings.Repeat("X", 8192)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, body)
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	sr := validTokenResolver("tok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+
+	resp, err := newTrustingClient(proxyURL, url.User("tok"), clientRoots).Get(upstream.URL + "/large")
+	if err != nil {
+		t.Fatalf("client.Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	if len(data) != len(body) {
+		t.Fatalf("got %d bytes, want %d", len(data), len(body))
+	}
+}
+
+func TestRequestBodyCapConfigurable(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	sr := validTokenResolver("tok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp, func(o *Options) {
+		o.MaxRequestBytes = 512
+	})
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+
+	resp, err := newTrustingClient(proxyURL, url.User("tok"), clientRoots).Post(
+		upstream.URL+"/upload", "application/octet-stream",
+		strings.NewReader(strings.Repeat("X", 1024)))
+	if err != nil {
+		t.Fatalf("client.Post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", resp.StatusCode)
+	}
+}
+
+func TestDefaultMaxRequestBytesZeroMeansDefault(t *testing.T) {
+	p := New("127.0.0.1:0", Options{
+		Logger: slog.New(slog.DiscardHandler),
+	})
+	if p.maxRequestBytes != brokercore.DefaultMaxRequestBytes {
+		t.Fatalf("maxRequestBytes = %d, want %d", p.maxRequestBytes, brokercore.DefaultMaxRequestBytes)
+	}
+	if p.maxResponseBytes != 0 {
+		t.Fatalf("maxResponseBytes = %d, want 0 (unlimited)", p.maxResponseBytes)
+	}
+}
