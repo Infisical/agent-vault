@@ -35,20 +35,9 @@ func maskedTextFrame(t *testing.T, text string) []byte {
 	return buf.Bytes()
 }
 
-func closeFrame() []byte {
-	// Opcode 0x8, FIN=1, unmasked, zero payload
-	return []byte{0x88, 0x00}
-}
-
 func maskedCloseFrame() []byte {
 	// Opcode 0x8, FIN=1, masked, zero payload, 4-byte mask
 	return []byte{0x88, 0x80, 0x00, 0x00, 0x00, 0x00}
-}
-
-func binaryFrame(payload []byte) []byte {
-	// Opcode 0x2, FIN=1, unmasked
-	hdr := []byte{0x82, byte(len(payload))}
-	return append(hdr, payload...)
 }
 
 func maskedBinaryFrame(payload []byte, mask [4]byte) []byte {
@@ -186,8 +175,9 @@ func TestCopyWSFramesPingPassesThrough(t *testing.T) {
 		In:          []string{"websocket"},
 	}}
 
-	ping := pingFrame([]byte("hello"))
-	frame := append(ping, maskedCloseFrame()...)
+	var frame []byte
+	frame = append(frame, pingFrame([]byte("hello"))...)
+	frame = append(frame, maskedCloseFrame()...)
 
 	src := bytes.NewReader(frame)
 	var dst bytes.Buffer

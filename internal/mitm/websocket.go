@@ -489,20 +489,21 @@ func copyWSFramesWithSubstitution(dst io.Writer, src io.Reader, srcConn net.Conn
 		// Build frame header with correct length encoding.
 		var frame []byte
 		firstByte := hdr[0] // preserves FIN, RSV bits, opcode
-		if newLen <= 125 {
+		switch {
+		case newLen <= 125:
 			secondByte := byte(newLen)
 			if masked {
 				secondByte |= 0x80
 			}
 			frame = append(frame, firstByte, secondByte)
-		} else if newLen <= 65535 {
+		case newLen <= 65535:
 			secondByte := byte(126)
 			if masked {
 				secondByte |= 0x80
 			}
 			frame = append(frame, firstByte, secondByte)
 			frame = binary.BigEndian.AppendUint16(frame, uint16(newLen))
-		} else {
+		default:
 			secondByte := byte(127)
 			if masked {
 				secondByte |= 0x80
