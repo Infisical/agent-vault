@@ -413,3 +413,30 @@ func TestApplyBodySubstitutionsScopingDoesNotAffectOtherSurfaces(t *testing.T) {
 		t.Fatalf("body-only sub should not modify header, got %q", headers.Get("X-Echo"))
 	}
 }
+
+func TestHasBodySubstitutions(t *testing.T) {
+	cases := []struct {
+		name string
+		subs []ResolvedSubstitution
+		want bool
+	}{
+		{"nil", nil, false},
+		{"empty", []ResolvedSubstitution{}, false},
+		{"header only", []ResolvedSubstitution{{In: []string{"header"}}}, false},
+		{"path and query", []ResolvedSubstitution{{In: []string{"path", "query"}}}, false},
+		{"body", []ResolvedSubstitution{{In: []string{"body"}}}, true},
+		{"body among others", []ResolvedSubstitution{{In: []string{"header", "body"}}}, true},
+		{"second sub has body", []ResolvedSubstitution{
+			{In: []string{"header"}},
+			{In: []string{"body"}},
+		}, true},
+		{"websocket only", []ResolvedSubstitution{{In: []string{"websocket"}}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := HasBodySubstitutions(tc.subs); got != tc.want {
+				t.Errorf("HasBodySubstitutions() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

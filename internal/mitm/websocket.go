@@ -73,6 +73,15 @@ func (p *Proxy) forwardWebSocket(
 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		defer func() { _ = resp.Body.Close() }()
+
+		if p.maxResponseBytes > 0 && resp.ContentLength > 0 && resp.ContentLength > p.maxResponseBytes {
+			brokercore.WriteProxyError(w, http.StatusBadGateway, "response_too_large",
+				fmt.Sprintf("Upstream response body (%d bytes) exceeds the proxy response-size limit (%d bytes).",
+					resp.ContentLength, p.maxResponseBytes))
+			emit(http.StatusBadGateway, "response_too_large")
+			return
+		}
+
 		for k, vv := range resp.Header {
 			if brokercore.ShouldStripResponseHeader(k) {
 				continue
@@ -82,7 +91,27 @@ func (p *Proxy) forwardWebSocket(
 			}
 		}
 		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, io.LimitReader(resp.Body, brokercore.MaxResponseBytes))
+
+		var src io.Reader = resp.Body
+		if p.maxResponseBytes > 0 {
+			src = io.LimitReader(resp.Body, p.maxResponseBytes)
+		}
+		n, _ := io.Copy(w, src)
+
+		if p.maxResponseBytes > 0 && n == p.maxResponseBytes {
+			var probe [1]byte
+			if extra, _ := resp.Body.Read(probe[:]); extra > 0 {
+				p.logger.Warn("response body truncated mid-stream, aborting connection",
+					slog.String("host", outReq.URL.Host),
+					slog.String("path", outReq.URL.Path),
+					slog.Int64("bytes_streamed", n),
+					slog.Int64("max_response_bytes", p.maxResponseBytes),
+				)
+				emit(resp.StatusCode, "response_truncated")
+				panic(http.ErrAbortHandler)
+			}
+		}
+
 		emit(resp.StatusCode, "")
 		return
 	}

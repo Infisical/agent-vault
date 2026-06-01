@@ -23,6 +23,8 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--password-stdin` | `false` | Read master password from stdin |
     | `--mitm-port` | `14322` | Port for the transparent MITM proxy. Enabled by default; set to `0` to disable. On first launch the root CA is created under `~/.agent-vault/ca/` — clients fetch it with [`agent-vault ca fetch`](#ca). Bind failures are non-fatal. |
     | `--log-level` | `info` | Log level: `info` (default) or `debug`. At `debug`, emits one structured line per proxied request on stderr covering method, host, path, matched service, injected credential key names, upstream status, and duration. Credential **values** are never logged. |
+    | `--max-response-bytes` | `0` (unlimited) | Maximum response body bytes the MITM proxy streams back to agents. `0` means unlimited — responses are streamed with a small buffer so there is no memory risk. When a limit is set and the upstream response exceeds it, the proxy returns 502 (if the size is known upfront) or aborts the connection mid-stream (if chunked). Also respects `AGENT_VAULT_MAX_RESPONSE_BYTES`; the flag takes precedence. |
+    | `--max-request-bytes` | `1073741824` (1 GiB) | Maximum request body bytes the MITM proxy forwards to upstreams. Requests exceeding this receive HTTP 413. Also respects `AGENT_VAULT_MAX_REQUEST_BYTES`; the flag takes precedence. |
 
     **Environment variables:**
 
@@ -31,6 +33,8 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `PORT` | Server listen port (default `14321`). The `--port` flag takes precedence. |
     | `AGENT_VAULT_MASTER_PASSWORD` | Derives a KEK that wraps the data encryption key. Omit for passwordless mode. |
     | `AGENT_VAULT_LOG_LEVEL` | Fallback for `--log-level` when the flag is not set. Accepts `info` or `debug`. |
+    | `AGENT_VAULT_MAX_RESPONSE_BYTES` | Maximum response body bytes streamed to agents (default `0` = unlimited). The `--max-response-bytes` flag takes precedence. |
+    | `AGENT_VAULT_MAX_REQUEST_BYTES` | Maximum request body bytes forwarded to upstreams (default `1073741824` = 1 GiB). The `--max-request-bytes` flag takes precedence. |
     | `AGENT_VAULT_ADDR` | Externally-reachable base URL (e.g. `https://agent-vault.example.com`). Used for links in emails, invites, and discovery, and the hostname is added as a SubjectAltName on every MITM leaf cert so clients that TLS-verify against the proxy's own hostname succeed without a shim. Falls back to `https://<FLY_APP_NAME>.fly.dev` on Fly.io, then `http://{host}:{port}`. The **Connect Your Agent** modal pre-fills the agent address from this value when set; when unset, the modal renders a literal `<AGENT_VAULT_ADDR>` placeholder. |
     | `FLY_APP_NAME` | Auto-detected on Fly.io. When `AGENT_VAULT_ADDR` is unset, derives the base URL as `https://<FLY_APP_NAME>.fly.dev`. |
     | `AGENT_VAULT_SMTP_HOST` | SMTP server host. If unset, email notifications are silently disabled. |

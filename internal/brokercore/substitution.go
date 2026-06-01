@@ -19,6 +19,20 @@ type ResolvedSubstitution struct {
 	In          []string // subset of {"path","query","header","body","websocket"} — security boundary
 }
 
+// HasBodySubstitutions reports whether any substitution targets the
+// "body" surface — used to decide whether the request body must be
+// materialized in RAM.
+func HasBodySubstitutions(subs []ResolvedSubstitution) bool {
+	for _, sub := range subs {
+		for _, s := range sub.In {
+			if s == "body" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ApplySubstitutions rewrites declared surfaces of an outbound request
 // in-place. Path uses url.PathEscape, query uses url.QueryEscape, header
 // uses the raw value with a CRLF guard. On error, callers must not

@@ -16,9 +16,11 @@ import (
 	"github.com/Infisical/agent-vault/internal/broker"
 )
 
-// MaxResponseBytes caps response bodies streamed back to agents on the
-// MITM proxy ingress.
-const MaxResponseBytes = 100 << 20
+// DefaultMaxResponseBytes is the default cap for response bodies on the
+// MITM proxy ingress. 0 means unlimited — response bodies are streamed
+// with a small buffer so there is no OOM risk. Operators can set a cap
+// via --max-response-bytes / AGENT_VAULT_MAX_RESPONSE_BYTES.
+const DefaultMaxResponseBytes int64 = 0
 
 // ProxyErrorHeader is the response header Agent Vault sets on broker-layer
 // error responses so SDK clients can distinguish them from upstream
