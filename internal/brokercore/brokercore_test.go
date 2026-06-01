@@ -314,3 +314,61 @@ func TestForbiddenHintBody_EmptyBaseURL(t *testing.T) {
 		t.Fatal("help field should be absent when baseURL is empty")
 	}
 }
+
+func TestParseByteSize(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    int64
+		wantErr bool
+	}{
+		{"0", 0, false},
+		{"1024", 1024, false},
+		{"100MB", 100 << 20, false},
+		{"1GB", 1 << 30, false},
+		{"5gb", 5 << 30, false},   // case-insensitive
+		{"  256MB  ", 256 << 20, false}, // whitespace tolerant
+		{"2TB", 2 << 40, false},
+		{"abc", 0, true},
+		{"-1", 0, true},
+		{"99999999999999999999GB", 0, true}, // overflow
+	}
+	for _, c := range cases {
+		got, err := parseByteSize(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("parseByteSize(%q) = %d, want error", c.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseByteSize(%q) unexpected error: %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("parseByteSize(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestResolveMaxResponseBytes(t *testing.T) {
+	// Default kicks in when env is unset.
+	t.Setenv("AGENT_VAULT_MAX_RESPONSE_BYTES", "")
+	if got := resolveMaxResponseBytes(); got != DefaultMaxResponseBytes {
+		t.Errorf("default = %d, want %d", got, DefaultMaxResponseBytes)
+	}
+	// Explicit override.
+	t.Setenv("AGENT_VAULT_MAX_RESPONSE_BYTES", "256MB")
+	if got := resolveMaxResponseBytes(); got != 256<<20 {
+		t.Errorf("override = %d, want 256MB", got)
+	}
+	// "0" → unbounded (MaxInt64) for operator opt-out.
+	t.Setenv("AGENT_VAULT_MAX_RESPONSE_BYTES", "0")
+	if got := resolveMaxResponseBytes(); got <= DefaultMaxResponseBytes {
+		t.Errorf("0 should disable the cap; got %d", got)
+	}
+	// Malformed → falls back to default.
+	t.Setenv("AGENT_VAULT_MAX_RESPONSE_BYTES", "garbage")
+	if got := resolveMaxResponseBytes(); got != DefaultMaxResponseBytes {
+		t.Errorf("malformed = %d, want %d (fallback to default)", got, DefaultMaxResponseBytes)
+	}
+}
