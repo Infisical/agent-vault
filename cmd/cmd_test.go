@@ -32,10 +32,42 @@ func TestCommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"server", "auth", "vault", "owner", "account", "catalog", "user", "agent", "ca"}
+	expected := []string{"server", "auth", "vault", "owner", "account", "catalog", "user", "agent", "ca", "logs", "inspect"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected command %q to be registered, but it was not", name)
+		}
+	}
+}
+
+func TestInspectSubcommandsRegistered(t *testing.T) {
+	inspectCmd := findSubcommand(rootCmd, "inspect")
+	if inspectCmd == nil {
+		t.Fatal("inspect command not found")
+	}
+
+	registered := make(map[string]bool)
+	for _, c := range inspectCmd.Commands() {
+		registered[c.Name()] = true
+	}
+
+	expected := []string{"request", "explain"}
+	for _, name := range expected {
+		if !registered[name] {
+			t.Errorf("expected inspect subcommand %q to be registered, but it was not", name)
+		}
+	}
+}
+
+func TestLogsFlagsRegistered(t *testing.T) {
+	logsCmd := findSubcommand(rootCmd, "logs")
+	if logsCmd == nil {
+		t.Fatal("logs command not found")
+	}
+
+	for _, name := range []string{"vault", "ingress", "status", "service", "limit", "tail", "interval", "json"} {
+		if logsCmd.Flags().Lookup(name) == nil {
+			t.Errorf("expected logs flag --%s to be registered", name)
 		}
 	}
 }
