@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -81,6 +82,28 @@ func TestCheckDoesNotRecord(t *testing.T) {
 	d = r.Allow(TierAuth, key)
 	if d.Allow {
 		t.Fatal("Allow should also deny after budget is exhausted")
+	}
+}
+
+func TestCheckEvictsColdKeys(t *testing.T) {
+	cfg := DefaultsFor(ProfileDefault)
+	cfg.Tiers[TierAuth].MaxKeys = 4
+	cfg.Tiers[TierAuth].Window = 50 * time.Millisecond
+	r := New(cfg)
+
+	// Check (not Allow) 6 unique keys — more than maxKeys.
+	for i := 0; i < 6; i++ {
+		r.Check(TierAuth, fmt.Sprintf("mitm:%d", i))
+	}
+
+	// Let entries expire so they become cold.
+	time.Sleep(60 * time.Millisecond)
+
+	// One more Check should trigger eviction of cold keys.
+	r.Check(TierAuth, "mitm:trigger")
+
+	if sz := r.sliding[TierAuth].size(); sz > cfg.Tiers[TierAuth].MaxKeys+2 {
+		t.Fatalf("check() did not evict cold keys: size=%d, maxKeys=%d", sz, cfg.Tiers[TierAuth].MaxKeys)
 	}
 }
 

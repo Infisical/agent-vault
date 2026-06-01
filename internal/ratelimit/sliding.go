@@ -135,6 +135,14 @@ func (l *slidingWindow) check(key string) Decision {
 		return Deny("rate", wait, l.max)
 	}
 
+	if l.maxKeys > 0 && len(l.attempts) > l.maxKeys {
+		for k, v := range l.attempts {
+			if len(v) == 0 || v[len(v)-1].Before(cutoff) {
+				delete(l.attempts, k)
+			}
+		}
+	}
+
 	return AllowOK(l.max-len(recent), l.max)
 }
 
