@@ -3,7 +3,7 @@ title: "Agent protocol"
 description: "How agents authenticate, discover services, route requests through HTTPS_PROXY/HTTP_PROXY, and propose changes through Agent Vault."
 ---
 
-Agent Vault agents follow a standard HTTP protocol to interact with the server. Agents handle this automatically — the canonical reference lives in the [agent skill files](https://github.com/Infisical/agent-vault/blob/main/cmd/skill_http.md), also served at `/v1/skills/http`. This page is a reference for understanding what happens under the hood.
+Agent Vault agents follow a standard HTTP protocol to interact with the server. Agents handle this automatically — the canonical reference lives in the [agent skill file](https://github.com/Infisical/agent-vault/blob/main/cmd/skill_cli.md), also served at `/v1/skills/cli`. This page is a reference for understanding what happens under the hood.
 
 <Warning>
 Agents must never extract, log, or display credential values. They reference credentials by key name only.

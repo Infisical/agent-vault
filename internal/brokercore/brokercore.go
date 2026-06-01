@@ -121,7 +121,7 @@ func ApplyInjection(src, dst http.Header, inject *InjectResult, extraStrip ...st
 // suffix appended to broker-layer error messages when baseURL is known.
 func helpLinks(baseURL string) string {
 	return fmt.Sprintf(
-		"To see available services, GET %s/discover. For usage instructions including how to create a proposal, GET %s/v1/skills/http",
+		"To see available services, GET %s/discover. For usage instructions including how to create a proposal, GET %s/v1/skills/cli",
 		baseURL, baseURL,
 	)
 }

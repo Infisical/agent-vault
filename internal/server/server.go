@@ -63,7 +63,6 @@ type Server struct {
 	initialized    bool   // true when at least one owner account exists
 	baseURL        string // externally-reachable base URL (e.g. "https://sb.example.com")
 	skillCLI       []byte       // embedded CLI skill content (served at GET /v1/skills/cli)
-	skillHTTP      []byte       // embedded HTTP skill content (served at GET /v1/skills/http)
 	mitm           *mitm.Proxy          // transparent MITM proxy; nil only when --mitm-port 0
 	logger         *slog.Logger         // structured logger for per-request observability
 	rateLimit      *ratelimit.Registry  // tiered rate limiter; shared with the MITM ingress
@@ -769,7 +768,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	// (re-mount poll) without defending any real surface.
 	mux.HandleFunc("GET /v1/service-catalog", s.requireInitialized(s.handleServiceCatalog))
 	mux.HandleFunc("GET /v1/skills/cli", s.requireInitialized(s.handleSkillCLI))
-	mux.HandleFunc("GET /v1/skills/http", s.requireInitialized(s.handleSkillHTTP))
 	// CA PEM is not wrapped in requireInitialized — the CA lifecycle is
 	// tied to --mitm-port, not owner registration.
 	mux.HandleFunc("GET /v1/mitm/ca.pem", s.handleMITMCA)

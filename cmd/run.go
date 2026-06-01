@@ -28,9 +28,6 @@ import (
 //go:embed skill_cli.md
 var skillCLI string
 
-//go:embed skill_http.md
-var skillHTTP string
-
 // newRunCmd is called twice — for `vault run` and top-level `run` — so each
 // command gets its own pflag state. examplePrefix parameterizes the Example
 // section of Long.
@@ -265,7 +262,6 @@ func maybeInstallSkills(agentName, baseDir string) {
 	}
 	skills := []skillEntry{
 		{filepath.Join(baseDir, "skills", "agent-vault-cli", "SKILL.md"), skillCLI},
-		{filepath.Join(baseDir, "skills", "agent-vault-http", "SKILL.md"), skillHTTP},
 	}
 
 	// Install or update skills whose on-disk content differs from the

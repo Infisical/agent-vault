@@ -37,7 +37,7 @@ Install the Agent Vault CLI on the host or in the container image where OpenClaw
     agent-vault run -- openclaw gateway run
     ```
 
-    `agent-vault run` automatically configures OpenClaw's managed proxy (`proxy.enabled`) and trusted env proxy for `web_fetch`, sets `OPENCLAW_PROXY_URL`, `HTTPS_PROXY`, `HTTP_PROXY`, and CA trust variables, and installs Agent Vault skills. No manual OpenClaw configuration needed.
+    `agent-vault run` automatically configures OpenClaw's managed proxy (`proxy.enabled`) and trusted env proxy for `web_fetch`, sets `OPENCLAW_PROXY_URL`, `HTTPS_PROXY`, `HTTP_PROXY`, and CA trust variables, and installs the Agent Vault skill. No manual OpenClaw configuration needed.
 
     <Warning>
       `agent-vault run` persists two settings in OpenClaw's config:

@@ -2382,7 +2382,7 @@ func TestDiscoverSuccess(t *testing.T) {
 
 // TestDiscoverHealsLegacyUnnamedServices pins that /discover returns
 // auto-slugged Names for legacy entries persisted without `name`.
-// Agents identify services by Name (per skill_http.md); a blank Name
+// Agents identify services by Name (per skill_cli.md); a blank Name
 // here makes the service un-addressable until an unrelated write
 // triggers a heal elsewhere.
 func TestDiscoverHealsLegacyUnnamedServices(t *testing.T) {
