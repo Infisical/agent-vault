@@ -70,7 +70,7 @@ EOF
 ## After creating a proposal
 
 1. Show the `approval_url` to the user — e.g. "I need access to Stripe. Click here to connect it: {approval_url}"
-2. Poll `agent-vault vault proposal get <id> --json` every 3s for the first 30s, then every 10s
+2. Poll `agent-vault vault proposal get <id> --json` every 3s for the first 30s, then every 10s. Stop after 10 minutes — the proposal may have expired.
 3. Once status is `applied`, retry your original request
 
 ## Checking what's available
@@ -116,3 +116,4 @@ WSS and WS connections also go through the proxy with credential injection — i
 
 - Never extract, log, or display credentials
 - Never hardcode tokens
+- Never use `AGENT_VAULT_TOKEN` as an upstream API credential — it authenticates with Agent Vault only
