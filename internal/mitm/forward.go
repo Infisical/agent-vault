@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
@@ -300,6 +301,117 @@ func (p *Proxy) forwardRequest(
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, io.LimitReader(resp.Body, brokercore.MaxResponseBytes))
+	// Strip Transfer-Encoding above means the response is delivered to the
+	// client via Go's auto-chunking based on what we write here. For
+	// non-streaming responses (single JSON body with Content-Length) that's
+	// fine — a single Write covers it. For streaming protocols though (git
+	// smart-HTTP's sideband pack, SSE, anything that flushes partial bytes
+	// upstream), the client needs each upstream chunk to arrive promptly;
+	// otherwise the parser hits a stall at end-of-stream and aborts (git:
+	// "fatal: early EOF / fetch-pack: invalid index-pack output").
+	//
+	// Use a periodic flusher (50ms) rather than flushing on every Write:
+	// Flush-per-Write is too aggressive — upstream Reads on chunked TLS
+	// can return MTU-sized fragments, and a syscall+TLS write per fragment
+	// throttles throughput to ~tens of KB/s, slow enough that anything
+	// non-trivial (a real git clone) hits the agent's tool timeout long
+	// before finishing. 50ms is what httputil.ReverseProxy uses for the
+	// same purpose and is below any reasonable parser idle timeout.
+	var (
+		copied  int64
+		copyErr error
+	)
+	if f, ok := w.(http.Flusher); ok {
+		fw := newFlushingWriter(w, f, 50*time.Millisecond)
+		copied, copyErr = io.Copy(fw, io.LimitReader(resp.Body, brokercore.MaxResponseBytes))
+		fw.Stop() // final Flush + halt the ticker goroutine
+	} else {
+		copied, copyErr = io.Copy(w, io.LimitReader(resp.Body, brokercore.MaxResponseBytes))
+	}
+	// Surface upstream body copy errors. A successful HTTP response can
+	// still be truncated mid-body if upstream resets or our http.Server
+	// fires a deadline — io.Copy returns the partial byte count plus the
+	// error, but the client just sees a short HTTP body and is left to
+	// puzzle out the cause. Log loudly when it happens.
+	if copyErr != nil {
+		p.logger.Warn("upstream body copy truncated",
+			slog.String("vault_id", scope.VaultID),
+			slog.String("vault_name", scope.VaultName),
+			slog.String("target_host", target),
+			slog.String("path", r.URL.Path),
+			slog.Int64("bytes_copied", copied),
+			slog.String("upstream_content_length", resp.Header.Get("Content-Length")),
+			slog.String("upstream_transfer_encoding", strings.Join(resp.TransferEncoding, ",")),
+			slog.String("error", copyErr.Error()),
+		)
+	} else {
+		p.logger.Debug("upstream body copy ok",
+			slog.String("target_host", target),
+			slog.Int64("bytes_copied", copied),
+		)
+	}
 	emit(resp.StatusCode, "")
+}
+
+// flushingWriter forwards Writes to w and asks f to flush on a periodic
+// timer (or once at Stop), so upstream byte boundaries propagate to the
+// client without the ResponseWriter's default coalescing — but without
+// the per-Write Flush cost that throttled real streaming throughput.
+// Used for proxying streaming responses (chunked transfers, SSE, git
+// sideband). Modeled on net/http/httputil.maxLatencyWriter.
+type flushingWriter struct {
+	mu       sync.Mutex
+	w        io.Writer
+	f        http.Flusher
+	latency  time.Duration
+	t        *time.Timer
+	flushPnd bool // a Write happened since the last Flush
+	stopped  bool
+}
+
+func newFlushingWriter(w io.Writer, f http.Flusher, latency time.Duration) *flushingWriter {
+	return &flushingWriter{w: w, f: f, latency: latency}
+}
+
+func (fw *flushingWriter) Write(p []byte) (int, error) {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+	n, err := fw.w.Write(p)
+	if n > 0 {
+		fw.flushPnd = true
+		if fw.t == nil {
+			fw.t = time.AfterFunc(fw.latency, fw.delayedFlush)
+		}
+	}
+	return n, err
+}
+
+func (fw *flushingWriter) delayedFlush() {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+	if fw.stopped || !fw.flushPnd {
+		return
+	}
+	fw.f.Flush()
+	fw.flushPnd = false
+	// Reschedule for the next tick; the next Write will reuse this timer
+	// (via the nil check) if Writes have stopped.
+	fw.t = nil
+}
+
+// Stop drains any pending flush and prevents future scheduled flushes.
+// Must be called when the copy finishes (success OR error) so the timer
+// goroutine doesn't outlive the response.
+func (fw *flushingWriter) Stop() {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+	fw.stopped = true
+	if fw.t != nil {
+		fw.t.Stop()
+		fw.t = nil
+	}
+	if fw.flushPnd {
+		fw.f.Flush()
+		fw.flushPnd = false
+	}
 }
