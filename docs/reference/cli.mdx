@@ -486,7 +486,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--vault` | `default` | Target vault |
     | `-f` | | Path to a YAML services file (upsert mode) |
     | `--name` | | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required for new services. May be omitted when `--host` uniquely matches an existing service — the server adopts that service's name (same pattern as `service remove` by host). |
-    | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). The server splits the path off the host on ingest. |
+    | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), an inline path-scoped form (`slack.com/api/*`), or an inline port-scoped form (`localhost:8080/api/*`). The server splits the path and port off the host on ingest. A service with a port matches only traffic to that port; a service without a port matches any port. |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, `custom`, `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
     | `--username-key` | | Credential key for basic auth username |
@@ -500,7 +500,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     New services are **enabled by default**. Pass `--disabled` to create the service in a disabled state, or use `agent-vault vault service disable <name-or-host>` after creation.
 
-    To layer two credentials on the same host, give them different inline paths in `--host` (e.g. Slack with `slack.com/api/*` for the Bot token and `slack.com/api/apps.connections.*` for Socket Mode). The matcher resolves overlapping rules deterministically — see [Matching priority](/learn/services#matching-priority).
+    To layer two credentials on the same host, give them different inline paths or ports in `--host` (e.g. Slack with `slack.com/api/*` for the Bot token and `slack.com/api/apps.connections.*` for Socket Mode; or `localhost:8080` and `localhost:9090` for two local apps). The matcher resolves overlapping rules deterministically — see [Matching priority](/learn/services#matching-priority).
 
     URL [substitutions](/learn/services#substitutions) are file-only — there are no flags. Configure them under the `substitutions:` block of a service entry in a YAML file passed via `-f`.
   </Accordion>
@@ -649,7 +649,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--vault` | `default` | Target vault |
     | `-f`, `--file` | | Path to JSON proposal file (use `-` for stdin) |
     | `--name` | | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required for new services. May be omitted when `--host` uniquely matches an existing service — the server adopts that service's name (same pattern as host-based delete). |
-    | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). |
+    | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), an inline path-scoped form (`slack.com/api/*`), or an inline port-scoped form (`localhost:8080/api/*`). |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, or `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
     | `--username-key` | | Credential key for basic auth username |

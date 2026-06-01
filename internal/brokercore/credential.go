@@ -28,7 +28,7 @@ func IsValidUnmatchedHostPolicy(p UnmatchedHostPolicy) bool {
 	return p == PolicyPassthrough || p == PolicyDeny
 }
 
-// InjectResult is the outcome of matching (host, path) and resolving
+// InjectResult is the outcome of matching (host, port, path) and resolving
 // credentials to ready-to-attach HTTP headers.
 type InjectResult struct {
 	// Headers carries SECRET values — never log. Caller must Set (not
@@ -36,10 +36,11 @@ type InjectResult struct {
 	// Nil for passthrough services.
 	Headers map[string]string
 
-	// MatchedName/Host/Path describe the matched service. Safe to log.
+	// MatchedName/Host/Port/Path describe the matched service. Safe to log.
 	// Empty under unmatched-host passthrough.
 	MatchedName string
 	MatchedHost string
+	MatchedPort string
 	MatchedPath string
 
 	// CredentialKeys are the key names referenced by the matched
@@ -101,10 +102,13 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 			return nil, fmt.Errorf("brokercore: parsing broker services: %w", err)
 		}
 	}
-	// MarshalJSON persists Host in joined-inline form; the matcher
-	// requires Host without "/", so split before matching.
+	// MarshalJSON persists Host in joined-inline form; split back to
+	// (host, port, path) for matching. Skip if Port is already set to
+	// preserve in-memory constructions.
 	for i := range services {
-		services[i].Host, services[i].Path = broker.SplitInlineHost(services[i].Host, services[i].Path)
+		if services[i].Port == "" {
+			services[i].Host, services[i].Port, services[i].Path = broker.SplitInlineHostWithPort(services[i].Host, services[i].Path)
+		}
 	}
 	// Heal legacy unnamed entries so MatchedName (which lands in the
 	// request log and the X-Vault-Service header) is never blank for a
@@ -113,13 +117,15 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	broker.AssignSlugNames(services)
 
 	matchHost := targetHost
-	if h, _, err := net.SplitHostPort(targetHost); err == nil {
+	matchPort := ""
+	if h, port, err := net.SplitHostPort(targetHost); err == nil {
 		matchHost = h
+		matchPort = port
 	}
 	if targetPath == "" {
 		targetPath = "/"
 	}
-	matched, score := broker.MatchService(matchHost, targetPath, services)
+	matched, score := broker.MatchService(matchHost, matchPort, targetPath, services)
 	if matched == nil {
 		// Fail closed on policy lookup errors so a transient store
 		// failure can't silently strip enforcement.
@@ -136,9 +142,11 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 		slog.String("vault", vaultID),
 		slog.String("service", matched.Name),
 		slog.String("host", matched.Host),
+		slog.String("port", matched.Port),
 		slog.String("path", matched.Path),
 		slog.String("host_tier", score.HostTierName()),
 		slog.Int("path_prefix_len", score.PathLiteralLen),
+		slog.Bool("port_match", score.PortMatch),
 		slog.Int("decl_order", score.DeclOrder),
 	)
 
@@ -167,6 +175,7 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	result := &InjectResult{
 		MatchedName:    matched.Name,
 		MatchedHost:    matched.Host,
+		MatchedPort:    matched.Port,
 		MatchedPath:    matched.Path,
 		CredentialKeys: matched.CredentialKeys(),
 	}
