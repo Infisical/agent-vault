@@ -286,8 +286,8 @@ func (p *Proxy) forwardRequest(
 			emit(http.StatusBadGateway, "substitution_error")
 			return
 		}
+		outReq.Body = newBody
 		if modified {
-			outReq.Body = newBody
 			outReq.ContentLength = newLen
 			outReq.Header.Set("Content-Length", fmt.Sprintf("%d", newLen))
 		}
