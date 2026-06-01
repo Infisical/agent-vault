@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -42,6 +43,76 @@ func TestSlidingWindowAllowThenDeny(t *testing.T) {
 	// Different key is independent.
 	if d := r.Allow(TierAuth, "ip:5.6.7.8"); !d.Allow {
 		t.Fatalf("different key should be allowed independently")
+	}
+}
+
+func TestCheckDoesNotRecord(t *testing.T) {
+	cfg := DefaultsFor(ProfileDefault)
+	cfg.Tiers[TierAuth].Max = 3
+	r := New(cfg)
+
+	key := "ip:10.0.0.5"
+
+	// Check many times — none should consume budget.
+	for i := 0; i < 20; i++ {
+		d := r.Check(TierAuth, key)
+		if !d.Allow {
+			t.Fatalf("Check %d denied, but no events were recorded", i+1)
+		}
+	}
+
+	// Now record 3 events via Allow to fill the budget.
+	for i := 0; i < 3; i++ {
+		d := r.Allow(TierAuth, key)
+		if !d.Allow {
+			t.Fatalf("Allow %d denied unexpectedly", i+1)
+		}
+	}
+
+	// Check should now return Deny.
+	d := r.Check(TierAuth, key)
+	if d.Allow {
+		t.Fatal("Check should deny after budget is exhausted")
+	}
+	if d.RetryAfter <= 0 {
+		t.Fatalf("RetryAfter should be positive, got %v", d.RetryAfter)
+	}
+
+	// Allow should also deny (and not double-count).
+	d = r.Allow(TierAuth, key)
+	if d.Allow {
+		t.Fatal("Allow should also deny after budget is exhausted")
+	}
+}
+
+func TestCheckEvictsColdKeys(t *testing.T) {
+	cfg := DefaultsFor(ProfileDefault)
+	cfg.Tiers[TierAuth].MaxKeys = 4
+	cfg.Tiers[TierAuth].Window = 50 * time.Millisecond
+	r := New(cfg)
+
+	// Check (not Allow) 6 unique keys — more than maxKeys.
+	for i := 0; i < 6; i++ {
+		r.Check(TierAuth, fmt.Sprintf("mitm:%d", i))
+	}
+
+	// Let entries expire so they become cold.
+	time.Sleep(60 * time.Millisecond)
+
+	// One more Check should trigger eviction of cold keys.
+	r.Check(TierAuth, "mitm:trigger")
+
+	if sz := r.sliding[TierAuth].size(); sz > cfg.Tiers[TierAuth].MaxKeys+2 {
+		t.Fatalf("check() did not evict cold keys: size=%d, maxKeys=%d", sz, cfg.Tiers[TierAuth].MaxKeys)
+	}
+}
+
+func TestCheckOffConfigAllows(t *testing.T) {
+	r := New(DefaultsFor(ProfileOff))
+	for i := 0; i < 100; i++ {
+		if d := r.Check(TierAuth, "ip:1.2.3.4"); !d.Allow {
+			t.Fatalf("off config denied Check at attempt %d", i)
+		}
 	}
 }
 

@@ -47,11 +47,12 @@ func isLoopbackPeer(r *http.Request) bool {
 // CONNECT request line (r.Host) and captured in a closure so subsequent
 // Host-header rewrites by the client cannot redirect the tunnel.
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
-	// Gate before ParseProxyAuth + session lookup so a bad-auth flood
-	// can't burn CPU. Per-IP on the raw TCP peer, shared with the
-	// TierAuth budget. Loopback is exempt — see isLoopbackPeer.
+	// Read-only pre-gate: if this IP has exhausted its auth-failure
+	// budget, reject immediately. Only auth failures are recorded
+	// (below) so legitimate agents don't burn the budget. Loopback
+	// is exempt — see isLoopbackPeer.
 	if p.rateLimit != nil && !isLoopbackPeer(r) {
-		if d := p.rateLimit.Allow(ratelimit.TierAuth, mitmIPKey(r)); !d.Allow {
+		if d := p.rateLimit.Check(ratelimit.TierAuth, mitmIPKey(r)); !d.Allow {
 			ratelimit.WriteDenial(w, d, "Too many CONNECT attempts")
 			return
 		}
@@ -73,11 +74,13 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// connection is hijacked — once hijacked, no HTTP status can be sent.
 	token, hint, err := brokercore.ParseProxyAuth(r)
 	if err != nil {
+		p.recordAuthFailure(r)
 		writeProxyAuthChallenge(w, "Proxy-Authorization required")
 		return
 	}
 	scope, err := p.sessions.ResolveForProxy(r.Context(), token, hint)
 	if err != nil {
+		p.recordAuthFailure(r)
 		writeAuthError(w, err)
 		return
 	}
@@ -145,6 +148,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	_ = srv.Serve(listener)
+}
+
+// recordAuthFailure records one auth-failure event against the per-IP
+// TierAuth budget so the read-only pre-gate in handleConnect /
+// handleForward will reject subsequent requests once the budget is
+// exhausted. Only called on auth failure — successful requests skip
+// TierAuth entirely (TierProxy covers them). Loopback peers are exempt.
+func (p *Proxy) recordAuthFailure(r *http.Request) {
+	if p.rateLimit != nil && !isLoopbackPeer(r) {
+		p.rateLimit.Allow(ratelimit.TierAuth, mitmIPKey(r))
+	}
 }
 
 // writeProxyAuthChallenge writes a 407 with a Proxy-Authenticate header so
