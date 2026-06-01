@@ -20,7 +20,7 @@ metadata:
 
 # Requesting API Access
 
-API keys in your environment may be placeholders. Your outbound requests are routed through a proxy that replaces them with real credentials before they reach the upstream API — in headers, URL paths, query strings, request bodies, and WebSocket frames. Just make requests normally — they will work even if the key looks fake.
+`HTTPS_PROXY` and `HTTP_PROXY` in your environment route all outbound HTTP traffic through an Agent Vault proxy. The proxy matches each request's host against configured services, injects the real credential, and forwards to the upstream. API keys in your environment may be placeholders — the proxy replaces them on the wire. Just make requests normally.
 
 If an API call fails with 401 or 403, you can request access by creating a proposal. A human approves it and provides the credentials.
 
