@@ -101,6 +101,12 @@ func (p *Proxy) forwardWebSocket(
 		if p.maxResponseBytes > 0 && n == p.maxResponseBytes {
 			var probe [1]byte
 			if extra, _ := resp.Body.Read(probe[:]); extra > 0 {
+				p.logger.Warn("response body truncated mid-stream, aborting connection",
+					slog.String("host", outReq.URL.Host),
+					slog.String("path", outReq.URL.Path),
+					slog.Int64("bytes_streamed", n),
+					slog.Int64("max_response_bytes", p.maxResponseBytes),
+				)
 				emit(resp.StatusCode, "response_truncated")
 				panic(http.ErrAbortHandler)
 			}
