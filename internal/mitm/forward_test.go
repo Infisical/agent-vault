@@ -19,6 +19,7 @@ import (
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/netguard"
+	"github.com/Infisical/agent-vault/internal/ratelimit"
 	"github.com/Infisical/agent-vault/internal/requestlog"
 )
 
@@ -649,5 +650,84 @@ func TestMITMForwardIPv6PreservesHostHeader(t *testing.T) {
 	wantHost := "[::1]:" + port
 	if sawHost != wantHost {
 		t.Errorf("upstream Host = %q, want %q (IPv6 brackets must round-trip)", sawHost, wantHost)
+	}
+}
+
+func TestMITMForwardAuthRateLimitSkipsSuccessfulAuth(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	upHost, upPort, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upHost: {result: &brokercore.InjectResult{Passthrough: true}},
+	}}
+	proxyURL, _, p := setupProxy(t, sr, cp)
+
+	cfg := ratelimit.DefaultsFor(ratelimit.ProfileDefault)
+	cfg.Tiers[ratelimit.TierAuth].Max = 3
+	p.rateLimit = ratelimit.New(cfg)
+	overrideRemoteAddr(p, "10.0.0.5:12345")
+
+	auth := base64.StdEncoding.EncodeToString([]byte("av_sess_ok:"))
+	for i := 0; i < 10; i++ {
+		conn := dialProxy(t, proxyURL)
+		resp := writeRawRequestLine(t, conn,
+			fmt.Sprintf("GET http://%s:%s/x HTTP/1.1", upHost, upPort),
+			map[string]string{
+				"Host":                upstream.Listener.Addr().String(),
+				"Proxy-Authorization": "Basic " + auth,
+			})
+		resp.Body.Close()
+		conn.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			t.Fatalf("forward %d got 429; successful auth should not consume TierAuth budget", i+1)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("forward %d got %d, want 200", i+1, resp.StatusCode)
+		}
+	}
+}
+
+func TestMITMForwardAuthRateLimitCountsFailures(t *testing.T) {
+	sr := validTokenResolver("good-token", nil)
+	cp := &fakeCredProvider{}
+	proxyURL, _, p := setupProxy(t, sr, cp)
+
+	cfg := ratelimit.DefaultsFor(ratelimit.ProfileDefault)
+	cfg.Tiers[ratelimit.TierAuth].Max = 3
+	p.rateLimit = ratelimit.New(cfg)
+	overrideRemoteAddr(p, "10.0.0.5:12345")
+
+	auth := base64.StdEncoding.EncodeToString([]byte("bad-token:"))
+	for i := 0; i < 3; i++ {
+		conn := dialProxy(t, proxyURL)
+		resp := writeRawRequestLine(t, conn,
+			"GET http://example.com/x HTTP/1.1",
+			map[string]string{
+				"Host":                "example.com",
+				"Proxy-Authorization": "Basic " + auth,
+			})
+		resp.Body.Close()
+		conn.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			t.Fatalf("forward %d got 429 before budget should be exhausted", i+1)
+		}
+	}
+
+	conn := dialProxy(t, proxyURL)
+	defer conn.Close()
+	resp := writeRawRequestLine(t, conn,
+		"GET http://example.com/x HTTP/1.1",
+		map[string]string{
+			"Host":                "example.com",
+			"Proxy-Authorization": "Basic " + auth,
+		})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("forward 4 got %d, want 429 after budget exhausted", resp.StatusCode)
 	}
 }

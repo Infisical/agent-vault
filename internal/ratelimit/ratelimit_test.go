@@ -45,6 +45,54 @@ func TestSlidingWindowAllowThenDeny(t *testing.T) {
 	}
 }
 
+func TestCheckDoesNotRecord(t *testing.T) {
+	cfg := DefaultsFor(ProfileDefault)
+	cfg.Tiers[TierAuth].Max = 3
+	r := New(cfg)
+
+	key := "ip:10.0.0.5"
+
+	// Check many times — none should consume budget.
+	for i := 0; i < 20; i++ {
+		d := r.Check(TierAuth, key)
+		if !d.Allow {
+			t.Fatalf("Check %d denied, but no events were recorded", i+1)
+		}
+	}
+
+	// Now record 3 events via Allow to fill the budget.
+	for i := 0; i < 3; i++ {
+		d := r.Allow(TierAuth, key)
+		if !d.Allow {
+			t.Fatalf("Allow %d denied unexpectedly", i+1)
+		}
+	}
+
+	// Check should now return Deny.
+	d := r.Check(TierAuth, key)
+	if d.Allow {
+		t.Fatal("Check should deny after budget is exhausted")
+	}
+	if d.RetryAfter <= 0 {
+		t.Fatalf("RetryAfter should be positive, got %v", d.RetryAfter)
+	}
+
+	// Allow should also deny (and not double-count).
+	d = r.Allow(TierAuth, key)
+	if d.Allow {
+		t.Fatal("Allow should also deny after budget is exhausted")
+	}
+}
+
+func TestCheckOffConfigAllows(t *testing.T) {
+	r := New(DefaultsFor(ProfileOff))
+	for i := 0; i < 100; i++ {
+		if d := r.Check(TierAuth, "ip:1.2.3.4"); !d.Allow {
+			t.Fatalf("off config denied Check at attempt %d", i)
+		}
+	}
+}
+
 func TestSlidingWindowEvictionCap(t *testing.T) {
 	// Tight map cap + tight window so eviction fires on an old entry.
 	cfg := DefaultsFor(ProfileDefault)

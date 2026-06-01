@@ -1517,6 +1517,104 @@ func TestMITMSubstitutionRewritesQueryAndHeader(t *testing.T) {
 	}
 }
 
+// overrideRemoteAddr wraps the proxy's HTTP handler to set RemoteAddr to
+// a non-loopback IP so rate-limit tests exercise the non-exempt path.
+// Must be called after setupProxy but before any requests are made.
+func overrideRemoteAddr(p *Proxy, addr string) {
+	orig := p.httpServer.Handler
+	p.httpServer.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.RemoteAddr = addr
+		orig.ServeHTTP(w, r)
+	})
+}
+
+func TestMITMConnectAuthRateLimitSkipsSuccessfulAuth(t *testing.T) {
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{}
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+
+	cfg := ratelimit.DefaultsFor(ratelimit.ProfileDefault)
+	cfg.Tiers[ratelimit.TierAuth].Max = 3
+	p.rateLimit = ratelimit.New(cfg)
+	overrideRemoteAddr(p, "10.0.0.5:12345")
+
+	// Send more CONNECT requests than the TierAuth budget (3). All should
+	// succeed because successful auth doesn't consume the budget.
+	auth := base64.StdEncoding.EncodeToString([]byte("av_sess_ok:"))
+	for i := 0; i < 10; i++ {
+		resp := rawConnect(t, proxyURL, clientRoots,
+			fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth))
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			t.Fatalf("CONNECT %d got 429; successful auth should not consume TierAuth budget", i+1)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("CONNECT %d got %d, want 200", i+1, resp.StatusCode)
+		}
+	}
+}
+
+func TestMITMConnectAuthRateLimitCountsFailures(t *testing.T) {
+	sr := validTokenResolver("good-token", nil)
+	cp := &fakeCredProvider{}
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+
+	cfg := ratelimit.DefaultsFor(ratelimit.ProfileDefault)
+	cfg.Tiers[ratelimit.TierAuth].Max = 3
+	p.rateLimit = ratelimit.New(cfg)
+	overrideRemoteAddr(p, "10.0.0.5:12345")
+
+	// 3 requests with bad auth should exhaust the budget.
+	auth := base64.StdEncoding.EncodeToString([]byte("bad-token:"))
+	for i := 0; i < 3; i++ {
+		resp := rawConnect(t, proxyURL, clientRoots,
+			fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth))
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			t.Fatalf("CONNECT %d got 429 before budget should be exhausted", i+1)
+		}
+	}
+
+	// 4th bad-auth request should be 429'd by the pre-gate.
+	resp := rawConnect(t, proxyURL, clientRoots,
+		fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("CONNECT 4 got %d, want 429 after budget exhausted", resp.StatusCode)
+	}
+}
+
+func TestMITMConnectAuthRateLimitCountsMissingAuth(t *testing.T) {
+	sr := errResolver(brokercore.ErrInvalidSession)
+	cp := &fakeCredProvider{}
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+
+	cfg := ratelimit.DefaultsFor(ratelimit.ProfileDefault)
+	cfg.Tiers[ratelimit.TierAuth].Max = 3
+	p.rateLimit = ratelimit.New(cfg)
+	overrideRemoteAddr(p, "10.0.0.5:12345")
+
+	// Requests with no Proxy-Authorization header should consume budget.
+	for i := 0; i < 3; i++ {
+		resp := rawConnect(t, proxyURL, clientRoots, "")
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			t.Fatalf("CONNECT %d got 429 before budget should be exhausted", i+1)
+		}
+		if resp.StatusCode != http.StatusProxyAuthRequired {
+			t.Fatalf("CONNECT %d got %d, want 407", i+1, resp.StatusCode)
+		}
+	}
+
+	// 4th should be 429.
+	resp := rawConnect(t, proxyURL, clientRoots, "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("CONNECT 4 got %d, want 429", resp.StatusCode)
+	}
+}
+
 func TestIsValidHost(t *testing.T) {
 	cases := []struct {
 		in   string
