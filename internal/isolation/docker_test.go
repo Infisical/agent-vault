@@ -430,6 +430,16 @@ func TestBuildRunArgs_RejectsCWDAncestorOfAgentVaultDir(t *testing.T) {
 	}
 }
 
+func TestValidateHostSrc_RejectsRootFilesystem(t *testing.T) {
+	err := validateHostSrc("/", t.TempDir())
+	if err == nil {
+		t.Fatal("expected validateHostSrc to reject /")
+	}
+	if !strings.Contains(err.Error(), "root filesystem") {
+		t.Errorf("err = %q, want to mention root filesystem", err.Error())
+	}
+}
+
 func TestIsDockerSocket_RejectsAncestorDir(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("docker socket path is POSIX-specific")

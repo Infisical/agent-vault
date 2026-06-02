@@ -233,6 +233,9 @@ func parseAndValidateMount(raw, homeDir string) (parsedMount, error) {
 }
 
 func validateHostSrc(resolved, homeDir string) error {
+	if resolved == "/" {
+		return errors.New("--mount: refusing to bind the host root filesystem")
+	}
 	if isDockerSocket(resolved) {
 		return errors.New("--mount: refusing to bind the docker socket (would undo every isolation guarantee)")
 	}
