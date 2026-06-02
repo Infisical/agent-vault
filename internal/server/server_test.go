@@ -4007,6 +4007,27 @@ func TestAgentRotate(t *testing.T) {
 	}
 }
 
+func TestAgentRotate_MemberCannotRotateOwnerRoleAgent(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	// Agent created by the member but promoted to owner role.
+	ms.agents["admin-bot"] = &store.Agent{
+		ID: "a1", Name: "admin-bot", Status: "active",
+		Role: "owner", CreatedBy: "member-user-id",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/admin-bot/rotate", nil)
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAgentRename(t *testing.T) {
 	srv, ms, sessID := setupAgentTest(t)
 
