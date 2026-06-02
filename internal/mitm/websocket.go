@@ -96,7 +96,11 @@ func (p *Proxy) forwardWebSocket(
 		if p.maxResponseBytes > 0 {
 			src = io.LimitReader(resp.Body, p.maxResponseBytes)
 		}
-		n, _ := io.Copy(w, src)
+		var dst io.Writer = w
+		if f, ok := w.(http.Flusher); ok {
+			dst = &flushingWriter{w: w, f: f}
+		}
+		n, _ := io.Copy(dst, src)
 
 		if p.maxResponseBytes > 0 && n == p.maxResponseBytes {
 			var probe [1]byte
@@ -426,6 +430,10 @@ func copyWSFramesWithSubstitution(dst io.Writer, src io.Reader, srcConn net.Conn
 		if !canSubstitute {
 			if opcode == wsOpText && !fin {
 				slog.Default().Warn("fragmented WebSocket text frame on connection with substitutions; passing through without substitution")
+			} else if opcode == wsOpText && payloadLen > maxWSSubstitutionPayload {
+				slog.Default().Warn("WebSocket text frame exceeds substitution size limit; passing through without substitution",
+					slog.Uint64("payload_len", payloadLen),
+					slog.Int("max_substitution_payload", maxWSSubstitutionPayload))
 			}
 			// Stream the frame through: write the already-read header bytes,
 			// then copy the payload with io.CopyN.

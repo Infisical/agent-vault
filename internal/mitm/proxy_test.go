@@ -1832,3 +1832,67 @@ func TestDefaultMaxRequestBytesZeroMeansDefault(t *testing.T) {
 		t.Fatalf("maxResponseBytes = %d, want 0 (unlimited)", p.maxResponseBytes)
 	}
 }
+
+func TestMITMForwardStreamsChunksPromptly(t *testing.T) {
+	const chunkCount = 5
+	const chunkDelay = 80 * time.Millisecond
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "no flusher", 500)
+			return
+		}
+		for i := 0; i < chunkCount; i++ {
+			_, _ = fmt.Fprintf(w, "chunk-%d\n", i)
+			f.Flush()
+			if i < chunkCount-1 {
+				time.Sleep(chunkDelay)
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	sr := validTokenResolver("tok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+
+	resp, err := newTrustingClient(proxyURL, url.User("tok"), clientRoots).Get(upstream.URL + "/stream")
+	if err != nil {
+		t.Fatalf("client.Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var arrivals []time.Time
+	buf := make([]byte, 256)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			arrivals = append(arrivals, time.Now())
+		}
+		if readErr != nil {
+			break
+		}
+	}
+
+	if len(arrivals) < 3 {
+		t.Fatalf("got %d reads, want ≥3 (chunks should arrive incrementally)", len(arrivals))
+	}
+	var hasGap bool
+	for i := 1; i < len(arrivals); i++ {
+		if arrivals[i].Sub(arrivals[i-1]) >= chunkDelay/2 {
+			hasGap = true
+			break
+		}
+	}
+	if !hasGap {
+		t.Fatal("no inter-chunk gap ≥40ms detected; proxy is buffering instead of flushing per-chunk")
+	}
+}

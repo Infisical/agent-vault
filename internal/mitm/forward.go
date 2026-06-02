@@ -16,6 +16,19 @@ import (
 	"github.com/Infisical/agent-vault/internal/requestlog"
 )
 
+type flushingWriter struct {
+	w io.Writer
+	f http.Flusher
+}
+
+func (fw *flushingWriter) Write(p []byte) (int, error) {
+	n, err := fw.w.Write(p)
+	if n > 0 {
+		fw.f.Flush()
+	}
+	return n, err
+}
+
 // actorFromScope returns the (type, id) pair used in request log rows.
 // Empty strings when neither principal is set on the scope.
 func actorFromScope(scope *brokercore.ProxyScope) (string, string) {
@@ -353,7 +366,11 @@ func (p *Proxy) forwardRequest(
 	if p.maxResponseBytes > 0 {
 		src = io.LimitReader(resp.Body, p.maxResponseBytes)
 	}
-	n, _ := io.Copy(w, src)
+	var dst io.Writer = w
+	if f, ok := w.(http.Flusher); ok {
+		dst = &flushingWriter{w: w, f: f}
+	}
+	n, _ := io.Copy(dst, src)
 
 	if p.maxResponseBytes > 0 && n == p.maxResponseBytes {
 		var probe [1]byte
