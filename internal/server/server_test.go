@@ -4026,6 +4026,9 @@ func TestAgentRotate_MemberCannotRotateOwnerRoleAgent(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), "owner-role agents") {
+		t.Errorf("expected owner-role error message, got: %s", rec.Body.String())
+	}
 }
 
 func TestAgentRename(t *testing.T) {
