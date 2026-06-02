@@ -18,9 +18,9 @@ func testRegistry(t *testing.T) *Registry {
 
 func TestSlidingWindowAllowThenDeny(t *testing.T) {
 	r := testRegistry(t)
-	// Drive TierAuth to its ceiling (10 at default).
+	// Drive TierAuth to its ceiling (50 at default).
 	var lastAllowed bool
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 50; i++ {
 		d := r.Allow(TierAuth, "ip:1.2.3.4")
 		lastAllowed = d.Allow
 		if !d.Allow {
@@ -32,7 +32,7 @@ func TestSlidingWindowAllowThenDeny(t *testing.T) {
 	}
 	d := r.Allow(TierAuth, "ip:1.2.3.4")
 	if d.Allow {
-		t.Fatalf("11th attempt should be denied")
+		t.Fatalf("51st attempt should be denied")
 	}
 	if d.RetryAfter <= 0 {
 		t.Fatalf("retry-after should be positive on denial, got %v", d.RetryAfter)

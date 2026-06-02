@@ -53,7 +53,7 @@ func DefaultsFor(profile Profile) Config {
 	// Unauthenticated surface: login/register/forgot/reset/verify,
 	// invite/approval-token redemption, and proxy auth failures.
 	c.Tiers[TierAuth] = TierConfig{
-		Algorithm: AlgSliding, Window: 5 * time.Minute, Max: scaleMax(10, mul), MaxKeys: 10000,
+		Algorithm: AlgSliding, Window: 5 * time.Minute, Max: scaleMax(50, mul), MaxKeys: 10000,
 	}
 	// MITM proxy: token bucket smooths traffic; Concurrency caps
 	// in-flight slow upstream calls per (actor, vault). Defaults are
