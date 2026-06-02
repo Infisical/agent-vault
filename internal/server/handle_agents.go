@@ -260,7 +260,7 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !actor.IsOwner() && agent.CreatedBy != actor.ID {
+	if !actor.IsOwner() && (agent.CreatedBy != actor.ID || agent.Role == "owner") {
 		jsonError(w, http.StatusForbidden, "Only the owner or agent creator can revoke agents")
 		return
 	}
@@ -297,7 +297,7 @@ func (s *Server) handleAgentRotate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !actor.IsOwner() && agent.CreatedBy != actor.ID {
+	if !actor.IsOwner() && (agent.CreatedBy != actor.ID || agent.Role == "owner") {
 		jsonError(w, http.StatusForbidden, "Only the owner or agent creator can rotate agents")
 		return
 	}
@@ -334,7 +334,7 @@ func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !actor.IsOwner() && agent.CreatedBy != actor.ID {
+	if !actor.IsOwner() && (agent.CreatedBy != actor.ID || agent.Role == "owner") {
 		jsonError(w, http.StatusForbidden, "Only the owner or agent creator can rename agents")
 		return
 	}
