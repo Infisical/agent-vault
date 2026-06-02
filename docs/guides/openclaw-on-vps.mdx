@@ -462,11 +462,18 @@ chmod 600 /etc/openclaw/agent-vault.env
 
 <Step title="Sanity-check the proxy path">
 
+systemd reads the env file natively when it runs the gateway, but a manual `agent-vault run` from your shell needs the vars exported into the current shell first. `set -a` makes every variable assigned by the following `source` get auto-exported.
+
 ```bash
+set -a
+source /etc/openclaw/agent-vault.env
+set +a
 agent-vault run -- curl -H "Authorization: Bearer __github_token__" https://api.github.com/user
 ```
 
 Expect a real GitHub user response. The placeholder was substituted on the wire. If this fails, fix it before moving on; debugging a wrapped gateway is harder than debugging a wrapped curl.
+
+If `agent-vault run` complains with `unsupported protocol scheme ""`, your `AGENT_VAULT_ADDR` is missing the `http://` scheme or the `:14321` port. Both are required.
 
 </Step>
 
