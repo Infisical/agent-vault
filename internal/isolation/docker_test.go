@@ -391,6 +391,67 @@ func TestParseAndValidateMount_SymlinkLaunderingRejected(t *testing.T) {
 	}
 }
 
+func TestBuildRunArgs_RejectsAncestorOfAgentVaultDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	vaultDir := filepath.Join(home, ".agent-vault")
+	if err := os.MkdirAll(vaultDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	cfg := baseConfig(t)
+	// Mount the home directory itself — an ancestor of ~/.agent-vault.
+	cfg.Mounts = []string{home + ":/data"}
+	_, err := BuildRunArgs(cfg)
+	if err == nil {
+		t.Fatal("expected BuildRunArgs to reject mounting a parent of ~/.agent-vault")
+	}
+	if !strings.Contains(err.Error(), ".agent-vault") {
+		t.Errorf("err = %q, want to mention .agent-vault", err.Error())
+	}
+}
+
+func TestBuildRunArgs_RejectsCWDAncestorOfAgentVaultDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	vaultDir := filepath.Join(home, ".agent-vault")
+	if err := os.MkdirAll(vaultDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	cfg := baseConfig(t)
+	cfg.WorkDir = home
+	_, err := BuildRunArgs(cfg)
+	if err == nil {
+		t.Fatal("expected BuildRunArgs to reject CWD that is a parent of ~/.agent-vault")
+	}
+	if !strings.Contains(err.Error(), ".agent-vault") {
+		t.Errorf("err = %q, want to mention .agent-vault", err.Error())
+	}
+}
+
+func TestValidateHostSrc_RejectsRootFilesystem(t *testing.T) {
+	err := validateHostSrc("/", t.TempDir())
+	if err == nil {
+		t.Fatal("expected validateHostSrc to reject /")
+	}
+	if !strings.Contains(err.Error(), "root filesystem") {
+		t.Errorf("err = %q, want to mention root filesystem", err.Error())
+	}
+}
+
+func TestIsDockerSocket_RejectsAncestorDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("docker socket path is POSIX-specific")
+	}
+	// /var/run is a parent of /var/run/docker.sock
+	for _, ancestor := range []string{"/var/run", "/private/var/run"} {
+		if !isDockerSocket(ancestor) {
+			t.Errorf("expected isDockerSocket(%q) = true (ancestor of docker.sock)", ancestor)
+		}
+	}
+}
+
 func TestParseAndValidateMount_MalformedSpec(t *testing.T) {
 	tmp := t.TempDir()
 	for _, raw := range []string{
