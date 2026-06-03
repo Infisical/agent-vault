@@ -10,15 +10,15 @@ By the end, you'll have:
 1. **Agent Vault running on one droplet**, holding real Anthropic, GitHub, Notion, and Slack credentials encrypted at rest behind a master password.
 2. **An OpenClaw gateway running on a second droplet**, reachable via a Slack bot, with every outbound API call brokered through Agent Vault and revocable from the UI in one click.
 
-<Note>
-This guide installs Agent Vault as a native binary via the install script, the path documented in [Self-hosting locally](/self-hosting/local). For containers, see [Docker self-hosting](/self-hosting/docker).
-</Note>
-
 ## Prerequisites
 
 - A [DigitalOcean](https://cloud.digitalocean.com) account.
 - API keys for the services you want OpenClaw to call. This guide uses Anthropic, GitHub, Notion, and Slack.
 - A Slack workspace where you can install a custom app.
+
+<Note>
+This guide installs Agent Vault as a native binary via the install script, the path documented in [Self-hosting locally](/self-hosting/local). For containers, see [Docker self-hosting](/self-hosting/docker).
+</Note>
 
 ## Architecture
 
@@ -102,7 +102,7 @@ Repeat the previous step with one change:
 
 - **Hostname:** `openclaw-box`
 
-Same region, same VPC, same SSH key.
+Same region, VPC, and SSH key.
 
 </Step>
 
@@ -257,17 +257,9 @@ You'll create one of each. Briefly:
 
 - A [**vault**](/learn/vaults) is a named isolation boundary. We'll create `prod`.
 - A [**credential**](/learn/credentials) is one secret value stored under a name (e.g. `ANTHROPIC_API_KEY = sk-ant-...`). Encrypted at rest.
-- A [**service**](/learn/services) is the wiring for one upstream host: host pattern, auth mode, and substitution rules that reference credentials by name.
+- A [**service**](/learn/services) is the wiring for one upstream host: host pattern + auth mode + substitution rules that reference credentials by name.
 
 Credentials store values. Services define wiring. At request time, Agent Vault matches the service by host, looks up the named credential, and rewrites the wire bytes before forwarding.
-
-</Step>
-
-<Step title="Disable rate limiting">
-
-Click your email (top right), **Manage Instance**, scroll to **Rate Limiting**. Set **Profile** to **off (disable all limits)** and click **Save Rate Limits**.
-
-OpenClaw's gateway opens fresh CONNECTs every time its HTTP client resets its connection pool (startup, retries, network blips), which trips the per-IP auth limit within seconds. Agent Vault is bound to `10.108.0.3` and only `openclaw-box` can reach it, so the per-IP gates aren't load-bearing here. See [Instance settings](/guides/instance-settings) for the per-tier alternative.
 
 </Step>
 
@@ -275,11 +267,13 @@ OpenClaw's gateway opens fresh CONNECTs every time its HTTP client resets its co
 
 **Vaults → New vault → `prod` → Create.**
 
+![Agent Vault UI showing the prod vault](/images/hermes-on-vps/hermes-on-vps-create-vault.png)
+
 </Step>
 
 <Step title="Add credentials">
 
-In the `prod` vault, **Credentials tab → Add credential** for each row below.
+In the `prod` vault, **Credentials tab → Add credential.** Add real tokens for Anthropic, GitHub, and Notion now; the two Slack tokens are placeholders you'll fill in the next section.
 
 | Key | Value |
 | --- | --- |
@@ -289,20 +283,24 @@ In the `prod` vault, **Credentials tab → Add credential** for each row below.
 | `SLACK_BOT_TOKEN` | Placeholder; you create the Slack app in the next section |
 | `SLACK_APP_TOKEN` | Placeholder; you create the Slack app in the next section |
 
+![Credentials tab in the prod vault with the five credentials added](/images/openclaw-on-vps/openclaw-on-vps-credentials.png)
+
 </Step>
 
 <Step title="Add services">
 
-**Services tab → + Add service.** For each row below: fill **Name** and **Host**, set **Authentication** to **Passthrough**, then scroll to **URL Substitutions** and click **+ Add substitution**. Paste the placeholder, tick the surface boxes the row lists (untick the others), select the credential. Save.
+**Services tab → + Add service.** For each row below: fill **Name** and **Host**, set **Authentication** to the value in the **Auth** column. For Bearer rows, fill the **Token (credential key)** field with the credential name (e.g. `GITHUB_TOKEN`) and skip the substitutions section. For Passthrough rows, scroll to **URL Substitutions**, click **+ Add substitution**, paste the placeholder, tick the surface boxes listed, select the credential. Save.
 
-Each substitution rule tells Agent Vault to scan the matched surfaces in outbound requests for the placeholder string and swap it for the credential's value before forwarding. OpenClaw emits placeholders on the wire; the real keys never leave `av-broker`.
-
-| Name | Host | Placeholder | Surface | Credential |
+| Name | Host | Auth | Credential / Placeholder | Surface |
 | --- | --- | --- | --- | --- |
-| `anthropic` | `api.anthropic.com` | `__anthropic_api_key__` | `header` | `ANTHROPIC_API_KEY` |
-| `github` | `api.github.com` | `__github_token__` | `header` | `GITHUB_TOKEN` |
-| `notion` | `api.notion.com` | `__notion_token__` | `header` | `NOTION_TOKEN` |
-| `slack` | `slack.com/*` | `__slack_bot_token__` | `header, body` | `SLACK_BOT_TOKEN` |
+| `anthropic` | `api.anthropic.com` | Passthrough | `__anthropic_api_key__` → `ANTHROPIC_API_KEY` | `header` |
+| `github` | `api.github.com` | Bearer | Token key: `GITHUB_TOKEN` | n/a |
+| `notion` | `api.notion.com` | Bearer | Token key: `NOTION_TOKEN` | n/a |
+| `slack` | `slack.com/*` | Passthrough | `__slack_bot_token__` → `SLACK_BOT_TOKEN` | `header, body` |
+
+![Anthropic service in Agent Vault with the Passthrough auth and URL substitution rule](/images/openclaw-on-vps/openclaw-on-vps-service-anthropic.png)
+
+![GitHub service in Agent Vault with Bearer auth and the GITHUB_TOKEN credential key](/images/openclaw-on-vps/openclaw-on-vps-service-github.png)
 
 The `slack` service carries a second substitution on the same service for the app token. After saving the first rule, click **+ Add substitution** again on the same service:
 
@@ -310,14 +308,18 @@ The `slack` service carries a second substitution on the same service for the ap
 | --- | --- | --- |
 | `__slack_app_token__` | `header, body` | `SLACK_APP_TOKEN` |
 
-The `slack.com/*` wildcard covers all Slack API paths, so one service rule handles every Slack request OpenClaw makes. Slack uses both surfaces because `@slack/web-api` puts the bot token in the request body on its method-arg shape (`client.auth.test({token})`); without `body` ticked, Bolt's `auth.test` validation fails at boot and the bot stops responding to mentions.
+Two auth modes appear above (Bearer for `github`/`notion`, Passthrough + substitution for `anthropic`/`slack`); see [Services](/learn/services) for how each one works and when to pick it.
+
+<Note>
+Slack ticks both `header` and `body` surfaces because `@slack/web-api` puts the bot token in the request body on its method-arg shape (`client.auth.test({token})`). Without `body` ticked, Bolt's `auth.test` validation fails at boot and the bot silently stops responding to mentions.
+</Note>
 
 </Step>
 
 </Steps>
 
 <Warning>
-**Placeholder strings are exact-match.** If an upstream returns 401, check the failing request's **Credential keys** field in the AV UI's **Logs** tab; an empty value means the substitution didn't fire.
+**For passthrough+substitution services, placeholder strings are exact-match.** If Anthropic or Slack returns 401, check the failing request's **Credential keys** field in the AV UI's **Logs** tab; an empty value means the substitution didn't fire (typo in the placeholder is the usual cause). Bearer services don't have this concern: Agent Vault rewrites the Authorization header regardless of what the client sent.
 </Warning>
 
 ## 5. Install OpenClaw on openclaw-box
@@ -337,37 +339,79 @@ On this box the Agent Vault CLI is a client wrapper; no server runs here.
 
 </Step>
 
-<Step title="Install OpenClaw">
+<Step title="Install OpenClaw and walk the setup wizard">
 
 ```bash
 curl -fsSL https://openclaw.ai/install.sh | bash
 ```
 
-The installer drops OpenClaw at `/usr/lib/node_modules/openclaw` and launches its interactive setup wizard.
+The installer drops OpenClaw at `/usr/lib/node_modules/openclaw` and launches its interactive setup wizard. At every token prompt, type the placeholder, not the real value. Exact strings matter; copy from this guide.
 
-</Step>
+1. **Personal data acknowledgement** → **I understand**.
 
-<Step title="Walk the setup wizard with placeholders">
+![Personal data acknowledgement prompt](/images/openclaw-on-vps/openclaw-on-vps-wizard-personal.png)
 
-At every token prompt, type the placeholder, not the real value. Exact strings matter; copy from this guide.
+2. **Setup mode** → **Quickstart**.
 
-| Wizard prompt | Answer |
-| --- | --- |
-| **Setup mode** | Quick setup |
-| **Model provider** | Anthropic |
-| **Anthropic API key** | `__anthropic_api_key__` |
-| **Model** | Pick your preferred Claude model |
-| **Messaging platform** | Slack (Socket Mode) |
-| **Slack Bot Token** | `__slack_bot_token__` |
-| **Slack App Token** | `__slack_app_token__` |
-| **Channel access** | Allowlist, then your target Slack channel |
-| **Search provider** | Skip |
-| **Skills** | Skip |
-| **Hatch agent in terminal?** | **No** |
+![Quickstart setup mode selection](/images/openclaw-on-vps/openclaw-on-vps-wizard-quickstart.png)
 
-When the wizard reaches the Slack step (right after you pick **Slack (Socket Mode)** as the messaging platform), it prints a block of JSON labelled `Slack manifest JSON` before asking for the bot token. **Stop, select that JSON block, and copy it to your clipboard.** You'll paste it into Slack in the next section to create the app. Then keep going through the wizard; it accepts the placeholders for the bot and app tokens because the real values live in Agent Vault.
+3. **Model provider** → **Anthropic**.
 
-If you miss the manifest (or you're re-running the wizard after Slack was partially configured), the wizard's manifest step is skipped on subsequent runs. Recover with `openclaw channels remove slack` followed by re-running `openclaw crestodian`; the manifest reappears.
+![Model provider list with Anthropic selected](/images/openclaw-on-vps/openclaw-on-vps-wizard-provider.png)
+
+4. **Anthropic auth method** → **Anthropic API Key**.
+
+![Anthropic auth method with Anthropic API Key selected](/images/openclaw-on-vps/openclaw-on-vps-wizard-auth-method.png)
+
+5. **Anthropic API key** → `__anthropic_api_key__`.
+
+![Anthropic API key prompt with the placeholder entered](/images/openclaw-on-vps/openclaw-on-vps-wizard-anthropic-key.png)
+
+6. **Model** → pick your preferred Claude model.
+
+![Claude model picker](/images/openclaw-on-vps/openclaw-on-vps-wizard-model.png)
+
+7. **Messaging platform** → **Slack (Socket Mode)**. The wizard then prints a `Slack manifest JSON` block; copy it for the next section.
+
+![Messaging platform list with Slack (Socket Mode) selected](/images/openclaw-on-vps/openclaw-on-vps-wizard-messaging.png)
+
+![Slack manifest JSON block ready to copy](/images/openclaw-on-vps/openclaw-on-vps-wizard-manifest.png)
+
+<Note>
+If you miss the manifest or re-run the wizard, it skips that step. Run `openclaw channels remove slack` then re-run the wizard to see it again.
+</Note>
+
+8. **Slack Bot Token** → `__slack_bot_token__`.
+
+![Slack bot token prompt with the placeholder entered](/images/openclaw-on-vps/openclaw-on-vps-wizard-bot-token.png)
+
+9. **Slack App Token** → `__slack_app_token__`.
+
+![Slack app token prompt with the placeholder entered](/images/openclaw-on-vps/openclaw-on-vps-wizard-app-token.png)
+
+10. **Configure channel access?** → **Yes**.
+
+![Configure Slack channel access prompt set to Yes](/images/openclaw-on-vps/openclaw-on-vps-wizard-channels-configure.png)
+
+11. **Channel access** → **Open**.
+
+![Slack channel access set to Open](/images/openclaw-on-vps/openclaw-on-vps-wizard-channels-open.png)
+
+12. **Search provider** → **Skip**.
+
+![Search provider prompt with Skip selected](/images/openclaw-on-vps/openclaw-on-vps-wizard-search.png)
+
+13. **Skills** → **No** (skip).
+
+![Skills configuration prompt with No selected](/images/openclaw-on-vps/openclaw-on-vps-wizard-skills.png)
+
+14. **Hooks** → **Skip for now**.
+
+![Hooks prompt with Skip for now selected](/images/openclaw-on-vps/openclaw-on-vps-wizard-hooks.png)
+
+15. **Hatch agent in terminal?** → **No** (hatch later).
+
+![Hatch agent in terminal prompt with hatch-later selected](/images/openclaw-on-vps/openclaw-on-vps-wizard-hatch.png)
 
 </Step>
 
@@ -385,13 +429,13 @@ You should see hits in `~/.openclaw/openclaw.json` (Slack tokens) and `~/.opencl
 
 ## 6. Create the Slack app from OpenClaw's manifest
 
-OpenClaw ships a Slack app manifest that pre-configures every scope, event subscription, and feature its Slack plugin needs (Socket Mode, the `app_mention` event, the `/openclaw` slash command, assistant view, file/reaction/pin scopes, and more). Pasting it into Slack's "Create from manifest" flow provisions a fully-configured app in one shot. You already have the manifest on your clipboard from section 5's wizard.
+OpenClaw's manifest pre-configures every scope, event, and feature its Slack plugin needs. Pasting it into Slack's "Create from manifest" flow provisions the app in one shot.
 
 <Steps>
 
 <Step title="Create the app in Slack from the manifest">
 
-Go to [api.slack.com/apps](https://api.slack.com/apps), click **Create New App → From a manifest**, pick your workspace, and paste the JSON from your clipboard. Slack shows a summary of what it'll create. Click **Create** to confirm.
+Go to [api.slack.com/apps](https://api.slack.com/apps), click **Create New App → From a manifest**, pick your workspace, paste the JSON, and click **Create**.
 
 </Step>
 
@@ -403,7 +447,7 @@ In the new app's sidebar: **OAuth & Permissions → Install to Workspace**. Appr
 
 <Step title="Generate the App-Level Token">
 
-Manifests don't include App-Level Tokens, so generate one separately. **Basic Information → App-Level Tokens → Generate Token and Scopes**, give it a name, add the `connections:write` scope, click **Generate**, and copy the `xapp-...` token.
+The manifest doesn't cover App-Level Tokens. **Basic Information → App-Level Tokens → Generate Token and Scopes**, name it, add the `connections:write` scope, **Generate**, copy the `xapp-...` token.
 
 </Step>
 
@@ -423,7 +467,7 @@ In Slack, open the channel you want OpenClaw to listen in. Type `/invite @<your-
 
 ## 7. Connect openclaw-box to Agent Vault
 
-One env file plus one systemd drop-in is the entire operator surface. `agent-vault run` detects the OpenClaw invocation and runs `openclaw config set` to enable OpenClaw's managed proxy and trusted env proxy settings, so outbound calls from the gateway flow through `av-broker` automatically.
+`agent-vault run` wraps OpenClaw's gateway so every outbound call goes through `av-broker`.
 
 <Steps>
 
@@ -431,13 +475,19 @@ One env file plus one systemd drop-in is the entire operator surface. `agent-vau
 
 Switch to the AV UI tab in your laptop browser. Sidebar: **All Agents → Add agent.**
 
+![All Agents tab with the Add agent button highlighted](/images/hermes-on-vps/hermes-on-vps-agents-add.png)
+
 In the modal:
 
 - **Agent name:** `openclaw-box`
 - **Vault access:** click **+ Add vault**, pick `prod`, leave role at `proxy`
 - Click **Add**
 
-The modal flips to the **Connect Your Agent** view with the freshly-minted `av_agt_` token. Copy it.
+![Add Agent modal with openclaw-box name and prod vault assignment](/images/openclaw-on-vps/openclaw-on-vps-agent-modal.png)
+
+The modal flips to the **Connect Your Agent** view with three values you'll need: `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN` (the `av_agt_...` value), and `AGENT_VAULT_VAULT`. Copy all three. The address shown may point at `localhost` or your laptop's tunnel; in the env file below you'll substitute `av-broker`'s private VPC IP (e.g. `http://10.108.0.3:14321`) because `openclaw-box` reaches Agent Vault over the private network, not through your laptop's SSH tunnel.
+
+![Connect Your Agent modal with the three-line export snippet](/images/hermes-on-vps/hermes-on-vps-agent-modal-2.png)
 
 </Step>
 
@@ -456,30 +506,33 @@ EOF
 chmod 600 /etc/openclaw/agent-vault.env
 ```
 
-`GITHUB_TOKEN` and `NOTION_TOKEN` hold the placeholder strings (not real tokens) so the agent can use `$GITHUB_TOKEN` / `$NOTION_TOKEN` in shell commands it generates. Bash expands the env var to the placeholder, Agent Vault substitutes on the wire, the upstream sees the real token. Slack tokens are the exception; they stay in `~/.openclaw/openclaw.json` because OpenClaw's Slack plugin reads from that file, not env.
-
 </Step>
 
-<Step title="Sanity-check the proxy path">
+<Step title="Export the env vars into your shell">
 
-systemd reads the env file natively when it runs the gateway, but a manual `agent-vault run` from your shell needs the vars exported into the current shell first. `set -a` makes every variable assigned by the following `source` get auto-exported.
+systemd reads the file natively at gateway start, but a manual `agent-vault run` needs the vars in the current shell:
 
 ```bash
 set -a
 source /etc/openclaw/agent-vault.env
 set +a
+```
+
+</Step>
+
+<Step title="Sanity-check the proxy path">
+
+```bash
 agent-vault run -- curl -H "Authorization: Bearer __github_token__" https://api.github.com/user
 ```
 
-Expect a real GitHub user response. The placeholder was substituted on the wire. If this fails, fix it before moving on; debugging a wrapped gateway is harder than debugging a wrapped curl.
-
-If `agent-vault run` complains with `unsupported protocol scheme ""`, your `AGENT_VAULT_ADDR` is missing the `http://` scheme or the `:14321` port. Both are required.
+A real GitHub user response means the placeholder was substituted on the wire and the proxy path works.
 
 </Step>
 
 <Step title="Write the systemd drop-in override">
 
-OpenClaw installs its gateway as a user-systemd service at `/root/.config/systemd/user/openclaw-gateway.service`. Add a drop-in override that wraps the gateway's `ExecStart` with `agent-vault run`. Setting `ExecStart=` to empty clears the base unit's value; the second line replaces it.
+Drop in an override that wraps the gateway's `ExecStart` with `agent-vault run`:
 
 ```bash
 mkdir -p /root/.config/systemd/user/openclaw-gateway.service.d
@@ -487,15 +540,13 @@ cat > /root/.config/systemd/user/openclaw-gateway.service.d/override.conf <<'EOF
 [Service]
 EnvironmentFile=/etc/openclaw/agent-vault.env
 ExecStart=
-ExecStart=/usr/local/bin/agent-vault run -- /usr/bin/node /usr/lib/node_modules/openclaw/dist/index.js gateway --port 18789
+ExecStart=/usr/local/bin/agent-vault run -- /usr/bin/openclaw gateway --port 18789
 EOF
 ```
 
 </Step>
 
 <Step title="Enable linger, reload, and start">
-
-`enable-linger` keeps the user bus running after the operator logs out, so the service survives SSH disconnects and reboots.
 
 ```bash
 loginctl enable-linger root
@@ -511,8 +562,6 @@ Healthy log lines to look for in the first few seconds:
 - `[slack] socket mode connected`: bot is on Slack via Socket Mode.
 - `[gateway] provider auth state pre-warmed in <N>ms`: Anthropic API key brokered successfully.
 - `[gateway] ready`: gateway accepting traffic.
-
-You should NOT see `[slack] auth.test failed at boot (... invalid_auth)`. If you do, the `body` surface on the Slack service substitutions in section 4 is missing.
 
 </Step>
 
