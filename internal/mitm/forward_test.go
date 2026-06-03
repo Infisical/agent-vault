@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -21,6 +19,7 @@ import (
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/netguard"
+	"github.com/Infisical/agent-vault/internal/ratelimit"
 	"github.com/Infisical/agent-vault/internal/requestlog"
 )
 
@@ -45,18 +44,15 @@ func (s *recordingSink) snapshot() []requestlog.Record {
 	return out
 }
 
-// dialProxyTLS opens a raw TLS connection to the proxy listener (no
+// dialProxy opens a plain TCP connection to the proxy listener (no
 // CONNECT, no absolute-form request). Tests use it to write malformed
 // or hand-shaped request lines so we can exercise the dispatch
 // validator directly.
-func dialProxyTLS(t *testing.T, proxyURL *url.URL, roots *x509.CertPool) net.Conn {
+func dialProxy(t *testing.T, proxyURL *url.URL) net.Conn {
 	t.Helper()
-	conn, err := tls.Dial("tcp", proxyURL.Host, &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		RootCAs:    roots,
-	})
+	conn, err := net.Dial("tcp", proxyURL.Host)
 	if err != nil {
-		t.Fatalf("tls.Dial proxy: %v", err)
+		t.Fatalf("dial proxy: %v", err)
 	}
 	return conn
 }
@@ -86,7 +82,7 @@ func writeRawRequestLine(t *testing.T, conn net.Conn, line string, headers map[s
 
 // TestMITMForwardPlainHTTPInjectsCredentials is the flagship test for
 // the plain-HTTP forward-proxy path. A standard Go client with
-// HTTPS_PROXY pointing at the TLS-wrapped proxy sends an absolute-form
+// HTTPS_PROXY pointing at the proxy sends an absolute-form
 // request to a plain-HTTP upstream; the proxy authenticates, injects
 // the configured credential, strips broker-scoped headers, and returns
 // the upstream response.
@@ -166,11 +162,11 @@ func TestMITMForwardPlainHTTPInjectsCredentials(t *testing.T) {
 // must be rejected with 400, not silently TLS-stripped. The hint
 // nudges the client toward CONNECT for HTTPS upstreams.
 func TestMITMForwardRejectsHTTPSScheme(t *testing.T) {
-	proxyURL, clientRoots, _ := setupProxy(t,
+	proxyURL, _, _ := setupProxy(t,
 		validTokenResolver("av_sess_ok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"}),
 		&fakeCredProvider{})
 
-	conn := dialProxyTLS(t, proxyURL, clientRoots)
+	conn := dialProxy(t, proxyURL)
 	defer conn.Close()
 
 	auth := base64.StdEncoding.EncodeToString([]byte("av_sess_ok:"))
@@ -195,14 +191,14 @@ func TestMITMForwardRejectsHTTPSScheme(t *testing.T) {
 // gopher, ftp, ws) reach the listener over TLS but are rejected as
 // malformed forward-proxy requests.
 func TestMITMForwardRejectsNonHTTPSchemes(t *testing.T) {
-	proxyURL, clientRoots, _ := setupProxy(t,
+	proxyURL, _, _ := setupProxy(t,
 		validTokenResolver("av_sess_ok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"}),
 		&fakeCredProvider{})
 
 	auth := base64.StdEncoding.EncodeToString([]byte("av_sess_ok:"))
 	for _, scheme := range []string{"file", "gopher", "ftp", "ws"} {
 		t.Run(scheme, func(t *testing.T) {
-			conn := dialProxyTLS(t, proxyURL, clientRoots)
+			conn := dialProxy(t, proxyURL)
 			defer conn.Close()
 
 			line := fmt.Sprintf("GET %s://example.com/x HTTP/1.1", scheme)
@@ -221,11 +217,11 @@ func TestMITMForwardRejectsNonHTTPSchemes(t *testing.T) {
 // TestMITMForwardRequiresProxyAuthorization: a forward request without
 // Proxy-Authorization gets a 407 challenge with Proxy-Authenticate.
 func TestMITMForwardRequiresProxyAuthorization(t *testing.T) {
-	proxyURL, clientRoots, _ := setupProxy(t,
+	proxyURL, _, _ := setupProxy(t,
 		validTokenResolver("av_sess_ok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"}),
 		&fakeCredProvider{})
 
-	conn := dialProxyTLS(t, proxyURL, clientRoots)
+	conn := dialProxy(t, proxyURL)
 	defer conn.Close()
 
 	resp := writeRawRequestLine(t, conn,
@@ -243,11 +239,11 @@ func TestMITMForwardRequiresProxyAuthorization(t *testing.T) {
 // TestMITMForwardInvalidSessionReturns407: a forward request with an
 // unknown token gets the same 407 challenge.
 func TestMITMForwardInvalidSessionReturns407(t *testing.T) {
-	proxyURL, clientRoots, _ := setupProxy(t,
+	proxyURL, _, _ := setupProxy(t,
 		errResolver(brokercore.ErrInvalidSession),
 		&fakeCredProvider{})
 
-	conn := dialProxyTLS(t, proxyURL, clientRoots)
+	conn := dialProxy(t, proxyURL)
 	defer conn.Close()
 
 	auth := base64.StdEncoding.EncodeToString([]byte("av_sess_bad:"))
@@ -266,11 +262,11 @@ func TestMITMForwardInvalidSessionReturns407(t *testing.T) {
 // TestMITMForwardVaultHintMismatchReturns403: parallels the CONNECT-
 // path test — ErrVaultHintMismatch from the resolver maps to 403.
 func TestMITMForwardVaultHintMismatchReturns403(t *testing.T) {
-	proxyURL, clientRoots, _ := setupProxy(t,
+	proxyURL, _, _ := setupProxy(t,
 		errResolver(brokercore.ErrVaultHintMismatch),
 		&fakeCredProvider{})
 
-	conn := dialProxyTLS(t, proxyURL, clientRoots)
+	conn := dialProxy(t, proxyURL)
 	defer conn.Close()
 
 	auth := base64.StdEncoding.EncodeToString([]byte("av_sess_ok:wrongvault"))
@@ -309,9 +305,9 @@ func TestMITMForwardStripsHopByHopHeaders(t *testing.T) {
 		upstreamHost: {result: &brokercore.InjectResult{Passthrough: true}},
 	}}
 
-	proxyURL, clientRoots, _ := setupProxy(t, sr, cp)
+	proxyURL, _, _ := setupProxy(t, sr, cp)
 
-	conn := dialProxyTLS(t, proxyURL, clientRoots)
+	conn := dialProxy(t, proxyURL)
 	defer conn.Close()
 
 	auth := base64.StdEncoding.EncodeToString([]byte("av_sess_ok:"))
@@ -392,9 +388,9 @@ func TestMITMForwardWebSocketPlainHTTP(t *testing.T) {
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{Passthrough: true}},
 	}}
-	proxyURL, clientRoots, _ := setupProxy(t, sr, cp)
+	proxyURL, _, _ := setupProxy(t, sr, cp)
 
-	conn := dialProxyTLS(t, proxyURL, clientRoots)
+	conn := dialProxy(t, proxyURL)
 	defer conn.Close()
 
 	keyBytes := make([]byte, 16)
@@ -634,9 +630,9 @@ func TestMITMForwardIPv6PreservesHostHeader(t *testing.T) {
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		"::1": {result: &brokercore.InjectResult{Passthrough: true}},
 	}}
-	proxyURL, clientRoots, _ := setupProxy(t, sr, cp)
+	proxyURL, _, _ := setupProxy(t, sr, cp)
 
-	conn := dialProxyTLS(t, proxyURL, clientRoots)
+	conn := dialProxy(t, proxyURL)
 	defer conn.Close()
 
 	auth := base64.StdEncoding.EncodeToString([]byte("av_sess_ok:"))
@@ -654,5 +650,84 @@ func TestMITMForwardIPv6PreservesHostHeader(t *testing.T) {
 	wantHost := "[::1]:" + port
 	if sawHost != wantHost {
 		t.Errorf("upstream Host = %q, want %q (IPv6 brackets must round-trip)", sawHost, wantHost)
+	}
+}
+
+func TestMITMForwardAuthRateLimitSkipsSuccessfulAuth(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	upHost, upPort, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upHost: {result: &brokercore.InjectResult{Passthrough: true}},
+	}}
+	proxyURL, _, p := setupProxy(t, sr, cp)
+
+	cfg := ratelimit.DefaultsFor(ratelimit.ProfileDefault)
+	cfg.Tiers[ratelimit.TierAuth].Max = 3
+	p.rateLimit = ratelimit.New(cfg)
+	overrideRemoteAddr(p, "10.0.0.5:12345")
+
+	auth := base64.StdEncoding.EncodeToString([]byte("av_sess_ok:"))
+	for i := 0; i < 10; i++ {
+		conn := dialProxy(t, proxyURL)
+		resp := writeRawRequestLine(t, conn,
+			fmt.Sprintf("GET http://%s:%s/x HTTP/1.1", upHost, upPort),
+			map[string]string{
+				"Host":                upstream.Listener.Addr().String(),
+				"Proxy-Authorization": "Basic " + auth,
+			})
+		resp.Body.Close()
+		conn.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			t.Fatalf("forward %d got 429; successful auth should not consume TierAuth budget", i+1)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("forward %d got %d, want 200", i+1, resp.StatusCode)
+		}
+	}
+}
+
+func TestMITMForwardAuthRateLimitCountsFailures(t *testing.T) {
+	sr := validTokenResolver("good-token", nil)
+	cp := &fakeCredProvider{}
+	proxyURL, _, p := setupProxy(t, sr, cp)
+
+	cfg := ratelimit.DefaultsFor(ratelimit.ProfileDefault)
+	cfg.Tiers[ratelimit.TierAuth].Max = 3
+	p.rateLimit = ratelimit.New(cfg)
+	overrideRemoteAddr(p, "10.0.0.5:12345")
+
+	auth := base64.StdEncoding.EncodeToString([]byte("bad-token:"))
+	for i := 0; i < 3; i++ {
+		conn := dialProxy(t, proxyURL)
+		resp := writeRawRequestLine(t, conn,
+			"GET http://example.com/x HTTP/1.1",
+			map[string]string{
+				"Host":                "example.com",
+				"Proxy-Authorization": "Basic " + auth,
+			})
+		resp.Body.Close()
+		conn.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			t.Fatalf("forward %d got 429 before budget should be exhausted", i+1)
+		}
+	}
+
+	conn := dialProxy(t, proxyURL)
+	defer conn.Close()
+	resp := writeRawRequestLine(t, conn,
+		"GET http://example.com/x HTTP/1.1",
+		map[string]string{
+			"Host":                "example.com",
+			"Proxy-Authorization": "Basic " + auth,
+		})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("forward 4 got %d, want 429 after budget exhausted", resp.StatusCode)
 	}
 }

@@ -7,12 +7,15 @@ import (
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
-// MaxProxyBodyBytes caps forwarded request bodies on the MITM proxy
-// ingress. Distinct from the generic 1 MB limitBody wrapper used on
-// control-plane endpoints: proxy bodies are legitimately larger (file
-// uploads, bulk API payloads) but must still be bounded to protect RAM
-// under the proxy concurrency semaphore.
-const MaxProxyBodyBytes = 64 << 20
+// DefaultMaxRequestBytes is the default cap for request bodies forwarded
+// on the MITM proxy ingress. Distinct from the generic 1 MB limitBody
+// wrapper used on control-plane endpoints.
+const DefaultMaxRequestBytes int64 = 1 << 30 // 1 GiB
+
+// MaxMaterializeBytes caps request bodies that must be buffered in RAM
+// for body-surface substitutions. Kept small because body substitutions
+// target API payloads (JSON, form-encoded), not large file uploads.
+const MaxMaterializeBytes int64 = 64 << 20 // 64 MiB
 
 // ProxyScope is the resolved identity + vault context for a proxy request.
 // It is produced once per CONNECT on the MITM ingress and carried through

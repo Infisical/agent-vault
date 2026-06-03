@@ -116,7 +116,7 @@ This means:
 
 ### Transparent proxy transport
 
-The MITM listener that backs `HTTPS_PROXY` and `HTTP_PROXY` is itself TLS-wrapped with a cert signed by the software-backed root CA. This means both the CONNECT handshake (for `https://` upstreams) and absolute-form forward-proxy requests (for `http://` upstreams) carry the agent's session token encrypted end-to-end between the client and the broker — session tokens are never exposed in plaintext on the wire, even on an untrusted local network.
+The MITM listener that backs `HTTPS_PROXY` and `HTTP_PROXY` is a plain HTTP forward proxy. The `Proxy-Authorization` header carrying the session token travels in cleartext between agent and broker. Deploy Agent Vault on a trusted or private network (localhost, VPN, private subnet). CONNECT tunnels to upstream HTTPS destinations are end-to-end encrypted inside the proxy connection.
 
 - **Root CA private key** is encrypted at rest with the DEK (same key that wraps credentials). See [Encryption at rest](#encryption-at-rest).
 - **DNS rebinding protection** and **[netguard](#network-security)** — every outbound connection is resolved and validated against the IP blocklist before Agent Vault dials the upstream.
@@ -140,7 +140,7 @@ Agent Vault enforces a tiered, in-memory rate limiter on every HTTP ingress. Eac
 
 | Tier | Keyed on | Covers |
 | ---- | -------- | ------ |
-| `AUTH` | Client IP | Anonymous endpoints (login, registration, password reset) |
+| `AUTH` | Client IP | Anonymous endpoints (login, registration, password reset) and proxy auth failures |
 | `AUTHED` | Session token hash | Proposal approval, authenticated CRUD |
 | `PROXY` | `(actor, vault)` scope | Proxy path and MITM ingress |
 | `GLOBAL` | Server-wide | In-flight request ceiling and RPS backstop |

@@ -233,6 +233,9 @@ func parseAndValidateMount(raw, homeDir string) (parsedMount, error) {
 }
 
 func validateHostSrc(resolved, homeDir string) error {
+	if resolved == "/" {
+		return errors.New("--mount: refusing to bind the host root filesystem")
+	}
 	if isDockerSocket(resolved) {
 		return errors.New("--mount: refusing to bind the docker socket (would undo every isolation guarantee)")
 	}
@@ -246,7 +249,8 @@ func validateHostSrc(resolved, homeDir string) error {
 			canonicalHome = c
 		}
 		vaultDir := filepath.Join(canonicalHome, ".agent-vault")
-		if resolved == vaultDir || strings.HasPrefix(resolved, vaultDir+string(os.PathSeparator)) {
+		sep := string(os.PathSeparator)
+		if resolved == vaultDir || strings.HasPrefix(resolved, vaultDir+sep) || strings.HasPrefix(vaultDir, resolved+sep) {
 			return fmt.Errorf("--mount: refusing to bind inside %s (contains master-key-encrypted vault data)", filepath.Join(homeDir, ".agent-vault"))
 		}
 	}
@@ -259,7 +263,7 @@ func validateHostSrc(resolved, homeDir string) error {
 // setups.
 func isDockerSocket(resolved string) bool {
 	for _, p := range []string{"/var/run/docker.sock", "/private/var/run/docker.sock"} {
-		if resolved == p {
+		if resolved == p || strings.HasPrefix(p, resolved+string(os.PathSeparator)) {
 			return true
 		}
 	}

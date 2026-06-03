@@ -930,12 +930,21 @@ func TestValidateSubstitutionsRejectsLowerCaseKey(t *testing.T) {
 	}
 }
 
-func TestValidateSubstitutionsRejectsBodySurface(t *testing.T) {
+func TestValidateSubstitutionsAcceptsBodySurface(t *testing.T) {
 	s := Service{Host: "api.example.com", Substitutions: []Substitution{
 		{Key: "K_X", Placeholder: "__sid__", In: []string{"body"}},
 	}}
-	if err := s.ValidateSubstitutions(); err == nil {
-		t.Fatal("expected error for body surface (deferred in v1)")
+	if err := s.ValidateSubstitutions(); err != nil {
+		t.Fatalf("body surface should be valid: %v", err)
+	}
+}
+
+func TestValidateSubstitutionsAcceptsWebsocketSurface(t *testing.T) {
+	s := Service{Host: "api.example.com", Substitutions: []Substitution{
+		{Key: "K_X", Placeholder: "__sid__", In: []string{"websocket"}},
+	}}
+	if err := s.ValidateSubstitutions(); err != nil {
+		t.Fatalf("websocket surface should be valid: %v", err)
 	}
 }
 

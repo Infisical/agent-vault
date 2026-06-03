@@ -171,7 +171,7 @@ This means vendor headers like `anthropic-version`, `OpenAI-Beta`, `If-Match`, a
 
 ## Substitutions
 
-Auth types only inject HTTP headers. Some upstream APIs want a credential value in the URL path or query string instead — Twilio's `/Accounts/{AccountSID}/Messages.json`, legacy services that take `?api_key=`. For those, declare a `substitutions` block alongside the auth.
+Auth types only inject HTTP headers. Some APIs want a credential value elsewhere — in the URL path, query string, request body, or even inside a WebSocket message. For those, declare a `substitutions` block alongside the auth.
 
 ```yaml
 services:
@@ -197,13 +197,13 @@ The agent then sends `GET https://api.twilio.com/2010-04-01/Accounts/__account_s
 
 - `key` — UPPER_SNAKE_CASE credential reference. Must resolve to a credential in the vault or a slot in the same proposal.
 - `placeholder` — the exact wire string Agent Vault matches **case-sensitively** as a literal. Operators choose the string; the broker does not auto-wrap delimiters around it. The recommended convention is `__name__` (double-underscore-bounded snake_case).
-- `in` — list of surfaces the broker is allowed to scan. Subset of `path`, `query`, `header`. Defaults to `[path, query]` if omitted. `body` is reserved for a future version.
+- `in` — list of surfaces the broker is allowed to scan. Subset of `path`, `query`, `header`, `body`, `websocket`. Defaults to `[path, query]` if omitted. `header`, `body`, and `websocket` must be explicit.
 
 ### Scoping is the security boundary
 
-Agent Vault only scans surfaces listed in `in`. If an agent embeds the placeholder in a non-declared surface (a JSON body to round-trip via an echo upstream, a header that wasn't declared), the literal string passes through to upstream — the broker will not substitute. There is no way to coerce the broker into substituting somewhere the operator did not authorize.
+Agent Vault only scans surfaces listed in `in`. If an agent embeds the placeholder in a non-declared surface, the literal string passes through to upstream — the broker will not substitute. There is no way to coerce the broker into substituting somewhere the operator did not authorize.
 
-Use this property to pick a narrow `in` for strong secrets that happen to live in URLs (legacy `?api_key=` APIs): keep `in: [query]` and the agent cannot exfiltrate the value through a body or a different header.
+Use this property to pick a narrow `in` for strong secrets: keep `in: [query]` and the agent cannot exfiltrate the value through a body, header, or different surface.
 
 ### Placeholder safety rules
 
@@ -218,6 +218,28 @@ The validator rejects placeholders that would cause false-positive substitutions
 
 When `in` includes `header`, the broker scans every outbound header for the placeholder — not one specific named header. Pick a unique placeholder so a typo or a copy-pasted value can't accidentally land in a header you didn't intend to rewrite. (Path and query are scoped to those URL components and don't have this concern.)
 
+### `body` scope
+
+When `in` includes `body`, the broker reads the HTTP request body, replaces placeholders, and updates `Content-Length`. Encoding is content-type-aware:
+
+- `application/x-www-form-urlencoded` — the replacement value is URL-encoded (matching `query` surface behavior), so characters like `&`, `=`, and `+` in the credential don't break form parsing.
+- `application/json` — the replacement value is JSON-string-escaped, so `"` and `\` in the credential produce valid JSON.
+- `multipart/*` — skipped (body returned unmodified). Raw replacement inside multipart boundaries could corrupt binary parts.
+- Compressed bodies (`Content-Encoding` set) — skipped.
+- All other content types — raw replacement (no encoding).
+
+Use `body` for OAuth `client_secret_post` flows where the secret is sent as a POST form parameter.
+
+### `websocket` scope
+
+When `in` includes `websocket`, the broker scans client→server WebSocket **text frames** for placeholders and replaces them before forwarding to the upstream. Server→client frames are never modified.
+
+Only unfragmented, uncompressed text frames are scanned. Binary frames, control frames (close, ping, pong), fragmented messages, and frames larger than 1 MB pass through unmodified.
+
+When `websocket` is active, the broker strips `Sec-WebSocket-Extensions` from the upgrade handshake to prevent compression negotiation (which would make all frames opaque to the broker).
+
+Use `websocket` for protocols like Discord Gateway where the auth token appears inside a JSON message body (the Identify and Resume events), not in HTTP headers.
+
 ### Composes with all auth types
 
 Substitutions and auth are independent. A service can use either, both, or neither:
@@ -225,6 +247,8 @@ Substitutions and auth are independent. A service can use either, both, or neith
 - Twilio: `auth: basic` (header) + path substitution for the SID.
 - Legacy `?api_key=` API: `auth: api-key` for an audit header + query substitution for the actual key.
 - A pure-substitution case (e.g. an internal API where the only secret lives in the path): `auth: passthrough` + path substitution.
+- Discord Gateway: `auth: passthrough` + header substitution for REST API + websocket substitution for Gateway token injection.
+- OAuth `client_secret_post`: `auth: passthrough` + body substitution for the client secret in the token exchange POST.
 
 <Warning>
   Modifying substitutions requires re-supplying auth in the same proposal.

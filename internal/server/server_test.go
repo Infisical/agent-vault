@@ -2382,7 +2382,7 @@ func TestDiscoverSuccess(t *testing.T) {
 
 // TestDiscoverHealsLegacyUnnamedServices pins that /discover returns
 // auto-slugged Names for legacy entries persisted without `name`.
-// Agents identify services by Name (per skill_http.md); a blank Name
+// Agents identify services by Name (per skill_cli.md); a blank Name
 // here makes the service un-addressable until an unrelated write
 // triggers a heal elsewhere.
 func TestDiscoverHealsLegacyUnnamedServices(t *testing.T) {
@@ -4007,6 +4007,30 @@ func TestAgentRotate(t *testing.T) {
 	}
 }
 
+func TestAgentRotate_MemberCannotRotateOwnerRoleAgent(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	// Agent created by the member but promoted to owner role.
+	ms.agents["admin-bot"] = &store.Agent{
+		ID: "a1", Name: "admin-bot", Status: "active",
+		Role: "owner", CreatedBy: "member-user-id",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/admin-bot/rotate", nil)
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "owner-role agents") {
+		t.Errorf("expected owner-role error message, got: %s", rec.Body.String())
+	}
+}
+
 func TestAgentRename(t *testing.T) {
 	srv, ms, sessID := setupAgentTest(t)
 
@@ -5436,6 +5460,71 @@ func TestResendVerificationTooManyPending(t *testing.T) {
 	// No new verification should have been created.
 	if len(ms.emailVerifications) != 3 {
 		t.Fatalf("expected 3 email verifications, got %d", len(ms.emailVerifications))
+	}
+}
+
+// --- Re-registration Security Tests ---
+
+func TestReRegisterInactiveUserDoesNotOverwritePassword(t *testing.T) {
+	ms := setupMockStoreWithInactiveUser(t, "victim@test.com", "original-password")
+	srv := newTestServer(withStore(ms))
+
+	// Attacker re-registers with the victim's email and a different password.
+	regBody := `{"email":"victim@test.com","password":"attacker-password"}`
+	regRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(regRec, httptest.NewRequest(http.MethodPost, "/v1/auth/register", strings.NewReader(regBody)))
+	if regRec.Code != http.StatusCreated {
+		t.Fatalf("re-register: expected 201, got %d: %s", regRec.Code, regRec.Body.String())
+	}
+
+	// A verification code should have been generated.
+	if len(ms.emailVerifications) != 1 {
+		t.Fatalf("expected 1 verification code, got %d", len(ms.emailVerifications))
+	}
+	code := ms.emailVerifications[0].Code
+
+	// Victim verifies with the code.
+	verifyBody := fmt.Sprintf(`{"email":"victim@test.com","code":"%s"}`, code)
+	verifyRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(verifyRec, httptest.NewRequest(http.MethodPost, "/v1/auth/verify", strings.NewReader(verifyBody)))
+	if verifyRec.Code != http.StatusOK {
+		t.Fatalf("verify: expected 200, got %d: %s", verifyRec.Code, verifyRec.Body.String())
+	}
+
+	// Login with original password should succeed.
+	loginOK := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(loginOK, httptest.NewRequest(http.MethodPost, "/v1/auth/login",
+		strings.NewReader(`{"email":"victim@test.com","password":"original-password"}`)))
+	if loginOK.Code != http.StatusOK {
+		t.Fatalf("login with original password: expected 200, got %d: %s", loginOK.Code, loginOK.Body.String())
+	}
+
+	// Login with attacker's password must fail.
+	loginFail := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(loginFail, httptest.NewRequest(http.MethodPost, "/v1/auth/login",
+		strings.NewReader(`{"email":"victim@test.com","password":"attacker-password"}`)))
+	if loginFail.Code != http.StatusUnauthorized {
+		t.Fatalf("login with attacker password: expected 401, got %d: %s", loginFail.Code, loginFail.Body.String())
+	}
+}
+
+func TestReRegisterInactiveUserUniformResponse(t *testing.T) {
+	ms := setupMockStoreWithInactiveUser(t, "existing@test.com", "password123")
+	srv := newTestServer(withStore(ms))
+
+	// Re-register an inactive account.
+	regBody := `{"email":"existing@test.com","password":"different-password"}`
+	regRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(regRec, httptest.NewRequest(http.MethodPost, "/v1/auth/register", strings.NewReader(regBody)))
+	if regRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", regRec.Code, regRec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(regRec.Body).Decode(&resp)
+
+	if resp["message"] != registerUniformMessage {
+		t.Fatalf("expected uniform message %q, got %q", registerUniformMessage, resp["message"])
 	}
 }
 

@@ -104,7 +104,7 @@ docker run -it -p 14321:14321 -p 14322:14322 \
   -v agent-vault-data:/data infisical/agent-vault
 ```
 
-The server starts the HTTP API on port `14321` and a TLS-encrypted transparent HTTP/HTTPS proxy on port `14322`; the same listener handles `CONNECT` for `https://` upstreams and absolute-form forward-proxy requests for `http://` upstreams.
+The server starts the HTTP API on port `14321` and a transparent HTTP/HTTPS proxy on port `14322`; the same listener handles `CONNECT` for `https://` upstreams and absolute-form forward-proxy requests for `http://` upstreams.
 
 The web UI becomes available at `http://<host>:14321` and you'll be prompted to create the first user known as the instance **owner**.
 
