@@ -1,0 +1,651 @@
+---
+title: "Run OpenClaw on a VPS"
+description: "Keep real credentials off the agent host by routing every outbound call through Agent Vault on a separate VPS."
+---
+
+Provision two DigitalOcean droplets, install Agent Vault on one and [OpenClaw](https://openclaw.ai) on the other, and broker every outbound call through Agent Vault. Plan for 45–60 minutes and ~$12/month.
+
+By the end, you'll have:
+
+1. **Agent Vault running on one droplet**, holding real Anthropic, GitHub, Notion, and Slack credentials encrypted at rest behind a master password.
+2. **An OpenClaw gateway running on a second droplet**, reachable via a Slack bot, with every outbound API call brokered through Agent Vault and revocable from the UI in one click.
+
+## Prerequisites
+
+- A [DigitalOcean](https://cloud.digitalocean.com) account.
+- API keys for the services you want OpenClaw to call. This guide uses Anthropic, GitHub, Notion, and Slack.
+- A Slack workspace where you can install a custom app.
+
+<Note>
+This guide installs Agent Vault as a native binary via the install script, the path documented in [Self-hosting locally](/self-hosting/local). For containers, see [Docker self-hosting](/self-hosting/docker).
+</Note>
+
+## Architecture
+
+```
++-----------------------------------------------------------------+
+| Public internet                                                 |
+|                                                                 |
+|   api.anthropic.com   api.github.com                            |
+|   api.notion.com      slack.com                                 |
+|          ^                   ^                                  |
++----------+-------------------+----------------------------------+
+           |                   |
+           +-------------------+
+                               | outbound HTTPS, Agent Vault
+                               | injects real credentials here
++------------------------------+----------------------------------+
+| Private VPC (10.108.0.0/20, region-scoped)                      |
+|                              |                                  |
+|  +---------------------------+----+     +--------------------+  |
+|  | av-broker  10.108.0.3          |     | openclaw-box       |  |
+|  | Agent Vault server             |<----| 10.108.0.2         |  |
+|  | :14321  control UI / API       |     | OpenClaw gateway   |  |
+|  | :14322  MITM proxy             |     | (placeholders)     |  |
+|  | (real credentials, encrypted)  |     |                    |  |
+|  +----------------^---------------+     +--------------------+  |
+|                   |                                             |
++-------------------+---------------------------------------------+
+                    | SSH + tunnel for AV UI from laptop
+                    |
+                Operator
+```
+
+Only `av-broker` holds real credentials, encrypted at rest behind your master password. `openclaw-box` holds placeholder strings (`__anthropic_api_key__`, etc.) and one revocable [agent token](/agents/overview).
+
+## 1. Provision the VPS boxes
+
+<Steps>
+
+<Step title="Generate an SSH key on your laptop">
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/digital-ocean-1 -C "digital-ocean-1"
+```
+
+Every `ssh` command in this guide uses `-i ~/.ssh/digital-ocean-1` to pin to this key.
+
+</Step>
+
+<Step title="Upload the public key to DigitalOcean">
+
+In the DigitalOcean console: **Settings → Security → SSH Keys → Add SSH Key.** Paste the contents of `~/.ssh/digital-ocean-1.pub`, name it (e.g. `digital-ocean-1`), and save.
+
+</Step>
+
+<Step title="Create the VPC">
+
+**Networking → VPC → Create VPC Network.** Pick any region. Both droplets must use the same region. Default IP range is fine.
+
+</Step>
+
+<Step title="Create av-broker">
+
+**Create → Droplets.** Set:
+
+| Panel | Setting |
+| --- | --- |
+| **Region** | Same region as the VPC |
+| **OS** | Ubuntu 24.04 (LTS) |
+| **Droplet type** | Basic, Regular ($6/mo, 1GB / 1vCPU is plenty for Agent Vault) |
+| **VPC Network** | The VPC you just created |
+| **Authentication** | SSH Key, tick `digital-ocean-1` |
+| **Hostname** | `av-broker` |
+
+Click **Create Droplet**.
+
+</Step>
+
+<Step title="Create openclaw-box">
+
+Repeat the previous step with one change:
+
+- **Hostname:** `openclaw-box`
+
+Same region, VPC, and SSH key.
+
+</Step>
+
+<Step title="Note the private IPs">
+
+Click each droplet, then **Networking**. Note the private IPv4 each got from the VPC range. The rest of this guide assumes:
+
+- `av-broker` is `10.108.0.3`
+- `openclaw-box` is `10.108.0.2`
+
+Substitute yours into every later command.
+
+</Step>
+
+<Step title="Verify private connectivity">
+
+From your laptop:
+
+```bash
+ssh -i ~/.ssh/digital-ocean-1 root@<av-broker-public-ip>
+ping -c 3 10.108.0.2
+```
+
+Three replies confirm the VPC is live. Type `exit` to disconnect.
+
+</Step>
+
+</Steps>
+
+## 2. Restrict SSH and broker ports with a cloud firewall
+
+<Steps>
+
+<Step title="Find your laptop's public IPv4">
+
+```bash
+curl -4 ifconfig.me; echo
+```
+
+</Step>
+
+<Step title="Create and attach the firewall">
+
+**Networking → Firewalls → Create Firewall**, name it `openclaw-lab`. Add three inbound rules:
+
+| Type | Port | Sources |
+| --- | --- | --- |
+| TCP | `22` | Your laptop's public IPv4 |
+| TCP | `14321` | `openclaw-box` private IP (`10.108.0.2`) |
+| TCP | `14322` | `openclaw-box` private IP (`10.108.0.2`) |
+
+Leave outbound rules empty (DigitalOcean allows all outbound by default).
+
+Scroll to **Apply to Droplets** and tick both `av-broker` and `openclaw-box`.
+
+</Step>
+
+</Steps>
+
+<Warning>
+If your laptop's public IP changes (cafe networks, VPNs), update the firewall rule's source IP for port 22.
+</Warning>
+
+## 3. Install Agent Vault on av-broker
+
+<Steps>
+
+<Step title="SSH into av-broker">
+
+From your laptop:
+
+```bash
+ssh -i ~/.ssh/digital-ocean-1 root@<av-broker-public-ip>
+```
+
+Every command in this section runs on `av-broker` until you exit.
+
+</Step>
+
+<Step title="Install Agent Vault">
+
+```bash
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | sh
+```
+
+The script detects your architecture, verifies the signed release, and drops the binary at `/usr/local/bin/agent-vault`.
+
+</Step>
+
+<Step title="Install tmux">
+
+```bash
+apt update && apt install -y tmux
+```
+
+You'll run Agent Vault inside a `tmux` session so it survives your SSH disconnect.
+
+</Step>
+
+<Step title="Launch the server inside tmux">
+
+```bash
+tmux new -s av
+agent-vault server --host 10.108.0.3 --port 14321 --mitm-port 14322
+```
+
+`--host 10.108.0.3` binds both listeners to the private NIC, keeping Agent Vault unreachable from the public internet.
+
+First-run prompts: master password, admin email, admin password.
+
+Detach with `Ctrl-B` then `D`. You'll see `[detached from session av]` and drop back to your normal shell. The server keeps running inside the tmux session.
+
+</Step>
+
+<Step title="Verify the server">
+
+```bash
+curl -sI http://10.108.0.3:14321/health
+```
+
+Expect `HTTP/1.1 200 OK`.
+
+</Step>
+
+</Steps>
+
+<Note>
+On reboot, tmux dies and so does the server. SSH back in, `tmux new -s av`, restart with the same command, re-enter the master password. For zero-touch restart, set [`AGENT_VAULT_MASTER_PASSWORD`](/self-hosting/environment-variables), but note the password then lives in an env file.
+</Note>
+
+## 4. Configure the vault
+
+<Steps>
+
+<Step title="Open an SSH tunnel">
+
+In a **new terminal on your laptop** (don't reuse the one you used to install Agent Vault):
+
+```bash
+ssh -i ~/.ssh/digital-ocean-1 -L 14321:10.108.0.3:14321 root@<av-broker-public-ip> -N
+```
+
+The terminal hangs silently. That's correct. **Leave it running for the rest of the guide.** Closing it stops the tunnel and the AV UI goes dark.
+
+Open `http://localhost:14321` in your laptop's browser and sign in with the admin email and password you set during install.
+
+</Step>
+
+<Step title="Understand vaults, credentials, and services">
+
+You'll create one of each. Briefly:
+
+- A [**vault**](/learn/vaults) is a named isolation boundary. We'll create `prod`.
+- A [**credential**](/learn/credentials) is one secret value stored under a name (e.g. `ANTHROPIC_API_KEY = sk-ant-...`). Encrypted at rest.
+- A [**service**](/learn/services) is the wiring for one upstream host: host pattern + auth mode + substitution rules that reference credentials by name.
+
+Credentials store values. Services define wiring. At request time, Agent Vault matches the service by host, looks up the named credential, and rewrites the wire bytes before forwarding.
+
+</Step>
+
+<Step title="Create the prod vault">
+
+**Vaults → New vault → `prod` → Create.**
+
+![Agent Vault UI showing the prod vault](/images/hermes-on-vps/hermes-on-vps-create-vault.png)
+
+</Step>
+
+<Step title="Add credentials">
+
+In the `prod` vault, **Credentials tab → Add credential.** Add real tokens for Anthropic, GitHub, and Notion now; the two Slack tokens are placeholders you'll fill in the next section.
+
+| Key | Value |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | Anthropic API key (`sk-ant-...`) |
+| `GITHUB_TOKEN` | GitHub PAT with `repo` scope (`ghp_...`) |
+| `NOTION_TOKEN` | Notion internal integration token (`ntn_...`) |
+| `SLACK_BOT_TOKEN` | Placeholder; you create the Slack app in the next section |
+| `SLACK_APP_TOKEN` | Placeholder; you create the Slack app in the next section |
+
+![Credentials tab in the prod vault with the five credentials added](/images/openclaw-on-vps/openclaw-on-vps-credentials.png)
+
+</Step>
+
+<Step title="Add services">
+
+**Services tab → + Add service.** For each row below: fill **Name** and **Host**, set **Authentication** to the value in the **Auth** column. For Bearer rows, fill the **Token (credential key)** field with the credential name (e.g. `GITHUB_TOKEN`) and skip the substitutions section. For Passthrough rows, scroll to **URL Substitutions**, click **+ Add substitution**, paste the placeholder, tick the surface boxes listed, select the credential. Save.
+
+| Name | Host | Auth | Credential / Placeholder | Surface |
+| --- | --- | --- | --- | --- |
+| `anthropic` | `api.anthropic.com` | Passthrough | `__anthropic_api_key__` → `ANTHROPIC_API_KEY` | `header` |
+| `github` | `api.github.com` | Bearer | Token key: `GITHUB_TOKEN` | n/a |
+| `notion` | `api.notion.com` | Bearer | Token key: `NOTION_TOKEN` | n/a |
+| `slack` | `slack.com/*` | Passthrough | `__slack_bot_token__` → `SLACK_BOT_TOKEN` | `header, body` |
+
+![Anthropic service in Agent Vault with the Passthrough auth and URL substitution rule](/images/openclaw-on-vps/openclaw-on-vps-service-anthropic.png)
+
+![GitHub service in Agent Vault with Bearer auth and the GITHUB_TOKEN credential key](/images/openclaw-on-vps/openclaw-on-vps-service-github.png)
+
+The `slack` service carries a second substitution on the same service for the app token. After saving the first rule, click **+ Add substitution** again on the same service:
+
+| Placeholder | Surface | Credential |
+| --- | --- | --- |
+| `__slack_app_token__` | `header, body` | `SLACK_APP_TOKEN` |
+
+Two auth modes appear above (Bearer for `github`/`notion`, Passthrough + substitution for `anthropic`/`slack`); see [Services](/learn/services) for how each one works and when to pick it.
+
+<Note>
+Slack ticks both `header` and `body` surfaces because `@slack/web-api` puts the bot token in the request body on its method-arg shape (`client.auth.test({token})`). Without `body` ticked, Bolt's `auth.test` validation fails at boot and the bot silently stops responding to mentions.
+</Note>
+
+</Step>
+
+</Steps>
+
+<Warning>
+**For passthrough+substitution services, placeholder strings are exact-match.** If Anthropic or Slack returns 401, check the failing request's **Credential keys** field in the AV UI's **Logs** tab; an empty value means the substitution didn't fire (typo in the placeholder is the usual cause). Bearer services don't have this concern: Agent Vault rewrites the Authorization header regardless of what the client sent.
+</Warning>
+
+## 5. Install OpenClaw on openclaw-box
+
+<Steps>
+
+<Step title="SSH into openclaw-box and install the Agent Vault CLI">
+
+In a **fresh terminal on your laptop** (leave the SSH tunnel to `av-broker` running):
+
+```bash
+ssh -i ~/.ssh/digital-ocean-1 root@<openclaw-box-public-ip>
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | sh
+```
+
+On this box the Agent Vault CLI is a client wrapper; no server runs here.
+
+</Step>
+
+<Step title="Install OpenClaw and walk the setup wizard">
+
+```bash
+curl -fsSL https://openclaw.ai/install.sh | bash
+```
+
+The installer drops OpenClaw at `/usr/lib/node_modules/openclaw` and launches its interactive setup wizard. At every token prompt, type the placeholder, not the real value. Exact strings matter; copy from this guide.
+
+1. **Personal data acknowledgement** → **I understand**.
+
+![Personal data acknowledgement prompt](/images/openclaw-on-vps/openclaw-on-vps-wizard-personal.png)
+
+2. **Setup mode** → **Quickstart**.
+
+![Quickstart setup mode selection](/images/openclaw-on-vps/openclaw-on-vps-wizard-quickstart.png)
+
+3. **Model provider** → **Anthropic**.
+
+![Model provider list with Anthropic selected](/images/openclaw-on-vps/openclaw-on-vps-wizard-provider.png)
+
+4. **Anthropic auth method** → **Anthropic API Key**.
+
+![Anthropic auth method with Anthropic API Key selected](/images/openclaw-on-vps/openclaw-on-vps-wizard-auth-method.png)
+
+5. **Anthropic API key** → `__anthropic_api_key__`.
+
+![Anthropic API key prompt with the placeholder entered](/images/openclaw-on-vps/openclaw-on-vps-wizard-anthropic-key.png)
+
+6. **Model** → pick your preferred Claude model.
+
+![Claude model picker](/images/openclaw-on-vps/openclaw-on-vps-wizard-model.png)
+
+7. **Messaging platform** → **Slack (Socket Mode)**. The wizard then prints a `Slack manifest JSON` block; copy it for the next section.
+
+![Messaging platform list with Slack (Socket Mode) selected](/images/openclaw-on-vps/openclaw-on-vps-wizard-messaging.png)
+
+![Slack manifest JSON block ready to copy](/images/openclaw-on-vps/openclaw-on-vps-wizard-manifest.png)
+
+<Note>
+If you miss the manifest or re-run the wizard, it skips that step. Run `openclaw channels remove slack` then re-run the wizard to see it again.
+</Note>
+
+8. **Slack Bot Token** → `__slack_bot_token__`.
+
+![Slack bot token prompt with the placeholder entered](/images/openclaw-on-vps/openclaw-on-vps-wizard-bot-token.png)
+
+9. **Slack App Token** → `__slack_app_token__`.
+
+![Slack app token prompt with the placeholder entered](/images/openclaw-on-vps/openclaw-on-vps-wizard-app-token.png)
+
+10. **Configure channel access?** → **Yes**.
+
+![Configure Slack channel access prompt set to Yes](/images/openclaw-on-vps/openclaw-on-vps-wizard-channels-configure.png)
+
+11. **Channel access** → **Open**.
+
+![Slack channel access set to Open](/images/openclaw-on-vps/openclaw-on-vps-wizard-channels-open.png)
+
+12. **Search provider** → **Skip**.
+
+![Search provider prompt with Skip selected](/images/openclaw-on-vps/openclaw-on-vps-wizard-search.png)
+
+13. **Skills** → **No** (skip).
+
+![Skills configuration prompt with No selected](/images/openclaw-on-vps/openclaw-on-vps-wizard-skills.png)
+
+14. **Hooks** → **Skip for now**.
+
+![Hooks prompt with Skip for now selected](/images/openclaw-on-vps/openclaw-on-vps-wizard-hooks.png)
+
+15. **Hatch agent in terminal?** → **No** (hatch later).
+
+![Hatch agent in terminal prompt with hatch-later selected](/images/openclaw-on-vps/openclaw-on-vps-wizard-hatch.png)
+
+</Step>
+
+<Step title="Sanity-check the placeholders landed">
+
+```bash
+grep -R "__anthropic_api_key__\|__slack_bot_token__\|__slack_app_token__" ~/.openclaw
+```
+
+You should see hits in `~/.openclaw/openclaw.json` (Slack tokens) and `~/.openclaw/agents/main/agent/auth-profiles.json` (Anthropic). If any are missing or mistyped, re-run the wizard.
+
+</Step>
+
+</Steps>
+
+## 6. Create the Slack app from OpenClaw's manifest
+
+OpenClaw's manifest pre-configures every scope, event, and feature its Slack plugin needs. Pasting it into Slack's "Create from manifest" flow provisions the app in one shot.
+
+<Steps>
+
+<Step title="Create the app in Slack from the manifest">
+
+Go to [api.slack.com/apps](https://api.slack.com/apps), click **Create New App → From a manifest**, pick your workspace, paste the JSON, and click **Create**.
+
+</Step>
+
+<Step title="Install to your workspace and copy the bot token">
+
+In the new app's sidebar: **OAuth & Permissions → Install to Workspace**. Approve the scopes. Copy the **Bot User OAuth Token** (`xoxb-...`).
+
+</Step>
+
+<Step title="Generate the App-Level Token">
+
+The manifest doesn't cover App-Level Tokens. **Basic Information → App-Level Tokens → Generate Token and Scopes**, name it, add the `connections:write` scope, **Generate**, copy the `xapp-...` token.
+
+</Step>
+
+<Step title="Paste the real tokens into Agent Vault">
+
+In the AV UI: `prod` → **Credentials** → `SLACK_BOT_TOKEN` → edit → paste the `xoxb-...` token → save. Then `SLACK_APP_TOKEN` → edit → paste the `xapp-...` token → save.
+
+</Step>
+
+<Step title="Invite the bot to your channel">
+
+In Slack, open the channel you want OpenClaw to listen in. Type `/invite @<your-bot-name>`.
+
+</Step>
+
+</Steps>
+
+## 7. Connect openclaw-box to Agent Vault
+
+`agent-vault run` wraps OpenClaw's gateway so every outbound call goes through `av-broker`.
+
+<Steps>
+
+<Step title="Mint an agent token">
+
+Switch to the AV UI tab in your laptop browser. Sidebar: **All Agents → Add agent.**
+
+![All Agents tab with the Add agent button highlighted](/images/hermes-on-vps/hermes-on-vps-agents-add.png)
+
+In the modal:
+
+- **Agent name:** `openclaw-box`
+- **Vault access:** click **+ Add vault**, pick `prod`, leave role at `proxy`
+- Click **Add**
+
+![Add Agent modal with openclaw-box name and prod vault assignment](/images/openclaw-on-vps/openclaw-on-vps-agent-modal.png)
+
+The modal flips to the **Connect Your Agent** view with three values you'll need: `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN` (the `av_agt_...` value), and `AGENT_VAULT_VAULT`. Copy all three. The address shown may point at `localhost` or your laptop's tunnel; in the env file below you'll substitute `av-broker`'s private VPC IP (e.g. `http://10.108.0.3:14321`) because `openclaw-box` reaches Agent Vault over the private network, not through your laptop's SSH tunnel.
+
+![Connect Your Agent modal with the three-line export snippet](/images/hermes-on-vps/hermes-on-vps-agent-modal-2.png)
+
+</Step>
+
+<Step title="Write the env file on openclaw-box">
+
+Back in the SSH session on `openclaw-box`:
+
+```bash
+mkdir -p /etc/openclaw && cat > /etc/openclaw/agent-vault.env <<EOF
+AGENT_VAULT_ADDR=http://10.108.0.3:14321
+AGENT_VAULT_TOKEN=<paste-the-av_agt_-token>
+AGENT_VAULT_VAULT=prod
+GITHUB_TOKEN=__github_token__
+NOTION_TOKEN=__notion_token__
+EOF
+chmod 600 /etc/openclaw/agent-vault.env
+```
+
+</Step>
+
+<Step title="Export the env vars into your shell">
+
+systemd reads the file natively at gateway start, but a manual `agent-vault run` needs the vars in the current shell:
+
+```bash
+set -a
+source /etc/openclaw/agent-vault.env
+set +a
+```
+
+</Step>
+
+<Step title="Sanity-check the proxy path">
+
+```bash
+agent-vault run -- curl -H "Authorization: Bearer __github_token__" https://api.github.com/user
+```
+
+A real GitHub user response means the placeholder was substituted on the wire and the proxy path works.
+
+</Step>
+
+<Step title="Write the systemd drop-in override">
+
+Drop in an override that wraps the gateway's `ExecStart` with `agent-vault run`:
+
+```bash
+mkdir -p /root/.config/systemd/user/openclaw-gateway.service.d
+cat > /root/.config/systemd/user/openclaw-gateway.service.d/override.conf <<'EOF'
+[Service]
+EnvironmentFile=/etc/openclaw/agent-vault.env
+ExecStart=
+ExecStart=/usr/local/bin/agent-vault run -- /usr/bin/openclaw gateway --port 18789
+EOF
+```
+
+</Step>
+
+<Step title="Enable linger, reload, and start">
+
+```bash
+loginctl enable-linger root
+systemctl --user daemon-reload
+systemctl --user restart openclaw-gateway
+sleep 3
+journalctl --user -u openclaw-gateway -n 30 --no-pager
+```
+
+Healthy log lines to look for in the first few seconds:
+
+- `agent-vault: routing HTTP/HTTPS through MITM proxy (10.108.0.3:14322)`: the wrap is live.
+- `[slack] socket mode connected`: bot is on Slack via Socket Mode.
+- `[gateway] provider auth state pre-warmed in <N>ms`: Anthropic API key brokered successfully.
+- `[gateway] ready`: gateway accepting traffic.
+
+</Step>
+
+</Steps>
+
+## 8. Lock down egress (optional)
+
+Restrict `openclaw-box` outbound to `av-broker` only. A compromised OpenClaw then has nowhere to exfiltrate.
+
+<Steps>
+
+<Step title="Create and attach the egress firewall">
+
+**Networking → Firewalls → Create Firewall**, name `openclaw-egress`. One outbound rule: TCP, destination `10.108.0.0/20` (your VPC range), any port.
+
+In **Apply To Droplets**, select **only** `openclaw-box`. Attaching this to `av-broker` breaks the brokered requests.
+
+</Step>
+
+<Step title="Verify">
+
+From `openclaw-box`:
+
+```bash
+curl --max-time 5 https://api.anthropic.com/v1/models
+```
+
+That should time out. Proxied calls through `10.108.0.3:14322` still work.
+
+</Step>
+
+</Steps>
+
+## 9. Try it end-to-end
+
+In your target Slack channel, @-mention the bot. OpenClaw replies, with every outbound call routed through `10.108.0.3:14322`.
+
+To exercise all four brokered services in one prompt:
+
+> @openclaw summarize the last 5 PRs in `<owner>/<repo>` and create a Notion page with the summary. Reply with the new page's URL.
+
+Replace `<owner>/<repo>` with a repo your `GITHUB_TOKEN` has read access to.
+
+To watch brokered traffic in real time, tail the gateway journal on `openclaw-box`:
+
+```bash
+journalctl --user -u openclaw-gateway -f
+```
+
+Open **Logs** in the AV UI to see each request's matched service and substituted credential.
+
+## 10. Revoke and recover
+
+<Steps>
+
+<Step title="Revoke the agent">
+
+In the AV UI: **All Agents → `openclaw-box` → Rotate** (or **Delete**).
+
+</Step>
+
+<Step title="Send another Slack message">
+
+The next outbound call returns `401` from the broker. The placeholder strings on `openclaw-box` are inert without a valid agent token.
+
+</Step>
+
+<Step title="Re-issue to recover">
+
+Copy the rotated token, update `AGENT_VAULT_TOKEN` in `/etc/openclaw/agent-vault.env`, then `systemctl --user restart openclaw-gateway`. OpenClaw replies normally on the next @-mention. See [Agents → Rotating an agent token](/agents/overview#rotating-an-agent-token).
+
+</Step>
+
+</Steps>
+
+## Cleanup
+
+1. **DigitalOcean console → Droplets:** delete `av-broker` and `openclaw-box`.
+2. **Networking → VPC:** delete the VPC.
+3. **Firewalls:** delete `openclaw-lab` and `openclaw-egress` (if you created it).
+4. Rotate or revoke the real upstream API tokens you uploaded (they remain valid in their home services until you do).
+
+## Related
+
+- [Run Hermes on a VPS](/guides/hermes-on-vps): the same brokering pattern with a Hermes Agent and Telegram bot on Hetzner Cloud.
+- [Connect a custom agent](/guides/connect-custom-agent): same pattern for any agent that supports `HTTPS_PROXY`.
+- [Container isolation](/guides/container-isolation): local Docker isolation as an alternative to a remote VPS.
