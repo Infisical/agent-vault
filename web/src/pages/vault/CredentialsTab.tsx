@@ -629,7 +629,7 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
                   </Select>
                 </FormField></div>
               </div>
-              <FormField label="Scopes" helperText="Space-separated">
+              <FormField label="Scopes">
                 <CreatableSelect
                   values={oauthScopes}
                   onChange={setOauthScopes}
