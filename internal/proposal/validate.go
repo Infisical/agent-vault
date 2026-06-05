@@ -153,6 +153,18 @@ func Validate(services []Service, credentials []CredentialSlot) error {
 			if c.OAuth.TokenURL == "" {
 				return fmt.Errorf("credential slot %q: oauth.token_url is required", c.Key)
 			}
+			if c.OAuth.AuthorizationURL != "" {
+				u, err := url.Parse(c.OAuth.AuthorizationURL)
+				if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+					return fmt.Errorf("credential slot %q: oauth.authorization_url must be an https:// or http:// URL", c.Key)
+				}
+			}
+			{
+				u, err := url.Parse(c.OAuth.TokenURL)
+				if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+					return fmt.Errorf("credential slot %q: oauth.token_url must be an https:// or http:// URL", c.Key)
+				}
+			}
 			if c.Value != nil {
 				return fmt.Errorf("credential slot %q: \"value\" must not be set for oauth credentials (tokens are obtained via the connect flow)", c.Key)
 			}

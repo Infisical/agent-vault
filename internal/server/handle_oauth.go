@@ -57,6 +57,14 @@ func (s *Server) handleOAuthConnect(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "\"authorization_url\" is required for the connect flow")
 		return
 	}
+	if !isValidHTTPURL(req.AuthorizationURL) {
+		jsonError(w, http.StatusBadRequest, "\"authorization_url\" must be an https:// or http:// URL")
+		return
+	}
+	if !isValidHTTPURL(req.TokenURL) {
+		jsonError(w, http.StatusBadRequest, "\"token_url\" must be an https:// or http:// URL")
+		return
+	}
 	if req.TokenURL == "" {
 		jsonError(w, http.StatusBadRequest, "\"token_url\" is required")
 		return
@@ -539,6 +547,11 @@ func (s *Server) redirectOAuthComplete(w http.ResponseWriter, r *http.Request, v
 	http.Redirect(w, r, u, http.StatusFound)
 }
 
+
+func isValidHTTPURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != ""
+}
 
 func hashOAuthState(raw string) string {
 	h := sha256.Sum256([]byte(raw))
