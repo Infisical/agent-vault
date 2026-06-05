@@ -75,6 +75,9 @@ func (s *Server) handleOAuthConnect(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
 		return
 	}
+	if !s.assertBuiltinCredentialStore(w, ctx, ns.ID, ns.Name) {
+		return
+	}
 
 	// Lazily expire old states.
 	_, _ = s.store.ExpireCredentialOAuthStates(ctx, time.Now())
@@ -344,6 +347,9 @@ func (s *Server) handleOAuthTokenUpload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
+		return
+	}
+	if !s.assertBuiltinCredentialStore(w, ctx, ns.ID, ns.Name) {
 		return
 	}
 
