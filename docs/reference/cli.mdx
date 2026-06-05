@@ -681,6 +681,26 @@ description: "Complete reference for all Agent Vault CLI commands."
     ```
 
     URL [substitutions](/learn/services#substitutions) are JSON-only — there are no flags. Add a `substitutions` array under the relevant `services[]` entry in the file passed via `-f`.
+
+    OAuth credentials are JSON-only. Set `type: "oauth"` on the credential slot and include an `oauth` config object:
+
+    ```json
+    {
+      "credentials": [{
+        "action": "set",
+        "key": "GITHUB",
+        "type": "oauth",
+        "oauth": {
+          "authorization_url": "https://github.com/login/oauth/authorize",
+          "token_url": "https://github.com/login/oauth/access_token",
+          "scopes": "repo user"
+        },
+        "description": "GitHub OAuth"
+      }]
+    }
+    ```
+
+    See [OAuth credentials](/learn/credentials#oauth-credentials) for field details.
   </Accordion>
 
   <Accordion title="agent-vault vault proposal approve">

@@ -154,13 +154,40 @@ Each service and credential slot carries an `action` field:
 
 ### Credential slots
 
-A credential slot can work in three ways:
+A credential slot can work in four ways:
 
-| Scenario                        | `value` field | What happens                                               |
-| ------------------------------- | ------------- | ---------------------------------------------------------- |
-| Human supplies the credential   | omitted       | Human enters the value at approval time                    |
-| Agent stores a credential back  | included      | Value is encrypted at creation; human confirms at approval |
-| Delete a credential             | n/a           | `action: "delete"` removes the key                         |
+| Scenario                        | `type`  | `value` field | What happens                                               |
+| ------------------------------- | ------- | ------------- | ---------------------------------------------------------- |
+| Human supplies the credential   | `static` (default) | omitted       | Human enters the value at approval time                    |
+| Agent stores a credential back  | `static` | included      | Value is encrypted at creation; human confirms at approval |
+| OAuth credential                | `oauth` | omitted       | Human connects via OAuth or pastes tokens at approval time |
+| Delete a credential             | n/a     | n/a           | `action: "delete"` removes the key                         |
+
+For OAuth credential slots, include an `oauth` config object:
+
+```json
+{
+  "action": "set",
+  "key": "GITHUB",
+  "type": "oauth",
+  "oauth": {
+    "authorization_url": "https://github.com/login/oauth/authorize",
+    "token_url": "https://github.com/login/oauth/access_token",
+    "scopes": "repo user",
+    "client_id": "optional-pre-fill"
+  },
+  "description": "GitHub OAuth",
+  "obtain_instructions": "Register an OAuth app at github.com/settings/developers"
+}
+```
+
+OAuth config fields:
+- `authorization_url` (optional): if present, approval shows a Connect button for the browser consent flow. If omitted, approval shows token paste fields.
+- `token_url` (required): the provider's token endpoint, used for token exchange and refresh.
+- `scopes` (optional): space-separated permissions to request during the consent flow.
+- `client_id` (optional): pre-fill the client ID field on the approval page.
+
+The `value` field must not be set for OAuth slots -- tokens are obtained through the connect flow or pasted by the human.
 
 Every credential key referenced in a service's `auth` config must resolve to either a credential slot in the proposal or an existing [credential](/learn/credentials) in the [vault](/learn/vaults). Credential keys use `UPPER_SNAKE_CASE` format.
 
