@@ -9,7 +9,9 @@ import Button from "../../components/Button";
 import Input from "../../components/Input";
 import FormField from "../../components/FormField";
 import Select from "../../components/Select";
+import Combobox from "../../components/Combobox";
 import { apiFetch } from "../../lib/api";
+import { OAUTH_PROVIDERS } from "../../lib/oauthProviders";
 
 export default function CredentialsTab() {
   const router = useRouter();
@@ -477,6 +479,19 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
     } catch (err: unknown) { setError(err instanceof Error ? err.message : "An error occurred."); } finally { setSaving(false); }
   }
 
+  // The "custom" pinned option intentionally falls through the guard below:
+  // selecting it just closes the list and leaves all fields free-form.
+  const customOption = { id: "custom", label: "Custom Provider", sublabel: "Enter provider manually", pinned: true };
+
+  function applyProvider(id: string) {
+    const p = OAUTH_PROVIDERS.find((p) => p.id === id);
+    if (!p) return;
+    setOauthAuthUrl(p.authorizationUrl);
+    setOauthTokenUrl(p.tokenUrl);
+    setOauthTokenAuthMethod(p.tokenAuthMethod);
+    if (!isEdit) setOauthKey(p.suggestedKey);
+  }
+
   async function handleOAuthConnect() {
     setOauthConnecting(true); setError("");
     try {
@@ -588,7 +603,15 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
 
           {!isTokenUpload ? (
             <>
-              <FormField label="Authorization URL"><Input placeholder="e.g. https://accounts.google.com/o/oauth2/v2/auth" value={oauthAuthUrl} onChange={(e) => setOauthAuthUrl(e.target.value)} /></FormField>
+              <FormField label="Authorization URL" helperText="Pick a provider or paste any URL">
+                <Combobox
+                  placeholder="e.g. https://accounts.google.com/o/oauth2/v2/auth"
+                  value={oauthAuthUrl}
+                  onChange={setOauthAuthUrl}
+                  options={[...OAUTH_PROVIDERS.map((p) => ({ id: p.id, label: p.name, sublabel: p.authorizationUrl })), customOption]}
+                  onSelect={applyProvider}
+                />
+              </FormField>
               <FormField label="Token URL"><Input placeholder="e.g. https://oauth2.googleapis.com/token" value={oauthTokenUrl} onChange={(e) => setOauthTokenUrl(e.target.value)} /></FormField>
               <div className="flex gap-3">
                 <div className="flex-1"><FormField label="Client ID"><Input placeholder="OAuth app client ID" value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} /></FormField></div>
@@ -609,7 +632,15 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
                 <div className="flex-1"><FormField label="Access Token" helperText="Optional when refresh token is provided"><Input placeholder="Access token" value={oauthAccessToken} onChange={(e) => setOauthAccessToken(e.target.value)} type="password" /></FormField></div>
                 <div className="flex-1"><FormField label="Refresh Token" helperText="Validated immediately on save"><Input placeholder="Refresh token" value={oauthRefreshToken} onChange={(e) => setOauthRefreshToken(e.target.value)} type="password" /></FormField></div>
               </div>
-              <FormField label="Token URL" helperText="Required for refresh"><Input placeholder="e.g. https://oauth2.googleapis.com/token" value={oauthTokenUrl} onChange={(e) => setOauthTokenUrl(e.target.value)} /></FormField>
+              <FormField label="Token URL" helperText="Required for refresh. Pick a provider or paste any URL.">
+                <Combobox
+                  placeholder="e.g. https://oauth2.googleapis.com/token"
+                  value={oauthTokenUrl}
+                  onChange={setOauthTokenUrl}
+                  options={[...OAUTH_PROVIDERS.map((p) => ({ id: p.id, label: p.name, sublabel: p.tokenUrl })), customOption]}
+                  onSelect={applyProvider}
+                />
+              </FormField>
               <div className="flex gap-3">
                 <div className="flex-1"><FormField label="Client ID" helperText="Required for refresh"><Input placeholder="OAuth app client ID" value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} /></FormField></div>
                 <div className="flex-1"><FormField label="Client Secret" helperText="Optional"><Input placeholder="OAuth app client secret" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} type="password" /></FormField></div>
