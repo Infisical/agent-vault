@@ -317,7 +317,7 @@ func (s *SQLiteStore) ReplaceVaultCredentials(ctx context.Context, vaultID strin
 	}
 	if len(items) > 0 {
 		stmt, err := tx.PrepareContext(ctx,
-			`INSERT INTO credentials (id, vault_id, key, type, ciphertext, nonce, created_at, updated_at)
+			`INSERT OR IGNORE INTO credentials (id, vault_id, key, type, ciphertext, nonce, created_at, updated_at)
 			   VALUES (?, ?, ?, 'static', ?, ?, ?, ?)`)
 		if err != nil {
 			return fmt.Errorf("preparing credential insert: %w", err)
