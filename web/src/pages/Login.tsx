@@ -6,7 +6,6 @@ import Input from "../components/Input";
 import FormField from "../components/FormField";
 import { ErrorBanner } from "../components/shared";
 import { apiFetch } from "../lib/api";
-import { OAuthSection } from "../components/GoogleButton";
 import { DomainNotice } from "../components/DomainNotice";
 
 export default function Login() {
@@ -98,8 +97,6 @@ function LoginForm() {
       </p>
 
       <DomainNotice className="mb-6" />
-
-      <OAuthSection />
 
       <form onSubmit={handleSubmit} autoComplete="on">
         <div className="mb-6">

@@ -8,6 +8,10 @@ import (
 // Ingress labels identify which entrypoint handled a proxied request.
 // Persisted into request logs and filterable by the Logs UI, so a typo
 // at any call site would silently desync filters from the real data.
+//
+// IngressExplicit is retained for backward compatibility with rows
+// persisted before the explicit /proxy endpoint was removed; new events
+// emit IngressMITM only.
 const (
 	IngressExplicit = "explicit"
 	IngressMITM     = "mitm"
@@ -21,24 +25,26 @@ const (
 )
 
 // ProxyEvent is the shape of a single structured per-request log line
-// emitted by both the explicit /proxy/ handler and the transparent MITM
-// forward handler. It is intentionally shallow and contains only
-// non-secret metadata — no header values, no bodies, no query strings.
+// emitted by the MITM forward handler. It is intentionally shallow and
+// contains only non-secret metadata — no header values, no bodies, no
+// query strings.
 type ProxyEvent struct {
-	Ingress        string   // one of IngressExplicit, IngressMITM
+	Ingress        string   // always IngressMITM for new events (IngressExplicit lingers only on legacy DB rows)
 	Method         string   // HTTP method from the agent request
 	Host           string   // target host (with port if present)
 	Path           string   // r.URL.Path only — no query, no fragment
-	MatchedService string   // broker service host that matched, or "" if none
+	MatchedService string   // canonical service name (slug) that matched, or "" if none
+	MatchedHost    string   // host pattern of the matched service (e.g. "*.github.com"), or "" if none
+	MatchedPath    string   // path pattern of the matched service, or "" if catch-all / none
 	CredentialKeys []string // upper-snake credential key names only
 	Status         int      // upstream status; 0 if never dispatched
 	TotalMs        int64    // handler entry → emit, in milliseconds
 	Err            string   // short error code, or "" on success
+	Passthrough    bool     // see InjectResult.Passthrough
 }
 
 // Emit fills in the terminal fields (Status, Err, TotalMs measured from
-// start) and writes the event at Debug level. Shared by both ingress
-// paths so the log-line shape stays consistent.
+// start) and writes the event at Debug level.
 func (e *ProxyEvent) Emit(logger *slog.Logger, start time.Time, status int, errCode string) {
 	e.Status = status
 	e.Err = errCode
@@ -59,10 +65,13 @@ func LogProxyEvent(logger *slog.Logger, e ProxyEvent) {
 		slog.String("host", e.Host),
 		slog.String("path", e.Path),
 		slog.String("matched_service", e.MatchedService),
+		slog.String("matched_host", e.MatchedHost),
+		slog.String("matched_path", e.MatchedPath),
 		slog.Any("credential_keys", e.CredentialKeys),
 		slog.Int("status", e.Status),
 		slog.Int64("total_ms", e.TotalMs),
 		slog.String("err", e.Err),
+		slog.Bool("passthrough", e.Passthrough),
 	)
 }
 

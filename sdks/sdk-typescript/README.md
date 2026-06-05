@@ -25,10 +25,7 @@ const av = new AgentVault({
 const vault = av.vault("my-project");
 
 // Mint a scoped session — returns the token + container config in one call
-const session = await vault.sessions.create({
-  vaultRole: "proxy",
-  ttlSeconds: 3600,
-});
+const session = await vault.sessions!.create({ ttlSeconds: 3600 });
 
 // Build the full env var set with your chosen CA cert mount path
 const certPath = "/etc/ssl/agent-vault-ca.pem";
@@ -100,63 +97,42 @@ const av = new AgentVault({
 await av.createVault({ name: "my-project" });
 const vault = av.vault("my-project");
 
-// Store a credential
-await vault.credentials.set({ STRIPE_KEY: "sk_live_abc" });
+// Store credentials
+await vault.credentials.set({
+  STRIPE_KEY: "sk_live_abc",
+  SLACK_BOT_TOKEN: "xoxb-...",
+  SLACK_CONNECTION_TOKEN: "xapp-...",
+});
 
-// Configure a proxy rule — the token field references the credential key above
-await vault.services.set([
+// Configure proxy rules — the token field references a credential key above.
+// Slack needs two credentials at different paths on the same host, so we
+// embed the path glob in `host` (inline form) and give each rule a distinct
+// `name` slug.
+await vault.services!.set([
   {
+    name: "stripe",
     host: "api.stripe.com",
-    description: "Stripe API",
     auth: { type: "bearer", token: "STRIPE_KEY" },
   },
+  {
+    name: "slack-bot",
+    host: "slack.com/api/*",
+    auth: { type: "bearer", token: "SLACK_BOT_TOKEN" },
+  },
+  {
+    name: "slack-conn",
+    host: "slack.com/api/apps.connections.*",
+    auth: { type: "bearer", token: "SLACK_CONNECTION_TOKEN" },
+  },
 ]);
+
+// Remove a path-scoped service unambiguously by name:
+await vault.services!.removeByName("slack-conn");
 ```
-
-### Explicit proxy (alternative)
-
-If you can't use the transparent MITM proxy, the agent can route requests through the explicit `/proxy` endpoint using `VaultClient`:
-
-```typescript
-import { VaultClient } from "@infisical/agent-vault-sdk";
-
-const client = new VaultClient({
-  token: session.token,
-  address: "http://localhost:14321",
-});
-
-const res = await client.proxy.get("api.stripe.com", "/v1/charges", {
-  query: { limit: 10 },
-});
-
-if (res.ok) {
-  const charges = await res.json<{ data: { id: string }[] }>();
-  console.log(charges.data);
-}
-```
-
-The agent never sees `sk_live_abc` — Agent Vault injects it into the request automatically. All standard HTTP methods are available: `get`, `post`, `put`, `patch`, `delete`, and `request` for arbitrary methods.
 
 ## Error handling
 
-The SDK distinguishes between broker errors (thrown as exceptions) and upstream errors (returned as responses):
-
-```typescript
-import { ProxyForbiddenError } from "@infisical/agent-vault-sdk";
-
-try {
-  await client.proxy.get("api.unknown-service.com", "/");
-} catch (err) {
-  if (err instanceof ProxyForbiddenError) {
-    // No proxy rule configured for this host
-    console.log(err.proposalHint.host);
-  }
-}
-```
-
-- **Upstream non-2xx** (e.g. Stripe 404): resolves normally with `res.ok === false`
-- **`ProxyForbiddenError`**: no proxy rule matches the target host
-- **`ApiError`**: other broker-level failures
+The SDK throws `ApiError` for non-2xx responses from Agent Vault control-plane endpoints. Upstream HTTP errors from agent-issued traffic — which travels through `HTTPS_PROXY`, not the SDK — surface in the agent's normal HTTP client.
 
 ## Documentation
 

@@ -97,11 +97,12 @@ func (s *Server) buildOwnerUserList(ctx context.Context, users []store.User) []m
 	return items
 }
 
-// handlePublicUserList returns all users to any authenticated user.
+// handlePublicUserList returns all users to any instance member or owner.
 // Owners get full data (including vault memberships); members get a reduced view.
+// no-access actors are blocked — the actor directory is instance-scoped.
 func (s *Server) handlePublicUserList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	actor, err := s.requireActor(w, r)
+	actor, err := s.requireInstanceMember(w, r)
 	if err != nil {
 		return
 	}
@@ -151,10 +152,19 @@ func (s *Server) handleUserGet(w http.ResponseWriter, r *http.Request) {
 		email = actor.User.Email
 	}
 
-	// Members can only view themselves.
-	if !actor.IsOwner() && (actor.User == nil || actor.User.Email != email) {
-		jsonError(w, http.StatusForbidden, "Owner role required to view other users")
-		return
+	// Self-lookup is always allowed. Looking up other users is instance-scoped:
+	// no-access actors are blocked entirely; members are blocked from viewing
+	// other users (owner-only).
+	isSelf := actor.User != nil && actor.User.Email == email
+	if !isSelf {
+		if !instanceRoleSatisfies(actor.Role, "member") {
+			jsonError(w, http.StatusForbidden, "Instance member role required")
+			return
+		}
+		if !actor.IsOwner() {
+			jsonError(w, http.StatusForbidden, "Owner role required to view other users")
+			return
+		}
 	}
 
 	user, err := s.store.GetUserByEmail(ctx, email)
@@ -223,8 +233,8 @@ func (s *Server) handleUserSetRole(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if req.Role != "owner" && req.Role != "member" {
-		jsonError(w, http.StatusBadRequest, "Role must be 'owner' or 'member'")
+	if !validInstanceRole(req.Role) {
+		jsonError(w, http.StatusBadRequest, "Role must be one of: owner, member, no-access")
 		return
 	}
 
@@ -234,8 +244,8 @@ func (s *Server) handleUserSetRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prevent demoting the last owner.
-	if user.Role == "owner" && req.Role == "member" && s.guardLastOwner(ctx, w, "demote") {
+	// Prevent demoting the last owner — to any non-owner role.
+	if user.Role == "owner" && req.Role != "owner" && s.guardLastOwner(ctx, w, "demote") {
 		return
 	}
 
@@ -301,7 +311,7 @@ func (s *Server) sendUserInviteEmail(w http.ResponseWriter, recipientEmail, invi
 func (s *Server) handleUserInviteCreate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	actor, err := s.requireActor(w, r)
+	actor, err := s.requireInstanceMember(w, r)
 	if err != nil {
 		return
 	}
@@ -328,8 +338,8 @@ func (s *Server) handleUserInviteCreate(w http.ResponseWriter, r *http.Request) 
 	if role == "" {
 		role = "member"
 	}
-	if role != "owner" && role != "member" {
-		jsonError(w, http.StatusBadRequest, "Role must be one of: owner, member")
+	if !validInstanceRole(role) {
+		jsonError(w, http.StatusBadRequest, "Role must be one of: owner, member, no-access")
 		return
 	}
 	if role == "owner" && !actor.IsOwner() {
@@ -522,7 +532,7 @@ func (s *Server) handleUserInviteAccept(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleUserInviteList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	actor, err := s.requireActor(w, r)
+	actor, err := s.requireInstanceMember(w, r)
 	if err != nil {
 		return
 	}
@@ -591,7 +601,7 @@ func (s *Server) handleUserInviteList(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUserInviteRevoke(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	actor, err := s.requireActor(w, r)
+	actor, err := s.requireInstanceMember(w, r)
 	if err != nil {
 		return
 	}
@@ -633,7 +643,7 @@ func (s *Server) handleUserInviteRevoke(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleUserInviteReinvite(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	actor, err := s.requireActor(w, r)
+	actor, err := s.requireInstanceMember(w, r)
 	if err != nil {
 		return
 	}

@@ -1,0 +1,42 @@
+upstream agent_vault {
+    server ${AGENT_VAULT_UPSTREAM};
+    keepalive 16;
+}
+
+server {
+    listen ${PORT};
+    server_name _;
+
+    # Local liveness probe; Agent Vault's own /health forwards through normally.
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # Refuse CONNECT — accepting it would turn this reverse proxy into an open forward proxy.
+    if ($request_method = CONNECT) {
+        return 405;
+    }
+
+    # MITM port 14322 is intentionally absent — never add it. See README.
+    location / {
+        proxy_pass http://agent_vault;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Strip oauth2-proxy-style headers in case future Vault versions trust them.
+        proxy_set_header X-Forwarded-User    "";
+        proxy_set_header X-Auth-Request-User "";
+
+        # Authorization is intentionally NOT stripped — see README "Why we don't strip Authorization".
+
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+    }
+}

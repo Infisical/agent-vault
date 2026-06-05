@@ -24,6 +24,8 @@ const emailVerificationTTL = 15 * time.Minute
 
 const maxPendingVerifications = 3
 
+const registerUniformMessage = "If this email is not already registered, a verification code has been sent."
+
 // generateAndSendVerificationCode creates a new 6-digit verification code for
 // the given email and sends it via email (or logs to stderr if SMTP is not configured).
 func (s *Server) generateAndSendVerificationCode(ctx context.Context, email string) (bool, error) {
@@ -105,25 +107,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			"email":                 req.Email,
 			"requires_verification": true,
 			"email_sent":            s.notifier.Enabled(),
-			"message":               "If this email is not already registered, a verification code has been sent.",
+			"message":               registerUniformMessage,
 		})
 		return
 	}
 
-	hash, salt, kdfParams, err := auth.HashUserPassword([]byte(req.Password))
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to hash password")
-		return
-	}
-
-	// If an inactive user exists, update their password and resend verification.
+	// If an inactive user exists, resend a verification code but do NOT
+	// overwrite their password — that would let an unauthenticated attacker
+	// silently replace the password before the legitimate user verifies.
 	if existing != nil && !existing.IsActive {
-		if err := s.store.UpdateUserPassword(ctx, existing.ID, hash, salt, kdfParams.Time, kdfParams.Memory, kdfParams.Threads); err != nil {
-			jsonError(w, http.StatusInternalServerError, "Failed to update account")
-			return
-		}
-
-		emailSent, err := s.generateAndSendVerificationCode(ctx, req.Email)
+		_, err := s.generateAndSendVerificationCode(ctx, req.Email)
 		if errors.Is(err, errTooManyPendingCodes) {
 			jsonError(w, http.StatusTooManyRequests, "Too many pending verification codes")
 			return
@@ -133,17 +126,18 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		msg := "Account updated. Ask your Agent Vault instance owner for the verification code."
-		if emailSent {
-			msg = "Account updated. Check your email for a new verification code."
-		}
-
 		jsonCreated(w, map[string]interface{}{
-			"email":                 existing.Email,
+			"email":                 req.Email,
 			"requires_verification": true,
-			"email_sent":            emailSent,
-			"message":               msg,
+			"email_sent":            s.notifier.Enabled(),
+			"message":               registerUniformMessage,
 		})
+		return
+	}
+
+	hash, salt, kdfParams, err := auth.HashUserPassword([]byte(req.Password))
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to hash password")
 		return
 	}
 
@@ -374,8 +368,7 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only allow reset for active accounts with a password.
-	if !user.IsActive || user.PasswordHash == nil {
+	if !user.IsActive {
 		uniformResponse(false)
 		return
 	}
@@ -461,7 +454,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !user.IsActive || user.PasswordHash == nil {
+	if !user.IsActive {
 		jsonError(w, http.StatusBadRequest, "Invalid or expired reset code")
 		return
 	}
@@ -537,24 +530,12 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 
 	// User actor.
 	user := actor.User
-	var oauthProviders []string
-	oauthAccounts, err := s.store.ListUserOAuthAccounts(r.Context(), user.ID)
-	if err == nil {
-		for _, oa := range oauthAccounts {
-			oauthProviders = append(oauthProviders, oa.Provider)
-		}
-	}
-	if oauthProviders == nil {
-		oauthProviders = []string{}
-	}
 
 	jsonOK(w, map[string]interface{}{
-		"type":            "user",
-		"email":           user.Email,
-		"role":            user.Role,
-		"is_owner":        user.Role == "owner",
-		"has_password":    user.PasswordHash != nil,
-		"oauth_providers": oauthProviders,
+		"type":     "user",
+		"email":    user.Email,
+		"role":     user.Role,
+		"is_owner": user.Role == "owner",
 	})
 }
 
@@ -612,8 +593,8 @@ func init() {
 
 // newUserSessionParams builds a CreateUserSessionParams populated with the
 // caller's IP and User-Agent. Centralized so every login path (password,
-// OAuth, verification, password reset) records the same shape and applies
-// the same TTLs. DeviceLabel is left empty here because only the password
+// verification, password reset) records the same shape and applies the
+// same TTLs. DeviceLabel is left empty here because only the password
 // login path receives one in the request body — other paths set it
 // post-construction if needed.
 func newUserSessionParams(r *http.Request, userID string) store.CreateUserSessionParams {
@@ -633,11 +614,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rate limit by IP and by email (reject if either bucket is full).
+	// Rate limit by IP (read-only peek — the ipAuth middleware already
+	// recorded this request) and by email (reject if either is full).
 	// Normalize the email key so case/whitespace variations don't
 	// let an attacker bypass the email bucket for a legitimate user.
 	ip := clientIP(r)
-	ipDecision := s.rateLimit.Allow(ratelimit.TierAuth, "ip:"+ip)
+	ipDecision := s.rateLimit.Check(ratelimit.TierAuth, "ip:"+ip)
 	emailDecision := s.rateLimit.Allow(ratelimit.TierAuth, "email:"+strings.ToLower(strings.TrimSpace(req.Email)))
 	if !ipDecision.Allow || !emailDecision.Allow {
 		d := ipDecision
@@ -655,13 +637,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// Run KDF against dummy hash to equalize response time (prevent user enumeration).
 		auth.VerifyUserPassword([]byte(req.Password), dummyPasswordHash, dummyPasswordSalt, dummyKDFParams)
 		jsonError(w, http.StatusUnauthorized, "Invalid email or password")
-		return
-	}
-
-	// OAuth-only user trying to use password login — run dummy KDF to prevent timing attacks.
-	if user.PasswordHash == nil {
-		auth.VerifyUserPassword([]byte(req.Password), dummyPasswordHash, dummyPasswordSalt, dummyKDFParams)
-		jsonError(w, http.StatusUnauthorized, "This account uses social login. Use the 'Continue with Google' button on the login page.")
 		return
 	}
 
@@ -722,17 +697,13 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// OAuth-only users (no password) can set a password without providing current_password.
-	// Users with an existing password must verify it first.
-	if user.PasswordHash != nil {
-		if req.CurrentPassword == "" {
-			jsonError(w, http.StatusBadRequest, "Current_password is required")
-			return
-		}
-		if !auth.VerifyUserPassword([]byte(req.CurrentPassword), user.PasswordHash, user.PasswordSalt, userKDFParams(user)) {
-			jsonError(w, http.StatusUnauthorized, "Current password is incorrect")
-			return
-		}
+	if req.CurrentPassword == "" {
+		jsonError(w, http.StatusBadRequest, "Current_password is required")
+		return
+	}
+	if !auth.VerifyUserPassword([]byte(req.CurrentPassword), user.PasswordHash, user.PasswordSalt, userKDFParams(user)) {
+		jsonError(w, http.StatusUnauthorized, "Current password is incorrect")
+		return
 	}
 
 	hash, salt, newKDFParams, err := auth.HashUserPassword([]byte(req.NewPassword))

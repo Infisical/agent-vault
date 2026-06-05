@@ -17,7 +17,7 @@ func customAuth(headers map[string]string) *broker.Auth {
 
 func TestValidateValid(t *testing.T) {
 	services := []Service{
-		{Action: ActionSet, Host: "api.stripe.com", Auth: bearerAuth("STRIPE_KEY")},
+		{Action: ActionSet, Name: "api-stripe-com", Host: "api.stripe.com", Auth: bearerAuth("STRIPE_KEY")},
 	}
 	creds := []CredentialSlot{
 		{Action: ActionSet, Key: "STRIPE_KEY", Description: "Stripe credential key"},
@@ -35,7 +35,7 @@ func TestValidateNoRulesOrCredentials(t *testing.T) {
 }
 
 func TestValidateEmptyHost(t *testing.T) {
-	services := []Service{{Action: ActionSet, Host: "", Auth: bearerAuth("KEY")}}
+	services := []Service{{Action: ActionSet, Name: "svc", Host: "", Auth: bearerAuth("KEY")}}
 	err := Validate(services, nil)
 	if err == nil || !strings.Contains(err.Error(), "host is required") {
 		t.Fatalf("expected host required error, got %v", err)
@@ -43,7 +43,7 @@ func TestValidateEmptyHost(t *testing.T) {
 }
 
 func TestValidateMissingAuthForSet(t *testing.T) {
-	services := []Service{{Action: ActionSet, Host: "example.com"}}
+	services := []Service{{Action: ActionSet, Name: "example-com", Host: "example.com"}}
 	err := Validate(services, nil)
 	if err == nil || !strings.Contains(err.Error(), "auth or enabled") {
 		t.Fatalf("expected auth-or-enabled required error, got %v", err)
@@ -52,7 +52,7 @@ func TestValidateMissingAuthForSet(t *testing.T) {
 
 func TestValidateEnabledOnlySetValid(t *testing.T) {
 	disabled := false
-	services := []Service{{Action: ActionSet, Host: "example.com", Enabled: &disabled}}
+	services := []Service{{Action: ActionSet, Name: "example-com", Host: "example.com", Enabled: &disabled}}
 	if err := Validate(services, nil); err != nil {
 		t.Fatalf("expected enable-only set to validate, got %v", err)
 	}
@@ -61,7 +61,7 @@ func TestValidateEnabledOnlySetValid(t *testing.T) {
 func TestValidateTooManyRules(t *testing.T) {
 	services := make([]Service, MaxServices+1)
 	for i := range services {
-		services[i] = Service{Action: ActionSet, Host: "example.com", Auth: bearerAuth("KEY")}
+		services[i] = Service{Action: ActionSet, Name: "example-com", Host: "example.com", Auth: bearerAuth("KEY")}
 	}
 	err := Validate(services, nil)
 	if err == nil || !strings.Contains(err.Error(), "too many services") {
@@ -71,7 +71,7 @@ func TestValidateTooManyRules(t *testing.T) {
 
 func TestValidateUnreferencedCredentialSlot(t *testing.T) {
 	services := []Service{
-		{Action: ActionSet, Host: "api.stripe.com", Auth: bearerAuth("STRIPE_KEY")},
+		{Action: ActionSet, Name: "api-stripe-com", Host: "api.stripe.com", Auth: bearerAuth("STRIPE_KEY")},
 	}
 	creds := []CredentialSlot{
 		{Action: ActionSet, Key: "STRIPE_KEY"},
@@ -85,7 +85,7 @@ func TestValidateUnreferencedCredentialSlot(t *testing.T) {
 
 func TestValidateDuplicateCredentialSlot(t *testing.T) {
 	services := []Service{
-		{Action: ActionSet, Host: "example.com", Auth: customAuth(map[string]string{"X": "{{ K }}"})},
+		{Action: ActionSet, Name: "example-com", Host: "example.com", Auth: customAuth(map[string]string{"X": "{{ K }}"})},
 	}
 	creds := []CredentialSlot{{Action: ActionSet, Key: "K"}, {Action: ActionSet, Key: "K"}}
 	err := Validate(services, creds)
@@ -96,7 +96,7 @@ func TestValidateDuplicateCredentialSlot(t *testing.T) {
 
 func TestValidateNoCredentialsAllowed(t *testing.T) {
 	services := []Service{
-		{Action: ActionSet, Host: "example.com", Auth: customAuth(map[string]string{"X-Static": "fixed-value"})},
+		{Action: ActionSet, Name: "example-com", Host: "example.com", Auth: customAuth(map[string]string{"X-Static": "fixed-value"})},
 	}
 	if err := Validate(services, nil); err != nil {
 		t.Fatalf("expected valid with no credentials, got %v", err)
@@ -104,7 +104,7 @@ func TestValidateNoCredentialsAllowed(t *testing.T) {
 }
 
 func TestValidateInvalidAction(t *testing.T) {
-	services := []Service{{Action: "bogus", Host: "example.com"}}
+	services := []Service{{Action: "bogus", Name: "example-com", Host: "example.com"}}
 	err := Validate(services, nil)
 	if err == nil || !strings.Contains(err.Error(), "invalid action") {
 		t.Fatalf("expected invalid action error, got %v", err)
@@ -113,7 +113,7 @@ func TestValidateInvalidAction(t *testing.T) {
 
 func TestValidateDeleteRuleNoAuth(t *testing.T) {
 	services := []Service{
-		{Action: ActionDelete, Host: "api.stripe.com"},
+		{Action: ActionDelete, Name: "api-stripe-com", Host: "api.stripe.com"},
 	}
 	if err := Validate(services, nil); err != nil {
 		t.Fatalf("expected delete service without auth to be valid, got %v", err)
@@ -131,7 +131,7 @@ func TestValidateDeleteOnlyCredentials(t *testing.T) {
 
 func TestValidateDeleteCredentialNotReferencedByRule(t *testing.T) {
 	services := []Service{
-		{Action: ActionSet, Host: "example.com", Auth: customAuth(map[string]string{"X-Static": "fixed"})},
+		{Action: ActionSet, Name: "example-com", Host: "example.com", Auth: customAuth(map[string]string{"X-Static": "fixed"})},
 	}
 	creds := []CredentialSlot{
 		{Action: ActionDelete, Key: "UNUSED_KEY"},
@@ -167,7 +167,7 @@ func TestValidateCredentialKeyFormat(t *testing.T) {
 	}
 	for _, tt := range tests {
 		services := []Service{
-			{Action: ActionSet, Host: "example.com", Auth: bearerAuth(tt.key)},
+			{Action: ActionSet, Name: "example-com", Host: "example.com", Auth: bearerAuth(tt.key)},
 		}
 		creds := []CredentialSlot{{Action: ActionSet, Key: tt.key}}
 		err := Validate(services, creds)
@@ -190,7 +190,7 @@ func TestValidateDeleteCredentialKeyFormat(t *testing.T) {
 
 func TestValidateBasicAuth(t *testing.T) {
 	services := []Service{
-		{Action: ActionSet, Host: "api.ashby.com", Auth: &broker.Auth{Type: "basic", Username: "ASHBY_KEY"}},
+		{Action: ActionSet, Name: "api-ashby-com", Host: "api.ashby.com", Auth: &broker.Auth{Type: "basic", Username: "ASHBY_KEY"}},
 	}
 	creds := []CredentialSlot{{Action: ActionSet, Key: "ASHBY_KEY"}}
 	if err := Validate(services, creds); err != nil {
@@ -200,7 +200,7 @@ func TestValidateBasicAuth(t *testing.T) {
 
 func TestValidateApiKeyAuth(t *testing.T) {
 	services := []Service{
-		{Action: ActionSet, Host: "api.openai.com", Auth: &broker.Auth{Type: "api-key", Key: "OPENAI_KEY", Header: "Authorization", Prefix: "Bearer "}},
+		{Action: ActionSet, Name: "api-openai-com", Host: "api.openai.com", Auth: &broker.Auth{Type: "api-key", Key: "OPENAI_KEY", Header: "Authorization", Prefix: "Bearer "}},
 	}
 	creds := []CredentialSlot{{Action: ActionSet, Key: "OPENAI_KEY"}}
 	if err := Validate(services, creds); err != nil {
@@ -212,7 +212,7 @@ func TestValidateApiKeyAuth(t *testing.T) {
 
 func TestValidateCredentialRefsAllInSlots(t *testing.T) {
 	services := []Service{
-		{Action: ActionSet, Host: "api.stripe.com", Auth: bearerAuth("STRIPE_KEY")},
+		{Action: ActionSet, Name: "api-stripe-com", Host: "api.stripe.com", Auth: bearerAuth("STRIPE_KEY")},
 	}
 	slots := []CredentialSlot{{Action: ActionSet, Key: "STRIPE_KEY"}}
 	if err := ValidateCredentialRefs(services, slots, nil); err != nil {
@@ -222,7 +222,7 @@ func TestValidateCredentialRefsAllInSlots(t *testing.T) {
 
 func TestValidateCredentialRefsAllInExisting(t *testing.T) {
 	services := []Service{
-		{Action: ActionSet, Host: "api.stripe.com", Auth: bearerAuth("STRIPE_KEY")},
+		{Action: ActionSet, Name: "api-stripe-com", Host: "api.stripe.com", Auth: bearerAuth("STRIPE_KEY")},
 	}
 	if err := ValidateCredentialRefs(services, nil, []string{"STRIPE_KEY"}); err != nil {
 		t.Fatalf("expected valid, got %v", err)
@@ -231,8 +231,8 @@ func TestValidateCredentialRefsAllInExisting(t *testing.T) {
 
 func TestValidateCredentialRefsMixed(t *testing.T) {
 	services := []Service{
-		{Action: ActionSet, Host: "api.stripe.com", Auth: bearerAuth("STRIPE_KEY")},
-		{Action: ActionSet, Host: "*.github.com", Auth: bearerAuth("GITHUB_TOKEN")},
+		{Action: ActionSet, Name: "api-stripe-com", Host: "api.stripe.com", Auth: bearerAuth("STRIPE_KEY")},
+		{Action: ActionSet, Name: "github-com", Host: "*.github.com", Auth: bearerAuth("GITHUB_TOKEN")},
 	}
 	slots := []CredentialSlot{{Action: ActionSet, Key: "STRIPE_KEY"}}
 	existing := []string{"GITHUB_TOKEN"}
@@ -243,7 +243,7 @@ func TestValidateCredentialRefsMixed(t *testing.T) {
 
 func TestValidateCredentialRefsMissing(t *testing.T) {
 	services := []Service{
-		{Action: ActionSet, Host: "api.stripe.com", Auth: bearerAuth("MISSING_KEY")},
+		{Action: ActionSet, Name: "api-stripe-com", Host: "api.stripe.com", Auth: bearerAuth("MISSING_KEY")},
 	}
 	err := ValidateCredentialRefs(services, nil, []string{"OTHER_KEY"})
 	if err == nil || !strings.Contains(err.Error(), "MISSING_KEY") {
@@ -253,7 +253,7 @@ func TestValidateCredentialRefsMissing(t *testing.T) {
 
 func TestValidateCredentialRefsCustomNoTemplates(t *testing.T) {
 	services := []Service{
-		{Action: ActionSet, Host: "example.com", Auth: customAuth(map[string]string{"X-Static": "fixed-value"})},
+		{Action: ActionSet, Name: "example-com", Host: "example.com", Auth: customAuth(map[string]string{"X-Static": "fixed-value"})},
 	}
 	if err := ValidateCredentialRefs(services, nil, nil); err != nil {
 		t.Fatalf("expected valid with no templates, got %v", err)
@@ -262,8 +262,8 @@ func TestValidateCredentialRefsCustomNoTemplates(t *testing.T) {
 
 func TestValidateCredentialRefsSkipsDeleteRules(t *testing.T) {
 	services := []Service{
-		{Action: ActionDelete, Host: "api.stripe.com"},
-		{Action: ActionSet, Host: "example.com", Auth: customAuth(map[string]string{"X": "{{ K }}"})},
+		{Action: ActionDelete, Name: "api-stripe-com", Host: "api.stripe.com"},
+		{Action: ActionSet, Name: "example-com", Host: "example.com", Auth: customAuth(map[string]string{"X": "{{ K }}"})},
 	}
 	slots := []CredentialSlot{{Action: ActionSet, Key: "K"}}
 	if err := ValidateCredentialRefs(services, slots, nil); err != nil {
@@ -273,7 +273,7 @@ func TestValidateCredentialRefsSkipsDeleteRules(t *testing.T) {
 
 func TestValidateCredentialRefsDeleteSlotsNotAvailable(t *testing.T) {
 	services := []Service{
-		{Action: ActionSet, Host: "example.com", Auth: customAuth(map[string]string{"X": "{{ K }}"})},
+		{Action: ActionSet, Name: "example-com", Host: "example.com", Auth: customAuth(map[string]string{"X": "{{ K }}"})},
 	}
 	slots := []CredentialSlot{{Action: ActionDelete, Key: "K"}}
 	err := ValidateCredentialRefs(services, slots, nil)
@@ -284,7 +284,7 @@ func TestValidateCredentialRefsDeleteSlotsNotAvailable(t *testing.T) {
 
 func TestValidateCredentialRefsBasicAuth(t *testing.T) {
 	services := []Service{
-		{Action: ActionSet, Host: "api.ashby.com", Auth: &broker.Auth{Type: "basic", Username: "USER", Password: "PASS"}},
+		{Action: ActionSet, Name: "api-ashby-com", Host: "api.ashby.com", Auth: &broker.Auth{Type: "basic", Username: "USER", Password: "PASS"}},
 	}
 	slots := []CredentialSlot{{Action: ActionSet, Key: "USER"}, {Action: ActionSet, Key: "PASS"}}
 	if err := ValidateCredentialRefs(services, slots, nil); err != nil {
@@ -297,6 +297,7 @@ func TestValidateCredentialRefsBasicAuth(t *testing.T) {
 func TestValidateProposalSubstitutionWithAuth(t *testing.T) {
 	services := []Service{{
 		Action: ActionSet,
+		Name:   "api-twilio-com",
 		Host:   "api.twilio.com",
 		Auth:   &broker.Auth{Type: "basic", Username: "TWILIO_ACCOUNT_SID", Password: "TWILIO_AUTH_TOKEN"},
 		Substitutions: []broker.Substitution{
@@ -316,6 +317,7 @@ func TestValidateProposalSubstitutionWithoutAuth(t *testing.T) {
 	on := true
 	services := []Service{{
 		Action:  ActionSet,
+		Name:   "api-twilio-com",
 		Host:    "api.twilio.com",
 		Enabled: &on,
 		Substitutions: []broker.Substitution{
@@ -331,6 +333,7 @@ func TestValidateProposalSubstitutionWithoutAuth(t *testing.T) {
 func TestValidateProposalSubstitutionInvalidPlaceholder(t *testing.T) {
 	services := []Service{{
 		Action: ActionSet,
+		Name:   "api-twilio-com",
 		Host:   "api.twilio.com",
 		Auth:   bearerAuth("TWILIO_ACCOUNT_SID"),
 		Substitutions: []broker.Substitution{
@@ -347,6 +350,7 @@ func TestValidateProposalSubstitutionInvalidPlaceholder(t *testing.T) {
 func TestValidateProposalSubstitutionRequiresCredSlot(t *testing.T) {
 	services := []Service{{
 		Action: ActionSet,
+		Name:   "api-twilio-com",
 		Host:   "api.twilio.com",
 		Auth:   bearerAuth("TWILIO_AUTH_TOKEN"),
 		Substitutions: []broker.Substitution{
@@ -365,6 +369,7 @@ func TestValidateProposalSubstitutionRequiresCredSlot(t *testing.T) {
 func TestValidateCredentialRefsSubstitutionResolvesFromExisting(t *testing.T) {
 	services := []Service{{
 		Action: ActionSet,
+		Name:   "api-twilio-com",
 		Host:   "api.twilio.com",
 		Auth:   bearerAuth("TWILIO_AUTH_TOKEN"),
 		Substitutions: []broker.Substitution{

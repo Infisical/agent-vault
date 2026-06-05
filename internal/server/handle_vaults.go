@@ -1,15 +1,66 @@
 package server
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/auth"
+	"github.com/Infisical/agent-vault/internal/broker"
+	"github.com/Infisical/agent-vault/internal/brokercore"
+	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/store"
 )
+
+// resolveVaultForAdminOrOwner loads the vault and verifies the caller is
+// either a vault admin or the instance owner — the auth scope shared by
+// vault rename, delete, and settings handlers. On failure it writes the
+// error response and returns nil; callers should `return` immediately.
+func (s *Server) resolveVaultForAdminOrOwner(w http.ResponseWriter, r *http.Request, name string) *store.Vault {
+	ctx := r.Context()
+	ns, err := s.store.GetVault(ctx, name)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
+		return nil
+	}
+	actor, err := s.requireActor(w, r)
+	if err != nil {
+		return nil
+	}
+	role, _ := s.store.GetVaultRole(ctx, actor.ID, ns.ID)
+	if role != "admin" && !actor.IsOwner() {
+		jsonError(w, http.StatusForbidden, "Vault admin or instance owner required")
+		return nil
+	}
+	return ns
+}
+
+// readUnmatchedHostPolicy returns the per-vault unmatched_host_policy,
+// defaulting to PolicyPassthrough when the row is absent or holds an
+// unrecognised value. A non-nil error means the underlying store read
+// failed for a reason other than "not present".
+func readUnmatchedHostPolicy(ctx context.Context, st interface {
+	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
+}, vaultID string) (brokercore.UnmatchedHostPolicy, error) {
+	raw, err := st.GetVaultSetting(ctx, vaultID, settingUnmatchedHostPolicy)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return brokercore.PolicyPassthrough, nil
+		}
+		return brokercore.PolicyPassthrough, err
+	}
+	policy := brokercore.UnmatchedHostPolicy(raw)
+	if !brokercore.IsValidUnmatchedHostPolicy(policy) {
+		return brokercore.PolicyPassthrough, nil
+	}
+	return policy, nil
+}
 
 // handleVaultContext returns the current user's membership context for a vault.
 func (s *Server) handleVaultContext(w http.ResponseWriter, r *http.Request) {
@@ -33,9 +84,179 @@ func (s *Server) handleVaultContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonOK(w, map[string]interface{}{
+	resp := map[string]interface{}{
 		"vault_name": vault.Name,
 		"vault_role": vaultRole,
+	}
+	// Fail closed on real DB errors: silently treating an external vault as
+	// builtin would expose mutation buttons that then 409 on click.
+	cs, err := s.store.GetVaultCredentialStore(ctx, vault.ID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		jsonError(w, http.StatusInternalServerError, "Failed to read credential store")
+		return
+	}
+	if cs != nil && cs.Kind != "" {
+		summary := credentialStoreDetailSummary(cs)
+		// Config and LastSyncError can both carry upstream topology
+		// (paths/keys); gate on the same role check that gates create.
+		if vaultRole != "admin" && !actor.IsOwner() {
+			summary.Config = nil
+			summary.LastSyncError = ""
+		}
+		resp["credential_store"] = summary
+	}
+	jsonOK(w, resp)
+}
+
+// handleVaultSyncNow forces an immediate refresh and returns the post-refresh
+// credential_store summary. Any vault member; broker identity authorizes upstream.
+func (s *Server) handleVaultSyncNow(w http.ResponseWriter, r *http.Request) {
+	vaultName := r.PathValue("name")
+	ctx := r.Context()
+
+	vault, err := s.store.GetVault(ctx, vaultName)
+	if err != nil || vault == nil {
+		jsonError(w, http.StatusNotFound, "Vault not found")
+		return
+	}
+
+	// requireVaultMember enforces member+ and returns the actor for instance
+	// sessions; scoped sessions return (nil, nil) and we resolve via requireActor.
+	actor, err := s.requireVaultMember(w, r, vault.ID)
+	if err != nil {
+		return
+	}
+	if actor == nil {
+		actor, err = s.requireActor(w, r)
+		if err != nil {
+			return
+		}
+	}
+
+	cs, err := s.store.GetVaultCredentialStore(ctx, vault.ID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		jsonError(w, http.StatusInternalServerError, "Failed to read credential store")
+		return
+	}
+	if cs == nil || cs.Kind == "" {
+		jsonError(w, http.StatusBadRequest, "Vault has no external credential store")
+		return
+	}
+
+	if s.infisicalSyncer == nil {
+		jsonCodedError(w, http.StatusServiceUnavailable, "infisical_not_configured",
+			"Infisical is not configured on this server. Set INFISICAL_URL to enable external-store vaults.")
+		return
+	}
+
+	if err := s.infisicalSyncer.RefreshOnce(ctx, *cs); err != nil {
+		switch {
+		case errors.Is(err, infisical.ErrSyncerDisabled):
+			jsonCodedError(w, http.StatusServiceUnavailable, "infisical_not_configured",
+				"Infisical is not configured on this server.")
+		case errors.Is(err, infisical.ErrNotExternal):
+			jsonError(w, http.StatusBadRequest, "Vault has no external credential store")
+		case errors.Is(err, infisical.ErrSyncInFlight):
+			jsonError(w, http.StatusConflict, "Sync already in flight for this vault")
+		case errors.Is(err, infisical.ErrInvalidKey):
+			// Upstream key name is topology; redact for non-admin/non-owner
+			// viewers, mirroring handleVaultContext's last_sync_error gate.
+			if s.callerCanSeeVaultUpstream(ctx, actor, vault.ID) {
+				jsonCodedError(w, http.StatusBadRequest, "external_store_invalid_key", err.Error())
+			} else {
+				s.logger.Warn("manual infisical sync rejected invalid upstream key",
+					slog.String("vault_id", vault.ID),
+					slog.String("err", err.Error()))
+				jsonCodedError(w, http.StatusBadRequest, "external_store_invalid_key",
+					"Upstream secret key does not match the required UPPER_SNAKE_CASE pattern. See server logs for the offending key.")
+			}
+		case errors.Is(err, context.Canceled):
+			return // caller went away
+		default:
+			s.logger.Warn("manual infisical sync failed",
+				slog.String("vault_id", vault.ID),
+				slog.String("err", err.Error()))
+			jsonCodedError(w, http.StatusBadGateway, "infisical_fetch_failed",
+				"Infisical sync failed. See server logs for details.")
+		}
+		return
+	}
+
+	// Re-read the row so the response reflects the freshly-written health.
+	cs, err = s.store.GetVaultCredentialStore(ctx, vault.ID)
+	if err != nil || cs == nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to read credential store after sync")
+		return
+	}
+	summary := credentialStoreDetailSummary(cs)
+	if !s.callerCanSeeVaultUpstream(ctx, actor, vault.ID) {
+		summary.Config = nil
+		summary.LastSyncError = ""
+	}
+	jsonOK(w, map[string]interface{}{"credential_store": summary})
+}
+
+// callerCanSeeVaultUpstream gates upstream topology (config, last_sync_error,
+// ErrInvalidKey messages) on instance owner or vault-admin grant.
+func (s *Server) callerCanSeeVaultUpstream(ctx context.Context, actor *Actor, vaultID string) bool {
+	if actor.IsOwner() {
+		return true
+	}
+	if sess := sessionFromContext(ctx); sess != nil && sess.VaultID != "" {
+		return sess.VaultRole == "admin"
+	}
+	role, _ := s.store.GetVaultRole(ctx, actor.ID, vaultID)
+	return role == "admin"
+}
+
+// credentialStoreSummary is the shared shape for vault list (kind + sync
+// status only) and vault context (full body, when full=true).
+type credentialStoreSummary struct {
+	Kind                string          `json:"kind"`
+	Config              json.RawMessage `json:"config,omitempty"`
+	PollIntervalSeconds int             `json:"poll_interval_seconds,omitempty"`
+	LastSyncStatus      string          `json:"last_sync_status,omitempty"`
+	LastSyncedAt        string          `json:"last_synced_at,omitempty"`
+	LastSyncError       string          `json:"last_sync_error,omitempty"`
+}
+
+// credentialStoreListSummary is the slim shape returned in GET /v1/vaults:
+// only kind + sync health, no config or error detail.
+func credentialStoreListSummary(cs *store.VaultCredentialStore) *credentialStoreSummary {
+	out := &credentialStoreSummary{Kind: cs.Kind, LastSyncStatus: cs.LastSyncStatus}
+	if cs.LastSyncedAt != nil {
+		out.LastSyncedAt = cs.LastSyncedAt.Format(time.RFC3339)
+	}
+	return out
+}
+
+// credentialStoreDetailSummary is the full shape for vault context and
+// post-sync responses. Callers must redact Config and LastSyncError for
+// non-admin/non-owner viewers (upstream topology leak).
+func credentialStoreDetailSummary(cs *store.VaultCredentialStore) *credentialStoreSummary {
+	out := credentialStoreListSummary(cs)
+	out.PollIntervalSeconds = cs.PollIntervalSeconds
+	out.LastSyncError = cs.LastSyncError
+	if cs.ConfigJSON != "" {
+		out.Config = json.RawMessage(cs.ConfigJSON)
+	}
+	return out
+}
+
+// handleInstanceCredentialStores lists credential-store kinds the caller
+// may create. Always "builtin"; "infisical" only for owners when the server
+// has an Infisical client (matches the create gate).
+func (s *Server) handleInstanceCredentialStores(w http.ResponseWriter, r *http.Request) {
+	actor, err := s.requireActor(w, r)
+	if err != nil {
+		return
+	}
+	available := []string{store.CredentialStoreBuiltin}
+	if actor.IsOwner() && s.infisicalClient != nil {
+		available = append(available, store.CredentialStoreInfisical)
+	}
+	jsonOK(w, map[string]interface{}{
+		"available": available,
 	})
 }
 
@@ -244,16 +465,26 @@ func (s *Server) handleVaultUserSetRole(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+type vaultCreateCredentialStoreRequest struct {
+	Kind                string          `json:"kind"`
+	Config              json.RawMessage `json:"config"`
+	PollIntervalSeconds int             `json:"poll_interval_seconds"`
+}
+
+type vaultCreateRequest struct {
+	Name            string                              `json:"name"`
+	CredentialStore *vaultCreateCredentialStoreRequest `json:"credential_store,omitempty"`
+}
+
 func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
-	// Any authenticated actor can create vaults.
-	actor, err := s.requireActor(w, r)
+	// no-access actors are blocked so they can't escalate by becoming admin
+	// of a brand-new vault they just created.
+	actor, err := s.requireInstanceMember(w, r)
 	if err != nil {
 		return
 	}
 
-	var req struct {
-		Name string `json:"name"`
-	}
+	var req vaultCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
@@ -262,7 +493,7 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "Name is required")
 		return
 	}
-	if !validateSlug(req.Name) {
+	if err := broker.ValidateSlug(req.Name); err != nil {
 		jsonError(w, http.StatusBadRequest, "Vault name must be 3-64 characters, lowercase alphanumeric and hyphens only")
 		return
 	}
@@ -272,6 +503,18 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+
+	// External-store branch: probe + atomic create. Owner-only so a member
+	// can't use the broker's machine identity to exfiltrate upstream secrets.
+	if req.CredentialStore != nil && req.CredentialStore.Kind != "" {
+		if !actor.IsOwner() {
+			jsonError(w, http.StatusForbidden, "Owner role required to create external-store vaults")
+			return
+		}
+		s.createExternalVault(w, ctx, actor, req)
+		return
+	}
+
 	ns, err := s.store.CreateVault(ctx, req.Name)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
@@ -292,6 +535,98 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// createExternalVault validates + probes + commits the vault,
+// credential-store row, initial snapshot, and admin grant in one
+// transaction. Any failure leaves the DB untouched.
+func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context, actor *Actor, req vaultCreateRequest) {
+	if s.infisicalClient == nil {
+		jsonCodedError(w, http.StatusServiceUnavailable, "infisical_not_configured",
+			"Infisical is not configured on this Agent Vault instance. Set INFISICAL_URL and a supported auth method's env vars.")
+		return
+	}
+	cs := req.CredentialStore
+	if cs.Kind != store.CredentialStoreInfisical {
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Unknown credential store kind %q", cs.Kind))
+		return
+	}
+
+	cfg, err := infisical.ParseConfigJSON(string(cs.Config))
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, "Invalid credential_store.config JSON")
+		return
+	}
+	if err := cfg.Validate(); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	pollInterval := cs.PollIntervalSeconds
+	if pollInterval == 0 {
+		pollInterval = infisical.DefaultPollIntervalSeconds
+	} else if pollInterval < infisical.MinPollIntervalSeconds {
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("poll_interval_seconds must be at least %d", infisical.MinPollIntervalSeconds))
+		return
+	}
+
+	secs, err := s.infisicalClient.FetchSecrets(ctx, cfg)
+	if err != nil {
+		// SDK error embeds INFISICAL_URL + upstream rejection body; scrub it.
+		s.logger.Warn("infisical fetch failed during vault create",
+			slog.String("vault_name", req.Name),
+			slog.String("err", err.Error()))
+		jsonCodedError(w, http.StatusBadGateway, "infisical_fetch_failed",
+			"Failed to fetch secrets from Infisical. See server logs for details.")
+		return
+	}
+
+	items, err := infisical.EncryptSecrets(secs, s.encKey)
+	if err != nil {
+		if errors.Is(err, infisical.ErrInvalidKey) {
+			jsonCodedError(w, http.StatusBadRequest, "external_store_invalid_key", err.Error())
+			return
+		}
+		jsonError(w, http.StatusInternalServerError, "Failed to encrypt fetched secrets")
+		return
+	}
+
+	configJSON, err := infisical.MarshalConfigJSON(cfg)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to marshal credential store config")
+		return
+	}
+	vault, err := s.store.CreateExternalVault(ctx, store.CreateExternalVaultParams{
+		Name:                req.Name,
+		Kind:                store.CredentialStoreInfisical,
+		ConfigJSON:          configJSON,
+		PollIntervalSeconds: pollInterval,
+		Credentials:         items,
+		CreatorActorID:      actor.ID,
+		CreatorActorType:    actor.Type,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			jsonError(w, http.StatusConflict, fmt.Sprintf("Vault %q already exists", req.Name))
+			return
+		}
+		jsonError(w, http.StatusInternalServerError, "Failed to create vault")
+		return
+	}
+
+	now := vault.CreatedAt
+	jsonCreated(w, map[string]interface{}{
+		"id":         vault.ID,
+		"name":       vault.Name,
+		"created_at": now.Format(time.RFC3339),
+		"credential_store": &credentialStoreSummary{
+			Kind:                store.CredentialStoreInfisical,
+			Config:              json.RawMessage(configJSON),
+			PollIntervalSeconds: pollInterval,
+			LastSyncStatus:      store.SyncStatusOK,
+			LastSyncedAt:        now.Format(time.RFC3339),
+		},
+	})
+}
+
 func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 	// Any authenticated actor can list vaults.
 	actor, err := s.requireActor(w, r)
@@ -302,12 +637,32 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	type nsItem struct {
-		ID               string `json:"id"`
-		Name             string `json:"name"`
-		Role             string `json:"role,omitempty"`
-		Membership       string `json:"membership"`
-		CreatedAt        string `json:"created_at"`
-		PendingProposals int    `json:"pending_proposals"`
+		ID               string                  `json:"id"`
+		Name             string                  `json:"name"`
+		Role             string                  `json:"role,omitempty"`
+		Membership       string                  `json:"membership"`
+		CreatedAt        string                  `json:"created_at"`
+		PendingProposals int                     `json:"pending_proposals"`
+		CredentialStore  *credentialStoreSummary `json:"credential_store,omitempty"`
+	}
+
+	// Single query → map to avoid N+1 in the per-vault loop. On error we
+	// still serve the list (mutation gate stays closed) and log for ops.
+	csByVault := map[string]*store.VaultCredentialStore{}
+	if rows, err := s.store.ListVaultCredentialStores(ctx); err != nil {
+		s.logger.Warn("listing credential stores failed; vault list will omit credential_store fields",
+			slog.String("err", err.Error()))
+	} else {
+		for i := range rows {
+			csByVault[rows[i].VaultID] = &rows[i]
+		}
+	}
+	credStoreFor := func(vaultID string) *credentialStoreSummary {
+		cs := csByVault[vaultID]
+		if cs == nil || cs.Kind == "" {
+			return nil
+		}
+		return credentialStoreListSummary(cs)
 	}
 
 	var items []nsItem
@@ -334,6 +689,7 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 				Membership:       membership,
 				CreatedAt:        v.CreatedAt.Format(time.RFC3339),
 				PendingProposals: pending,
+				CredentialStore:  credStoreFor(v.ID),
 			})
 		}
 	} else {
@@ -356,6 +712,7 @@ func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
 				Membership:       "explicit",
 				CreatedAt:        ns.CreatedAt.Format(time.RFC3339),
 				PendingProposals: pending,
+				CredentialStore:  credStoreFor(ns.ID),
 			})
 		}
 	}
@@ -404,34 +761,13 @@ func (s *Server) handleVaultDelete(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "Cannot delete the default vault")
 		return
 	}
-
-	ctx := r.Context()
-	ns, err := s.store.GetVault(ctx, name)
-	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
+	if s.resolveVaultForAdminOrOwner(w, r, name) == nil {
 		return
 	}
-
-	// Vault admin OR instance owner can delete.
-	actor, err := s.requireActor(w, r)
-	if err != nil {
-		return
-	}
-
-	isVaultAdmin := false
-	if role, _ := s.store.GetVaultRole(ctx, actor.ID, ns.ID); role == "admin" {
-		isVaultAdmin = true
-	}
-	if !isVaultAdmin && !actor.IsOwner() {
-		jsonError(w, http.StatusForbidden, "Vault admin or instance owner required")
-		return
-	}
-
-	if err := s.store.DeleteVault(ctx, name); err != nil {
+	if err := s.store.DeleteVault(r.Context(), name); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to delete vault")
 		return
 	}
-
 	jsonOK(w, map[string]interface{}{"name": name, "deleted": true})
 }
 
@@ -441,28 +777,10 @@ func (s *Server) handleVaultRename(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "Cannot rename the default vault")
 		return
 	}
-
+	if s.resolveVaultForAdminOrOwner(w, r, name) == nil {
+		return
+	}
 	ctx := r.Context()
-	ns, err := s.store.GetVault(ctx, name)
-	if err != nil || ns == nil {
-		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
-		return
-	}
-
-	// Vault admin OR instance owner can rename.
-	actor, err := s.requireActor(w, r)
-	if err != nil {
-		return
-	}
-
-	isVaultAdmin := false
-	if role, _ := s.store.GetVaultRole(ctx, actor.ID, ns.ID); role == "admin" {
-		isVaultAdmin = true
-	}
-	if !isVaultAdmin && !actor.IsOwner() {
-		jsonError(w, http.StatusForbidden, "Vault admin or instance owner required")
-		return
-	}
 
 	var body struct {
 		Name string `json:"name"`
@@ -471,7 +789,7 @@ func (s *Server) handleVaultRename(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "Request body must include {\"name\": \"new-name\"}")
 		return
 	}
-	if !validateSlug(body.Name) {
+	if err := broker.ValidateSlug(body.Name); err != nil {
 		jsonError(w, http.StatusBadRequest, "Vault name must be 3-64 characters, lowercase alphanumeric and hyphens only")
 		return
 	}
@@ -497,6 +815,79 @@ func (s *Server) handleVaultRename(w http.ResponseWriter, r *http.Request) {
 		"old_name": name,
 		"new_name": body.Name,
 	})
+}
+
+// handleVaultSettingsGet is a read-only view, gated at vault-member scope
+// so non-admin users can see the actual policy (the toggle is disabled
+// for them via canManage on the frontend). PATCH stays at admin/owner.
+func (s *Server) handleVaultSettingsGet(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	ns, err := s.store.GetVault(ctx, r.PathValue("name"))
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, "Vault not found")
+		return
+	}
+	if _, err := s.requireVaultAccess(w, r, ns.ID); err != nil {
+		return
+	}
+	policy, err := readUnmatchedHostPolicy(ctx, s.store, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to read vault settings")
+		return
+	}
+	jsonOK(w, map[string]interface{}{"unmatched_host_policy": string(policy)})
+}
+
+func (s *Server) handleVaultSettingsPatch(w http.ResponseWriter, r *http.Request) {
+	ns := s.resolveVaultForAdminOrOwner(w, r, r.PathValue("name"))
+	if ns == nil {
+		return
+	}
+	ctx := r.Context()
+
+	var body struct {
+		UnmatchedHostPolicy *string `json:"unmatched_host_policy"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// On the write path, echo the validated input. The follow-up read
+	// only fires for no-op PATCHes (no field set) — otherwise a transient
+	// read failure after a committed write would desync the UI from the
+	// DB on a security-relevant control.
+	if body.UnmatchedHostPolicy != nil {
+		val := strings.TrimSpace(*body.UnmatchedHostPolicy)
+		var effective brokercore.UnmatchedHostPolicy
+		if val == "" {
+			if err := s.store.DeleteVaultSetting(ctx, ns.ID, settingUnmatchedHostPolicy); err != nil {
+				jsonError(w, http.StatusInternalServerError, "Failed to update vault settings")
+				return
+			}
+			effective = brokercore.PolicyPassthrough
+		} else {
+			policy := brokercore.UnmatchedHostPolicy(val)
+			if !brokercore.IsValidUnmatchedHostPolicy(policy) {
+				jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid unmatched_host_policy %q (expected \"passthrough\" or \"deny\")", val))
+				return
+			}
+			if err := s.store.SetVaultSetting(ctx, ns.ID, settingUnmatchedHostPolicy, string(policy)); err != nil {
+				jsonError(w, http.StatusInternalServerError, "Failed to update vault settings")
+				return
+			}
+			effective = policy
+		}
+		jsonOK(w, map[string]interface{}{"unmatched_host_policy": string(effective)})
+		return
+	}
+
+	policy, err := readUnmatchedHostPolicy(ctx, s.store, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to read vault settings")
+		return
+	}
+	jsonOK(w, map[string]interface{}{"unmatched_host_policy": string(policy)})
 }
 
 func (s *Server) handleVaultJoin(w http.ResponseWriter, r *http.Request) {

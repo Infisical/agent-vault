@@ -14,9 +14,11 @@ import (
 
 // fakeCredStore satisfies CredentialStore for tests.
 type fakeCredStore struct {
-	brokerCfg map[string]*store.BrokerConfig // vaultID → config
-	creds     map[string]*store.Credential   // key = vaultID+"|"+key
-	missKey   string                         // if set, GetCredential for this key returns nil/err
+	brokerCfg     map[string]*store.BrokerConfig // vaultID → config
+	creds         map[string]*store.Credential   // key = vaultID+"|"+key
+	missKey       string                         // if set, GetCredential for this key returns nil/err
+	policy        UnmatchedHostPolicy            // unmatched-host policy returned by UnmatchedHostPolicy
+	brokerCfgErr  error                          // if non-nil, GetBrokerConfig returns this error
 
 	getCredentialCalls int // call count — used by passthrough tests to assert no lookup
 }
@@ -25,13 +27,17 @@ func newFakeCredStore() *fakeCredStore {
 	return &fakeCredStore{
 		brokerCfg: map[string]*store.BrokerConfig{},
 		creds:     map[string]*store.Credential{},
+		policy:    PolicyPassthrough,
 	}
 }
 
 func (f *fakeCredStore) GetBrokerConfig(_ context.Context, vaultID string) (*store.BrokerConfig, error) {
+	if f.brokerCfgErr != nil {
+		return nil, f.brokerCfgErr
+	}
 	c, ok := f.brokerCfg[vaultID]
 	if !ok {
-		return nil, errors.New("not found")
+		return nil, nil
 	}
 	return c, nil
 }
@@ -45,6 +51,13 @@ func (f *fakeCredStore) GetCredential(_ context.Context, vaultID, key string) (*
 		return nil, errors.New("not found")
 	}
 	return c, nil
+}
+
+func (f *fakeCredStore) UnmatchedHostPolicy(_ context.Context, _ string) (UnmatchedHostPolicy, error) {
+	if f.policy == "" {
+		return PolicyPassthrough, nil
+	}
+	return f.policy, nil
 }
 
 // make32 returns a deterministic 32-byte key for tests.
@@ -86,7 +99,7 @@ func TestInject_BearerHappyPath(t *testing.T) {
 	f.setCred(t, key32, "v1", "MY_TOKEN", "s3cret")
 
 	p := NewStoreCredentialProvider(f, key32)
-	res, err := p.Inject(context.Background(), "v1", "api.example.com")
+	res, err := p.Inject(context.Background(), "v1", "api.example.com", "/")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -106,7 +119,7 @@ func TestInject_BasicHappyPath(t *testing.T) {
 	f.setCred(t, key32, "v1", "PASS", "wonderland")
 
 	p := NewStoreCredentialProvider(f, key32)
-	res, err := p.Inject(context.Background(), "v1", "api.example.com")
+	res, err := p.Inject(context.Background(), "v1", "api.example.com", "/")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -126,7 +139,7 @@ func TestInject_APIKeyCustomHeader(t *testing.T) {
 	f.setCred(t, key32, "v1", "STRIPE_KEY", "live123")
 
 	p := NewStoreCredentialProvider(f, key32)
-	res, err := p.Inject(context.Background(), "v1", "api.example.com")
+	res, err := p.Inject(context.Background(), "v1", "api.example.com", "/")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -149,7 +162,7 @@ func TestInject_CustomHeaders(t *testing.T) {
 	f.setCred(t, key32, "v1", "TENANT", "42")
 
 	p := NewStoreCredentialProvider(f, key32)
-	res, err := p.Inject(context.Background(), "v1", "api.example.com")
+	res, err := p.Inject(context.Background(), "v1", "api.example.com", "/")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -171,12 +184,37 @@ func TestInject_StripsPortForMatching(t *testing.T) {
 	f.setCred(t, key32, "v1", "TOK", "v")
 
 	p := NewStoreCredentialProvider(f, key32)
-	res, err := p.Inject(context.Background(), "v1", "api.example.com:443")
+	res, err := p.Inject(context.Background(), "v1", "api.example.com:443", "/")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if res.Headers["Authorization"] != "Bearer v" {
 		t.Fatalf("got %q", res.Headers["Authorization"])
+	}
+}
+
+// TestInject_HealsLegacyUnnamedServiceMatchedName pins that the proxy
+// hot path auto-slugs missing Names before matching, so MatchedName
+// (which lands in the request log and the X-Vault-Service header)
+// never persists as "" for a matched service. The documented
+// `?service=<name>` log filter depends on this.
+func TestInject_HealsLegacyUnnamedServiceMatchedName(t *testing.T) {
+	key32 := make32(0x77)
+	f := newFakeCredStore()
+	// Pre-#164 vault: persisted without `name`.
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "api.example.com",
+		Auth: broker.Auth{Type: "bearer", Token: "TOK"},
+	}})
+	f.setCred(t, key32, "v1", "TOK", "s3cret")
+
+	p := NewStoreCredentialProvider(f, key32)
+	res, err := p.Inject(context.Background(), "v1", "api.example.com", "/")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.MatchedName != "api-example-com" {
+		t.Fatalf("expected MatchedName=api-example-com (auto-slug), got %q", res.MatchedName)
 	}
 }
 
@@ -190,7 +228,7 @@ func TestInject_WildcardMatch(t *testing.T) {
 	f.setCred(t, key32, "v1", "GH", "ghp_abc")
 
 	p := NewStoreCredentialProvider(f, key32)
-	res, err := p.Inject(context.Background(), "v1", "api.github.com")
+	res, err := p.Inject(context.Background(), "v1", "api.github.com", "/")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -199,16 +237,86 @@ func TestInject_WildcardMatch(t *testing.T) {
 	}
 }
 
-func TestInject_ServiceNotFound_NoConfig(t *testing.T) {
+// TestInject_PathBasedDisambiguation pins that two services on the same
+// host with different path globs both work end-to-end through the
+// Inject path: the more specific path wins, the right credential is
+// injected, and MatchedName/Host/Path on the result reflect the
+// matched service. The motivating case is the Slack split where /api/*
+// uses a Bot token and /api/apps.connections.* uses a Socket Mode
+// token.
+func TestInject_PathBasedDisambiguation(t *testing.T) {
+	key32 := make32(0x88)
 	f := newFakeCredStore()
-	p := NewStoreCredentialProvider(f, make32(0x77))
-	_, err := p.Inject(context.Background(), "v1", "api.example.com")
-	if !errors.Is(err, ErrServiceNotFound) {
-		t.Fatalf("expected ErrServiceNotFound, got %v", err)
+	f.setServices(t, "v1", []broker.Service{
+		{
+			Name: "slack-bot",
+			Host: "slack.com",
+			Path: "/api/*",
+			Auth: broker.Auth{Type: "bearer", Token: "SLACK_BOT_TOKEN"},
+		},
+		{
+			Name: "slack-conn",
+			Host: "slack.com",
+			Path: "/api/apps.connections.*",
+			Auth: broker.Auth{Type: "bearer", Token: "SLACK_CONN_TOKEN"},
+		},
+	})
+	f.setCred(t, key32, "v1", "SLACK_BOT_TOKEN", "xoxb-bot")
+	f.setCred(t, key32, "v1", "SLACK_CONN_TOKEN", "xapp-conn")
+	p := NewStoreCredentialProvider(f, key32)
+
+	cases := []struct {
+		path     string
+		wantAuth string
+		wantName string
+		wantPath string
+	}{
+		{"/api/chat.postMessage", "Bearer xoxb-bot", "slack-bot", "/api/*"},
+		{"/api/apps.connections.open", "Bearer xapp-conn", "slack-conn", "/api/apps.connections.*"},
+	}
+	for _, tc := range cases {
+		res, err := p.Inject(context.Background(), "v1", "slack.com", tc.path)
+		if err != nil {
+			t.Fatalf("path %q: unexpected err: %v", tc.path, err)
+		}
+		if res.Headers["Authorization"] != tc.wantAuth {
+			t.Fatalf("path %q: got Authorization=%q want %q", tc.path, res.Headers["Authorization"], tc.wantAuth)
+		}
+		if res.MatchedName != tc.wantName {
+			t.Fatalf("path %q: got MatchedName=%q want %q", tc.path, res.MatchedName, tc.wantName)
+		}
+		if res.MatchedHost != "slack.com" {
+			t.Fatalf("path %q: got MatchedHost=%q want slack.com", tc.path, res.MatchedHost)
+		}
+		if res.MatchedPath != tc.wantPath {
+			t.Fatalf("path %q: got MatchedPath=%q want %q", tc.path, res.MatchedPath, tc.wantPath)
+		}
 	}
 }
 
-func TestInject_ServiceNotFound_HostMiss(t *testing.T) {
+func TestInject_UnmatchedHost_DefaultPassthrough(t *testing.T) {
+	// With the default unmatched-host policy (passthrough), a host with
+	// no matching service forwards without injection.
+	f := newFakeCredStore()
+	p := NewStoreCredentialProvider(f, make32(0x77))
+	res, err := p.Inject(context.Background(), "v1", "api.example.com", "/")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res == nil || !res.Passthrough {
+		t.Fatalf("expected passthrough result, got %+v", res)
+	}
+	if len(res.Headers) != 0 {
+		t.Fatalf("expected no injected headers, got %v", res.Headers)
+	}
+	if res.MatchedHost != "" {
+		t.Fatalf("expected empty MatchedHost, got %q", res.MatchedHost)
+	}
+}
+
+func TestInject_UnmatchedHost_HostMissPassthrough(t *testing.T) {
+	// Even with services configured, a host that matches none of them
+	// passes through under the default policy.
 	key32 := make32(0x88)
 	f := newFakeCredStore()
 	f.setServices(t, "v1", []broker.Service{{
@@ -218,9 +326,56 @@ func TestInject_ServiceNotFound_HostMiss(t *testing.T) {
 	f.setCred(t, key32, "v1", "T", "x")
 
 	p := NewStoreCredentialProvider(f, key32)
-	_, err := p.Inject(context.Background(), "v1", "other.example.com")
+	res, err := p.Inject(context.Background(), "v1", "other.example.com", "/")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res == nil || !res.Passthrough {
+		t.Fatalf("expected passthrough result, got %+v", res)
+	}
+	if f.getCredentialCalls != 0 {
+		t.Fatalf("passthrough should not resolve credentials, got %d calls", f.getCredentialCalls)
+	}
+}
+
+func TestInject_UnmatchedHost_DenyPolicy(t *testing.T) {
+	f := newFakeCredStore()
+	f.policy = PolicyDeny
+	p := NewStoreCredentialProvider(f, make32(0x77))
+	_, err := p.Inject(context.Background(), "v1", "api.example.com", "/")
 	if !errors.Is(err, ErrServiceNotFound) {
-		t.Fatalf("expected ErrServiceNotFound, got %v", err)
+		t.Fatalf("expected ErrServiceNotFound under deny policy, got %v", err)
+	}
+}
+
+func TestInject_UnmatchedHost_HostMissDeny(t *testing.T) {
+	key32 := make32(0x88)
+	f := newFakeCredStore()
+	f.policy = PolicyDeny
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "api.example.com",
+		Auth: broker.Auth{Type: "bearer", Token: "T"},
+	}})
+	f.setCred(t, key32, "v1", "T", "x")
+
+	p := NewStoreCredentialProvider(f, key32)
+	_, err := p.Inject(context.Background(), "v1", "other.example.com", "/")
+	if !errors.Is(err, ErrServiceNotFound) {
+		t.Fatalf("expected ErrServiceNotFound under deny policy, got %v", err)
+	}
+}
+
+// Regression: a non-ErrNoRows GetBrokerConfig error must fail closed
+// (ErrServiceNotFound), not fall through to passthrough. Otherwise a
+// transient store failure silently strips credential injection from a
+// vault that has services configured.
+func TestInject_GetBrokerConfigError_FailsClosed(t *testing.T) {
+	f := newFakeCredStore()
+	f.brokerCfgErr = errors.New("transient sqlite I/O error")
+	p := NewStoreCredentialProvider(f, make32(0xAB))
+	_, err := p.Inject(context.Background(), "v1", "api.example.com", "/")
+	if !errors.Is(err, ErrServiceNotFound) {
+		t.Fatalf("expected ErrServiceNotFound on store error, got %v", err)
 	}
 }
 
@@ -233,7 +388,7 @@ func TestInject_CredentialMissing(t *testing.T) {
 	}})
 
 	p := NewStoreCredentialProvider(f, key32)
-	_, err := p.Inject(context.Background(), "v1", "api.example.com")
+	_, err := p.Inject(context.Background(), "v1", "api.example.com", "/")
 	if !errors.Is(err, ErrCredentialMissing) {
 		t.Fatalf("expected ErrCredentialMissing, got %v", err)
 	}
@@ -251,7 +406,7 @@ func TestInject_DecryptFails(t *testing.T) {
 	f.setCred(t, encKey, "v1", "TOK", "secret")
 
 	p := NewStoreCredentialProvider(f, wrongKey)
-	_, err := p.Inject(context.Background(), "v1", "api.example.com")
+	_, err := p.Inject(context.Background(), "v1", "api.example.com", "/")
 	if !errors.Is(err, ErrCredentialMissing) {
 		t.Fatalf("expected ErrCredentialMissing, got %v", err)
 	}
@@ -265,7 +420,7 @@ func TestInject_Passthrough(t *testing.T) {
 	}})
 
 	p := NewStoreCredentialProvider(f, make32(0xCC))
-	res, err := p.Inject(context.Background(), "v1", "api.example.com")
+	res, err := p.Inject(context.Background(), "v1", "api.example.com", "/")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -295,7 +450,7 @@ func TestInject_ServiceDisabled(t *testing.T) {
 	f.setCred(t, key32, "v1", "TOK", "x")
 
 	p := NewStoreCredentialProvider(f, key32)
-	_, err := p.Inject(context.Background(), "v1", "api.example.com")
+	_, err := p.Inject(context.Background(), "v1", "api.example.com", "/")
 	if !errors.Is(err, ErrServiceDisabled) {
 		t.Fatalf("expected ErrServiceDisabled, got %v", err)
 	}
@@ -313,7 +468,7 @@ func TestInject_ServiceDisabled_Passthrough(t *testing.T) {
 		Auth:    broker.Auth{Type: "passthrough"},
 	}})
 	p := NewStoreCredentialProvider(f, make32(0xEF))
-	_, err := p.Inject(context.Background(), "v1", "api.example.com")
+	_, err := p.Inject(context.Background(), "v1", "api.example.com", "/")
 	if !errors.Is(err, ErrServiceDisabled) {
 		t.Fatalf("expected ErrServiceDisabled for disabled passthrough, got %v", err)
 	}
@@ -331,7 +486,7 @@ func TestInject_EnabledExplicitTrue(t *testing.T) {
 	f.setCred(t, key32, "v1", "TOK", "v")
 
 	p := NewStoreCredentialProvider(f, key32)
-	res, err := p.Inject(context.Background(), "v1", "api.example.com")
+	res, err := p.Inject(context.Background(), "v1", "api.example.com", "/")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -347,7 +502,7 @@ func TestInject_PassthroughPortStripped(t *testing.T) {
 		Auth: broker.Auth{Type: "passthrough"},
 	}})
 	p := NewStoreCredentialProvider(f, make32(0xDD))
-	res, err := p.Inject(context.Background(), "v1", "api.example.com:443")
+	res, err := p.Inject(context.Background(), "v1", "api.example.com:443", "/")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -375,7 +530,7 @@ func TestInject_ResolvesSubstitutionAlongsideAuth(t *testing.T) {
 	f.setCred(t, key32, "v1", "TWILIO_AUTH_TOKEN", "tok-shh")
 
 	p := NewStoreCredentialProvider(f, key32)
-	res, err := p.Inject(context.Background(), "v1", "api.twilio.com")
+	res, err := p.Inject(context.Background(), "v1", "api.twilio.com", "/")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -410,7 +565,7 @@ func TestInject_ResolvesSubstitutionOnPassthrough(t *testing.T) {
 	f.setCred(t, key32, "v1", "TWILIO_ACCOUNT_SID", "AC12345")
 
 	p := NewStoreCredentialProvider(f, key32)
-	res, err := p.Inject(context.Background(), "v1", "api.twilio.com")
+	res, err := p.Inject(context.Background(), "v1", "api.twilio.com", "/")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -434,7 +589,7 @@ func TestInject_SubstitutionMissingCredentialErrorsLikeAuth(t *testing.T) {
 	}})
 	// No credential set → lookup returns "not found".
 	p := NewStoreCredentialProvider(f, key32)
-	_, err := p.Inject(context.Background(), "v1", "api.twilio.com")
+	_, err := p.Inject(context.Background(), "v1", "api.twilio.com", "/")
 	if !errors.Is(err, ErrCredentialMissing) {
 		t.Fatalf("expected ErrCredentialMissing, got %v", err)
 	}
@@ -458,7 +613,7 @@ func TestInject_AuthFailureLeavesSubstitutionsNil(t *testing.T) {
 	// MISSING_AUTH_KEY is intentionally not set.
 
 	p := NewStoreCredentialProvider(f, key32)
-	res, err := p.Inject(context.Background(), "v1", "api.twilio.com")
+	res, err := p.Inject(context.Background(), "v1", "api.twilio.com", "/")
 	if !errors.Is(err, ErrCredentialMissing) {
 		t.Fatalf("expected ErrCredentialMissing, got %v", err)
 	}
@@ -484,7 +639,7 @@ func TestInject_CredentialKeysIncludesSubstitution(t *testing.T) {
 	// No SID credential → expect ErrCredentialMissing, but CredentialKeys
 	// must already be populated for diagnostic logging.
 	p := NewStoreCredentialProvider(f, key32)
-	res, err := p.Inject(context.Background(), "v1", "api.twilio.com")
+	res, err := p.Inject(context.Background(), "v1", "api.twilio.com", "/")
 	if !errors.Is(err, ErrCredentialMissing) {
 		t.Fatalf("expected ErrCredentialMissing, got %v", err)
 	}

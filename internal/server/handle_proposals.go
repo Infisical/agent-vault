@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/proposal"
 	"github.com/Infisical/agent-vault/internal/store"
@@ -127,11 +127,45 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	vaultID := resolvedVault.ID
 
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, "Failed to read request body")
+		return
+	}
+	var probe struct {
+		Services json.RawMessage `json:"services"`
+	}
+	if err := json.Unmarshal(body, &probe); err == nil {
+		if i := rejectDeprecatedDescription(probe.Services); i >= 0 {
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("services[%d]: %s", i, deprecatedDescriptionMsg))
+			return
+		}
+	}
 	var req proposalCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
+
+	// External-store vaults reject credential mutations; service-only proposals still work.
+	if len(req.Credentials) > 0 {
+		if !s.assertBuiltinCredentialStore(w, ctx, vaultID, resolvedVault.Name) {
+			return
+		}
+	}
+
+	// Resolve unnamed-delete targets against existing vault state.
+	existing, err := s.loadServices(ctx, vaultID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to load existing services")
+		return
+	}
+	normalized, err := normalizeProposalServices(req.Services, existing)
+	if err != nil {
+		writeNormalizeError(w, err, http.StatusNotFound, http.StatusBadRequest, nil)
+		return
+	}
+	req.Services = normalized
 
 	// Validate the proposal.
 	if err := proposal.Validate(req.Services, req.Credentials); err != nil {
@@ -362,7 +396,7 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Approving proposals: agents need admin role; users need vault access.
+	// Approving proposals requires member+ role (blocks proxy-role agents from self-approving).
 	if _, err := s.requireProposalReview(w, r, ns.ID); err != nil {
 		return
 	}
@@ -389,6 +423,13 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Defense-in-depth: re-check at apply time in case the vault flipped to external.
+	if len(credentialSlots) > 0 {
+		if !s.assertBuiltinCredentialStore(w, ctx, ns.ID, ns.Name) {
+			return
+		}
+	}
+
 	// Load agent-provided encrypted credentials.
 	agentCredentials, err := s.store.GetProposalCredentials(ctx, ns.ID, cs.ID)
 	if err != nil {
@@ -399,9 +440,28 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 	// Resolve final credential values for set slots; collect keys for delete slots.
 	finalCredentials := make(map[string]store.EncryptedCredential)
 	var deleteCredentialKeys []string
+	var oauthConfigs []store.OAuthCredentialConfig
 	for _, slot := range credentialSlots {
 		if slot.Action == proposal.ActionDelete {
 			deleteCredentialKeys = append(deleteCredentialKeys, slot.Key)
+			continue
+		}
+
+		// OAuth credentials: tokens come from the connect flow or token
+		// upload, not from the approval request. Build an OAuthCredentialConfig
+		// and let ApplyProposal handle the credential row.
+		if slot.Type == "oauth" && slot.OAuth != nil {
+			oc := store.OAuthCredentialConfig{
+				Key:              slot.Key,
+				AuthorizationURL: slot.OAuth.AuthorizationURL,
+				TokenURL:         slot.OAuth.TokenURL,
+				ClientID:         slot.OAuth.ClientID,
+				Scopes:           slot.OAuth.Scopes,
+				ScopeSeparator:   slot.OAuth.ScopeSeparator,
+				DisablePKCE:      slot.OAuth.DisablePKCE,
+				TokenAuthMethod:  slot.OAuth.TokenAuthMethod,
+			}
+			oauthConfigs = append(oauthConfigs, oc)
 			continue
 		}
 
@@ -442,16 +502,24 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		finalCredentials[slot.Key] = store.EncryptedCredential{Ciphertext: ct, Nonce: nonce}
 	}
 
-	// Merge services.
-	bc, err := s.store.GetBrokerConfig(ctx, ns.ID)
-	if err != nil {
-		// No existing config — start fresh.
-		bc = &store.BrokerConfig{ServicesJSON: "[]"}
-	}
+	// MergeServices requires non-empty Name on both sides; normalize
+	// proposed entries against current existing state using the same
+	// helper as the create path. The lock serializes load → merge →
+	// apply against concurrent direct upserts on /services.
+	defer s.lockVaultServices(ns.ID)()
 
-	var existingServices []broker.Service
-	if err := json.Unmarshal([]byte(bc.ServicesJSON), &existingServices); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to parse existing services")
+	existingServices, err := s.loadServices(ctx, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to load existing services")
+		return
+	}
+	// At apply time both error modes are state conflicts: surface
+	// not-found as 409 with a "reject manually" framing instead of 404.
+	proposedServices, err = normalizeProposalServices(proposedServices, existingServices)
+	if err != nil {
+		writeNormalizeError(w, err, http.StatusConflict, http.StatusInternalServerError, func(host string) string {
+			return fmt.Sprintf("proposal targets host %q which no longer matches any service in this vault — reject the proposal manually", host)
+		})
 		return
 	}
 
@@ -463,7 +531,7 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Apply atomically.
-	if err := s.store.ApplyProposal(ctx, ns.ID, cs.ID, string(mergedJSON), finalCredentials, deleteCredentialKeys); err != nil {
+	if err := s.store.ApplyProposal(ctx, ns.ID, cs.ID, string(mergedJSON), finalCredentials, deleteCredentialKeys, oauthConfigs); err != nil {
 		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to apply proposal: %v", err))
 		return
 	}
@@ -504,7 +572,7 @@ func (s *Server) handleAdminProposalReject(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Rejecting proposals: agents need admin role; users need vault access.
+	// Rejecting proposals requires member+ role (blocks proxy-role agents from self-rejecting).
 	if _, err := s.requireProposalReview(w, r, ns.ID); err != nil {
 		return
 	}

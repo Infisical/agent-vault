@@ -8,7 +8,7 @@ describe("AgentVault", () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
-    delete process.env.AGENT_VAULT_SESSION_TOKEN;
+    delete process.env.AGENT_VAULT_TOKEN;
     delete process.env.AGENT_VAULT_ADDR;
   });
 
@@ -27,21 +27,21 @@ describe("AgentVault", () => {
       expect(() => new AgentVault()).toThrow("Token is required");
     });
 
-    it("reads token from AGENT_VAULT_SESSION_TOKEN env var", () => {
-      process.env.AGENT_VAULT_SESSION_TOKEN = "env-token";
+    it("reads token from AGENT_VAULT_TOKEN env var", () => {
+      process.env.AGENT_VAULT_TOKEN = "env-token";
       const av = new AgentVault();
       expect(av).toBeInstanceOf(AgentVault);
     });
 
     it("prefers config token over env var", () => {
-      process.env.AGENT_VAULT_SESSION_TOKEN = "env-token";
+      process.env.AGENT_VAULT_TOKEN = "env-token";
       // Should not throw — config token takes precedence
       const av = new AgentVault({ token: "config-token" });
       expect(av).toBeInstanceOf(AgentVault);
     });
 
     it("reads address from AGENT_VAULT_ADDR env var", () => {
-      process.env.AGENT_VAULT_SESSION_TOKEN = "test-token";
+      process.env.AGENT_VAULT_TOKEN = "test-token";
       process.env.AGENT_VAULT_ADDR = "http://custom:9999";
       const av = new AgentVault();
       expect(av).toBeInstanceOf(AgentVault);

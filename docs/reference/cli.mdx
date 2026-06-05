@@ -23,6 +23,8 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--password-stdin` | `false` | Read master password from stdin |
     | `--mitm-port` | `14322` | Port for the transparent MITM proxy. Enabled by default; set to `0` to disable. On first launch the root CA is created under `~/.agent-vault/ca/` — clients fetch it with [`agent-vault ca fetch`](#ca). Bind failures are non-fatal. |
     | `--log-level` | `info` | Log level: `info` (default) or `debug`. At `debug`, emits one structured line per proxied request on stderr covering method, host, path, matched service, injected credential key names, upstream status, and duration. Credential **values** are never logged. |
+    | `--max-response-bytes` | `0` (unlimited) | Maximum response body bytes the MITM proxy streams back to agents. `0` means unlimited — responses are streamed with a small buffer so there is no memory risk. When a limit is set and the upstream response exceeds it, the proxy returns 502 (if the size is known upfront) or aborts the connection mid-stream (if chunked). Also respects `AGENT_VAULT_MAX_RESPONSE_BYTES`; the flag takes precedence. |
+    | `--max-request-bytes` | `1073741824` (1 GiB) | Maximum request body bytes the MITM proxy forwards to upstreams. Requests exceeding this receive HTTP 413. Also respects `AGENT_VAULT_MAX_REQUEST_BYTES`; the flag takes precedence. |
 
     **Environment variables:**
 
@@ -31,10 +33,10 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `PORT` | Server listen port (default `14321`). The `--port` flag takes precedence. |
     | `AGENT_VAULT_MASTER_PASSWORD` | Derives a KEK that wraps the data encryption key. Omit for passwordless mode. |
     | `AGENT_VAULT_LOG_LEVEL` | Fallback for `--log-level` when the flag is not set. Accepts `info` or `debug`. |
-    | `AGENT_VAULT_ADDR` | Externally-reachable base URL (e.g. `https://agent-vault.example.com`). Used for links in emails, invites, and discovery. Falls back to `https://<FLY_APP_NAME>.fly.dev` on Fly.io, then `http://{host}:{port}`. |
+    | `AGENT_VAULT_MAX_RESPONSE_BYTES` | Maximum response body bytes streamed to agents (default `0` = unlimited). The `--max-response-bytes` flag takes precedence. |
+    | `AGENT_VAULT_MAX_REQUEST_BYTES` | Maximum request body bytes forwarded to upstreams (default `1073741824` = 1 GiB). The `--max-request-bytes` flag takes precedence. |
+    | `AGENT_VAULT_ADDR` | Externally-reachable base URL (e.g. `https://agent-vault.example.com`). Used for links in emails, invites, and discovery, and the hostname is added as a SubjectAltName on every MITM leaf cert so clients that TLS-verify against the proxy's own hostname succeed without a shim. Falls back to `https://<FLY_APP_NAME>.fly.dev` on Fly.io, then `http://{host}:{port}`. The **Connect Your Agent** modal pre-fills the agent address from this value when set; when unset, the modal renders a literal `<AGENT_VAULT_ADDR>` placeholder. |
     | `FLY_APP_NAME` | Auto-detected on Fly.io. When `AGENT_VAULT_ADDR` is unset, derives the base URL as `https://<FLY_APP_NAME>.fly.dev`. |
-    | `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_ID` | Google OAuth client ID. When both this and the client secret are set, Google OAuth is enabled. |
-    | `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
     | `AGENT_VAULT_SMTP_HOST` | SMTP server host. If unset, email notifications are silently disabled. |
     | `AGENT_VAULT_SMTP_PORT` | SMTP server port (default `587`) |
     | `AGENT_VAULT_SMTP_USERNAME` | SMTP username |
@@ -49,6 +51,17 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `AGENT_VAULT_LOGS_MAX_AGE_HOURS` | Retention ceiling for the per-vault request log. Default `168` (7 days). Rows older than this are trimmed by a background job every 15 minutes. Only non-secret metadata is stored. |
     | `AGENT_VAULT_LOGS_MAX_ROWS_PER_VAULT` | Per-vault row cap for the request log. Default `10000`. Whichever limit (age or rows) fills first wins. Set `0` to disable the cap. |
     | `AGENT_VAULT_LOGS_RETENTION_LOCK` | When `true`, owner-UI overrides for log retention are ignored and env values (or defaults) are pinned. |
+    | `INFISICAL_URL` | Base URL of an Infisical instance. When set, the server constructs a machine-identity client from one of the auth-method groups below and enables `--credential-store=infisical` on `vault create`. See [Credential stores](/learn/credential-stores) for the conceptual overview and [Environment variables: Infisical credential store](/self-hosting/environment-variables#infisical-credential-store) for the priority order when multiple groups are configured. |
+    | `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID` | Universal Auth client ID. Set together with `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET`. |
+    | `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET` | Universal Auth client secret. Set together with `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID`. |
+    | `INFISICAL_KUBERNETES_IDENTITY_ID` | Kubernetes Auth identity ID. Service-account token is read from `INFISICAL_KUBERNETES_SERVICE_ACCOUNT_TOKEN_PATH` if set, else the SDK's default projected-token path. |
+    | `INFISICAL_KUBERNETES_SERVICE_ACCOUNT_TOKEN_PATH` | Override for the projected SA-token path (default `/var/run/secrets/kubernetes.io/serviceaccount/token`). |
+    | `INFISICAL_AWS_IAM_AUTH_IDENTITY_ID` | AWS IAM Auth identity ID. Credentials come from the standard AWS resolver chain. |
+    | `INFISICAL_GCP_AUTH_IDENTITY_ID` | GCP Auth identity ID. Shared by both GCP IAM and GCP ID Token; IAM wins when both methods are otherwise complete. |
+    | `INFISICAL_GCP_IAM_SERVICE_ACCOUNT_KEY_FILE_PATH` | Path to a GCP service-account key file. Required to select GCP IAM; absent means GCP ID Token. |
+    | `INFISICAL_LDAP_AUTH_IDENTITY_ID` | LDAP Auth identity ID. All three LDAP vars are required together. |
+    | `INFISICAL_LDAP_AUTH_USERNAME` | LDAP bind username. |
+    | `INFISICAL_LDAP_AUTH_PASSWORD` | LDAP bind password. |
   </Accordion>
 
   <Accordion title="agent-vault server stop">
@@ -181,10 +194,22 @@ description: "Complete reference for all Agent Vault CLI commands."
 <AccordionGroup>
   <Accordion title="agent-vault vault create">
     ```bash
-    agent-vault vault create <name>
+    agent-vault vault create <name> [flags]
     ```
 
     Create a new vault. Name must be in slug format (lowercase alphanumeric and hyphens).
+
+    Without flags the vault is "built-in": credentials are stored locally and managed through Agent Vault. With `--credential-store=infisical`, Agent Vault probes Infisical with the supplied config, encrypts the snapshot, and commits the vault, credentials, and your admin grant atomically. If the probe fails nothing is persisted. See [Credential stores](/learn/credential-stores).
+
+    External-store vault creation requires instance-owner role. Non-owners receive `403 Owner role required to create external-store vaults` because the broker's configured machine identity, not the caller's, authorizes the upstream fetch.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--credential-store` | `builtin` | Credential store kind: `builtin` or `infisical`. Immutable after create. |
+    | `--infisical-project-id` | | Infisical project ID. Required when `--credential-store=infisical`. |
+    | `--infisical-environment` | | Infisical environment slug (e.g., `dev`, `prod`). Required when `--credential-store=infisical`. |
+    | `--infisical-path` | `/` | Infisical secret path (must start with `/`). |
+    | `--poll-interval-seconds` | `60` | Refresh cadence floor for the cached secrets. Minimum 10s. The server wakes every 10s and refreshes any vault past its interval, so actual cadence rounds up to the next 10s boundary. |
   </Accordion>
 
   <Accordion title="agent-vault vault list">
@@ -231,6 +256,22 @@ description: "Complete reference for all Agent Vault CLI commands."
     Show the active vault.
   </Accordion>
 
+  <Accordion title="agent-vault vault credential-store show">
+    ```bash
+    agent-vault vault credential-store show <name>
+    ```
+
+    Print the vault's credential-store kind, full config, poll interval, and last sync health. Prints `Credential store: builtin` for vaults with no external source; otherwise the kind name plus the Infisical project, environment, path, poll cadence, and `last_sync_status` / `last_synced_at` / `last_sync_error`. The kind is fixed at create time; this command is read-only.
+  </Accordion>
+
+  <Accordion title="agent-vault vault credential-store sync">
+    ```bash
+    agent-vault vault credential-store sync <name>
+    ```
+
+    Force an immediate refresh of an external-store vault and print the post-refresh credential-store summary. Available to any vault member. Returns an error if the vault is built-in (no external source), if Infisical is not configured on the server, or if another refresh is already in flight (409). The periodic syncer keeps the vault fresh on its own; use this when a secret has just been rotated upstream and you don't want to wait for the next tick.
+  </Accordion>
+
   <Accordion title="agent-vault vault init">
     ```bash
     agent-vault vault init [flags]
@@ -248,7 +289,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault discover [flags]
     ```
 
-    Show available services and credentials for the current vault. Requires a vault-scoped session (via `agent-vault run` or `AGENT_VAULT_SESSION_TOKEN` + `AGENT_VAULT_ADDR` env vars).
+    Show available services and credentials for the current vault. Requires a vault-scoped session token or long-lived agent token (via `agent-vault run` or `AGENT_VAULT_TOKEN` + `AGENT_VAULT_ADDR` env vars). In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -264,15 +305,15 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     Wrap a process with Agent Vault environment variables. `agent-vault run` is the shorthand; `agent-vault vault run` is the long form. Both are identical in behavior and flags.
 
-    The child process always receives `AGENT_VAULT_ADDR`, `AGENT_VAULT_SESSION_TOKEN`, and `AGENT_VAULT_VAULT`. When the server's transparent MITM proxy is reachable (default), it also receives `HTTPS_PROXY` / `NO_PROXY` / `NODE_USE_ENV_PROXY` plus CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) pointing at `~/.agent-vault/mitm-ca.pem`, so standard HTTPS clients transparently route through the broker.
+    The child process receives `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN`, and `AGENT_VAULT_VAULT`, plus `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` / `NODE_USE_ENV_PROXY` / `OPENCLAW_PROXY_URL` and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) pointing at `~/.agent-vault/mitm-ca.pem`, so standard HTTP and HTTPS clients transparently route through the broker. `OPENCLAW_PROXY_URL` feeds OpenClaw's Proxyline managed proxy (OpenClaw requires this plus `proxy.enabled: true` in its config). `HTTPS_PROXY` and `HTTP_PROXY` both point at the same plain HTTP proxy URL — the listener handles CONNECT for `https://` upstreams and absolute-form forward-proxy requests for `http://` upstreams on the same port. If the server's MITM proxy is unreachable, `vault run` aborts.
+
+    **Agent mode (containerized / unattended deployments).** When `AGENT_VAULT_TOKEN` and `AGENT_VAULT_ADDR` are pre-set on the environment, `vault run` skips the admin-session login and uses the env-supplied token as the credential — `--ttl` is rejected in this mode since the token's lifetime is fixed at mint time. The token is validated against the broker once at startup so bad/expired tokens fail fast with a clear error rather than producing 401s on every proxied call. See [Deploy your agent in a container](/guides/deploy-agent-container).
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--address` | | Server address override |
-    | `--role` | `proxy` | Vault role for the session: `proxy`, `member`, or `admin` |
     | `--ttl` | `0` | Session TTL in seconds (300–604800). Default: server default (24h). |
-    | `--no-mitm` | `false` | Skip HTTPS_PROXY/CA env injection; rely solely on the explicit `/proxy/{host}/{path}` endpoint. |
-    | `--isolation` | `host` | Isolation mode for the child: `host` (default, cooperative — runs on the host with HTTPS_PROXY) or `container` (non-cooperative Docker container; see [Container isolation](/guides/container-isolation)). Also read from `AGENT_VAULT_ISOLATION`. |
+    | `--isolation` | `host` | Isolation mode for the child: `host` (default, cooperative — runs on the host with `HTTPS_PROXY`/`HTTP_PROXY`) or `container` (non-cooperative Docker container; see [Container isolation](/guides/container-isolation)). Also read from `AGENT_VAULT_ISOLATION`. |
     | `--image` | | Override the bundled container image (`--isolation=container` only). |
     | `--mount` | | Extra bind mount `src:dst[:ro]`; repeatable (`--isolation=container` only). Host paths are EvalSymlinks-resolved; reserved paths rejected. |
     | `--keep` | `false` | Omit `--rm` from `docker run` (`--isolation=container` only; useful for debugging). |
@@ -286,22 +327,21 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault token [flags]
     ```
 
-    Mint a vault-scoped session token and print it to stdout. Useful when you need a scoped token without wrapping a child process via `agent-vault run`.
+    Mint a vault-scoped session token and print it to stdout. Useful when you need a scoped token without wrapping a child process via `agent-vault run`. Tokens are minted with vault role `proxy`.
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--address` | | Server address override |
-    | `--role` | `proxy` | Vault role for the session: `proxy`, `member`, or `admin` |
     | `--ttl` | `0` | Session TTL in seconds (300–604800). Default: server default (24h). |
 
     ```bash
     # Export token for use in other commands
-    export AGENT_VAULT_SESSION_TOKEN=$(agent-vault vault token)
+    export AGENT_VAULT_TOKEN=$(agent-vault vault token)
     export AGENT_VAULT_ADDR=http://localhost:14321
     export AGENT_VAULT_VAULT=default
 
-    # Mint a short-lived token with member role
-    agent-vault vault token --vault myproject --role member --ttl 3600
+    # Mint a short-lived token (1 hour TTL)
+    agent-vault vault token --vault myproject --ttl 3600
     ```
   </Accordion>
 </AccordionGroup>
@@ -380,7 +420,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--role` | `member` | Instance role for the invited user: `owner` or `member` |
+    | `--role` | `member` | Instance role for the invited user: `owner`, `member`, or `no-access` |
     | `--vault` | | Vault pre-assignment in `name:role` format (repeatable). Role defaults to `member`. |
 
     ```bash
@@ -443,14 +483,14 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault service add [flags]
     ```
 
-    Add or update a single service (upsert by host). Use `-f` to upsert services from a YAML file non-destructively (unlike `set -f`, which replaces all).
+    Add or update a single service (upsert by name). Use `-f` to upsert services from a YAML file non-destructively (unlike `set -f`, which replaces all).
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
     | `-f` | | Path to a YAML services file (upsert mode) |
-    | `--host` | | Target service host (e.g. `api.stripe.com`) |
-    | `--description` | | Service description |
+    | `--name` | | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required for new services. May be omitted when `--host` uniquely matches an existing service — the server adopts that service's name (same pattern as `service remove` by host). |
+    | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). The server splits the path off the host on ingest. |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, `custom`, `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
     | `--username-key` | | Credential key for basic auth username |
@@ -462,17 +502,19 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     The `passthrough` auth type accepts no credential flags; Agent Vault allowlists the host but does not store or inject a credential. See [Header forwarding](/learn/services#header-forwarding) for the rules that apply across every auth type — passthrough simply has no auth slot to override.
 
-    New services are **enabled by default**. Pass `--disabled` to create the service in a disabled state, or use `agent-vault vault service disable <host>` after creation.
+    New services are **enabled by default**. Pass `--disabled` to create the service in a disabled state, or use `agent-vault vault service disable <name-or-host>` after creation.
+
+    To layer two credentials on the same host, give them different inline paths in `--host` (e.g. Slack with `slack.com/api/*` for the Bot token and `slack.com/api/apps.connections.*` for Socket Mode). The matcher resolves overlapping rules deterministically — see [Matching priority](/learn/services#matching-priority).
 
     URL [substitutions](/learn/services#substitutions) are file-only — there are no flags. Configure them under the `substitutions:` block of a service entry in a YAML file passed via `-f`.
   </Accordion>
 
   <Accordion title="agent-vault vault service enable">
     ```bash
-    agent-vault vault service enable <host> [flags]
+    agent-vault vault service enable <name-or-host> [flags]
     ```
 
-    Enable a service so proxy traffic to the host resumes. Idempotent — no error if the service is already enabled.
+    Enable a service so proxy traffic resumes. The argument is matched against service names first, then host. When more than one service shares the host, the server returns 409 with the candidate names — retry with the specific name. Idempotent.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -481,10 +523,10 @@ description: "Complete reference for all Agent Vault CLI commands."
 
   <Accordion title="agent-vault vault service disable">
     ```bash
-    agent-vault vault service disable <host> [flags]
+    agent-vault vault service disable <name-or-host> [flags]
     ```
 
-    Disable a service while preserving its configuration. Agents proxying to the host receive `403` with error code `service_disabled` until the service is re-enabled. Idempotent.
+    Disable a service while preserving its configuration. Agents proxying to it receive `403` with error code `service_disabled` until re-enabled. The argument is matched against service names first, then host (with the same 409-on-ambiguity behavior as `enable`). Idempotent.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -493,10 +535,10 @@ description: "Complete reference for all Agent Vault CLI commands."
 
   <Accordion title="agent-vault vault service remove">
     ```bash
-    agent-vault vault service remove <host> [flags]
+    agent-vault vault service remove <name-or-host> [flags]
     ```
 
-    Remove a specific service by host. Prompts for confirmation unless `--yes` is passed.
+    Remove a specific service. The argument is matched against service names first, then host (409 on ambiguity). Prompts for confirmation unless `--yes` is passed.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -526,7 +568,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential list [flags]
     ```
 
-    List credential keys in a vault. Alias: `agent-vault vault creds list`.
+    List credential keys in a vault. Alias: `agent-vault vault creds list`. In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -539,7 +581,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential get <KEY> [flags]
     ```
 
-    Print the decrypted value of a single credential to stdout. Pipe-friendly. Requires member+ role. Alias: `agent-vault vault creds get`.
+    Print the decrypted value of a single credential to stdout. Pipe-friendly. Requires member+ role. Alias: `agent-vault vault creds get`. In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -551,7 +593,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential set <KEY=VALUE> [KEY2=VALUE2 ...] [flags]
     ```
 
-    Store one or more credentials using `KEY=VALUE` format. Alias: `agent-vault vault creds set`.
+    Store one or more credentials using `KEY=VALUE` format. Alias: `agent-vault vault creds set`. In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -563,7 +605,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential delete <KEY> [KEY2 ...] [flags]
     ```
 
-    Delete one or more credentials. Alias: `agent-vault vault creds delete`.
+    Delete one or more credentials. Alias: `agent-vault vault creds delete`. In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -604,14 +646,14 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault proposal create [flags]
     ```
 
-    Create a proposal to request services or credentials. Supports two modes: flag-driven (for simple single-service proposals) and JSON file (for complex or multi-service proposals).
+    Create a proposal to request services or credentials. Supports two modes: flag-driven (for simple single-service proposals) and JSON file (for complex or multi-service proposals). In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
     | `-f`, `--file` | | Path to JSON proposal file (use `-` for stdin) |
-    | `--host` | | Target service host (e.g. `api.stripe.com`) |
-    | `--description` | | Service description |
+    | `--name` | | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required for new services. May be omitted when `--host` uniquely matches an existing service — the server adopts that service's name (same pattern as host-based delete). |
+    | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, or `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
     | `--username-key` | | Credential key for basic auth username |
@@ -627,6 +669,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     ```bash
     # Flag-driven: request a bearer-auth service with a credential
     agent-vault vault proposal create \
+      --name stripe \
       --host api.stripe.com \
       --auth-type bearer \
       --token-key STRIPE_KEY \
@@ -638,6 +681,26 @@ description: "Complete reference for all Agent Vault CLI commands."
     ```
 
     URL [substitutions](/learn/services#substitutions) are JSON-only — there are no flags. Add a `substitutions` array under the relevant `services[]` entry in the file passed via `-f`.
+
+    OAuth credentials are JSON-only. Set `type: "oauth"` on the credential slot and include an `oauth` config object:
+
+    ```json
+    {
+      "credentials": [{
+        "action": "set",
+        "key": "GITHUB",
+        "type": "oauth",
+        "oauth": {
+          "authorization_url": "https://github.com/login/oauth/authorize",
+          "token_url": "https://github.com/login/oauth/access_token",
+          "scopes": "repo user"
+        },
+        "description": "GitHub OAuth"
+      }]
+    }
+    ```
+
+    See [OAuth credentials](/learn/credentials#oauth-credentials) for field details.
   </Accordion>
 
   <Accordion title="agent-vault vault proposal approve">
@@ -682,48 +745,27 @@ description: "Complete reference for all Agent Vault CLI commands."
 ## Agents (instance-level)
 
 <AccordionGroup>
-  <Accordion title="agent-vault agent invite">
+  <Accordion title="agent-vault agent create">
     ```bash
-    agent-vault agent invite <name> [flags]
+    agent-vault agent create <name> [flags]
     ```
 
-    Create an agent invite and print the onboarding prompt (copies to clipboard). The agent redeems the invite via HTTP and receives an instance-level agent token.
+    Create a new instance-level agent and print its token (copies to clipboard). Supply the token to the agent's runtime via `AGENT_VAULT_TOKEN`.
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--role` | `member` | Instance-level role: `owner` or `member` |
+    | `--role` | `no-access` | Instance-level role: `owner`, `member`, or `no-access` |
     | `--vault` | | Vault pre-assignment in `name:role` format (repeatable). Role defaults to `proxy`. |
-    | `--invite-ttl` | `15m` | Invite link expiration time (Go duration format) |
-    | `--address` | | Agent Vault server address (default: from session) |
-    | `--token-only` | `false` | Output only the raw invite token (for programmatic use) |
+    | `--token-only` | `false` | Output only the raw agent token (for programmatic use) |
+    | `--address` | | Agent Vault server address (defaults to session address) |
 
     ```bash
-    # Invite with vault pre-assignments
-    agent-vault agent invite my-agent --vault default:proxy --vault payments:member
+    # Create with vault pre-assignments
+    agent-vault agent create my-agent --vault default:proxy --vault payments:member
 
-    # Invite as an instance owner
-    agent-vault agent invite my-agent --role owner --vault default:admin
+    # Create as an instance owner
+    agent-vault agent create my-agent --role owner --vault default:admin
     ```
-  </Accordion>
-
-  <Accordion title="agent-vault agent invite list">
-    ```bash
-    agent-vault agent invite list [flags]
-    ```
-
-    List agent invites.
-
-    | Flag | Default | Description |
-    |------|---------|-------------|
-    | `--status` | | Filter by status (e.g. `pending`) |
-  </Accordion>
-
-  <Accordion title="agent-vault agent invite revoke">
-    ```bash
-    agent-vault agent invite revoke <token_suffix>
-    ```
-
-    Revoke a pending invite by the last 8 or more characters of the token.
   </Accordion>
 
   <Accordion title="agent-vault agent list">
@@ -752,10 +794,14 @@ description: "Complete reference for all Agent Vault CLI commands."
 
   <Accordion title="agent-vault agent rotate">
     ```bash
-    agent-vault agent rotate <name>
+    agent-vault agent rotate <name> [flags]
     ```
 
-    Create a rotation invite to re-issue an agent's session. The old sessions are invalidated when the agent redeems the new invite.
+    Invalidate the agent's existing token and print a new one. Update `AGENT_VAULT_TOKEN` wherever the agent runs.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--token-only` | `false` | Output only the raw agent token (for programmatic use) |
   </Accordion>
 
   <Accordion title="agent-vault agent rename">
@@ -775,7 +821,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--role` | | Instance role: `owner` or `member` (required) |
+    | `--role` | | Instance role: `owner`, `member`, or `no-access` (required) |
   </Accordion>
 </AccordionGroup>
 
@@ -869,7 +915,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--role` | | Instance role: `owner` or `member` (required) |
+    | `--role` | | Instance role: `owner`, `member`, or `no-access` (required) |
   </Accordion>
 </AccordionGroup>
 

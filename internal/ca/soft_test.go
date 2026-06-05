@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -241,6 +242,67 @@ func TestMintLeaf_IPAddressPopulatesIPSAN(t *testing.T) {
 	}
 	if len(cert.Leaf.DNSNames) != 0 {
 		t.Errorf("DNSNames = %v, want empty", cert.Leaf.DNSNames)
+	}
+}
+
+func TestMintLeaf_IncludesExtraDNSSans(t *testing.T) {
+	ca := newTestCA(t, Options{ExtraSANs: []string{"agent-vault-hnh0"}})
+
+	cert, err := ca.MintLeaf("api.linear.app")
+	if err != nil {
+		t.Fatalf("MintLeaf: %v", err)
+	}
+	want := []string{"api.linear.app", "agent-vault-hnh0"}
+	if !slices.Equal(cert.Leaf.DNSNames, want) {
+		t.Errorf("DNSNames = %v, want %v", cert.Leaf.DNSNames, want)
+	}
+
+	cert2, err := ca.MintLeaf("agent-vault-hnh0")
+	if err != nil {
+		t.Fatalf("MintLeaf (dedup): %v", err)
+	}
+	if len(cert2.Leaf.DNSNames) != 1 || cert2.Leaf.DNSNames[0] != "agent-vault-hnh0" {
+		t.Errorf("dedup DNSNames = %v, want [agent-vault-hnh0]", cert2.Leaf.DNSNames)
+	}
+}
+
+func TestMintLeaf_IncludesExtraIPSans(t *testing.T) {
+	ca := newTestCA(t, Options{ExtraSANs: []string{"10.0.0.5"}})
+	cert, err := ca.MintLeaf("api.linear.app")
+	if err != nil {
+		t.Fatalf("MintLeaf: %v", err)
+	}
+	if len(cert.Leaf.IPAddresses) != 1 || !cert.Leaf.IPAddresses[0].Equal(net.ParseIP("10.0.0.5")) {
+		t.Errorf("IPAddresses = %v, want [10.0.0.5]", cert.Leaf.IPAddresses)
+	}
+}
+
+func TestMintLeaf_DropsMalformedExtraSANs(t *testing.T) {
+	ca := newTestCA(t, Options{ExtraSANs: []string{
+		"",                // empty
+		"my_host",         // underscore — illegal DNS label
+		"-leading.hyphen", // leading hyphen
+		"label with space",
+		"agent-vault-hnh0", // valid — should survive
+	}})
+	cert, err := ca.MintLeaf("api.linear.app")
+	if err != nil {
+		t.Fatalf("MintLeaf: %v", err)
+	}
+	want := []string{"api.linear.app", "agent-vault-hnh0"}
+	if !slices.Equal(cert.Leaf.DNSNames, want) {
+		t.Errorf("DNSNames = %v, want %v", cert.Leaf.DNSNames, want)
+	}
+}
+
+func TestMintLeaf_DedupExtraDNSCaseInsensitive(t *testing.T) {
+	ca := newTestCA(t, Options{ExtraSANs: []string{"Agent-Vault-HNH0"}})
+	cert, err := ca.MintLeaf("agent-vault-hnh0")
+	if err != nil {
+		t.Fatalf("MintLeaf: %v", err)
+	}
+	if len(cert.Leaf.DNSNames) != 1 || cert.Leaf.DNSNames[0] != "agent-vault-hnh0" {
+		t.Errorf("DNSNames = %v, want [agent-vault-hnh0] (case-insensitive dedup)", cert.Leaf.DNSNames)
 	}
 }
 

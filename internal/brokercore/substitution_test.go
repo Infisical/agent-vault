@@ -1,6 +1,7 @@
 package brokercore
 
 import (
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -178,5 +179,264 @@ func TestApplySubstitutionsEmpty(t *testing.T) {
 	}
 	if u.Path != "/items/__sid__" {
 		t.Fatal("nil subs slice should not mutate URL")
+	}
+}
+
+// --- Body substitution tests ---
+
+func makeBody(s string) io.ReadCloser {
+	return io.NopCloser(strings.NewReader(s))
+}
+
+func readBody(t *testing.T, body io.ReadCloser) string {
+	t.Helper()
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	return string(data)
+}
+
+func TestApplyBodySubstitutionsFormURLEncoded(t *testing.T) {
+	body := makeBody("client_id=abc&client_secret=__secret__&code=xyz")
+	subs := []ResolvedSubstitution{{
+		Placeholder: "__secret__",
+		Value:       "s3cr&t=val+ue",
+		In:          []string{"body"},
+	}}
+	newBody, newLen, modified, err := ApplyBodySubstitutions(body, 46, "application/x-www-form-urlencoded", subs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !modified {
+		t.Fatal("expected modified=true")
+	}
+	got := readBody(t, newBody)
+	if !strings.Contains(got, "client_secret=s3cr%26t%3Dval%2Bue") {
+		t.Fatalf("expected URL-encoded value, got %q", got)
+	}
+	if int64(len(got)) != newLen {
+		t.Fatalf("Content-Length mismatch: body=%d, reported=%d", len(got), newLen)
+	}
+}
+
+func TestApplyBodySubstitutionsFormURLEncodedWithCharset(t *testing.T) {
+	body := makeBody("secret=__secret__")
+	subs := []ResolvedSubstitution{{
+		Placeholder: "__secret__",
+		Value:       "a&b",
+		In:          []string{"body"},
+	}}
+	newBody, _, modified, err := ApplyBodySubstitutions(body, 17, "application/x-www-form-urlencoded; charset=utf-8", subs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !modified {
+		t.Fatal("expected modified=true")
+	}
+	got := readBody(t, newBody)
+	if !strings.Contains(got, "secret=a%26b") {
+		t.Fatalf("expected URL-encoded value with charset param, got %q", got)
+	}
+}
+
+func TestApplyBodySubstitutionsJSON(t *testing.T) {
+	body := makeBody(`{"token": "__token__"}`)
+	subs := []ResolvedSubstitution{{
+		Placeholder: "__token__",
+		Value:       `val"with\slash`,
+		In:          []string{"body"},
+	}}
+	newBody, _, modified, err := ApplyBodySubstitutions(body, 21, "application/json", subs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !modified {
+		t.Fatal("expected modified=true")
+	}
+	got := readBody(t, newBody)
+	if !strings.Contains(got, `val\"with\\slash`) {
+		t.Fatalf("expected JSON-escaped value, got %q", got)
+	}
+}
+
+func TestApplyBodySubstitutionsJSONWithCharset(t *testing.T) {
+	body := makeBody(`{"key": "__key__"}`)
+	subs := []ResolvedSubstitution{{
+		Placeholder: "__key__",
+		Value:       `has"quote`,
+		In:          []string{"body"},
+	}}
+	_, _, modified, err := ApplyBodySubstitutions(body, 18, "application/json; charset=utf-8", subs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !modified {
+		t.Fatal("expected modified=true (json with charset param)")
+	}
+}
+
+func TestApplyBodySubstitutionsMultipartSkipped(t *testing.T) {
+	body := makeBody("--boundary\r\nContent-Disposition: form-data; name=\"secret\"\r\n\r\n__secret__\r\n--boundary--")
+	subs := []ResolvedSubstitution{{
+		Placeholder: "__secret__",
+		Value:       "real",
+		In:          []string{"body"},
+	}}
+	_, _, modified, err := ApplyBodySubstitutions(body, 85, "multipart/form-data; boundary=boundary", subs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if modified {
+		t.Fatal("expected modified=false for multipart body")
+	}
+}
+
+func TestApplyBodySubstitutionsRawForPlaintext(t *testing.T) {
+	body := makeBody("token=__token__")
+	subs := []ResolvedSubstitution{{
+		Placeholder: "__token__",
+		Value:       "raw&value",
+		In:          []string{"body"},
+	}}
+	newBody, _, modified, err := ApplyBodySubstitutions(body, 15, "text/plain", subs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !modified {
+		t.Fatal("expected modified=true")
+	}
+	got := readBody(t, newBody)
+	if got != "token=raw&value" {
+		t.Fatalf("expected raw replacement, got %q", got)
+	}
+}
+
+func TestApplyBodySubstitutionsNoBodySurface(t *testing.T) {
+	body := makeBody("secret=__secret__")
+	subs := []ResolvedSubstitution{{
+		Placeholder: "__secret__",
+		Value:       "real",
+		In:          []string{"header"},
+	}}
+	_, _, modified, err := ApplyBodySubstitutions(body, 17, "text/plain", subs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if modified {
+		t.Fatal("expected modified=false when no sub targets body surface")
+	}
+}
+
+func TestApplyBodySubstitutionsNilBody(t *testing.T) {
+	subs := []ResolvedSubstitution{{
+		Placeholder: "__secret__",
+		Value:       "real",
+		In:          []string{"body"},
+	}}
+	_, _, modified, err := ApplyBodySubstitutions(nil, 0, "", subs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if modified {
+		t.Fatal("expected modified=false for nil body")
+	}
+}
+
+func TestApplyBodySubstitutionsNoBody(t *testing.T) {
+	subs := []ResolvedSubstitution{{
+		Placeholder: "__secret__",
+		Value:       "real",
+		In:          []string{"body"},
+	}}
+	_, _, modified, err := ApplyBodySubstitutions(http.NoBody, 0, "", subs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if modified {
+		t.Fatal("expected modified=false for http.NoBody")
+	}
+}
+
+func TestApplyBodySubstitutionsEmptyBody(t *testing.T) {
+	body := makeBody("")
+	subs := []ResolvedSubstitution{{
+		Placeholder: "__secret__",
+		Value:       "real",
+		In:          []string{"body"},
+	}}
+	_, _, modified, err := ApplyBodySubstitutions(body, 0, "text/plain", subs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if modified {
+		t.Fatal("expected modified=false for empty body")
+	}
+}
+
+func TestApplyBodySubstitutionsNoMatch(t *testing.T) {
+	body := makeBody("secret=other_value")
+	subs := []ResolvedSubstitution{{
+		Placeholder: "__secret__",
+		Value:       "real",
+		In:          []string{"body"},
+	}}
+	_, _, modified, err := ApplyBodySubstitutions(body, 18, "text/plain", subs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if modified {
+		t.Fatal("expected modified=false when placeholder not present")
+	}
+}
+
+func TestApplyBodySubstitutionsScopingDoesNotAffectOtherSurfaces(t *testing.T) {
+	u := mustParseURL(t, "https://api.example.com/items/__sid__?id=__sid__")
+	headers := http.Header{}
+	headers.Set("X-Echo", "__sid__")
+
+	subs := []ResolvedSubstitution{{
+		Placeholder: "__sid__",
+		Value:       "REAL",
+		In:          []string{"body"},
+	}}
+	if err := ApplySubstitutions(u, headers, subs); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(u.Path, "__sid__") {
+		t.Fatalf("body-only sub should not modify path, got %q", u.Path)
+	}
+	if u.RawQuery != "id=__sid__" {
+		t.Fatalf("body-only sub should not modify query, got %q", u.RawQuery)
+	}
+	if headers.Get("X-Echo") != "__sid__" {
+		t.Fatalf("body-only sub should not modify header, got %q", headers.Get("X-Echo"))
+	}
+}
+
+func TestHasBodySubstitutions(t *testing.T) {
+	cases := []struct {
+		name string
+		subs []ResolvedSubstitution
+		want bool
+	}{
+		{"nil", nil, false},
+		{"empty", []ResolvedSubstitution{}, false},
+		{"header only", []ResolvedSubstitution{{In: []string{"header"}}}, false},
+		{"path and query", []ResolvedSubstitution{{In: []string{"path", "query"}}}, false},
+		{"body", []ResolvedSubstitution{{In: []string{"body"}}}, true},
+		{"body among others", []ResolvedSubstitution{{In: []string{"header", "body"}}}, true},
+		{"second sub has body", []ResolvedSubstitution{
+			{In: []string{"header"}},
+			{In: []string{"body"}},
+		}, true},
+		{"websocket only", []ResolvedSubstitution{{In: []string{"websocket"}}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := HasBodySubstitutions(tc.subs); got != tc.want {
+				t.Errorf("HasBodySubstitutions() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

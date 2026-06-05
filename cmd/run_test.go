@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // expectedRunFlags is the single source of truth for flags both `vault run`
@@ -16,7 +18,7 @@ import (
 // the other is a bug. `vault` is inherited from vaultCmd's persistent flags
 // on `vault run` and registered locally on the top-level `run`.
 var expectedRunFlags = []string{
-	"address", "role", "ttl", "no-mitm", "vault",
+	"address", "ttl", "vault",
 	"isolation", "image", "mount", "keep", "no-firewall",
 	"home-volume-shared", "share-agent-dir",
 }
@@ -89,18 +91,43 @@ func TestAugmentEnvWithMITM_Disabled(t *testing.T) {
 	}
 }
 
+func TestRequireMITMEnv_DisabledIsFatal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
+	_, _, err := requireMITMEnv(nil, srv.URL, "tok", "v", caPath)
+	if err == nil {
+		t.Fatal("expected fatal error when server has MITM disabled")
+	}
+	// Operator-facing message must point at the server-side fix.
+	if !strings.Contains(err.Error(), "--mitm-port 0") {
+		t.Errorf("error should reference --mitm-port 0; got: %v", err)
+	}
+}
+
+func TestRequireMITMEnv_TransportFailureIsFatal(t *testing.T) {
+	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
+	// Bogus address that will fail to dial.
+	_, _, err := requireMITMEnv(nil, "http://127.0.0.1:1", "tok", "v", caPath)
+	if err == nil {
+		t.Fatal("expected fatal error on transport failure")
+	}
+	if !strings.Contains(err.Error(), "MITM setup failed") {
+		t.Errorf("error should be wrapped with 'MITM setup failed'; got: %v", err)
+	}
+}
+
 // fakeMITMServer returns an httptest server that mimics the real
 // /v1/mitm/ca.pem endpoint. advertisedPort, when non-zero, is written
-// into the X-MITM-Port response header. advertiseTLS controls whether
-// the X-MITM-TLS: 1 header is sent (matching new TLS-wrapped servers).
-func fakeMITMServer(t *testing.T, pem string, advertisedPort int, advertiseTLS bool) *httptest.Server {
+// into the X-MITM-Port response header.
+func fakeMITMServer(t *testing.T, pem string, advertisedPort int) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if advertisedPort > 0 {
 			w.Header().Set("X-MITM-Port", fmt.Sprintf("%d", advertisedPort))
-		}
-		if advertiseTLS {
-			w.Header().Set("X-MITM-TLS", "1")
 		}
 		w.Header().Set("Content-Type", "application/x-pem-file")
 		_, _ = w.Write([]byte(pem))
@@ -109,7 +136,7 @@ func fakeMITMServer(t *testing.T, pem string, advertisedPort int, advertiseTLS b
 
 func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 	const fakePEM = "-----BEGIN CERTIFICATE-----\nMIIFAKE\n-----END CERTIFICATE-----\n"
-	srv := fakeMITMServer(t, fakePEM, 9001, true)
+	srv := fakeMITMServer(t, fakePEM, 9001)
 	defer srv.Close()
 
 	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
@@ -134,8 +161,10 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 
 	want := map[string]string{
 		"HTTPS_PROXY":         "", // checked separately below
-		"NO_PROXY":            "localhost,127.0.0.1",
+		"HTTP_PROXY":          "", // checked separately below
+		"NO_PROXY":            "", // checked separately — includes AV host
 		"NODE_USE_ENV_PROXY":  "1",
+		"OPENCLAW_PROXY_URL":  "", // checked separately below (equals HTTPS_PROXY)
 		"SSL_CERT_FILE":       caPath,
 		"NODE_EXTRA_CA_CERTS": caPath,
 		"REQUESTS_CA_BUNDLE":  caPath,
@@ -155,10 +184,20 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 		}
 	}
 
-	// HTTP_PROXY must NOT be set — the MITM proxy is HTTPS-only and would
-	// return 405 for plain http:// requests routed through it.
-	if v, ok := vars["HTTP_PROXY"]; ok {
-		t.Errorf("HTTP_PROXY should not be set (MITM is HTTPS-only), got %q", v)
+	// HTTP_PROXY and OPENCLAW_PROXY_URL must equal HTTPS_PROXY — all
+	// point at the same MITM ingress so plain http:// upstreams and
+	// OpenClaw's Proxyline route through the broker.
+	if vars["HTTP_PROXY"] != vars["HTTPS_PROXY"] {
+		t.Errorf("HTTP_PROXY = %q, want it to equal HTTPS_PROXY = %q", vars["HTTP_PROXY"], vars["HTTPS_PROXY"])
+	}
+	if vars["OPENCLAW_PROXY_URL"] != vars["HTTPS_PROXY"] {
+		t.Errorf("OPENCLAW_PROXY_URL = %q, want it to equal HTTPS_PROXY = %q", vars["OPENCLAW_PROXY_URL"], vars["HTTPS_PROXY"])
+	}
+
+	// NO_PROXY must include the AV host so control-plane calls bypass the proxy.
+	noProxy := vars["NO_PROXY"]
+	if !strings.Contains(noProxy, "localhost") || !strings.Contains(noProxy, "127.0.0.1") {
+		t.Errorf("NO_PROXY = %q, want localhost and 127.0.0.1", noProxy)
 	}
 
 	// Proxy URL must parse cleanly and carry token:vault userinfo.
@@ -170,8 +209,8 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse HTTPS_PROXY: %v", err)
 	}
-	if u.Scheme != "https" {
-		t.Errorf("proxy scheme = %q, want https", u.Scheme)
+	if u.Scheme != "http" {
+		t.Errorf("proxy scheme = %q, want http", u.Scheme)
 	}
 	if u.User == nil {
 		t.Fatal("proxy URL missing userinfo")
@@ -197,7 +236,7 @@ func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 // port 0.
 func TestAugmentEnvWithMITM_PortFallback(t *testing.T) {
 	const fakePEM = "-----BEGIN CERTIFICATE-----\nMIIFAKE\n-----END CERTIFICATE-----\n"
-	srv := fakeMITMServer(t, fakePEM, 0, true) // no port header
+	srv := fakeMITMServer(t, fakePEM, 0) // no port header
 	defer srv.Close()
 
 	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
@@ -218,13 +257,14 @@ func TestAugmentEnvWithMITM_PortFallback(t *testing.T) {
 // The fix strips the parent entries before appending the new ones.
 func TestAugmentEnvWithMITM_DedupesParentEnv(t *testing.T) {
 	const fakePEM = "-----BEGIN CERTIFICATE-----\nMIIFAKE\n-----END CERTIFICATE-----\n"
-	srv := fakeMITMServer(t, fakePEM, 14322, true)
+	srv := fakeMITMServer(t, fakePEM, 14322)
 	defer srv.Close()
 
 	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
 	parentEnv := []string{
 		"FOO=bar",
 		"HTTPS_PROXY=http://corp-proxy:3128",
+		"HTTP_PROXY=http://corp-proxy:3128",
 		"NO_PROXY=internal.example.com",
 		"SSL_CERT_FILE=/etc/ssl/corp-ca.pem",
 		"NODE_EXTRA_CA_CERTS=/etc/ssl/corp-ca.pem",
@@ -247,7 +287,7 @@ func TestAugmentEnvWithMITM_DedupesParentEnv(t *testing.T) {
 			counts[kv[:i]]++
 		}
 	}
-	for _, k := range []string{"HTTPS_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "DENO_CERT"} {
+	for _, k := range []string{"HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY", "OPENCLAW_PROXY_URL", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "DENO_CERT"} {
 		if counts[k] != 1 {
 			t.Errorf("%s appears %d times in env, want exactly 1 (POSIX getenv returns first match)", k, counts[k])
 		}
@@ -271,30 +311,6 @@ func TestAugmentEnvWithMITM_DedupesParentEnv(t *testing.T) {
 	}
 }
 
-// TestAugmentEnvWithMITM_OldServerNoTLS verifies backward compatibility:
-// when the server does not advertise X-MITM-TLS (pre-TLS build), the
-// HTTPS_PROXY scheme stays http:// so old plaintext listeners still work.
-func TestAugmentEnvWithMITM_OldServerNoTLS(t *testing.T) {
-	const fakePEM = "-----BEGIN CERTIFICATE-----\nMIIFAKE\n-----END CERTIFICATE-----\n"
-	srv := fakeMITMServer(t, fakePEM, 9001, false) // no X-MITM-TLS header
-	defer srv.Close()
-
-	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
-	env, _, ok, err := augmentEnvWithMITM(nil, srv.URL, "tok", "v", caPath)
-	if err != nil || !ok {
-		t.Fatalf("augmentEnvWithMITM: ok=%v err=%v", ok, err)
-	}
-
-	vars := envMap(env)
-	u, err := url.Parse(vars["HTTPS_PROXY"])
-	if err != nil {
-		t.Fatalf("parse HTTPS_PROXY: %v", err)
-	}
-	if u.Scheme != "http" {
-		t.Errorf("proxy scheme = %q, want http (old server without X-MITM-TLS)", u.Scheme)
-	}
-}
-
 func envMap(env []string) map[string]string {
 	m := make(map[string]string, len(env))
 	for _, kv := range env {
@@ -303,4 +319,107 @@ func envMap(env []string) map[string]string {
 		}
 	}
 	return m
+}
+
+// newRunCmdForTest builds a run command with --vault registered locally so
+// tests don't depend on the persistent flag inherited from vaultCmd.
+func newRunCmdForTest() *cobra.Command {
+	c := newRunCmd("test")
+	c.Flags().String("vault", "", "target vault")
+	return c
+}
+
+func TestResolveVaultForAgentMode(t *testing.T) {
+	t.Run("flag wins", func(t *testing.T) {
+		t.Setenv("AGENT_VAULT_VAULT", "env-vault")
+		c := newRunCmdForTest()
+		_ = c.Flags().Set("vault", "flag-vault")
+		got, err := resolveVaultForAgentMode(c)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "flag-vault" {
+			t.Errorf("got %q, want flag-vault", got)
+		}
+	})
+
+	t.Run("env when no flag", func(t *testing.T) {
+		t.Setenv("AGENT_VAULT_VAULT", "env-vault")
+		c := newRunCmdForTest()
+		got, err := resolveVaultForAgentMode(c)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "env-vault" {
+			t.Errorf("got %q, want env-vault", got)
+		}
+	})
+
+	t.Run("error when neither set", func(t *testing.T) {
+		t.Setenv("AGENT_VAULT_VAULT", "")
+		c := newRunCmdForTest()
+		_, err := resolveVaultForAgentMode(c)
+		if err == nil {
+			t.Fatal("expected error when no vault is configured")
+		}
+		if !strings.Contains(err.Error(), "AGENT_VAULT_VAULT") {
+			t.Errorf("error should mention AGENT_VAULT_VAULT; got: %v", err)
+		}
+	})
+}
+
+// TestStripEnvKeys_AgentVaultInjectedKeys is the AGENT_VAULT_* analogue of
+// TestAugmentEnvWithMITM_DedupesParentEnv. In agent mode the parent env is
+// guaranteed to already carry AGENT_VAULT_TOKEN/ADDR/VAULT (that's how agent
+// mode is detected), so without this strip the parent's stale value would
+// silently win in the child via POSIX getenv first-match semantics — most
+// dangerously, --vault would be overridden by a stale AGENT_VAULT_VAULT.
+func TestStripEnvKeys_AgentVaultInjectedKeys(t *testing.T) {
+	parent := []string{
+		"AGENT_VAULT_TOKEN=stale-tok",
+		"AGENT_VAULT_ADDR=https://stale.example/",
+		"AGENT_VAULT_VAULT=stale-vault",
+		"UNRELATED=keep-me",
+	}
+	stripped := stripEnvKeys(parent, agentVaultInjectedKeys)
+	for _, kv := range stripped {
+		key := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			key = kv[:i]
+		}
+		if _, dropped := agentVaultInjectedKeys[key]; dropped {
+			t.Errorf("expected %q to be stripped from parent env, still present as %q", key, kv)
+		}
+	}
+	if !contains(stripped, "UNRELATED=keep-me") {
+		t.Error("unrelated parent env vars must be preserved")
+	}
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRunCmdAgentMode_RejectsTTL exercises the runCmdRunE early-exit when a
+// pre-supplied token is used together with --ttl. The token's lifetime is
+// fixed at mint time, so --ttl is meaningless in agent mode.
+func TestRunCmdAgentMode_RejectsTTL(t *testing.T) {
+	t.Setenv("AGENT_VAULT_TOKEN", "tok123")
+	t.Setenv("AGENT_VAULT_ADDR", "http://example.invalid")
+	t.Setenv("AGENT_VAULT_VAULT", "myvault")
+
+	c := newRunCmd("test")
+	_ = c.Flags().Set("ttl", "3600")
+	err := runCmdRunE(c, []string{"true"})
+	if err == nil {
+		t.Fatal("expected error rejecting --ttl in agent mode")
+	}
+	if !strings.Contains(err.Error(), "--ttl has no effect") {
+		t.Errorf("error should mention --ttl rejection; got: %v", err)
+	}
 }

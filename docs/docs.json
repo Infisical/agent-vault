@@ -1,10 +1,25 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
+  "theme": "palm",
   "name": "Agent Vault",
   "favicon": "/favicon.svg",
+  "logo": {
+    "light": "/logo.png",
+    "dark": "/logo-light.png"
+  },
   "colors": {
-    "primary": "#3B82F6"
+    "primary": "#26272b",
+    "light": "#97b31d",
+    "dark": "#A1B659"
+  },
+  "styling": {
+    "codeblocks": "dark"
+  },
+  "background": {
+    "color": {
+      "light": "#ffffff",
+      "dark": "#0B0C0E"
+    }
   },
   "integrations": {
     "ga4": {
@@ -15,10 +30,7 @@
     "groups": [
       {
         "group": "Getting Started",
-        "pages": [
-          "index",
-          "installation"
-        ]
+        "pages": ["index", "installation", "tutorial"]
       },
       {
         "group": "Quickstart",
@@ -27,7 +39,6 @@
           "quickstart/cursor",
           "quickstart/codex",
           "quickstart/openclaw",
-          "quickstart/nanoclaw",
           "quickstart/hermes-agent",
           "quickstart/opencode",
           "quickstart/custom-agent"
@@ -41,7 +52,10 @@
             "pages": [
               "guides/connect-coding-agent",
               "guides/connect-custom-agent",
-              "guides/container-isolation"
+              "guides/deploy-agent-container",
+              "guides/hermes-on-vps",
+              "guides/openclaw-on-vps",
+              "guides/oauth-claude-code"
             ]
           },
           {
@@ -52,9 +66,9 @@
               "self-hosting/docker",
               "self-hosting/fly-io",
               "self-hosting/environment-variables",
+              "self-hosting/maintenance",
               "guides/instance-settings",
-              "guides/smtp",
-              "guides/oauth"
+              "guides/smtp"
             ]
           }
         ]
@@ -64,15 +78,13 @@
         "pages": [
           "learn/vaults",
           "learn/credentials",
+          "learn/credential-stores",
           "learn/services",
           "learn/proposals",
           "learn/permissions",
           {
             "group": "Agents",
-            "pages": [
-              "agents/overview",
-              "agents/protocol"
-            ]
+            "pages": ["agents/overview", "agents/protocol"]
           },
           "learn/security"
         ]
@@ -83,21 +95,201 @@
       }
     ]
   },
+  "footer": {
+    "socials": {
+      "x": "https://www.twitter.com/infisical/",
+      "linkedin": "https://www.linkedin.com/company/infisical/",
+      "github": "https://github.com/Infisical/infisical-cli",
+      "slack": "https://infisical.com/slack"
+    },
+    "links": [
+      {
+        "header": "PRODUCT",
+        "items": [
+          {
+            "label": "Secret Management",
+            "href": "https://infisical.com/"
+          },
+          {
+            "label": "Secret Scanning",
+            "href": "https://infisical.com/radar"
+          },
+          {
+            "label": "Share Secrets",
+            "href": "https://app.infisical.com/share-secret"
+          },
+          {
+            "label": "Pricing",
+            "href": "https://infisical.com/pricing"
+          },
+          {
+            "label": "Security",
+            "href": "https://infisical.com/docs/internals/security"
+          },
+          {
+            "label": "Blog",
+            "href": "https://infisical.com/blog"
+          },
+          {
+            "label": "Infisical vs Vault",
+            "href": "https://infisical.com/infisical-vs-hashicorp-vault"
+          },
+          {
+            "label": "Forum",
+            "href": "https://questions.infisical.com/"
+          }
+        ]
+      },
+      {
+        "header": "USE CASES",
+        "items": [
+          {
+            "label": "Infisical Agent",
+            "href": "https://infisical.com/docs/documentation/getting-started/introduction"
+          },
+          {
+            "label": "Infisical Proxy",
+            "href": "https://infisical.com/docs/integrations/platforms/infisical-proxy"
+          },
+          {
+            "label": "Kubernetes",
+            "href": "https://infisical.com/docs/integrations/platforms/kubernetes"
+          },
+          {
+            "label": "Dynamic Secrets",
+            "href": "https://infisical.com/docs/documentation/platform/dynamic-secrets/overview"
+          },
+          {
+            "label": "Terraform",
+            "href": "https://registry.terraform.io/providers/Infisical/infisical/latest/docs"
+          },
+          {
+            "label": "Ansible",
+            "href": "https://infisical.com/docs/integrations/platforms/ansible"
+          },
+          {
+            "label": "Jenkins",
+            "href": "https://infisical.com/docs/integrations/cicd/jenkins"
+          },
+          {
+            "label": "Docker",
+            "href": "https://infisical.com/docs/integrations/platforms/docker-intro"
+          },
+          {
+            "label": "AWS ECS",
+            "href": "https://infisical.com/docs/integrations/platforms/ecs-with-agent"
+          },
+          {
+            "label": "GitLab",
+            "href": "https://infisical.com/docs/integrations/cicd/gitlab"
+          },
+          {
+            "label": "GitHub",
+            "href": "https://infisical.com/docs/integrations/cicd/githubactions"
+          },
+          {
+            "label": "SDK",
+            "href": "https://infisical.com/docs/sdks/overview"
+          }
+        ]
+      },
+      {
+        "header": "DEVELOPERS",
+        "items": [
+          {
+            "label": "Changelog",
+            "href": "https://github.com/Infisical/infisical/releases"
+          },
+          {
+            "label": "Status",
+            "href": "https://status.infisical.com/"
+          },
+          {
+            "label": "Feedback & Requests",
+            "href": "https://github.com/Infisical/infisical/issues"
+          },
+          {
+            "label": "Trust of Center",
+            "href": "https://app.vanta.com/infisical.com/trust/hoop8cr78cuarxo9sztvs"
+          },
+          {
+            "label": "Open Source Friends",
+            "href": "https://infisical.com/infisical-friends"
+          },
+          {
+            "label": "How to contribute",
+            "href": "https://www.infisical.com/infisical-heroes"
+          }
+        ]
+      },
+      {
+        "header": "OTHERS",
+        "items": [
+          {
+            "label": "Customers",
+            "href": "https://infisical.com/customers/traba"
+          },
+          {
+            "label": "Company Handbook",
+            "href": "https://infisical.com/wiki/handbook/overview"
+          },
+          {
+            "label": "Careers",
+            "href": "https://infisical.com/careers"
+          },
+          {
+            "label": "Terms of Service",
+            "href": "https://infisical.com/terms"
+          },
+          {
+            "label": "Privacy Policy",
+            "href": "https://infisical.com/privacy"
+          },
+          {
+            "label": "Subprocessors",
+            "href": "https://infisical.com/subprocessors"
+          },
+          {
+            "label": "SLA",
+            "href": "https://infisical.com/sla"
+          },
+          {
+            "label": "Support Email",
+            "href": "mailto:support@infisical.com"
+          },
+          {
+            "label": "Sales",
+            "href": "mailto:sales@infisical.com"
+          },
+          {
+            "label": "Support",
+            "href": "https://infisical.com/slack"
+          }
+        ]
+      }
+    ]
+  },
   "redirects": [
     { "source": "/quickstart", "destination": "/quickstart/claude-code" },
     { "source": "/quickstart/coding-agents", "destination": "/quickstart/claude-code" },
     { "source": "/quickstart/long-lived-agents", "destination": "/quickstart/claude-code" },
     { "source": "/deployment/docker", "destination": "/self-hosting/docker" },
     { "source": "/deployment/fly-io", "destination": "/self-hosting/fly-io" },
-    { "source": "/deployment/environment-variables", "destination": "/self-hosting/environment-variables" },
-    { "source": "/configuration/environment-variables", "destination": "/self-hosting/environment-variables" },
+    {
+      "source": "/deployment/environment-variables",
+      "destination": "/self-hosting/environment-variables"
+    },
+    {
+      "source": "/configuration/environment-variables",
+      "destination": "/self-hosting/environment-variables"
+    },
     { "source": "/team/users-and-roles", "destination": "/learn/permissions" },
     { "source": "/configuration/secrets", "destination": "/learn/credentials" },
     { "source": "/configuration/policies", "destination": "/learn/services" },
     { "source": "/learn/policies", "destination": "/learn/services" },
     { "source": "/agents/persistent-agents", "destination": "/agents/overview" },
-    { "source": "/learn/oauth", "destination": "/guides/oauth" },
     { "source": "/how-it-works", "destination": "/" },
-    { "source": "/learn/connect-custom-agent", "destination": "/guides/connect-custom-agent" }
+    { "source": "/learn/connect-custom-agent", "destination": "/guides/connect-custom-agent" },
+    { "source": "/first-proposal", "destination": "/quickstart/claude-code" }
   ]
 }

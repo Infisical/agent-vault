@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,9 +20,9 @@ import (
 	"github.com/Infisical/agent-vault/internal/auth"
 	"github.com/Infisical/agent-vault/internal/ca"
 	"github.com/Infisical/agent-vault/internal/crypto"
+	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/mitm"
 	"github.com/Infisical/agent-vault/internal/notify"
-	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/pidfile"
 	"github.com/Infisical/agent-vault/internal/requestlog"
 	"github.com/Infisical/agent-vault/internal/server"
@@ -80,6 +81,8 @@ var serverCmd = &cobra.Command{
 		mitmPort, _ := cmd.Flags().GetInt("mitm-port")
 		logLevelFlag, _ := cmd.Flags().GetString("log-level")
 		logLevelChanged := cmd.Flags().Changed("log-level")
+		maxRespBytes, _ := cmd.Flags().GetInt64("max-response-bytes")
+		maxReqBytes, _ := cmd.Flags().GetInt64("max-request-bytes")
 		addr := fmt.Sprintf("%s:%d", host, port)
 
 		logLevel, err := resolveLogLevel(logLevelFlag, logLevelChanged)
@@ -90,13 +93,13 @@ var serverCmd = &cobra.Command{
 
 		// --- Detached child path: read master key + initialized flag from stdin pipe ---
 		if os.Getenv("_AGENT_VAULT_DETACHED") == "1" {
-			return runDetachedChild(host, addr, mitmPort, logger)
+			return runDetachedChild(host, addr, mitmPort, logger, maxRespBytes, maxReqBytes)
 		}
 
 		// Pre-flight before unlocking the vault: don't make the user type a
 		// master password just to learn the port is taken.
 		if pid, err := pidfile.Read(); err == nil {
-			if pidfile.IsRunning(pid) {
+			if pid != os.Getpid() && pidfile.IsRunning(pid) {
 				return fmt.Errorf("server is already running (PID %d). Use 'agent-vault server stop' to stop it first", pid)
 			}
 			_ = pidfile.Remove()
@@ -143,7 +146,7 @@ var serverCmd = &cobra.Command{
 			if logLevelChanged {
 				explicitLogLevel = &logLevelFlag
 			}
-			return spawnDetached(cmd, masterKey, initialized, host, port, mitmPort, addr, explicitLogLevel)
+			return spawnDetached(cmd, masterKey, initialized, host, port, mitmPort, addr, explicitLogLevel, maxRespBytes, maxReqBytes)
 		}
 
 		// --- Foreground path ---
@@ -152,12 +155,11 @@ var serverCmd = &cobra.Command{
 		smtpCfg := notify.LoadSMTPConfig()
 		_ = os.Unsetenv("AGENT_VAULT_SMTP_PASSWORD")
 		notifier := notify.New(smtpCfg)
-		oauthProviders := loadOAuthProviders(baseURL)
-		srv := server.New(addr, db, masterKey.Key(), notifier, initialized, baseURL, oauthProviders, logger)
-		srv.SetSkills(skillCLI, skillHTTP)
+		srv := server.New(addr, db, masterKey.Key(), notifier, initialized, baseURL, logger)
+		srv.SetSkills(skillCLI)
 		shutdownLogs := attachLogSink(srv, db, logger)
 		defer shutdownLogs()
-		if err := attachMITMIfEnabled(srv, host, mitmPort, masterKey.Key()); err != nil {
+		if err := attachServerExtensions(srv, host, mitmPort, masterKey.Key(), logger, maxRespBytes, maxReqBytes); err != nil {
 			return err
 		}
 		return srv.Start()
@@ -172,11 +174,17 @@ var serverCmd = &cobra.Command{
 // in server.Start: since the MITM proxy is default-on, environments that
 // cannot create ~/.agent-vault/ca/ (read-only FS, containers without HOME,
 // corrupted state) must still be able to run the core HTTP server.
-func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKey []byte) error {
+func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKey []byte, maxRespBytes, maxReqBytes int64) error {
 	if mitmPort <= 0 {
 		return nil
 	}
-	caProv, err := ca.New(masterKey, ca.Options{})
+	var extraSANs []string
+	if u, err := url.Parse(srv.BaseURL()); err == nil {
+		if h := u.Hostname(); h != "" {
+			extraSANs = []string{h}
+		}
+	}
+	caProv, err := ca.New(masterKey, ca.Options{ExtraSANs: extraSANs})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: transparent proxy disabled (CA init failed: %v); pass --mitm-port 0 to suppress\n", err)
 		return nil
@@ -184,16 +192,58 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 	srv.AttachMITM(mitm.New(
 		net.JoinHostPort(host, strconv.Itoa(mitmPort)),
 		mitm.Options{
-			CA:          caProv,
-			Sessions:    srv.SessionResolver(),
-			Credentials: srv.CredentialProvider(),
-			BaseURL:     srv.BaseURL(),
-			Logger:      srv.Logger(),
-			RateLimit:   srv.RateLimit(),
-			LogSink:     srv.LogSink(),
+			CA:               caProv,
+			Sessions:         srv.SessionResolver(),
+			Credentials:      srv.CredentialProvider(),
+			BaseURL:          srv.BaseURL(),
+			Logger:           srv.Logger(),
+			RateLimit:        srv.RateLimit(),
+			LogSink:          srv.LogSink(),
+			MaxResponseBytes: maxRespBytes,
+			MaxRequestBytes:  maxReqBytes,
 		},
 	))
 	return nil
+}
+
+// attachServerExtensions wires optional subsystems (MITM, Infisical) onto srv.
+// Both bootstrap paths (foreground and detached child) call this.
+func attachServerExtensions(srv *server.Server, host string, mitmPort int, masterKey []byte, logger *slog.Logger, maxRespBytes, maxReqBytes int64) error {
+	if err := attachMITMIfEnabled(srv, host, mitmPort, masterKey, maxRespBytes, maxReqBytes); err != nil {
+		return err
+	}
+	attachInfisicalIfConfigured(srv, logger)
+	return nil
+}
+
+// attachInfisicalIfConfigured wires the Infisical client when INFISICAL_URL
+// is set. The 10s deadline uses time.After because the SDK login is
+// synchronous and ignores ctx; on timeout we proceed without a client so
+// external vaults serve-stale until next restart.
+func attachInfisicalIfConfigured(srv *server.Server, logger *slog.Logger) {
+	if os.Getenv("INFISICAL_URL") == "" {
+		return
+	}
+	type result struct {
+		c   *infisical.Client
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		c, err := infisical.NewClient(context.Background(), logger)
+		done <- result{c, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			logger.Warn("infisical client unavailable; external-store vaults will not refresh",
+				slog.String("err", r.err.Error()))
+			return
+		}
+		srv.AttachInfisical(r.c)
+	case <-time.After(10 * time.Second):
+		logger.Warn("infisical client login exceeded 10s deadline; continuing without external store")
+	}
 }
 
 // attachLogSink wires the request-log pipeline: a SQLiteSink with async
@@ -446,7 +496,7 @@ func readPasswordFromStdin() ([]byte, error) {
 
 // runDetachedChild is the entry point for the detached child process.
 // It reads 33 bytes from stdin: 32-byte master key + 1-byte initialized flag.
-func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger) error {
+func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger, maxRespBytes, maxReqBytes int64) error {
 	buf := make([]byte, 33)
 	if _, err := io.ReadFull(os.Stdin, buf); err != nil {
 		return fmt.Errorf("reading master key from pipe: %w", err)
@@ -469,12 +519,11 @@ func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger) erro
 	smtpCfg := notify.LoadSMTPConfig()
 	_ = os.Unsetenv("AGENT_VAULT_SMTP_PASSWORD")
 	notifier := notify.New(smtpCfg)
-	oauthProviders := loadOAuthProviders(baseURL)
-	srv := server.New(addr, db, key, notifier, initialized, baseURL, oauthProviders, logger)
-	srv.SetSkills(skillCLI, skillHTTP)
+	srv := server.New(addr, db, key, notifier, initialized, baseURL, logger)
+	srv.SetSkills(skillCLI)
 	shutdownLogs := attachLogSink(srv, db, logger)
 	defer shutdownLogs()
-	if err := attachMITMIfEnabled(srv, host, mitmPort, key); err != nil {
+	if err := attachServerExtensions(srv, host, mitmPort, key, logger, maxRespBytes, maxReqBytes); err != nil {
 		return err
 	}
 	return srv.Start()
@@ -483,7 +532,7 @@ func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger) erro
 // spawnDetached re-execs the server as a background process, passing the master key + initialized flag via a pipe.
 // explicitLogLevel, when non-nil, forwards the parent's --log-level flag to the child so a flag-only
 // invocation (no env var) still takes effect after re-exec.
-func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bool, host string, port, mitmPort int, addr string, explicitLogLevel *string) error {
+func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bool, host string, port, mitmPort int, addr string, explicitLogLevel *string, maxRespBytes, maxReqBytes int64) error {
 	defer masterKey.Wipe()
 
 	exe, err := os.Executable()
@@ -511,6 +560,8 @@ func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bo
 	if explicitLogLevel != nil {
 		childArgs = append(childArgs, "--log-level", *explicitLogLevel)
 	}
+	childArgs = append(childArgs, "--max-response-bytes", strconv.FormatInt(maxRespBytes, 10))
+	childArgs = append(childArgs, "--max-request-bytes", strconv.FormatInt(maxReqBytes, 10))
 	child := exec.Command(exe, childArgs...)
 	child.Stdin = pr
 	child.Stdout = logFile
@@ -611,26 +662,6 @@ var stopCmd = &cobra.Command{
 	},
 }
 
-// loadOAuthProviders reads OAuth configuration from environment variables
-// and returns a map of enabled providers.
-func loadOAuthProviders(baseURL string) map[string]oauth.Provider {
-	providers := make(map[string]oauth.Provider)
-
-	google := oauth.NewGoogleProvider(oauth.GoogleConfig{
-		ClientID:     os.Getenv("AGENT_VAULT_OAUTH_GOOGLE_CLIENT_ID"),
-		ClientSecret: os.Getenv("AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET"),
-		RedirectURL:  strings.TrimRight(baseURL, "/") + "/v1/auth/oauth/google/callback",
-	})
-	if google.Enabled() {
-		providers["google"] = google
-	}
-
-	// Clear sensitive env var after reading (matches master password pattern).
-	_ = os.Unsetenv("AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET")
-
-	return providers
-}
-
 func init() {
 	serverCmd.Flags().IntP("port", "p", defaultPort(), "port to listen on (also respects PORT env var)")
 	serverCmd.Flags().String("host", DefaultHost, "host to bind to")
@@ -638,6 +669,8 @@ func init() {
 	serverCmd.Flags().Bool("password-stdin", false, "read master password from stdin (for non-interactive use)")
 	serverCmd.Flags().Int("mitm-port", DefaultMITMPort, "port for the transparent MITM proxy (0 = disabled)")
 	serverCmd.Flags().String("log-level", "info", "log level: info (default) or debug (per-request proxy logs)")
+	serverCmd.Flags().Int64("max-response-bytes", defaultMaxResponseBytes(), "max response body bytes streamed to agents (default: unlimited; also respects AGENT_VAULT_MAX_RESPONSE_BYTES)")
+	serverCmd.Flags().Int64("max-request-bytes", defaultMaxRequestBytes(), "max request body bytes forwarded to upstreams (default: 1 GiB; also respects AGENT_VAULT_MAX_REQUEST_BYTES)")
 	serverCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(serverCmd)
 }

@@ -3,39 +3,70 @@ title: "Introduction"
 description: "A credential broker for AI agents to prevent credential exfiltration."
 ---
 
-Agent Vault is an agent-first, open source proxy and secrets management vault by [Infisical](https://github.com/Infisical/infisical) that sits between agents and the APIs they call. Check out the [GitHub repository](https://github.com/Infisical/agent-vault).
+Agent Vault is an open source vault and proxy service by [Infisical](https://github.com/Infisical/infisical) that sits between AI agents and the APIs they call including LLM providers, GitHub, Stripe, and more. Check out the [GitHub repository](https://github.com/Infisical/agent-vault).
 
-Agents route HTTP requests through an Agent Vault server, which reconstructs each request with the right set of authentication credentials, before forwarding it to the target service.
+Agent Vault works with all kinds of AI Agent use-cases including secure remote coding agents, all-purpose agents, custom agents + harnesses, secure ephemeral sandboxes and more.
 
-<Frame>
-  <img src="/images/architecture.png" alt="Agent Vault architecture diagram" />
-</Frame>
+Agents like Claude Code or OpenClaw route HTTP requests through an Agent Vault server, which swaps dummy credentials for real ones (or replaces auth headers entirely), before forwarding the request to the target service.
+
+```
++-----------------------------------------------------------------+
+| Public internet                                                 |
+|                                                                 |
+|   api.anthropic.com    api.github.com    api.stripe.com   ...   |
+|          ^                   ^                  ^               |
++----------+-------------------+------------------+---------------+
+           |                   |                  |
+           +-------------------+------------------+
+                               | outbound HTTPS, Agent Vault
+                               | injects credentials on the way out
++------------------------------+----------------------------------+
+| Private network              |                                  |
+|                              |                                  |
+|  +---------------------------+----+     +--------------------+  |
+|  | Agent Vault                    |     | AI agent           |  |
+|  | :14321  management UI / API    |<----| HTTPS_PROXY=       |  |
+|  | :14322  MITM proxy             |     | agent-vault:14322  |  |
+|  +----------------^---------------+     +--------------------+  |
+|                   |                                             |
++-------------------+---------------------------------------------+
+                    | operator access: keep private, or front
+                    | with TLS + auth (SSO reverse proxy, IP
+                    | allowlist, or VPN) if you need remote admin
+                    |
+                Operator
+```
 
 ## Why Agent Vault
 
-Traditional credential management solutions return credentials directly to the end users of that solution.
+Traditional secrets management involves returning credentials back to you applications and services.
 
-This is not suitable for agents because they are non-deterministic and vulnerable to prompt injection. This implies that an attacker could craft a malicious prompt and exfiltrate credentials from an agent back to the attacker.
+This is not suitable for AI agents because they are vulnerable to credential exfiltration via [prompt injection](https://en.wikipedia.org/wiki/Prompt_injection); an attacker could craft a malicious prompt or payload and exfiltrate credentials from an agent back to the attacker.
 
 Enter Agent Vault - a new credential management solution built for agents that prevents credential exfiltration with ergonomic, agent-first design.
 
 ## How it works
 
-1. You point the agent at Agent Vault by setting `HTTPS_PROXY` and trusting the Agent Vault CA certificate.
-2. The agent makes API calls the way it normally would — direct `fetch`, a vendor SDK, a CLI like `gh` or `stripe`, or an MCP server. All outbound HTTPS transparently routes through the Agent Vault proxy.
-3. Agent Vault matches the target host against the services in the [vault](/learn/vaults), injects the stored credential into the auth header for that service, and forwards the request upstream with the agent's other headers intact.
-4. If no service matches the host, the agent can raise a [**proposal**](/learn/proposals) requesting access. You review and approve in the browser, pasting in the API key, and the next request succeeds.
+Start by setting up an instance of Agent Vault on a separate host machine:
 
-The agent never sees or handles your secrets. Learn more about [vaults](/learn/vaults), [services](/learn/services), [proposals](/learn/proposals), and [agents](/agents/overview).
+1. You [install](/installation) the Agent Vault binary or deploy an instance with Docker.
+2. You configure Agent Vault with the credentials and service credential substitution rules to enable Agent Vault to broker credentials for your AI agent.
+3. You configure an agent in Agent Vault to represent your AI agent and obtain a token for it. If your workflow involves using an orchestrator backend to spin up ephemeral sandboxed agents, you can use the agent construct to represent your orchestrator and mint a short-lived token to be passed into the sandbox for the agent to use and proxy requests through Agent Vault.
+
+Next, you [configure](/quickstart/custom-agent) your AI agent to connect to Agent Vault:
+
+4. You bootstrap your AI agent's environment to automatically route all outbound HTTP and HTTPS traffic through Agent Vault. This can be done with the Agent Vault CLI and setting `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN`, and `AGENT_VAULT_VAULT` in the agent's environment.
+5. You give your AI agent dummy credentials like `__anthropic_api_key__` or `__github_pat__` to use when making API calls.
+
+That's it! Your AI agent is now able to make authenticated API calls to LLM providers and other HTTP services through any interface (API, CLI, SDK, MCP, etc.) without holding any real credentials.
+
+Agent Vault matches the target host on the proxied request against the configured service rules, performs any required credential substitutions, and forwards the reconstructed request upstream to the target service.
 
 ## Get started
 
-<CardGroup cols={2}>
+<CardGroup cols={1}>
   <Card title="Installation" icon="download" href="/installation">
-    Install Agent Vault, start a server, and register.
-  </Card>
-  <Card title="Your first proposal" icon="sparkles" href="/first-proposal">
-    See Agent Vault in action in under 2 minutes.
+    Deploy Agent Vault, start a server, and register.
   </Card>
 </CardGroup>
 
@@ -53,9 +84,6 @@ The agent never sees or handles your secrets. Learn more about [vaults](/learn/v
   </Card>
   <Card title="OpenClaw" icon="robot" href="/quickstart/openclaw">
     Connect OpenClaw to Agent Vault.
-  </Card>
-  <Card title="NanoClaw" icon="microchip" href="/quickstart/nanoclaw">
-    Connect NanoClaw to Agent Vault.
   </Card>
   <Card title="Hermes Agent" icon="bolt" href="/quickstart/hermes-agent">
     Connect Hermes Agent to Agent Vault.

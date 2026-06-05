@@ -33,7 +33,7 @@ const SDK_VERSION = "0.1.0";
 const USER_AGENT = `agent-vault-sdk-typescript/${SDK_VERSION}`;
 const DEFAULT_TIMEOUT = 30_000;
 const DEFAULT_ADDRESS = "http://localhost:14321";
-const ENV_TOKEN = "AGENT_VAULT_SESSION_TOKEN";
+const ENV_TOKEN = "AGENT_VAULT_TOKEN";
 const ENV_ADDR = "AGENT_VAULT_ADDR";
 
 /**
@@ -207,8 +207,8 @@ export class HttpClient {
 
   /**
    * Perform an HTTP request and return the raw Response without parsing or
-   * throwing on non-2xx. Used by ProxyResource where the response body format
-   * is determined by the upstream service, not Agent Vault.
+   * throwing on non-2xx. Used by callers (e.g. CA cert fetch) where the
+   * response body format is not the standard Agent Vault JSON envelope.
    */
   async raw(
     method: string,

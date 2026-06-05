@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/session"
+	"github.com/Infisical/agent-vault/internal/store"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/spf13/cobra"
 )
@@ -31,9 +33,42 @@ var vaultCreateCmd = &cobra.Command{
 			return err
 		}
 
-		body, err := json.Marshal(map[string]string{
-			"name": name,
-		})
+		credStore, _ := cmd.Flags().GetString("credential-store")
+
+		payload := map[string]interface{}{"name": name}
+
+		switch credStore {
+		case "", store.CredentialStoreBuiltin:
+			// no extra payload
+		case store.CredentialStoreInfisical:
+			projectID, _ := cmd.Flags().GetString("infisical-project-id")
+			environment, _ := cmd.Flags().GetString("infisical-environment")
+			secretPath, _ := cmd.Flags().GetString("infisical-path")
+			pollSecs, _ := cmd.Flags().GetInt("poll-interval-seconds")
+
+			if projectID == "" || environment == "" {
+				return fmt.Errorf("--infisical-project-id and --infisical-environment are required when --credential-store=%s", store.CredentialStoreInfisical)
+			}
+			if pollSecs < 10 {
+				return fmt.Errorf("--poll-interval-seconds must be at least 10")
+			}
+			if secretPath == "" {
+				secretPath = "/"
+			}
+			payload["credential_store"] = map[string]interface{}{
+				"kind": store.CredentialStoreInfisical,
+				"config": map[string]interface{}{
+					"project_id":  projectID,
+					"environment": environment,
+					"secret_path": secretPath,
+				},
+				"poll_interval_seconds": pollSecs,
+			}
+		default:
+			return fmt.Errorf("unsupported --credential-store %q (use %s or %s)", credStore, store.CredentialStoreBuiltin, store.CredentialStoreInfisical)
+		}
+
+		body, err := json.Marshal(payload)
 		if err != nil {
 			return err
 		}
@@ -45,14 +80,111 @@ var vaultCreateCmd = &cobra.Command{
 		}
 
 		var resp struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
+			ID              string                 `json:"id"`
+			Name            string                 `json:"name"`
+			CredentialStore map[string]interface{} `json:"credential_store,omitempty"`
 		}
 		_ = json.Unmarshal(respBody, &resp)
 
 		fmt.Fprintf(cmd.OutOrStdout(), "%s Created vault %q (id: %s)\n", successText("✓"), resp.Name, mutedText(resp.ID))
+		if kind, ok := resp.CredentialStore["kind"].(string); ok && kind != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "  Credential store: %s\n", kind)
+		}
 		return nil
 	},
+}
+
+var vaultCredentialStoreCmd = &cobra.Command{
+	Use:   "credential-store",
+	Short: "Inspect the credential store backing a vault",
+}
+
+var vaultCredentialStoreShowCmd = &cobra.Command{
+	Use:   "show <name>",
+	Short: "Show the credential store kind, config, and sync health for a vault",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		sess, err := ensureSession()
+		if err != nil {
+			return err
+		}
+		url := fmt.Sprintf("%s/v1/vaults/%s/context", sess.Address, name)
+		respBody, err := doAdminRequestWithBody("GET", url, sess.Token, nil)
+		if err != nil {
+			return err
+		}
+		var resp struct {
+			VaultName       string                 `json:"vault_name"`
+			VaultRole       string                 `json:"vault_role"`
+			CredentialStore map[string]interface{} `json:"credential_store,omitempty"`
+		}
+		if err := json.Unmarshal(respBody, &resp); err != nil {
+			return fmt.Errorf("parsing response: %w", err)
+		}
+		out := cmd.OutOrStdout()
+		fmt.Fprintf(out, "Vault: %s\n", resp.VaultName)
+		printCredentialStore(out, resp.CredentialStore)
+		return nil
+	},
+}
+
+var vaultCredentialStoreSyncCmd = &cobra.Command{
+	Use:   "sync <name>",
+	Short: "Force an immediate refresh of an external-store vault",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		sess, err := ensureSession()
+		if err != nil {
+			return err
+		}
+		url := fmt.Sprintf("%s/v1/vaults/%s/sync", sess.Address, name)
+		respBody, err := doAdminRequestWithBody("POST", url, sess.Token, nil)
+		if err != nil {
+			return err
+		}
+		var resp struct {
+			CredentialStore map[string]interface{} `json:"credential_store,omitempty"`
+		}
+		if err := json.Unmarshal(respBody, &resp); err != nil {
+			return fmt.Errorf("parsing response: %w", err)
+		}
+		out := cmd.OutOrStdout()
+		fmt.Fprintf(out, "%s Synced vault %q\n", successText("✓"), name)
+		printCredentialStore(out, resp.CredentialStore)
+		return nil
+	},
+}
+
+func printCredentialStore(out io.Writer, cs map[string]interface{}) {
+	if cs == nil {
+		fmt.Fprintf(out, "Credential store: %s\n", store.CredentialStoreBuiltin)
+		return
+	}
+	fmt.Fprintf(out, "Credential store: %v\n", cs["kind"])
+	if cfg, ok := cs["config"].(map[string]interface{}); ok {
+		fmt.Fprintf(out, "  Project:     %v\n", cfg["project_id"])
+		fmt.Fprintf(out, "  Environment: %v\n", cfg["environment"])
+		fmt.Fprintf(out, "  Path:        %v\n", cfg["secret_path"])
+	}
+	if v, ok := cs["poll_interval_seconds"]; ok {
+		fmt.Fprintf(out, "  Poll:        %vs\n", v)
+	}
+	status, _ := cs["last_sync_status"].(string)
+	if status != "" {
+		fmt.Fprintf(out, "  Last sync:   %v\n", status)
+	}
+	if v, ok := cs["last_synced_at"]; ok {
+		label := "Synced at"
+		if status == store.SyncStatusError {
+			label = "Last attempt"
+		}
+		fmt.Fprintf(out, "  %s:   %v\n", label, v)
+	}
+	if v, ok := cs["last_sync_error"]; ok {
+		fmt.Fprintf(out, "  Error:       %v\n", v)
+	}
 }
 
 var vaultListCmd = &cobra.Command{
@@ -73,10 +205,13 @@ var vaultListCmd = &cobra.Command{
 
 		var resp struct {
 			Vaults []struct {
-				ID        string `json:"id"`
-				Name      string `json:"name"`
-				Role      string `json:"role"`
-				CreatedAt string `json:"created_at"`
+				ID              string `json:"id"`
+				Name            string `json:"name"`
+				Role            string `json:"role"`
+				CreatedAt       string `json:"created_at"`
+				CredentialStore *struct {
+					Kind string `json:"kind"`
+				} `json:"credential_store,omitempty"`
 			} `json:"vaults"`
 		}
 		if err := json.Unmarshal(respBody, &resp); err != nil {
@@ -89,7 +224,7 @@ var vaultListCmd = &cobra.Command{
 		}
 
 		t := newTable(cmd.OutOrStdout())
-		t.AppendHeader(table.Row{"ID", "NAME", "ROLE", "CREATED"})
+		t.AppendHeader(table.Row{"ID", "NAME", "ROLE", "STORE", "CREATED"})
 		for _, ns := range resp.Vaults {
 			created := ns.CreatedAt
 			if parsed, err := time.Parse(time.RFC3339, ns.CreatedAt); err == nil {
@@ -99,7 +234,11 @@ var vaultListCmd = &cobra.Command{
 			if role == "" {
 				role = "-"
 			}
-			t.AppendRow(table.Row{ns.ID, ns.Name, role, created})
+			kind := store.CredentialStoreBuiltin
+			if ns.CredentialStore != nil && ns.CredentialStore.Kind != "" {
+				kind = ns.CredentialStore.Kind
+			}
+			t.AppendRow(table.Row{ns.ID, ns.Name, role, kind, created})
 		}
 		t.Render()
 		return nil
@@ -341,12 +480,22 @@ func init() {
 
 	vaultDeleteCmd.Flags().Bool("yes", false, "Skip confirmation prompt")
 
+	vaultCreateCmd.Flags().String("credential-store", "", "credential store kind: builtin (default) or infisical (owner only)")
+	vaultCreateCmd.Flags().String("infisical-project-id", "", "Infisical project ID (required when --credential-store=infisical)")
+	vaultCreateCmd.Flags().String("infisical-environment", "", "Infisical environment slug, e.g. dev/prod")
+	vaultCreateCmd.Flags().String("infisical-path", "/", "Infisical secret path (default /)")
+	vaultCreateCmd.Flags().Int("poll-interval-seconds", 60, "Sync cadence floor for the external store (min 10; server wakes every 10s and refreshes vaults past their interval)")
+
 	vaultCmd.AddCommand(vaultCreateCmd)
 	vaultCmd.AddCommand(vaultListCmd)
 	vaultCmd.AddCommand(vaultDeleteCmd)
 	vaultCmd.AddCommand(vaultRenameCmd)
 	vaultCmd.AddCommand(vaultUseCmd)
 	vaultCmd.AddCommand(vaultCurrentCmd)
+
+	vaultCredentialStoreCmd.AddCommand(vaultCredentialStoreShowCmd)
+	vaultCredentialStoreCmd.AddCommand(vaultCredentialStoreSyncCmd)
+	vaultCmd.AddCommand(vaultCredentialStoreCmd)
 
 	vaultUserAddCmd.Flags().String("role", "member", "role to grant (admin or member)")
 	vaultUserSetRoleCmd.Flags().String("role", "", "role to set (admin or member)")

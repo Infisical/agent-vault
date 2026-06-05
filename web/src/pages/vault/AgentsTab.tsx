@@ -214,9 +214,7 @@ function AddAgentButton({
   }, [open]);
 
   const availableAgents = instanceAgents.filter(
-    (a) =>
-      (a.status === "active" || a.status === "pending") &&
-      !vaultAgents.some((va) => va.name === a.name)
+    (a) => a.status === "active" && !vaultAgents.some((va) => va.name === a.name)
   );
 
   function close() {

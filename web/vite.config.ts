@@ -17,7 +17,6 @@ export default defineConfig({
   server: {
     proxy: {
       "/v1": API_TARGET,
-      "/proxy": API_TARGET,
       "/discover": API_TARGET,
       "/health": API_TARGET,
       "/invite": API_TARGET,

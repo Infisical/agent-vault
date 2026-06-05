@@ -8,13 +8,12 @@ import (
 )
 
 type discoverService struct {
-	Host        string  `json:"host"`
-	Description *string `json:"description"`
+	Name string `json:"name"`
+	Host string `json:"host"`
 }
 
 type discoverResponse struct {
 	Vault                string            `json:"vault"`
-	ProxyURL             string            `json:"proxy_url"`
 	Services             []discoverService `json:"services"`
 	AvailableCredentials []string          `json:"available_credentials"`
 }
@@ -42,7 +41,6 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		// No config means no services — return empty list.
 		jsonOK(w, discoverResponse{
 			Vault:                ns.Name,
-			ProxyURL:             s.baseURL + "/proxy",
 			Services:             []discoverService{},
 			AvailableCredentials: credentialKeys,
 		})
@@ -54,18 +52,26 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		proxyError(w, http.StatusInternalServerError, "internal", "Failed to parse broker services")
 		return
 	}
+	// MarshalJSON persists Host in joined form; re-split so
+	// MatcherPattern emits the same shape regardless of storage form.
+	for i := range svcList {
+		svcList[i].Host, svcList[i].Path = broker.SplitInlineHost(svcList[i].Host, svcList[i].Path)
+	}
+	// Heal legacy unnamed entries on the agent-facing read path too —
+	// agents identify services by Name (per skill_cli.md) and a blank
+	// Name in this response makes the service un-addressable.
+	broker.AssignSlugNames(svcList)
 
 	services := make([]discoverService, len(svcList))
 	for i, svc := range svcList {
 		services[i] = discoverService{
-			Host:        svc.Host,
-			Description: svc.Description,
+			Name: svc.Name,
+			Host: svc.MatcherPattern(),
 		}
 	}
 
 	jsonOK(w, discoverResponse{
 		Vault:                ns.Name,
-		ProxyURL:             s.baseURL + "/proxy",
 		Services:             services,
 		AvailableCredentials: credentialKeys,
 	})

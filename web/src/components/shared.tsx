@@ -45,6 +45,31 @@ export function ErrorBanner({
   );
 }
 
+export function InfoBanner({
+  children,
+  action,
+  className = "",
+}: {
+  children: React.ReactNode;
+  action?: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={`rounded-lg border border-border bg-surface-raised p-4 text-sm text-text-muted ${className}`}
+    >
+      {action ? (
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0 flex-1">{children}</div>
+          <div className="flex-shrink-0">{action}</div>
+        </div>
+      ) : (
+        children
+      )}
+    </div>
+  );
+}
+
 export function EmptyState({ message }: { message: string }) {
   return (
     <div className="text-center py-20 text-text-muted text-sm">{message}</div>
@@ -66,6 +91,25 @@ export function timeAgo(dateStr: string): string {
   const months = Math.floor(days / 30);
   return `${months} ${months === 1 ? "month" : "months"} ago`;
 }
+
+export type InstanceRole = "owner" | "member" | "no-access";
+
+// CSS `capitalize` would render "no-access" as "No-access", so wire values
+// must be mapped to display labels by hand.
+export function formatInstanceRole(role: string): string {
+  if (role === "no-access") return "No Access";
+  if (role === "owner") return "Owner";
+  if (role === "member") return "Member";
+  return role;
+}
+
+// Lowest privilege first; "No Access" is the safe default offered to operators
+// when adding a new actor. Consumers filter out the actor's current role.
+export const INSTANCE_ROLE_OPTIONS: ReadonlyArray<{ role: InstanceRole; label: string }> = [
+  { role: "no-access", label: "No Access" },
+  { role: "member", label: "Member" },
+  { role: "owner", label: "Owner" },
+];
 
 export function timeUntil(dateStr: string): string {
   const date = new Date(dateStr);

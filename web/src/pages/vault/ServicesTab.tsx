@@ -12,6 +12,7 @@ import Button from "../../components/Button";
 import Input from "../../components/Input";
 import FormField from "../../components/FormField";
 import Toggle from "../../components/Toggle";
+import SegmentedTabs from "../../components/SegmentedTabs";
 import {
   type Auth,
   type Substitution,
@@ -22,8 +23,8 @@ import {
 import { apiFetch, apiRequest } from "../../lib/api";
 
 interface Service {
+  name: string;
   host: string;
-  description?: string;
   enabled?: boolean;
   auth: Auth;
   substitutions?: Substitution[];
@@ -49,11 +50,11 @@ function isEnabled(service: Service): boolean {
 type AuthType = "bearer" | "basic" | "api-key" | "custom" | "passthrough";
 
 const AUTH_TYPE_OPTIONS: { value: AuthType; label: string }[] = [
+  { value: "passthrough", label: "Passthrough" },
   { value: "bearer", label: "Bearer" },
   { value: "basic", label: "Basic" },
   { value: "api-key", label: "API key" },
   { value: "custom", label: "Custom" },
-  { value: "passthrough", label: "Passthrough" },
 ];
 
 export default function ServicesTab() {
@@ -118,18 +119,20 @@ export default function ServicesTab() {
       const data = await resp.json();
       throw new Error(data.error || "Failed to save services.");
     }
-    setServices(updatedServices);
+    // Re-fetch so the local copy always reflects exactly what the
+    // server stored (e.g. inline-host re-joining for the read surface).
+    await fetchServices();
   }
 
   async function toggleEnabled(index: number, next: boolean) {
     const service = services[index];
     if (!service) return;
     const applyEnabled = (want: boolean) => (list: Service[]) =>
-      list.map((s) => (s.host === service.host ? { ...s, enabled: want } : s));
+      list.map((s) => (s.name === service.name ? { ...s, enabled: want } : s));
     setServices(applyEnabled(next));
     try {
       const resp = await apiFetch(
-        `/v1/vaults/${encodeURIComponent(vaultName)}/services/${encodeURIComponent(service.host)}`,
+        `/v1/vaults/${encodeURIComponent(vaultName)}/services/${encodeURIComponent(service.name)}`,
         {
           method: "PATCH",
           body: JSON.stringify({ enabled: next }),
@@ -164,16 +167,12 @@ export default function ServicesTab() {
 
   const columns: Column<Service>[] = [
     {
-      key: "host",
-      header: "Host",
+      key: "name",
+      header: "Service",
       render: (service) => (
         <div>
-          <div className="text-sm font-semibold text-text">{service.host}</div>
-          {service.description && (
-            <div className="text-xs text-text-muted mt-0.5">
-              {service.description}
-            </div>
-          )}
+          <div className="text-sm font-semibold text-text">{service.name}</div>
+          <div className="text-xs text-text-muted mt-0.5">{service.host}</div>
         </div>
       ),
     },
@@ -203,7 +202,7 @@ export default function ServicesTab() {
           checked={isEnabled(service)}
           disabled={!isAdmin}
           onChange={(next) => toggleEnabled(index, next)}
-          ariaLabel={`Toggle ${service.host}`}
+          ariaLabel={`Toggle ${service.name}`}
         />
       ),
     },
@@ -264,7 +263,7 @@ export default function ServicesTab() {
         <DataTable
           columns={columns}
           data={services}
-          rowKey={(_, i) => i}
+          rowKey={(s) => s.name}
           emptyTitle="No services configured"
           emptyDescription="Add a service to allow agents to proxy requests through this vault."
         />
@@ -280,7 +279,7 @@ export default function ServicesTab() {
         title="Delete service"
         description={
           deleteIndex !== null && services[deleteIndex]
-            ? `Permanently delete the service for "${services[deleteIndex].host}". Agents will no longer be able to proxy requests to this host.`
+            ? `Permanently delete "${services[deleteIndex].name}" (${services[deleteIndex].host}). Agents will no longer be able to proxy requests through this service.`
             : "Permanently delete this service."
         }
         footer={
@@ -338,10 +337,10 @@ function ServiceModal({
   onClose: () => void;
   onSave: (service: Service) => Promise<void>;
 }) {
-  const [host, setHost] = useState(initial?.host ?? "");
-  const [description, setDescription] = useState(initial?.description ?? "");
+  const [name, setName] = useState(initial?.name ?? "");
+  const [pattern, setPattern] = useState(initial?.host ?? "");
   const [enabled, setEnabled] = useState(initial ? initial.enabled !== false : true);
-  const [authType, setAuthType] = useState<AuthType>((initial?.auth?.type as AuthType) ?? "bearer");
+  const [authType, setAuthType] = useState<AuthType>((initial?.auth?.type as AuthType) ?? "passthrough");
 
   // Bearer fields
   const [token, setToken] = useState(initial?.auth?.token ?? "");
@@ -355,19 +354,29 @@ function ServiceModal({
   const [apiKeyHeader, setApiKeyHeader] = useState(initial?.auth?.header ?? "");
   const [apiKeyPrefix, setApiKeyPrefix] = useState(initial?.auth?.prefix ?? "");
 
-  // Custom header fields (multiple)
-  const [customHeaders, setCustomHeaders] = useState<{ name: string; value: string }[]>(() => {
+  // Stable row IDs so React reconciliation keys editable rows by identity
+  // rather than array index — without this, deleting a middle row causes
+  // input values to bleed between adjacent rows during the re-render.
+  const rowIdSeq = useRef(0);
+  const nextRowId = () => ++rowIdSeq.current;
+
+  // Custom header fields (multiple). _id is local-only — stripped before
+  // submitting; never round-tripped to the server.
+  type HeaderRow = { _id: number; name: string; value: string };
+  const [customHeaders, setCustomHeaders] = useState<HeaderRow[]>(() => {
     if (initial?.auth?.headers && Object.keys(initial.auth.headers).length > 0) {
-      return Object.entries(initial.auth.headers).map(([name, value]) => ({ name, value }));
+      return Object.entries(initial.auth.headers).map(([name, value]) => ({ _id: nextRowId(), name, value }));
     }
-    return [{ name: "", value: "" }];
+    return [{ _id: nextRowId(), name: "", value: "" }];
   });
 
   // Substitution editor state — independent of auth type so it composes
   // with all of them (including passthrough).
-  const [subs, setSubs] = useState<Substitution[]>(() =>
+  type SubRow = Substitution & { _id: number };
+  const [subs, setSubs] = useState<SubRow[]>(() =>
     initial?.substitutions
       ? initial.substitutions.map((s) => ({
+          _id: nextRowId(),
           key: s.key,
           placeholder: s.placeholder,
           in: s.in && s.in.length > 0 ? [...s.in] : [...DEFAULT_SUBSTITUTION_SURFACES],
@@ -382,16 +391,16 @@ function ServiceModal({
   const showPresets = !initial && catalogSnapshot.length > 0;
 
   function resetFields() {
-    setHost("");
-    setDescription("");
-    setAuthType("bearer");
+    setName("");
+    setPattern("");
+    setAuthType("passthrough");
     setToken("");
     setUsername("");
     setPassword("");
     setApiKey("");
     setApiKeyHeader("");
     setApiKeyPrefix("");
-    setCustomHeaders([{ name: "", value: "" }]);
+    setCustomHeaders([{ _id: nextRowId(), name: "", value: "" }]);
     setSubs([]);
   }
 
@@ -401,8 +410,7 @@ function ServiceModal({
     if (!id) return;
     const tpl = catalogSnapshot.find((t) => t.id === id);
     if (!tpl) return;
-    setHost(tpl.host);
-    setDescription(tpl.description);
+    setPattern(tpl.host);
     setAuthType(tpl.auth_type as AuthType);
     if (tpl.auth_type === "bearer") setToken(tpl.suggested_credential_key);
     // Catalogued basic-auth services (Twilio, Jira) carry a token that belongs
@@ -420,7 +428,8 @@ function ServiceModal({
   const [subsExpanded, setSubsExpanded] = useState(subs.length > 0);
 
   const canSubmit = (() => {
-    if (!host.trim()) return false;
+    if (!name.trim()) return false;
+    if (!pattern.trim()) return false;
     switch (authType) {
       case "bearer":
         return !!token.trim();
@@ -480,9 +489,11 @@ function ServiceModal({
     setSaving(true);
     setError("");
     try {
+      // Send only `host` (inline-form accepted). Server splits into
+      // host + path on ingest — the UI never names a separate path field.
       const service: Service = {
-        host: host.trim(),
-        ...(description.trim() && { description: description.trim() }),
+        name: name.trim(),
+        host: pattern.trim(),
         ...(enabled ? {} : { enabled: false }),
         auth: buildAuth(),
         ...(cleanedSubs.length > 0 && { substitutions: cleanedSubs }),
@@ -527,19 +538,27 @@ function ServiceModal({
     >
       <div className="space-y-6">
         <Section title="Basics">
-          <FormField label="Host Pattern">
+          <FormField
+            label="Name"
+            tooltip="Slug-style identifier (3–64 chars, lowercase, hyphens). The canonical per-vault key for this service."
+            required
+          >
             <Input
-              placeholder="e.g. api.stripe.com"
-              value={host}
-              onChange={(e) => setHost(e.target.value)}
+              placeholder="e.g. stripe, slack-bot, internal-billing"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
               autoFocus
             />
           </FormField>
-          <FormField label="Description">
+          <FormField
+            label="Host Pattern"
+            tooltip="Host with optional path glob. * is a subdomain label in the host (*.github.com) and a greedy glob in the path (/api/*). Examples: api.stripe.com, *.atlassian.net, slack.com/api/*."
+            required
+          >
             <Input
-              placeholder="e.g. Stripe API"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              placeholder="e.g. api.stripe.com or slack.com/api/*"
+              value={pattern}
+              onChange={(e) => setPattern(e.target.value)}
             />
           </FormField>
           <div className="flex items-start justify-between gap-4 pt-1">
@@ -564,7 +583,8 @@ function ServiceModal({
           {authType === "bearer" && (
             <FormField
               label="Token Credential Key"
-              helperText="The UPPER_SNAKE_CASE name of the credential storing the token."
+              tooltip="The UPPER_SNAKE_CASE name of the credential storing the token."
+              required
             >
               <Input
                 placeholder="e.g. STRIPE_KEY"
@@ -581,7 +601,8 @@ function ServiceModal({
             <>
               <FormField
                 label="Username Credential Key"
-                helperText="Credential key for the Basic Auth username."
+                tooltip="Credential key for the Basic Auth username."
+                required
               >
                 <Input
                   placeholder="e.g. ASHBY_API_KEY"
@@ -591,7 +612,7 @@ function ServiceModal({
               </FormField>
               <FormField
                 label="Password Credential Key"
-                helperText="Optional — leave empty if the service only requires a username."
+                tooltip="Optional — leave empty if the service only requires a username."
               >
                 <Input
                   placeholder="e.g. ASHBY_PASSWORD"
@@ -609,7 +630,8 @@ function ServiceModal({
             <>
               <FormField
                 label="API Key Credential"
-                helperText="The UPPER_SNAKE_CASE name of the credential storing the API key."
+                tooltip="The UPPER_SNAKE_CASE name of the credential storing the API key."
+                required
               >
                 <Input
                   placeholder="e.g. OPENAI_API_KEY"
@@ -619,7 +641,7 @@ function ServiceModal({
               </FormField>
               <FormField
                 label="Header Name"
-                helperText="Which header to inject. Defaults to Authorization."
+                tooltip="Which header to inject. Defaults to Authorization."
               >
                 <Input
                   placeholder="Authorization"
@@ -629,7 +651,7 @@ function ServiceModal({
               </FormField>
               <FormField
                 label="Prefix"
-                helperText='Optional prefix before the key value (e.g. "Bearer ").'
+                tooltip='Optional prefix before the key value (e.g. "Bearer ").'
               >
                 <Input
                   placeholder="e.g. Bearer "
@@ -655,11 +677,12 @@ function ServiceModal({
           {authType === "custom" && (
             <FormField
               label="Headers"
-              helperText="Type {{ CREDENTIAL_KEY }} to reference a stored credential."
+              tooltip="Type {{ CREDENTIAL_KEY }} to reference a stored credential."
+              required
             >
               <div className="space-y-3">
                 {customHeaders.map((header, i) => (
-                  <div key={i} className="flex gap-3 items-center">
+                  <div key={header._id} className="flex gap-3 items-center">
                     <Input
                       placeholder="Header name"
                       value={header.name}
@@ -693,7 +716,7 @@ function ServiceModal({
                 ))}
                 <button
                   onClick={() =>
-                    setCustomHeaders((prev) => [...prev, { name: "", value: "" }])
+                    setCustomHeaders((prev) => [...prev, { _id: nextRowId(), name: "", value: "" }])
                   }
                   className="text-sm font-medium text-primary hover:text-primary-hover transition-colors"
                 >
@@ -722,7 +745,7 @@ function ServiceModal({
           <div className="space-y-3">
             {subs.map((sub, i) => (
               <div
-                key={i}
+                key={sub._id}
                 className="rounded-lg border border-border bg-bg p-4 flex items-start gap-3"
               >
                 <div className="flex-1 flex flex-wrap items-center gap-x-2 gap-y-2 text-sm text-text-muted">
@@ -796,7 +819,7 @@ function ServiceModal({
               onClick={() =>
                 setSubs((prev) => [
                   ...prev,
-                  { key: "", placeholder: "", in: [...DEFAULT_SUBSTITUTION_SURFACES] },
+                  { _id: nextRowId(), key: "", placeholder: "", in: [...DEFAULT_SUBSTITUTION_SURFACES] },
                 ])
               }
               className="text-sm font-medium text-primary hover:text-primary-hover transition-colors"
@@ -873,46 +896,6 @@ function CollapsibleSection({
       </button>
       {expanded && <div className="px-3 pb-3 pt-1 space-y-3">{children}</div>}
     </section>
-  );
-}
-
-function SegmentedTabs<T extends string>({
-  options,
-  value,
-  onChange,
-  ariaLabel,
-}: {
-  options: { value: T; label: string }[];
-  value: T;
-  onChange: (next: T) => void;
-  ariaLabel?: string;
-}) {
-  return (
-    <div
-      role="tablist"
-      aria-label={ariaLabel}
-      className="inline-flex flex-wrap gap-1 p-1 bg-bg border border-border rounded-lg"
-    >
-      {options.map((opt) => {
-        const active = opt.value === value;
-        return (
-          <button
-            key={opt.value}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            onClick={() => onChange(opt.value)}
-            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-              active
-                ? "bg-surface-raised text-text border border-border"
-                : "text-text-muted hover:text-text border border-transparent"
-            }`}
-          >
-            {opt.label}
-          </button>
-        );
-      })}
-    </div>
   );
 }
 
