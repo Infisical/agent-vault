@@ -10,6 +10,7 @@ import Input from "../../components/Input";
 import FormField from "../../components/FormField";
 import Select from "../../components/Select";
 import Combobox from "../../components/Combobox";
+import CreatableSelect from "../../components/CreatableSelect";
 import { apiFetch } from "../../lib/api";
 import { OAUTH_PROVIDERS } from "../../lib/oauthProviders";
 
@@ -436,7 +437,7 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
   const [oauthClientId, setOauthClientId] = useState(editingCred?.client_id ?? "");
   const [oauthClientSecret, setOauthClientSecret] = useState(editingCred?.client_secret ?? "");
   const [oauthTokenAuthMethod, setOauthTokenAuthMethod] = useState(editingCred?.token_auth_method ?? (editingCred?.client_secret ? "client_secret_post" : "none"));
-  const [oauthScopes, setOauthScopes] = useState(editingCred?.scopes ?? "");
+  const [oauthScopes, setOauthScopes] = useState<string[]>(editingCred?.scopes ? editingCred.scopes.split(" ").filter(Boolean) : []);
   const [oauthAccessToken, setOauthAccessToken] = useState(editingCred?.access_token ?? "");
   const [oauthRefreshToken, setOauthRefreshToken] = useState(editingCred?.refresh_token ?? "");
   const [oauthConnecting, setOauthConnecting] = useState(false);
@@ -449,7 +450,7 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
   function removeEntry(i: number) { setEntries((p) => p.filter((_, j) => j !== i)); }
   function addEntry() { setEntries((p) => [...p, { key: "", value: "" }]); }
 
-  const [oauthMode, setOauthMode] = useState<"connect" | "upload">(editingCred?.authorization_url ? "connect" : "upload");
+  const [oauthMode, setOauthMode] = useState<"connect" | "upload">(!isEdit || editingCred?.authorization_url ? "connect" : "upload");
   const isTokenUpload = oauthMode === "upload";
   const canSubmitStatic = entries.every((e) => e.key.trim() && e.value.trim());
   const canSubmitOAuthConnect = !!(oauthKey.trim() && oauthTokenUrl.trim() && oauthClientId.trim() && oauthAuthUrl.trim());
@@ -483,6 +484,9 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
   // selecting it just closes the list and leaves all fields free-form.
   const customOption = { id: "custom", label: "Custom Provider", sublabel: "Enter provider manually", pinned: true };
 
+  const currentProvider = OAUTH_PROVIDERS.find((p) => p.authorizationUrl === oauthAuthUrl || p.tokenUrl === oauthTokenUrl);
+  const scopeOptions = (currentProvider?.scopes ?? []).map((s) => ({ value: s.value, description: s.description }));
+
   function applyProvider(id: string) {
     const p = OAUTH_PROVIDERS.find((p) => p.id === id);
     if (!p) return;
@@ -490,6 +494,7 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
     setOauthTokenUrl(p.tokenUrl);
     setOauthTokenAuthMethod(p.tokenAuthMethod);
     if (!isEdit) setOauthKey(p.suggestedKey);
+    setOauthScopes([]);
   }
 
   async function handleOAuthConnect() {
@@ -497,7 +502,7 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
     try {
       const resp = await apiFetch("/v1/credentials/oauth/connect", {
         method: "POST",
-        body: JSON.stringify({ vault: vaultName, key: oauthKey.trim(), authorization_url: oauthAuthUrl.trim(), token_url: oauthTokenUrl.trim(), client_id: oauthClientId.trim(), client_secret: oauthClientSecret.trim() || undefined, scopes: oauthScopes.trim() || undefined, token_auth_method: oauthTokenAuthMethod === "none" ? undefined : oauthTokenAuthMethod }),
+        body: JSON.stringify({ vault: vaultName, key: oauthKey.trim(), authorization_url: oauthAuthUrl.trim(), token_url: oauthTokenUrl.trim(), client_id: oauthClientId.trim(), client_secret: oauthClientSecret.trim() || undefined, scopes: oauthScopes.join(" ") || undefined, token_auth_method: oauthTokenAuthMethod === "none" ? undefined : oauthTokenAuthMethod }),
       });
       if (!resp.ok) { const d = await resp.json(); throw new Error(d.error || "Failed to start OAuth."); }
       const data = await resp.json();
@@ -624,7 +629,14 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
                   </Select>
                 </FormField></div>
               </div>
-              <FormField label="Scopes" helperText="Space-separated"><Input placeholder="e.g. repo user" value={oauthScopes} onChange={(e) => setOauthScopes(e.target.value)} /></FormField>
+              <FormField label="Scopes" helperText="Space-separated">
+                <CreatableSelect
+                  values={oauthScopes}
+                  onChange={setOauthScopes}
+                  options={scopeOptions}
+                  placeholder="Add scopes"
+                />
+              </FormField>
             </>
           ) : (
             <>
