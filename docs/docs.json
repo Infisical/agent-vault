@@ -53,7 +53,8 @@
               "guides/connect-coding-agent",
               "guides/connect-custom-agent",
               "guides/deploy-agent-container",
-              "guides/hermes-on-vps"
+              "guides/hermes-on-vps",
+              "guides/oauth-claude-code"
             ]
           },
           {
