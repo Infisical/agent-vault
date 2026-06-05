@@ -685,11 +685,21 @@ func (s *SQLiteStore) SetCredentialOAuth(ctx context.Context, co *CredentialOAut
 		   scope_separator = excluded.scope_separator,
 		   disable_pkce = excluded.disable_pkce,
 		   token_auth_method = excluded.token_auth_method,
-		   refresh_token_ct = COALESCE(excluded.refresh_token_ct, credential_oauth.refresh_token_ct),
-		   refresh_token_nonce = COALESCE(excluded.refresh_token_nonce, credential_oauth.refresh_token_nonce),
-		   token_expires_at = COALESCE(excluded.token_expires_at, credential_oauth.token_expires_at),
-		   connected_at = COALESCE(excluded.connected_at, credential_oauth.connected_at),
-		   last_refreshed_at = COALESCE(excluded.last_refreshed_at, credential_oauth.last_refreshed_at),
+		   refresh_token_ct = CASE WHEN excluded.token_url = credential_oauth.token_url
+		     THEN COALESCE(excluded.refresh_token_ct, credential_oauth.refresh_token_ct)
+		     ELSE excluded.refresh_token_ct END,
+		   refresh_token_nonce = CASE WHEN excluded.token_url = credential_oauth.token_url
+		     THEN COALESCE(excluded.refresh_token_nonce, credential_oauth.refresh_token_nonce)
+		     ELSE excluded.refresh_token_nonce END,
+		   token_expires_at = CASE WHEN excluded.token_url = credential_oauth.token_url
+		     THEN COALESCE(excluded.token_expires_at, credential_oauth.token_expires_at)
+		     ELSE excluded.token_expires_at END,
+		   connected_at = CASE WHEN excluded.token_url = credential_oauth.token_url
+		     THEN COALESCE(excluded.connected_at, credential_oauth.connected_at)
+		     ELSE excluded.connected_at END,
+		   last_refreshed_at = CASE WHEN excluded.token_url = credential_oauth.token_url
+		     THEN COALESCE(excluded.last_refreshed_at, credential_oauth.last_refreshed_at)
+		     ELSE excluded.last_refreshed_at END,
 		   last_refresh_error = excluded.last_refresh_error,
 		   last_refresh_error_at = excluded.last_refresh_error_at,
 		   updated_at = excluded.updated_at`,
