@@ -152,14 +152,18 @@ func applyClientAuth(form url.Values, clientID, clientSecret, method string) {
 	}
 }
 
-var tokenClient = func() *http.Client {
+var defaultTokenClient = func() *http.Client {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = nil
 	return &http.Client{Timeout: 30 * time.Second, Transport: t}
 }()
 
+// TokenClient is the HTTP client used for token endpoint requests.
+// Override this at init time to inject network guards (e.g., SSRF protection).
+var TokenClient = defaultTokenClient
+
 func doTokenRequest(req *http.Request) (*TokenResponse, error) {
-	resp, err := tokenClient.Do(req)
+	resp, err := TokenClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("oauth: sending token request: %w", err)
 	}

@@ -481,6 +481,12 @@ func (s *Server) handleOAuthTokenUpload(w http.ResponseWriter, r *http.Request) 
 	if isRefreshSentinel && existing != nil {
 		refreshCT = existing.RefreshTokenCT
 		refreshNonce = existing.RefreshTokenNonce
+	} else if hasNewRefreshToken {
+		refreshCT, refreshNonce, err = crypto.Encrypt([]byte(req.RefreshToken), s.encKey)
+		if err != nil {
+			jsonError(w, http.StatusInternalServerError, "Encryption failed")
+			return
+		}
 	}
 
 	// Create credential_oauth row if needed.

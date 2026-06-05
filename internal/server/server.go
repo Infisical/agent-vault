@@ -703,6 +703,12 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 		oauthRefresher: oauth.NewRefresher(),
 	}
 
+	// Apply SSRF protection to OAuth token endpoint requests.
+	oauthTransport := http.DefaultTransport.(*http.Transport).Clone()
+	oauthTransport.Proxy = nil
+	oauthTransport.DialContext = netguard.SafeDialContext(netguard.AllowPrivateFromEnv())
+	oauth.TokenClient = &http.Client{Timeout: 30 * time.Second, Transport: oauthTransport}
+
 	ipAuth := s.tier(ratelimit.TierAuth, s.ipKeyer())
 
 	// /health, /v1/status, and other public static routes rely on the
