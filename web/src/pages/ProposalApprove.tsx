@@ -229,7 +229,7 @@ function ApprovalForm({ data }: { data: ApprovalData }) {
         throw new Error(result.error || "Failed to start OAuth flow.");
       }
       const result = await resp.json();
-      window.open(result.authorization_url, "_blank");
+      window.open(result.authorization_url, "_blank", "noopener,noreferrer");
 
       const timer = setInterval(async () => {
         try {

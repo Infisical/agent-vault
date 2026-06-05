@@ -486,7 +486,7 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
       });
       if (!resp.ok) { const d = await resp.json(); throw new Error(d.error || "Failed to start OAuth."); }
       const data = await resp.json();
-      window.open(data.authorization_url, "_blank");
+      window.open(data.authorization_url, "_blank", "noopener,noreferrer");
       const timer = setInterval(async () => {
         try {
           const sr = await apiFetch(`/v1/credentials/oauth/status?vault=${encodeURIComponent(vaultName)}&key=${encodeURIComponent(oauthKey.trim())}`);
@@ -605,13 +605,13 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
             </>
           ) : (
             <>
-              <FormField label="Access Token" helperText="Optional when refresh token is provided"><Input placeholder="Access token" value={oauthAccessToken} onChange={(e) => setOauthAccessToken(e.target.value)} type="password" /></FormField>
-              <FormField label="Refresh Token" helperText="Validated immediately on save"><Input placeholder="Refresh token" value={oauthRefreshToken} onChange={(e) => setOauthRefreshToken(e.target.value)} type="password" /></FormField>
               <div className="flex gap-3">
-                <div className="flex-1"><FormField label="Token URL" helperText="Required for refresh"><Input placeholder="e.g. https://oauth2.googleapis.com/token" value={oauthTokenUrl} onChange={(e) => setOauthTokenUrl(e.target.value)} /></FormField></div>
-                <div className="flex-1"><FormField label="Client ID" helperText="Required for refresh"><Input placeholder="OAuth app client ID" value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} /></FormField></div>
+                <div className="flex-1"><FormField label="Access Token" helperText="Optional when refresh token is provided"><Input placeholder="Access token" value={oauthAccessToken} onChange={(e) => setOauthAccessToken(e.target.value)} type="password" /></FormField></div>
+                <div className="flex-1"><FormField label="Refresh Token" helperText="Validated immediately on save"><Input placeholder="Refresh token" value={oauthRefreshToken} onChange={(e) => setOauthRefreshToken(e.target.value)} type="password" /></FormField></div>
               </div>
+              <FormField label="Token URL" helperText="Required for refresh"><Input placeholder="e.g. https://oauth2.googleapis.com/token" value={oauthTokenUrl} onChange={(e) => setOauthTokenUrl(e.target.value)} /></FormField>
               <div className="flex gap-3">
+                <div className="flex-1"><FormField label="Client ID" helperText="Required for refresh"><Input placeholder="OAuth app client ID" value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} /></FormField></div>
                 <div className="flex-1"><FormField label="Client Secret" helperText="Optional"><Input placeholder="OAuth app client secret" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} type="password" /></FormField></div>
                 <div className="w-36"><FormField label="Auth Method">
                   <Select value={oauthTokenAuthMethod} onChange={(e) => setOauthTokenAuthMethod(e.target.value)}>

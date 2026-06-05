@@ -57,16 +57,16 @@ func (s *Server) handleOAuthConnect(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "\"authorization_url\" is required for the connect flow")
 		return
 	}
+	if req.TokenURL == "" {
+		jsonError(w, http.StatusBadRequest, "\"token_url\" is required")
+		return
+	}
 	if !isValidHTTPURL(req.AuthorizationURL) {
 		jsonError(w, http.StatusBadRequest, "\"authorization_url\" must be an https:// or http:// URL")
 		return
 	}
 	if !isValidHTTPURL(req.TokenURL) {
 		jsonError(w, http.StatusBadRequest, "\"token_url\" must be an https:// or http:// URL")
-		return
-	}
-	if req.TokenURL == "" {
-		jsonError(w, http.StatusBadRequest, "\"token_url\" is required")
 		return
 	}
 	if req.ClientID == "" {
@@ -374,7 +374,11 @@ func (s *Server) handleOAuthTokenUpload(w http.ResponseWriter, r *http.Request) 
 		if clientID == "" {
 			clientID = existing.ClientID
 		}
-		if clientSecret == "" && len(existing.ClientSecretCT) > 0 {
+		// Only reuse stored secrets when the provider config hasn't changed.
+		// If the caller sends a different token_url, don't send stored secrets
+		// to the new endpoint (prevents client secret exfiltration).
+		providerUnchanged := tokenURL == existing.TokenURL
+		if clientSecret == "" && len(existing.ClientSecretCT) > 0 && providerUnchanged {
 			cs, err := crypto.Decrypt(existing.ClientSecretCT, existing.ClientSecretNonce, s.encKey)
 			if err == nil {
 				clientSecret = string(cs)

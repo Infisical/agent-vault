@@ -283,7 +283,7 @@ function ProposalModal({
       });
       if (!resp.ok) { const d = await resp.json(); throw new Error(d.error || "Failed to start OAuth."); }
       const data = await resp.json();
-      window.open(data.authorization_url, "_blank");
+      window.open(data.authorization_url, "_blank", "noopener,noreferrer");
       const timer = setInterval(async () => {
         try {
           const sr = await apiFetch(`/v1/credentials/oauth/status?vault=${encodeURIComponent(vaultName)}&key=${encodeURIComponent(credKey)}`);
