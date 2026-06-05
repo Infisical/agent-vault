@@ -1,31 +1,31 @@
 ---
 title: "OAuth for Claude Code"
-description: "Manage Claude Code's OAuth tokens through Agent Vault so agent containers never hold real credentials."
+description: "Manage Claude Code's OAuth tokens through Agent Vault so agents never hold real credentials."
 ---
 
-This guide sets up Agent Vault to manage Claude Code's Anthropic OAuth tokens. The agent container runs with a placeholder credential file while Agent Vault injects the real token and handles refresh automatically.
+This guide sets up Agent Vault to manage Claude Code's Anthropic OAuth tokens. The machine where the agent runs has only a placeholder credential file while Agent Vault injects the real token and handles refresh automatically.
 
 ## Prerequisites
 
-- A running Agent Vault instance with the [dashboard](/quickstart/claude-code) accessible.
-- Claude Code logged in on a separate machine (the "source" machine) where you have access to `~/.claude/.credentials.json`.
+- A running [Agent Vault instance](/self-hosting/overview).
+- Claude Code logged in on a machine where you have access to `~/.claude/.credentials.json`.
 - An agent token from Agent Vault with **proxy** role on a vault.
 
-## 1. Get the tokens from your source machine
+## 1. Get the tokens
 
-On the machine where Claude Code is already logged in, copy the tokens:
+On the machine where Claude Code is already logged in, view the credentials file:
 
 ```bash
 cat ~/.claude/.credentials.json
 ```
 
-You'll need `accessToken`, `refreshToken`, and the full file structure for later.
+You'll need the `accessToken` and `refreshToken` values from this file.
 
 ## 2. Create the OAuth credential
 
 In the Agent Vault dashboard, go to your vault's **Credentials** tab and click **Add credential**.
 
-1. Switch to **OAuth** → **Paste tokens**
+1. Switch to **OAuth** then **Paste tokens**
 2. Fill in:
 
 | Field | Value |
@@ -34,14 +34,16 @@ In the Agent Vault dashboard, go to your vault's **Credentials** tab and click *
 | Token URL | `https://console.anthropic.com/v1/oauth/token` |
 | Client ID | `9d1c250a-e61b-44d9-88ed-5944d1962f5e` |
 | Auth Method | None |
-| Access Token | *(paste from step 1)* |
-| Refresh Token | *(paste from step 1)* |
+| Access Token | *(paste `accessToken` from step 1)* |
+| Refresh Token | *(paste `refreshToken` from step 1)* |
 
-3. Click **Add**. The refresh token is validated immediately against Anthropic's token endpoint.
+The Client ID `9d1c250a-e61b-44d9-88ed-5944d1962f5e` is Anthropic's public OAuth client ID used by Claude Code. It is a public client (no client secret), which is why Auth Method is set to **None**.
+
+3. Click **Add**. The refresh token is validated immediately against Anthropic's token endpoint. If validation fails, check that the Client ID and Token URL are correct.
 
 ## 3. Create the services
 
-Claude Code talks to three Anthropic hosts. All three need a service pointing to the same `ANTHROPIC` credential.
+Claude Code communicates with three Anthropic hosts. All three need a service pointing to the same `ANTHROPIC` credential.
 
 In the **Services** tab, add:
 
@@ -51,7 +53,12 @@ In the **Services** tab, add:
 | `claude-platform` | `platform.claude.com` | Bearer | `ANTHROPIC` |
 | `claude-mcp` | `mcp-proxy.anthropic.com` | Bearer | `ANTHROPIC` |
 
-Or an agent can propose all three in a single proposal:
+- `api.anthropic.com` handles the main API (chat, models, settings).
+- `platform.claude.com` handles OAuth validation and token refresh.
+- `mcp-proxy.anthropic.com` handles cloud MCP connectors (Slack, Gmail, Linear, etc.).
+
+<Accordion title="Using a proposal instead">
+If you already have another agent connected to Agent Vault (e.g., using a different LLM provider or an API key), that agent can propose all three services and the OAuth credential in a single proposal:
 
 ```json
 {
@@ -75,9 +82,12 @@ Or an agent can propose all three in a single proposal:
 }
 ```
 
-## 4. Set up the agent container
+You approve the proposal and paste your tokens on the approval page.
+</Accordion>
 
-On the container or host where the agent will run, create a placeholder credentials file so Claude Code skips the login screen:
+## 4. Set up the agent machine
+
+On the machine where the agent will run, create a placeholder credentials file so Claude Code skips the login screen:
 
 ```bash
 mkdir -p ~/.claude
@@ -92,19 +102,11 @@ cat > ~/.claude/.credentials.json << 'EOF'
     "rateLimitTier": "default_claude_max_5x"
   }
 }
-EOF
 ```
 
-Copy the `scopes`, `subscriptionType`, and `rateLimitTier` values from your source machine's `~/.claude/.credentials.json` to match your account type.
+Adjust the `scopes`, `subscriptionType`, and `rateLimitTier` values to match your source machine's `~/.claude/.credentials.json`.
 
-You also need the `.claude.json` onboarding file from your source machine. Copy it to the agent container:
-
-```bash
-# On the source machine
-scp ~/.claude.json agent-host:~/.claude.json
-```
-
-This file contains `hasCompletedOnboarding: true` and cached config that Claude Code needs to skip the initial setup flow.
+You also need the `.claude.json` onboarding file from the source machine. Copy it to `~/.claude.json` on the agent machine. This file contains `hasCompletedOnboarding: true` and cached config that Claude Code needs to skip the initial setup flow.
 
 ## 5. Run Claude Code
 
@@ -115,7 +117,7 @@ export AGENT_VAULT_VAULT="default"
 agent-vault run -- claude
 ```
 
-Claude Code starts with the placeholder token. The proxy intercepts every API call to `api.anthropic.com`, `platform.claude.com`, and `mcp-proxy.anthropic.com`, replaces the placeholder with the real token from Agent Vault, and forwards to the upstream.
+Claude Code starts with the placeholder token. The proxy intercepts every API call to `api.anthropic.com`, `platform.claude.com`, and `mcp-proxy.anthropic.com`, replaces `__PLACEHOLDER__` with the real token from Agent Vault, and forwards to the upstream.
 
 ## How refresh works
 
@@ -125,11 +127,11 @@ If the refresh token itself is revoked (e.g., you deauthorize the app on Anthrop
 
 ## Verify
 
-Confirm the placeholder is still on the agent container:
+Confirm the placeholder is still on the agent machine:
 
 ```bash
 cat ~/.claude/.credentials.json
 # Should show "__PLACEHOLDER__" as the accessToken
 ```
 
-Check the Agent Vault logs tab to see proxied requests with `status: 200` and `matched_service: anthropic-api`.
+Check the Agent Vault **Logs** tab to see proxied requests with `status: 200` and `matched_service: anthropic-api`.
