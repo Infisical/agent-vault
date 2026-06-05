@@ -91,10 +91,12 @@ func (s *Server) handleOAuthConnect(w http.ResponseWriter, r *http.Request) {
 	_, _ = s.store.ExpireCredentialOAuthStates(ctx, time.Now())
 
 	// Handle client_secret: sentinel = keep current, empty = clear, other = set new.
+	// Only reuse stored secret when the provider config hasn't changed
+	// to prevent exfiltration via a new token_url.
 	var clientSecretCT, clientSecretNonce []byte
 	if req.ClientSecret == oauthSecretSentinel {
 		existing, _ := s.store.GetCredentialOAuth(ctx, ns.ID, req.Key)
-		if existing != nil {
+		if existing != nil && existing.TokenURL == req.TokenURL {
 			clientSecretCT = existing.ClientSecretCT
 			clientSecretNonce = existing.ClientSecretNonce
 		}
