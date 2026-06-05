@@ -1,6 +1,6 @@
 {
   "name": "@infisical/agent-vault-sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The official TypeScript SDK for Agent Vault",
   "type": "module",
   "main": "./dist/index.cjs",

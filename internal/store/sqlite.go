@@ -45,14 +45,6 @@ func nowUTC() string {
 	return time.Now().UTC().Format(time.DateTime)
 }
 
-// nullableInt returns nil for zero/negative ints, enabling SQL NULL inserts.
-func nullableInt(n int) interface{} {
-	if n <= 0 {
-		return nil
-	}
-	return n
-}
-
 // nullableString returns nil for empty strings, enabling SQL NULL inserts.
 func nullableString(s string) interface{} {
 	if s == "" {
@@ -153,6 +145,224 @@ func (s *SQLiteStore) GetAllSettings(ctx context.Context) (map[string]string, er
 
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
+}
+
+// --- Vault Settings ---
+
+func (s *SQLiteStore) GetVaultSetting(ctx context.Context, vaultID, key string) (string, error) {
+	var value string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT value FROM vault_settings WHERE vault_id = ? AND key = ?`,
+		vaultID, key).Scan(&value)
+	if err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+func (s *SQLiteStore) SetVaultSetting(ctx context.Context, vaultID, key, value string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO vault_settings (vault_id, key, value, updated_at) VALUES (?, ?, ?, datetime('now'))
+		 ON CONFLICT(vault_id, key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
+		vaultID, key, value)
+	return err
+}
+
+func (s *SQLiteStore) DeleteVaultSetting(ctx context.Context, vaultID, key string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM vault_settings WHERE vault_id = ? AND key = ?`,
+		vaultID, key)
+	return err
+}
+
+// --- External Credential Stores ---
+
+// CreateExternalVault atomically commits the vault, default broker config,
+// credential-store config, initial encrypted snapshot, and admin grant.
+func (s *SQLiteStore) CreateExternalVault(ctx context.Context, p CreateExternalVaultParams) (*Vault, error) {
+	if p.Name == "" || p.Kind == "" || p.ConfigJSON == "" {
+		return nil, fmt.Errorf("CreateExternalVault: name, kind, and config required")
+	}
+	if p.CreatorActorID == "" || p.CreatorActorType == "" {
+		return nil, fmt.Errorf("CreateExternalVault: creator actor required")
+	}
+
+	vaultID := newUUID()
+	bcID := newUUID()
+	now := time.Now().UTC()
+	nowStr := now.Format(time.DateTime)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO vaults (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+		vaultID, p.Name, nowStr, nowStr,
+	); err != nil {
+		return nil, fmt.Errorf("creating vault: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO broker_configs (id, vault_id, services_json, created_at, updated_at) VALUES (?, ?, '[]', ?, ?)",
+		bcID, vaultID, nowStr, nowStr,
+	); err != nil {
+		return nil, fmt.Errorf("creating broker config: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO vault_credential_stores
+		   (vault_id, kind, config_json, poll_interval_seconds, last_synced_at, last_sync_status, last_sync_error, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+		vaultID, p.Kind, p.ConfigJSON, p.PollIntervalSeconds, nowStr, SyncStatusOK, nowStr, nowStr,
+	); err != nil {
+		return nil, fmt.Errorf("creating credential store: %w", err)
+	}
+
+	for _, item := range p.Credentials {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO credentials (id, vault_id, key, type, ciphertext, nonce, created_at, updated_at)
+			 VALUES (?, ?, ?, 'static', ?, ?, ?, ?)`,
+			newUUID(), vaultID, item.Key, item.Ciphertext, item.Nonce, nowStr, nowStr,
+		); err != nil {
+			return nil, fmt.Errorf("inserting credential %q: %w", item.Key, err)
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO vault_grants (actor_id, actor_type, vault_id, role, created_at)
+		 VALUES (?, ?, ?, 'admin', ?)`,
+		p.CreatorActorID, p.CreatorActorType, vaultID, nowStr,
+	); err != nil {
+		return nil, fmt.Errorf("granting admin: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+
+	return &Vault{ID: vaultID, Name: p.Name, CreatedAt: now, UpdatedAt: now}, nil
+}
+
+func (s *SQLiteStore) GetVaultCredentialStore(ctx context.Context, vaultID string) (*VaultCredentialStore, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT vault_id, kind, config_json, poll_interval_seconds,
+		        last_synced_at, last_sync_status, last_sync_error,
+		        created_at, updated_at
+		   FROM vault_credential_stores WHERE vault_id = ?`,
+		vaultID,
+	)
+	return scanVaultCredentialStore(row)
+}
+
+// ListVaultCredentialStores returns every external-store row, ordered by
+// vault_id for stable iteration.
+func (s *SQLiteStore) ListVaultCredentialStores(ctx context.Context) ([]VaultCredentialStore, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT vault_id, kind, config_json, poll_interval_seconds,
+		        last_synced_at, last_sync_status, last_sync_error,
+		        created_at, updated_at
+		   FROM vault_credential_stores ORDER BY vault_id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing credential stores: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []VaultCredentialStore
+	for rows.Next() {
+		v, err := scanVaultCredentialStore(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *v)
+	}
+	return out, rows.Err()
+}
+
+// UpdateVaultCredentialStoreHealth returns sql.ErrNoRows when the row is
+// gone (vault deleted mid-sync); callers should treat that as benign.
+func (s *SQLiteStore) UpdateVaultCredentialStoreHealth(ctx context.Context, vaultID, status, errMsg string, syncedAt time.Time) error {
+	syncedStr := syncedAt.UTC().Format(time.DateTime)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE vault_credential_stores
+		    SET last_synced_at = ?, last_sync_status = ?, last_sync_error = ?, updated_at = ?
+		  WHERE vault_id = ?`,
+		syncedStr, status, nullableString(errMsg), nowUTC(), vaultID,
+	)
+	if err != nil {
+		return fmt.Errorf("updating credential store health: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// ReplaceVaultCredentials atomically wipes and rewrites the vault's credentials
+// in one transaction; empty items clears the vault.
+func (s *SQLiteStore) ReplaceVaultCredentials(ctx context.Context, vaultID string, items []EncryptedKV) error {
+	nowStr := nowUTC()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM credentials WHERE vault_id = ? AND type = 'static'", vaultID); err != nil {
+		return fmt.Errorf("clearing credentials: %w", err)
+	}
+	if len(items) > 0 {
+		stmt, err := tx.PrepareContext(ctx,
+			`INSERT OR IGNORE INTO credentials (id, vault_id, key, type, ciphertext, nonce, created_at, updated_at)
+			   VALUES (?, ?, ?, 'static', ?, ?, ?, ?)`)
+		if err != nil {
+			return fmt.Errorf("preparing credential insert: %w", err)
+		}
+		defer func() { _ = stmt.Close() }()
+		for _, item := range items {
+			if _, err := stmt.ExecContext(ctx,
+				newUUID(), vaultID, item.Key, item.Ciphertext, item.Nonce, nowStr, nowStr,
+			); err != nil {
+				return fmt.Errorf("inserting credential %q: %w", item.Key, err)
+			}
+		}
+	}
+
+	return tx.Commit()
+}
+
+// rowScanner unifies *sql.Row and *sql.Rows so one scan func serves both.
+type rowScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanVaultCredentialStore(row rowScanner) (*VaultCredentialStore, error) {
+	var v VaultCredentialStore
+	var lastSyncedAt sql.NullString
+	var lastSyncStatus sql.NullString
+	var lastSyncErr sql.NullString
+	var createdAt, updatedAt string
+	if err := row.Scan(&v.VaultID, &v.Kind, &v.ConfigJSON, &v.PollIntervalSeconds,
+		&lastSyncedAt, &lastSyncStatus, &lastSyncErr, &createdAt, &updatedAt); err != nil {
+		return nil, err
+	}
+	if lastSyncedAt.Valid && lastSyncedAt.String != "" {
+		t, _ := time.Parse(time.DateTime, lastSyncedAt.String)
+		v.LastSyncedAt = &t
+	}
+	if lastSyncStatus.Valid {
+		v.LastSyncStatus = lastSyncStatus.String
+	}
+	if lastSyncErr.Valid {
+		v.LastSyncError = lastSyncErr.String
+	}
+	v.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
+	v.UpdatedAt, _ = time.Parse(time.DateTime, updatedAt)
+	return &v, nil
 }
 
 // --- Vaults ---
@@ -286,8 +496,8 @@ func (s *SQLiteStore) SetCredential(ctx context.Context, vaultID, key string, ci
 	nowStr := now.Format(time.DateTime)
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO credentials (id, vault_id, key, ciphertext, nonce, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO credentials (id, vault_id, key, type, ciphertext, nonce, created_at, updated_at)
+		 VALUES (?, ?, ?, 'static', ?, ?, ?, ?)
 		 ON CONFLICT(vault_id, key) DO UPDATE SET
 		   ciphertext = excluded.ciphertext,
 		   nonce = excluded.nonce,
@@ -299,7 +509,7 @@ func (s *SQLiteStore) SetCredential(ctx context.Context, vaultID, key string, ci
 	}
 
 	return &Credential{
-		ID: id, VaultID: vaultID, Key: key,
+		ID: id, VaultID: vaultID, Key: key, Type: "static",
 		Ciphertext: ciphertext, Nonce: nonce,
 		CreatedAt: now, UpdatedAt: now,
 	}, nil
@@ -307,7 +517,7 @@ func (s *SQLiteStore) SetCredential(ctx context.Context, vaultID, key string, ci
 
 func (s *SQLiteStore) GetCredential(ctx context.Context, vaultID, key string) (*Credential, error) {
 	row := s.db.QueryRowContext(ctx,
-		"SELECT id, vault_id, key, ciphertext, nonce, created_at, updated_at FROM credentials WHERE vault_id = ? AND key = ?",
+		"SELECT id, vault_id, key, type, ciphertext, nonce, created_at, updated_at FROM credentials WHERE vault_id = ? AND key = ?",
 		vaultID, key,
 	)
 	return scanCredential(row)
@@ -315,7 +525,7 @@ func (s *SQLiteStore) GetCredential(ctx context.Context, vaultID, key string) (*
 
 func (s *SQLiteStore) ListCredentials(ctx context.Context, vaultID string) ([]Credential, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT id, vault_id, key, ciphertext, nonce, created_at, updated_at FROM credentials WHERE vault_id = ? ORDER BY key",
+		"SELECT id, vault_id, key, type, ciphertext, nonce, created_at, updated_at FROM credentials WHERE vault_id = ? ORDER BY key",
 		vaultID,
 	)
 	if err != nil {
@@ -327,7 +537,7 @@ func (s *SQLiteStore) ListCredentials(ctx context.Context, vaultID string) ([]Cr
 	for rows.Next() {
 		var cred Credential
 		var createdAt, updatedAt string
-		if err := rows.Scan(&cred.ID, &cred.VaultID, &cred.Key, &cred.Ciphertext, &cred.Nonce, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&cred.ID, &cred.VaultID, &cred.Key, &cred.Type, &cred.Ciphertext, &cred.Nonce, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scanning credential: %w", err)
 		}
 		cred.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
@@ -347,6 +557,274 @@ func (s *SQLiteStore) DeleteCredential(ctx context.Context, vaultID, key string)
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// --- OAuth Credentials ---
+
+func (s *SQLiteStore) GetCredentialOAuth(ctx context.Context, vaultID, key string) (*CredentialOAuth, error) {
+	var co CredentialOAuth
+	var authURL, scopes, scopeSep, tokenAuthMethod, tokenExpiresAt sql.NullString
+	var connectedAt, lastRefreshedAt, lastRefreshError, lastRefreshErrorAt sql.NullString
+	var createdAt, updatedAt string
+	var disablePKCE int
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT vault_id, credential_key, authorization_url, token_url, client_id,
+		   client_secret_ct, client_secret_nonce, scopes, scope_separator, disable_pkce,
+		   token_auth_method, refresh_token_ct, refresh_token_nonce, token_expires_at,
+		   connected_at, last_refreshed_at, last_refresh_error, last_refresh_error_at,
+		   created_at, updated_at
+		 FROM credential_oauth WHERE vault_id = ? AND credential_key = ?`,
+		vaultID, key,
+	).Scan(
+		&co.VaultID, &co.CredentialKey, &authURL, &co.TokenURL, &co.ClientID,
+		&co.ClientSecretCT, &co.ClientSecretNonce, &scopes, &scopeSep, &disablePKCE,
+		&tokenAuthMethod, &co.RefreshTokenCT, &co.RefreshTokenNonce, &tokenExpiresAt,
+		&connectedAt, &lastRefreshedAt, &lastRefreshError, &lastRefreshErrorAt,
+		&createdAt, &updatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	co.AuthorizationURL = authURL.String
+	co.Scopes = scopes.String
+	co.ScopeSeparator = scopeSep.String
+	if co.ScopeSeparator == "" {
+		co.ScopeSeparator = " "
+	}
+	co.DisablePKCE = disablePKCE != 0
+	co.TokenAuthMethod = tokenAuthMethod.String
+	if co.TokenAuthMethod == "" {
+		co.TokenAuthMethod = "client_secret_post"
+	}
+	if tokenExpiresAt.Valid {
+		t, _ := time.Parse(time.DateTime, tokenExpiresAt.String)
+		co.TokenExpiresAt = &t
+	}
+	if connectedAt.Valid {
+		t, _ := time.Parse(time.DateTime, connectedAt.String)
+		co.ConnectedAt = &t
+	}
+	if lastRefreshedAt.Valid {
+		t, _ := time.Parse(time.DateTime, lastRefreshedAt.String)
+		co.LastRefreshedAt = &t
+	}
+	co.LastRefreshError = lastRefreshError.String
+	if lastRefreshErrorAt.Valid {
+		t, _ := time.Parse(time.DateTime, lastRefreshErrorAt.String)
+		co.LastRefreshErrorAt = &t
+	}
+	co.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
+	co.UpdatedAt, _ = time.Parse(time.DateTime, updatedAt)
+	return &co, nil
+}
+
+func (s *SQLiteStore) SetCredentialOAuth(ctx context.Context, co *CredentialOAuth) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Ensure parent credentials row exists with type='oauth'.
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO credentials (id, vault_id, key, type, ciphertext, nonce, created_at, updated_at)
+		 VALUES (?, ?, ?, 'oauth', X'', X'', ?, ?)
+		 ON CONFLICT(vault_id, key) DO UPDATE SET
+		   type = 'oauth',
+		   updated_at = excluded.updated_at`,
+		newUUID(), co.VaultID, co.CredentialKey, nowUTC(), nowUTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("ensuring credential row: %w", err)
+	}
+
+	nowStr := nowUTC()
+	disablePKCE := 0
+	if co.DisablePKCE {
+		disablePKCE = 1
+	}
+	tokenAuthMethod := co.TokenAuthMethod
+	if tokenAuthMethod == "" {
+		tokenAuthMethod = "client_secret_post"
+	}
+	scopeSep := co.ScopeSeparator
+	if scopeSep == "" {
+		scopeSep = " "
+	}
+
+	var tokenExpiresAt, connectedAt, lastRefreshedAt, lastRefreshErrorAt interface{}
+	if co.TokenExpiresAt != nil {
+		tokenExpiresAt = co.TokenExpiresAt.UTC().Format(time.DateTime)
+	}
+	if co.ConnectedAt != nil {
+		connectedAt = co.ConnectedAt.UTC().Format(time.DateTime)
+	}
+	if co.LastRefreshedAt != nil {
+		lastRefreshedAt = co.LastRefreshedAt.UTC().Format(time.DateTime)
+	}
+	if co.LastRefreshErrorAt != nil {
+		lastRefreshErrorAt = co.LastRefreshErrorAt.UTC().Format(time.DateTime)
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO credential_oauth (vault_id, credential_key, authorization_url, token_url, client_id,
+		   client_secret_ct, client_secret_nonce, scopes, scope_separator, disable_pkce, token_auth_method,
+		   refresh_token_ct, refresh_token_nonce, token_expires_at,
+		   connected_at, last_refreshed_at, last_refresh_error, last_refresh_error_at,
+		   created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(vault_id, credential_key) DO UPDATE SET
+		   authorization_url = excluded.authorization_url,
+		   token_url = excluded.token_url,
+		   client_id = excluded.client_id,
+		   client_secret_ct = excluded.client_secret_ct,
+		   client_secret_nonce = excluded.client_secret_nonce,
+		   scopes = excluded.scopes,
+		   scope_separator = excluded.scope_separator,
+		   disable_pkce = excluded.disable_pkce,
+		   token_auth_method = excluded.token_auth_method,
+		   refresh_token_ct = CASE WHEN excluded.token_url = credential_oauth.token_url
+		     THEN COALESCE(excluded.refresh_token_ct, credential_oauth.refresh_token_ct)
+		     ELSE excluded.refresh_token_ct END,
+		   refresh_token_nonce = CASE WHEN excluded.token_url = credential_oauth.token_url
+		     THEN COALESCE(excluded.refresh_token_nonce, credential_oauth.refresh_token_nonce)
+		     ELSE excluded.refresh_token_nonce END,
+		   token_expires_at = CASE WHEN excluded.token_url = credential_oauth.token_url
+		     THEN COALESCE(excluded.token_expires_at, credential_oauth.token_expires_at)
+		     ELSE excluded.token_expires_at END,
+		   connected_at = CASE WHEN excluded.token_url = credential_oauth.token_url
+		     THEN COALESCE(excluded.connected_at, credential_oauth.connected_at)
+		     ELSE excluded.connected_at END,
+		   last_refreshed_at = CASE WHEN excluded.token_url = credential_oauth.token_url
+		     THEN COALESCE(excluded.last_refreshed_at, credential_oauth.last_refreshed_at)
+		     ELSE excluded.last_refreshed_at END,
+		   last_refresh_error = excluded.last_refresh_error,
+		   last_refresh_error_at = excluded.last_refresh_error_at,
+		   updated_at = excluded.updated_at`,
+		co.VaultID, co.CredentialKey, nullableString(co.AuthorizationURL), co.TokenURL, co.ClientID,
+		co.ClientSecretCT, co.ClientSecretNonce, nullableString(co.Scopes), scopeSep, disablePKCE, tokenAuthMethod,
+		co.RefreshTokenCT, co.RefreshTokenNonce, tokenExpiresAt,
+		connectedAt, lastRefreshedAt, nullableString(co.LastRefreshError), lastRefreshErrorAt,
+		nowStr, nowStr,
+	)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) UpdateCredentialOAuthTokens(ctx context.Context, vaultID, key string, accessCT, accessNonce, refreshCT, refreshNonce []byte, expiresAt *time.Time) error {
+	nowStr := nowUTC()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Update the access token in the credentials table.
+	_, err = tx.ExecContext(ctx,
+		`UPDATE credentials SET ciphertext = ?, nonce = ?, updated_at = ?
+		 WHERE vault_id = ? AND key = ?`,
+		accessCT, accessNonce, nowStr, vaultID, key,
+	)
+	if err != nil {
+		return fmt.Errorf("updating access token: %w", err)
+	}
+
+	// Update refresh state in the companion table.
+	var expiresAtStr interface{}
+	if expiresAt != nil {
+		expiresAtStr = expiresAt.UTC().Format(time.DateTime)
+	}
+
+	if refreshCT != nil {
+		_, err = tx.ExecContext(ctx,
+			`UPDATE credential_oauth SET
+			   refresh_token_ct = ?, refresh_token_nonce = ?,
+			   token_expires_at = ?, connected_at = COALESCE(connected_at, ?),
+			   last_refreshed_at = ?, last_refresh_error = NULL, last_refresh_error_at = NULL,
+			   updated_at = ?
+			 WHERE vault_id = ? AND credential_key = ?`,
+			refreshCT, refreshNonce, expiresAtStr, nowStr, nowStr, nowStr, vaultID, key,
+		)
+	} else {
+		_, err = tx.ExecContext(ctx,
+			`UPDATE credential_oauth SET
+			   token_expires_at = ?, connected_at = COALESCE(connected_at, ?),
+			   last_refreshed_at = ?, last_refresh_error = NULL, last_refresh_error_at = NULL,
+			   updated_at = ?
+			 WHERE vault_id = ? AND credential_key = ?`,
+			expiresAtStr, nowStr, nowStr, nowStr, vaultID, key,
+		)
+	}
+	if err != nil {
+		return fmt.Errorf("updating oauth refresh state: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) UpdateCredentialOAuthError(ctx context.Context, vaultID, key, errMsg string) error {
+	nowStr := nowUTC()
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE credential_oauth SET
+		   last_refresh_error = ?, last_refresh_error_at = ?, updated_at = ?
+		 WHERE vault_id = ? AND credential_key = ?`,
+		errMsg, nowStr, nowStr, vaultID, key,
+	)
+	return err
+}
+
+// --- OAuth States ---
+
+func (s *SQLiteStore) CreateCredentialOAuthState(ctx context.Context, state *CredentialOAuthState) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO credential_oauth_states (id, state_hash, code_verifier, vault_id, credential_key, redirect_url, created_at, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		state.ID, state.StateHash, state.CodeVerifier, state.VaultID, state.CredentialKey,
+		nullableString(state.RedirectURL),
+		state.CreatedAt.UTC().Format(time.DateTime),
+		state.ExpiresAt.UTC().Format(time.DateTime),
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetCredentialOAuthStateByHash(ctx context.Context, stateHash string) (*CredentialOAuthState, error) {
+	var st CredentialOAuthState
+	var redirectURL sql.NullString
+	var createdAt, expiresAt string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, state_hash, code_verifier, vault_id, credential_key, redirect_url, created_at, expires_at
+		 FROM credential_oauth_states WHERE state_hash = ?`,
+		stateHash,
+	).Scan(&st.ID, &st.StateHash, &st.CodeVerifier, &st.VaultID, &st.CredentialKey, &redirectURL, &createdAt, &expiresAt)
+	if err != nil {
+		return nil, err
+	}
+	st.RedirectURL = redirectURL.String
+	st.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
+	st.ExpiresAt, _ = time.Parse(time.DateTime, expiresAt)
+	return &st, nil
+}
+
+func (s *SQLiteStore) DeleteCredentialOAuthState(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM credential_oauth_states WHERE id = ?", id)
+	return err
+}
+
+func (s *SQLiteStore) ExpireCredentialOAuthStates(ctx context.Context, before time.Time) (int, error) {
+	res, err := s.db.ExecContext(ctx,
+		"DELETE FROM credential_oauth_states WHERE expires_at < ?",
+		before.UTC().Format(time.DateTime),
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // --- Users ---
@@ -530,6 +1008,16 @@ func (s *SQLiteStore) DeleteUser(ctx context.Context, userID string) error {
 	// Clean up vault grants (no FK cascade since the unified table uses generic actor_id).
 	if _, err := tx.ExecContext(ctx, "DELETE FROM vault_grants WHERE actor_id = ?", userID); err != nil {
 		return fmt.Errorf("cleaning up vault grants: %w", err)
+	}
+	// Revoke scoped tokens this user minted on behalf of others. Without
+	// this, an orphan token keeps proxying upstream APIs until its TTL
+	// expires (up to scopedSessionMaxTTL).
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM sessions
+		 WHERE created_by_actor_id = ? AND created_by_actor_type = 'user'`,
+		userID,
+	); err != nil {
+		return fmt.Errorf("cleaning up scoped tokens minted by user: %w", err)
 	}
 	return tx.Commit()
 }
@@ -761,32 +1249,124 @@ func (s *SQLiteStore) CreateUserSession(ctx context.Context, p CreateUserSession
 	}, nil
 }
 
-func (s *SQLiteStore) CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*Session, error) {
+func (s *SQLiteStore) CreateScopedSession(ctx context.Context, p CreateScopedSessionParams) (*Session, error) {
 	rawToken := newSessionToken()
 	tokenHash := hashSessionToken(rawToken)
+	publicID := newPublicID()
 	now := time.Now().UTC()
 
 	var expiresAtStr sql.NullString
-	if expiresAt != nil {
-		expiresAtStr = sql.NullString{String: expiresAt.UTC().Format(time.DateTime), Valid: true}
+	if p.ExpiresAt != nil {
+		expiresAtStr = sql.NullString{String: p.ExpiresAt.UTC().Format(time.DateTime), Valid: true}
 	}
 
 	_, err := s.db.ExecContext(ctx,
-		"INSERT INTO sessions (id, vault_id, vault_role, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
-		tokenHash, vaultID, vaultRole, expiresAtStr, now.Format(time.DateTime),
+		`INSERT INTO sessions
+		   (id, vault_id, vault_role, expires_at, created_at,
+		    public_id, label, created_by_actor_id, created_by_actor_type)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		tokenHash, p.VaultID, p.VaultRole, expiresAtStr, now.Format(time.DateTime),
+		publicID,
+		nullableString(p.Label),
+		nullableString(p.CreatedByActorID),
+		nullableString(p.CreatedByActorType),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating scoped session: %w", err)
 	}
 
-	return &Session{ID: rawToken, VaultID: vaultID, VaultRole: vaultRole, ExpiresAt: utcTimePtr(expiresAt), CreatedAt: now}, nil
+	return &Session{
+		ID:                 rawToken,
+		VaultID:            p.VaultID,
+		VaultRole:          p.VaultRole,
+		ExpiresAt:          utcTimePtr(p.ExpiresAt),
+		CreatedAt:          now,
+		PublicID:           publicID,
+		Label:              p.Label,
+		CreatedByActorID:   p.CreatedByActorID,
+		CreatedByActorType: p.CreatedByActorType,
+	}, nil
+}
+
+// ListScopedSessionsByVault returns active scoped tokens for the vault,
+// most recent first. Stale rows past their absolute expiry are filtered
+// in SQL; rows with a NULL public_id (legacy scoped rows from before
+// migration 044) are excluded so the UI can revoke every row it shows.
+func (s *SQLiteStore) ListScopedSessionsByVault(ctx context.Context, vaultID string) ([]Session, error) {
+	if vaultID == "" {
+		return nil, fmt.Errorf("ListScopedSessionsByVault: vaultID is required")
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT vault_role, expires_at, created_at, public_id,
+		        label, created_by_actor_id, created_by_actor_type
+		   FROM sessions
+		  WHERE vault_id = ?
+		    AND public_id IS NOT NULL
+		    AND user_id IS NULL
+		    AND agent_id IS NULL
+		    AND (expires_at IS NULL OR expires_at > datetime('now'))
+		  ORDER BY created_at DESC`,
+		vaultID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing scoped sessions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []Session
+	for rows.Next() {
+		var sess Session
+		var vaultRole, expiresAt, publicID sql.NullString
+		var label, createdByActorID, createdByActorType sql.NullString
+		var createdAt string
+		if err := rows.Scan(&vaultRole, &expiresAt, &createdAt, &publicID,
+			&label, &createdByActorID, &createdByActorType); err != nil {
+			return nil, fmt.Errorf("scanning scoped session: %w", err)
+		}
+		sess.VaultID = vaultID
+		sess.VaultRole = vaultRole.String
+		sess.PublicID = publicID.String
+		sess.Label = label.String
+		sess.CreatedByActorID = createdByActorID.String
+		sess.CreatedByActorType = createdByActorType.String
+		if expiresAt.Valid {
+			t, _ := time.Parse(time.DateTime, expiresAt.String)
+			sess.ExpiresAt = &t
+		}
+		sess.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
+		out = append(out, sess)
+	}
+	return out, rows.Err()
+}
+
+// RevokeScopedSession deletes one scoped session by (vaultID, publicID).
+// Returns sql.ErrNoRows when no matching row exists. Vault scoping in the
+// WHERE clause prevents one vault's admin from revoking another vault's
+// token by guessing a public_id.
+func (s *SQLiteStore) RevokeScopedSession(ctx context.Context, vaultID, publicID string) error {
+	if vaultID == "" || publicID == "" {
+		return sql.ErrNoRows
+	}
+	res, err := s.db.ExecContext(ctx,
+		"DELETE FROM sessions WHERE vault_id = ? AND public_id = ? AND user_id IS NULL AND agent_id IS NULL",
+		vaultID, publicID,
+	)
+	if err != nil {
+		return fmt.Errorf("revoking scoped session: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *SQLiteStore) GetSession(ctx context.Context, rawToken string) (*Session, error) {
 	tokenHash := hashSessionToken(rawToken)
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, user_id, vault_id, agent_id, vault_role, expires_at, created_at,
-		        last_used_at, idle_ttl_seconds, device_label, last_ip, last_user_agent, public_id
+		        last_used_at, idle_ttl_seconds, device_label, last_ip, last_user_agent, public_id,
+		        label, created_by_actor_id, created_by_actor_type
 		 FROM sessions WHERE id = ?`, tokenHash,
 	)
 
@@ -794,10 +1374,12 @@ func (s *SQLiteStore) GetSession(ctx context.Context, rawToken string) (*Session
 	var storedID string
 	var userID, vaultID, agentID, vaultRole, expiresAt sql.NullString
 	var lastUsedAt, deviceLabel, lastIP, lastUserAgent, publicID sql.NullString
+	var label, createdByActorID, createdByActorType sql.NullString
 	var idleSecs sql.NullInt64
 	var createdAt string
 	if err := row.Scan(&storedID, &userID, &vaultID, &agentID, &vaultRole, &expiresAt, &createdAt,
-		&lastUsedAt, &idleSecs, &deviceLabel, &lastIP, &lastUserAgent, &publicID); err != nil {
+		&lastUsedAt, &idleSecs, &deviceLabel, &lastIP, &lastUserAgent, &publicID,
+		&label, &createdByActorID, &createdByActorType); err != nil {
 		return nil, err
 	}
 	// Return the raw token as ID (not the hash) so callers can reference it.
@@ -822,6 +1404,9 @@ func (s *SQLiteStore) GetSession(ctx context.Context, rawToken string) (*Session
 	sess.LastIP = lastIP.String
 	sess.LastUserAgent = lastUserAgent.String
 	sess.PublicID = publicID.String
+	sess.Label = label.String
+	sess.CreatedByActorID = createdByActorID.String
+	sess.CreatedByActorType = createdByActorType.String
 	return &sess, nil
 }
 
@@ -1232,7 +1817,7 @@ func (s *SQLiteStore) GetProposalCredentials(ctx context.Context, vaultID string
 	return creds, rows.Err()
 }
 
-func (s *SQLiteStore) ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string) error {
+func (s *SQLiteStore) ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []OAuthCredentialConfig) error {
 	nowStr := nowUTC()
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1250,12 +1835,12 @@ func (s *SQLiteStore) ApplyProposal(ctx context.Context, vaultID string, proposa
 		return fmt.Errorf("updating broker config: %w", err)
 	}
 
-	// 2. Upsert each credential.
+	// 2. Upsert each static credential.
 	for key, enc := range credentials {
 		id := newUUID()
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO credentials (id, vault_id, key, ciphertext, nonce, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)
+			`INSERT INTO credentials (id, vault_id, key, type, ciphertext, nonce, created_at, updated_at)
+			 VALUES (?, ?, ?, 'static', ?, ?, ?, ?)
 			 ON CONFLICT(vault_id, key) DO UPDATE SET
 			   ciphertext = excluded.ciphertext,
 			   nonce = excluded.nonce,
@@ -1264,6 +1849,70 @@ func (s *SQLiteStore) ApplyProposal(ctx context.Context, vaultID string, proposa
 		)
 		if err != nil {
 			return fmt.Errorf("upserting credential %q: %w", key, err)
+		}
+	}
+
+	// 2b. Upsert each OAuth credential config.
+	for _, oc := range oauthConfigs {
+		id := newUUID()
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO credentials (id, vault_id, key, type, ciphertext, nonce, created_at, updated_at)
+			 VALUES (?, ?, ?, 'oauth', X'', X'', ?, ?)
+			 ON CONFLICT(vault_id, key) DO UPDATE SET
+			   type = 'oauth',
+			   updated_at = excluded.updated_at`,
+			id, vaultID, oc.Key, nowStr, nowStr,
+		)
+		if err != nil {
+			return fmt.Errorf("upserting oauth credential %q: %w", oc.Key, err)
+		}
+
+		disablePKCE := 0
+		if oc.DisablePKCE {
+			disablePKCE = 1
+		}
+		tokenAuthMethod := oc.TokenAuthMethod
+		if tokenAuthMethod == "" {
+			tokenAuthMethod = "client_secret_post"
+		}
+		scopeSep := oc.ScopeSeparator
+		if scopeSep == "" {
+			scopeSep = " "
+		}
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO credential_oauth (vault_id, credential_key, authorization_url, token_url, client_id,
+			   client_secret_ct, client_secret_nonce, scopes, scope_separator, disable_pkce, token_auth_method,
+			   created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(vault_id, credential_key) DO UPDATE SET
+			   authorization_url = excluded.authorization_url,
+			   token_url = excluded.token_url,
+			   client_id = excluded.client_id,
+			   client_secret_ct = CASE WHEN excluded.token_url = credential_oauth.token_url
+			     THEN COALESCE(excluded.client_secret_ct, credential_oauth.client_secret_ct)
+			     ELSE excluded.client_secret_ct END,
+			   client_secret_nonce = CASE WHEN excluded.token_url = credential_oauth.token_url
+			     THEN COALESCE(excluded.client_secret_nonce, credential_oauth.client_secret_nonce)
+			     ELSE excluded.client_secret_nonce END,
+			   scopes = excluded.scopes,
+			   scope_separator = excluded.scope_separator,
+			   disable_pkce = excluded.disable_pkce,
+			   token_auth_method = excluded.token_auth_method,
+			   refresh_token_ct = CASE WHEN excluded.token_url = credential_oauth.token_url
+			     THEN credential_oauth.refresh_token_ct ELSE NULL END,
+			   refresh_token_nonce = CASE WHEN excluded.token_url = credential_oauth.token_url
+			     THEN credential_oauth.refresh_token_nonce ELSE NULL END,
+			   token_expires_at = CASE WHEN excluded.token_url = credential_oauth.token_url
+			     THEN credential_oauth.token_expires_at ELSE NULL END,
+			   connected_at = CASE WHEN excluded.token_url = credential_oauth.token_url
+			     THEN credential_oauth.connected_at ELSE NULL END,
+			   updated_at = excluded.updated_at`,
+			vaultID, oc.Key, nullableString(oc.AuthorizationURL), oc.TokenURL, oc.ClientID,
+			oc.ClientSecretCT, oc.ClientSecretNonce, nullableString(oc.Scopes), scopeSep, disablePKCE, tokenAuthMethod,
+			nowStr, nowStr,
+		)
+		if err != nil {
+			return fmt.Errorf("upserting credential_oauth %q: %w", oc.Key, err)
 		}
 	}
 
@@ -1354,7 +2003,7 @@ func scanVault(row *sql.Row) (*Vault, error) {
 func scanCredential(row *sql.Row) (*Credential, error) {
 	var cred Credential
 	var createdAt, updatedAt string
-	if err := row.Scan(&cred.ID, &cred.VaultID, &cred.Key, &cred.Ciphertext, &cred.Nonce, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&cred.ID, &cred.VaultID, &cred.Key, &cred.Type, &cred.Ciphertext, &cred.Nonce, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	cred.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
@@ -1373,432 +2022,6 @@ func scanBrokerConfig(row *sql.Row) (*BrokerConfig, error) {
 	return &bc, nil
 }
 
-// --- Invites ---
-
-func newInviteToken() string { return newPrefixedToken("av_inv_") }
-
-func (s *SQLiteStore) CreateAgentInvite(ctx context.Context, agentName, createdBy string, expiresAt time.Time, sessionTTLSeconds int, agentRole string, vaults []AgentInviteVault) (*Invite, error) {
-	now := time.Now().UTC()
-	token := newInviteToken()
-	if agentRole == "" {
-		agentRole = "member"
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("beginning transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	res, err := tx.ExecContext(ctx,
-		`INSERT INTO invites (token_hash, agent_name, agent_role, status, created_by, created_at, expires_at, session_ttl_seconds)
-		 VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`,
-		hashToken(token), agentName, agentRole, createdBy, now.Format(time.DateTime), expiresAt.UTC().Format(time.DateTime), nullableInt(sessionTTLSeconds),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("inserting invite: %w", err)
-	}
-
-	inviteID, _ := res.LastInsertId()
-
-	// Insert vault pre-assignments.
-	for _, v := range vaults {
-		_, err := tx.ExecContext(ctx,
-			`INSERT INTO agent_invite_vaults (invite_id, vault_id, vault_role) VALUES (?, ?, ?)`,
-			inviteID, v.VaultID, v.VaultRole,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("inserting invite vault: %w", err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing invite: %w", err)
-	}
-
-	return &Invite{
-		ID:                int(inviteID),
-		Token:             token,
-		AgentName:         agentName,
-		AgentRole:         agentRole,
-		Status:            "pending",
-		CreatedBy:         createdBy,
-		SessionTTLSeconds: sessionTTLSeconds,
-		Vaults:            vaults,
-		CreatedAt:         now,
-		ExpiresAt:         expiresAt.UTC(),
-	}, nil
-}
-
-func (s *SQLiteStore) GetInviteByToken(ctx context.Context, token string) (*Invite, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT id, '' as token, agent_name, agent_id, agent_role, session_ttl_seconds,
-		        status, session_id, created_by,
-		        created_at, expires_at, redeemed_at, revoked_at
-		 FROM invites WHERE token_hash = ?`, hashToken(token),
-	)
-	inv, err := scanInvite(row)
-	if err != nil {
-		return nil, err
-	}
-	inv.Vaults, err = s.loadAgentInviteVaults(ctx, inv.ID)
-	if err != nil {
-		return nil, err
-	}
-	return inv, nil
-}
-
-func (s *SQLiteStore) ListInvites(ctx context.Context, status string) ([]Invite, error) {
-	// Lazily expire pending invites that are past their TTL.
-	nowStr := nowUTC()
-	_, _ = s.db.ExecContext(ctx,
-		`UPDATE invites SET status = 'expired' WHERE status = 'pending' AND expires_at <= ?`,
-		nowStr,
-	)
-
-	var rows *sql.Rows
-	var err error
-	if status != "" {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, '' as token, agent_name, agent_id, agent_role, session_ttl_seconds,
-			        status, session_id, created_by,
-			        created_at, expires_at, redeemed_at, revoked_at
-			 FROM invites WHERE status = ? ORDER BY created_at DESC`,
-			status,
-		)
-	} else {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, '' as token, agent_name, agent_id, agent_role, session_ttl_seconds,
-			        status, session_id, created_by,
-			        created_at, expires_at, redeemed_at, revoked_at
-			 FROM invites ORDER BY created_at DESC`,
-		)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("listing invites: %w", err)
-	}
-
-	var invites []Invite
-	for rows.Next() {
-		inv, err := scanInviteRow(rows)
-		if err != nil {
-			_ = rows.Close()
-			return nil, err
-		}
-		invites = append(invites, *inv)
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return nil, err
-	}
-	_ = rows.Close()
-
-	// Load vault pre-assignments after closing rows to avoid connection deadlock.
-	for i := range invites {
-		invites[i].Vaults, _ = s.loadAgentInviteVaults(ctx, invites[i].ID)
-	}
-	return invites, nil
-}
-
-func (s *SQLiteStore) ListInvitesByVault(ctx context.Context, vaultID, status string) ([]Invite, error) {
-	// Lazily expire pending invites that are past their TTL.
-	nowStr := nowUTC()
-	_, _ = s.db.ExecContext(ctx,
-		`UPDATE invites SET status = 'expired' WHERE status = 'pending' AND expires_at <= ?`,
-		nowStr,
-	)
-
-	var rows *sql.Rows
-	var err error
-	if status != "" {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT DISTINCT i.id, '' as token, i.agent_name, i.agent_id, i.agent_role, i.session_ttl_seconds,
-			        i.status, i.session_id, i.created_by,
-			        i.created_at, i.expires_at, i.redeemed_at, i.revoked_at
-			 FROM invites i
-			 JOIN agent_invite_vaults aiv ON aiv.invite_id = i.id
-			 WHERE aiv.vault_id = ? AND i.status = ? ORDER BY i.created_at DESC`,
-			vaultID, status,
-		)
-	} else {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT DISTINCT i.id, '' as token, i.agent_name, i.agent_id, i.agent_role, i.session_ttl_seconds,
-			        i.status, i.session_id, i.created_by,
-			        i.created_at, i.expires_at, i.redeemed_at, i.revoked_at
-			 FROM invites i
-			 JOIN agent_invite_vaults aiv ON aiv.invite_id = i.id
-			 WHERE aiv.vault_id = ? ORDER BY i.created_at DESC`,
-			vaultID,
-		)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("listing invites by vault: %w", err)
-	}
-
-	var invites []Invite
-	for rows.Next() {
-		inv, err := scanInviteRow(rows)
-		if err != nil {
-			_ = rows.Close()
-			return nil, err
-		}
-		invites = append(invites, *inv)
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return nil, err
-	}
-	_ = rows.Close()
-
-	for i := range invites {
-		invites[i].Vaults, _ = s.loadAgentInviteVaults(ctx, invites[i].ID)
-	}
-	return invites, nil
-}
-
-func (s *SQLiteStore) RedeemInvite(ctx context.Context, token, sessionID string) error {
-	nowStr := nowUTC()
-
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE invites SET status = 'redeemed', session_id = ?, redeemed_at = ?
-		 WHERE token_hash = ? AND status = 'pending' AND expires_at > ?`,
-		sessionID, nowStr, hashToken(token), nowStr,
-	)
-	if err != nil {
-		return fmt.Errorf("redeeming invite: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
-}
-
-func (s *SQLiteStore) UpdateInviteSessionID(ctx context.Context, inviteID int, sessionID string) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE invites SET session_id = ? WHERE id = ?`,
-		sessionID, inviteID,
-	)
-	return err
-}
-
-func (s *SQLiteStore) RevokeInvite(ctx context.Context, token string) error {
-	nowStr := nowUTC()
-
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE invites SET status = 'revoked', revoked_at = ?
-		 WHERE token_hash = ? AND status = 'pending'`,
-		nowStr, hashToken(token),
-	)
-	if err != nil {
-		return fmt.Errorf("revoking invite: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
-}
-
-func (s *SQLiteStore) GetInviteByID(ctx context.Context, id int) (*Invite, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT id, '' as token, agent_name, agent_id, agent_role, session_ttl_seconds,
-		        status, session_id, created_by,
-		        created_at, expires_at, redeemed_at, revoked_at
-		 FROM invites WHERE id = ?`, id,
-	)
-	inv, err := scanInvite(row)
-	if err != nil {
-		return nil, err
-	}
-	inv.Vaults, err = s.loadAgentInviteVaults(ctx, inv.ID)
-	if err != nil {
-		return nil, err
-	}
-	return inv, nil
-}
-
-func (s *SQLiteStore) RevokeInviteByID(ctx context.Context, id int) error {
-	nowStr := nowUTC()
-
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE invites SET status = 'revoked', revoked_at = ?
-		 WHERE id = ? AND status = 'pending'`,
-		nowStr, id,
-	)
-	if err != nil {
-		return fmt.Errorf("revoking invite by id: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
-}
-
-func (s *SQLiteStore) CountPendingInvites(ctx context.Context) (int, error) {
-	var count int
-	err := s.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM invites WHERE status = 'pending'",
-	).Scan(&count)
-	return count, err
-}
-
-func (s *SQLiteStore) HasPendingInviteByAgentName(ctx context.Context, name string) (bool, error) {
-	var count int
-	err := s.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM invites WHERE status = 'pending' AND agent_name = ?",
-		name,
-	).Scan(&count)
-	return count > 0, err
-}
-
-func (s *SQLiteStore) GetPendingInviteByAgentName(ctx context.Context, name string) (*Invite, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, '' as token, agent_name, agent_id, agent_role, session_ttl_seconds,
-		        status, session_id, created_by,
-		        created_at, expires_at, redeemed_at, revoked_at
-		 FROM invites WHERE status = 'pending' AND agent_name = ? LIMIT 1`,
-		name,
-	)
-	if err != nil {
-		return nil, err
-	}
-	if !rows.Next() {
-		_ = rows.Close()
-		return nil, sql.ErrNoRows
-	}
-	inv, err := scanInviteRow(rows)
-	_ = rows.Close()
-	if err != nil {
-		return nil, err
-	}
-	vaults, err := s.loadAgentInviteVaults(ctx, inv.ID)
-	if err != nil {
-		return nil, err
-	}
-	inv.Vaults = vaults
-	return inv, nil
-}
-
-func (s *SQLiteStore) AddAgentInviteVault(ctx context.Context, inviteID int, vaultID, role string) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO agent_invite_vaults (invite_id, vault_id, vault_role) VALUES (?, ?, ?)`,
-		inviteID, vaultID, role,
-	)
-	return err
-}
-
-func (s *SQLiteStore) RemoveAgentInviteVault(ctx context.Context, inviteID int, vaultID string) error {
-	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM agent_invite_vaults WHERE invite_id = ? AND vault_id = ?`,
-		inviteID, vaultID,
-	)
-	return err
-}
-
-func (s *SQLiteStore) UpdateAgentInviteVaultRole(ctx context.Context, inviteID int, vaultID, role string) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE agent_invite_vaults SET vault_role = ? WHERE invite_id = ? AND vault_id = ?`,
-		role, inviteID, vaultID,
-	)
-	return err
-}
-
-func (s *SQLiteStore) ExpirePendingInvites(ctx context.Context, before time.Time) (int, error) {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE invites SET status = 'expired'
-		 WHERE status = 'pending' AND expires_at < ?`,
-		before.UTC().Format(time.DateTime),
-	)
-	if err != nil {
-		return 0, fmt.Errorf("expiring invites: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	return int(n), nil
-}
-
-// scanInviteFields populates an Invite from pre-scanned fields.
-func scanInviteFields(inv *Invite, agentID, sessionID sql.NullString, createdAt, expiresAt string, redeemedAt, revokedAt sql.NullString, sessionTTL sql.NullInt64) {
-	inv.AgentID = agentID.String
-	inv.SessionID = sessionID.String
-	inv.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
-	inv.ExpiresAt, _ = time.Parse(time.DateTime, expiresAt)
-	if redeemedAt.Valid {
-		t, _ := time.Parse(time.DateTime, redeemedAt.String)
-		inv.RedeemedAt = &t
-	}
-	if revokedAt.Valid {
-		t, _ := time.Parse(time.DateTime, revokedAt.String)
-		inv.RevokedAt = &t
-	}
-	if sessionTTL.Valid {
-		inv.SessionTTLSeconds = int(sessionTTL.Int64)
-	}
-}
-
-// scanInvite scans a single invite row from a *sql.Row.
-// Expected column order: id, token, agent_name, agent_id, agent_role, session_ttl_seconds,
-//
-//	status, session_id, created_by, created_at, expires_at, redeemed_at, revoked_at
-func scanInvite(row *sql.Row) (*Invite, error) {
-	var inv Invite
-	var agentID, sessionID sql.NullString
-	var createdAt, expiresAt string
-	var redeemedAt, revokedAt sql.NullString
-	var sessionTTL sql.NullInt64
-
-	if err := row.Scan(&inv.ID, &inv.Token, &inv.AgentName, &agentID, &inv.AgentRole, &sessionTTL,
-		&inv.Status, &sessionID, &inv.CreatedBy,
-		&createdAt, &expiresAt, &redeemedAt, &revokedAt); err != nil {
-		return nil, err
-	}
-
-	scanInviteFields(&inv, agentID, sessionID, createdAt, expiresAt, redeemedAt, revokedAt, sessionTTL)
-	return &inv, nil
-}
-
-// scanInviteRow scans a single invite from a *sql.Rows.
-func scanInviteRow(rows *sql.Rows) (*Invite, error) {
-	var inv Invite
-	var agentID, sessionID sql.NullString
-	var createdAt, expiresAt string
-	var redeemedAt, revokedAt sql.NullString
-	var sessionTTL sql.NullInt64
-
-	if err := rows.Scan(&inv.ID, &inv.Token, &inv.AgentName, &agentID, &inv.AgentRole, &sessionTTL,
-		&inv.Status, &sessionID, &inv.CreatedBy,
-		&createdAt, &expiresAt, &redeemedAt, &revokedAt); err != nil {
-		return nil, err
-	}
-
-	scanInviteFields(&inv, agentID, sessionID, createdAt, expiresAt, redeemedAt, revokedAt, sessionTTL)
-	return &inv, nil
-}
-
-// loadAgentInviteVaults loads the vault pre-assignments for an invite.
-func (s *SQLiteStore) loadAgentInviteVaults(ctx context.Context, inviteID int) ([]AgentInviteVault, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT aiv.vault_id, v.name, aiv.vault_role
-		 FROM agent_invite_vaults aiv
-		 JOIN vaults v ON v.id = aiv.vault_id
-		 WHERE aiv.invite_id = ?`, inviteID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("loading invite vaults: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var vaults []AgentInviteVault
-	for rows.Next() {
-		var v AgentInviteVault
-		if err := rows.Scan(&v.VaultID, &v.VaultName, &v.VaultRole); err != nil {
-			return nil, err
-		}
-		vaults = append(vaults, v)
-	}
-	return vaults, rows.Err()
-}
 
 // --- Vault Invites ---
 
@@ -2288,240 +2511,6 @@ func (s *SQLiteStore) ExpirePendingPasswordResets(ctx context.Context, before ti
 	return int(n), nil
 }
 
-// --- OAuth Accounts ---
-
-func (s *SQLiteStore) CreateOAuthAccount(ctx context.Context, userID, provider, providerUserID, email, name, avatarURL string) (*OAuthAccount, error) {
-	id := newUUID()
-	now := time.Now().UTC()
-	nowStr := now.Format(time.DateTime)
-
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO oauth_accounts (id, user_id, provider, provider_user_id, email, name, avatar_url, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, userID, provider, providerUserID, email, name, avatarURL, nowStr, nowStr,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("creating oauth account: %w", err)
-	}
-
-	return &OAuthAccount{
-		ID: id, UserID: userID, Provider: provider, ProviderUserID: providerUserID,
-		Email: email, Name: name, AvatarURL: avatarURL,
-		CreatedAt: now, UpdatedAt: now,
-	}, nil
-}
-
-func (s *SQLiteStore) GetOAuthAccount(ctx context.Context, provider, providerUserID string) (*OAuthAccount, error) {
-	var oa OAuthAccount
-	var createdAt, updatedAt string
-	var name, avatarURL sql.NullString
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, user_id, provider, provider_user_id, email, name, avatar_url, created_at, updated_at
-		 FROM oauth_accounts WHERE provider = ? AND provider_user_id = ?`,
-		provider, providerUserID,
-	).Scan(&oa.ID, &oa.UserID, &oa.Provider, &oa.ProviderUserID, &oa.Email, &name, &avatarURL, &createdAt, &updatedAt)
-	if err != nil {
-		return nil, err
-	}
-	oa.Name = name.String
-	oa.AvatarURL = avatarURL.String
-	oa.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
-	oa.UpdatedAt, _ = time.Parse(time.DateTime, updatedAt)
-	return &oa, nil
-}
-
-func (s *SQLiteStore) GetOAuthAccountByUser(ctx context.Context, userID, provider string) (*OAuthAccount, error) {
-	var oa OAuthAccount
-	var createdAt, updatedAt string
-	var name, avatarURL sql.NullString
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, user_id, provider, provider_user_id, email, name, avatar_url, created_at, updated_at
-		 FROM oauth_accounts WHERE user_id = ? AND provider = ?`,
-		userID, provider,
-	).Scan(&oa.ID, &oa.UserID, &oa.Provider, &oa.ProviderUserID, &oa.Email, &name, &avatarURL, &createdAt, &updatedAt)
-	if err != nil {
-		return nil, err
-	}
-	oa.Name = name.String
-	oa.AvatarURL = avatarURL.String
-	oa.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
-	oa.UpdatedAt, _ = time.Parse(time.DateTime, updatedAt)
-	return &oa, nil
-}
-
-func (s *SQLiteStore) ListUserOAuthAccounts(ctx context.Context, userID string) ([]OAuthAccount, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, user_id, provider, provider_user_id, email, name, avatar_url, created_at, updated_at
-		 FROM oauth_accounts WHERE user_id = ? ORDER BY provider`,
-		userID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("listing oauth accounts: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var accounts []OAuthAccount
-	for rows.Next() {
-		var oa OAuthAccount
-		var createdAt, updatedAt string
-		var name, avatarURL sql.NullString
-		if err := rows.Scan(&oa.ID, &oa.UserID, &oa.Provider, &oa.ProviderUserID, &oa.Email, &name, &avatarURL, &createdAt, &updatedAt); err != nil {
-			return nil, fmt.Errorf("scanning oauth account: %w", err)
-		}
-		oa.Name = name.String
-		oa.AvatarURL = avatarURL.String
-		oa.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
-		oa.UpdatedAt, _ = time.Parse(time.DateTime, updatedAt)
-		accounts = append(accounts, oa)
-	}
-	return accounts, rows.Err()
-}
-
-func (s *SQLiteStore) DeleteOAuthAccount(ctx context.Context, userID, provider string) error {
-	res, err := s.db.ExecContext(ctx,
-		"DELETE FROM oauth_accounts WHERE user_id = ? AND provider = ?",
-		userID, provider,
-	)
-	if err != nil {
-		return fmt.Errorf("deleting oauth account: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
-}
-
-// --- OAuth States ---
-
-func (s *SQLiteStore) CreateOAuthState(ctx context.Context, stateHash, codeVerifier, nonce, redirectURL, mode, userID string, expiresAt time.Time) (*OAuthState, error) {
-	id := newUUID()
-	now := time.Now().UTC()
-	nowStr := now.Format(time.DateTime)
-
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO oauth_states (id, state_hash, code_verifier, nonce, redirect_url, mode, user_id, created_at, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, stateHash, codeVerifier, nonce, redirectURL, mode, userID, nowStr, expiresAt.UTC().Format(time.DateTime),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("creating oauth state: %w", err)
-	}
-
-	return &OAuthState{
-		ID: id, StateHash: stateHash, CodeVerifier: codeVerifier, Nonce: nonce,
-		RedirectURL: redirectURL, Mode: mode, UserID: userID,
-		CreatedAt: now, ExpiresAt: expiresAt.UTC(),
-	}, nil
-}
-
-func (s *SQLiteStore) GetOAuthStateByHash(ctx context.Context, stateHash string) (*OAuthState, error) {
-	var os OAuthState
-	var createdAt, expiresAt string
-	var nonce, redirectURL, userID sql.NullString
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, state_hash, code_verifier, nonce, redirect_url, mode, user_id, created_at, expires_at
-		 FROM oauth_states WHERE state_hash = ?`,
-		stateHash,
-	).Scan(&os.ID, &os.StateHash, &os.CodeVerifier, &nonce, &redirectURL, &os.Mode, &userID, &createdAt, &expiresAt)
-	if err != nil {
-		return nil, err
-	}
-	os.Nonce = nonce.String
-	os.RedirectURL = redirectURL.String
-	os.UserID = userID.String
-	os.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
-	os.ExpiresAt, _ = time.Parse(time.DateTime, expiresAt)
-	return &os, nil
-}
-
-func (s *SQLiteStore) DeleteOAuthState(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM oauth_states WHERE id = ?", id)
-	return err
-}
-
-func (s *SQLiteStore) ExpireOAuthStates(ctx context.Context, before time.Time) (int, error) {
-	res, err := s.db.ExecContext(ctx,
-		"DELETE FROM oauth_states WHERE expires_at <= ?",
-		before.UTC().Format(time.DateTime),
-	)
-	if err != nil {
-		return 0, fmt.Errorf("expiring oauth states: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	return int(n), nil
-}
-
-// --- OAuth User Creation ---
-
-func (s *SQLiteStore) CreateOAuthUser(ctx context.Context, email, role string) (*User, error) {
-	id := newUUID()
-	now := time.Now().UTC()
-	nowStr := now.Format(time.DateTime)
-
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (id, email, password_hash, password_salt, role, is_active, kdf_time, kdf_memory, kdf_threads, created_at, updated_at)
-		 VALUES (?, ?, NULL, NULL, ?, 1, 3, 65536, 4, ?, ?)`,
-		id, email, role, nowStr, nowStr,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("creating oauth user: %w", err)
-	}
-
-	return &User{
-		ID: id, Email: email, Role: role, IsActive: true,
-		KDFTime: 3, KDFMemory: 65536, KDFThreads: 4,
-		CreatedAt: now, UpdatedAt: now,
-	}, nil
-}
-
-func (s *SQLiteStore) CreateOAuthUserAndAccount(ctx context.Context, email, role, provider, providerUserID, oauthEmail, name, avatarURL string) (*User, *OAuthAccount, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	userID := newUUID()
-	oauthAccID := newUUID()
-	now := time.Now().UTC()
-	nowStr := now.Format(time.DateTime)
-
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO users (id, email, password_hash, password_salt, role, is_active, kdf_time, kdf_memory, kdf_threads, created_at, updated_at)
-		 VALUES (?, ?, NULL, NULL, ?, 1, 3, 65536, 4, ?, ?)`,
-		userID, email, role, nowStr, nowStr,
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("creating oauth user: %w", err)
-	}
-
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO oauth_accounts (id, user_id, provider, provider_user_id, email, name, avatar_url, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		oauthAccID, userID, provider, providerUserID, oauthEmail, name, avatarURL, nowStr, nowStr,
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("creating oauth account: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, nil, fmt.Errorf("commit: %w", err)
-	}
-
-	user := &User{
-		ID: userID, Email: email, Role: role, IsActive: true,
-		KDFTime: 3, KDFMemory: 65536, KDFThreads: 4,
-		CreatedAt: now, UpdatedAt: now,
-	}
-	oauthAcc := &OAuthAccount{
-		ID: oauthAccID, UserID: userID, Provider: provider, ProviderUserID: providerUserID,
-		Email: oauthEmail, Name: name, AvatarURL: avatarURL,
-		CreatedAt: now, UpdatedAt: now,
-	}
-	return user, oauthAcc, nil
-}
-
 // --- Agents ---
 
 func (s *SQLiteStore) CreateAgent(ctx context.Context, name, createdBy, role string) (*Agent, error) {
@@ -2547,6 +2536,69 @@ func (s *SQLiteStore) CreateAgent(ctx context.Context, name, createdBy, role str
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, nil
+}
+
+func (s *SQLiteStore) CreateAgentWithGrantsAndToken(ctx context.Context, name, createdBy, role string, vaultGrants []AgentVaultGrantSpec, expiresAt *time.Time) (*Agent, *Session, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	agentID := newUUID()
+	now := time.Now().UTC()
+	nowStr := now.Format(time.DateTime)
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO agents (id, name, role, status, created_by, created_at, updated_at)
+		 VALUES (?, ?, ?, 'active', ?, ?, ?)`,
+		agentID, name, role, createdBy, nowStr, nowStr,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating agent: %w", err)
+	}
+
+	grantNow := nowUTC()
+	for _, vg := range vaultGrants {
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO vault_grants (actor_id, actor_type, vault_id, role, created_at) VALUES (?, 'agent', ?, ?, ?)
+			 ON CONFLICT(actor_id, vault_id) DO UPDATE SET role = excluded.role`,
+			agentID, vg.VaultID, vg.Role, grantNow,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("granting vault role: %w", err)
+		}
+	}
+
+	rawToken := newAgentToken()
+	tokenHash := hashSessionToken(rawToken)
+	var expiresAtStr sql.NullString
+	if expiresAt != nil {
+		expiresAtStr = sql.NullString{String: expiresAt.UTC().Format(time.DateTime), Valid: true}
+	}
+	_, err = tx.ExecContext(ctx,
+		"INSERT INTO sessions (id, agent_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+		tokenHash, agentID, expiresAtStr, nowStr,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating agent token: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("committing transaction: %w", err)
+	}
+
+	ag := &Agent{
+		ID:        agentID,
+		Name:      name,
+		Role:      role,
+		Status:    "active",
+		CreatedBy: createdBy,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	sess := &Session{ID: rawToken, AgentID: agentID, ExpiresAt: utcTimePtr(expiresAt), CreatedAt: now}
+	return ag, sess, nil
 }
 
 func (s *SQLiteStore) GetAgentByID(ctx context.Context, id string) (*Agent, error) {
@@ -2670,8 +2722,16 @@ func (s *SQLiteStore) RevokeAgent(ctx context.Context, id string) error {
 		return sql.ErrNoRows
 	}
 
-	// Cascade: delete all tokens minted for this agent.
-	_, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE agent_id = ?", id)
+	// Cascade: delete tokens authenticating AS this agent and scoped
+	// tokens this agent minted on behalf of others. Without the second
+	// branch, a revoked agent's orphan token keeps proxying upstream APIs
+	// until its TTL expires (up to scopedSessionMaxTTL).
+	_, err = tx.ExecContext(ctx,
+		`DELETE FROM sessions
+		 WHERE agent_id = ?
+		    OR (created_by_actor_id = ? AND created_by_actor_type = 'agent')`,
+		id, id,
+	)
 	if err != nil {
 		return fmt.Errorf("deleting agent tokens: %w", err)
 	}
@@ -2744,6 +2804,40 @@ func (s *SQLiteStore) DeleteAgentTokens(ctx context.Context, agentID string) err
 	return nil
 }
 
+func (s *SQLiteStore) RotateAgentToken(ctx context.Context, agentID string, expiresAt *time.Time) (*Session, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE agent_id = ?", agentID); err != nil {
+		return nil, fmt.Errorf("deleting agent tokens: %w", err)
+	}
+
+	rawToken := newAgentToken()
+	tokenHash := hashSessionToken(rawToken)
+	now := time.Now().UTC()
+
+	var expiresAtStr sql.NullString
+	if expiresAt != nil {
+		expiresAtStr = sql.NullString{String: expiresAt.UTC().Format(time.DateTime), Valid: true}
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO sessions (id, agent_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+		tokenHash, agentID, expiresAtStr, now.Format(time.DateTime),
+	); err != nil {
+		return nil, fmt.Errorf("creating agent token: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing transaction: %w", err)
+	}
+
+	return &Session{ID: rawToken, AgentID: agentID, ExpiresAt: utcTimePtr(expiresAt), CreatedAt: now}, nil
+}
+
 func (s *SQLiteStore) CreateAgentToken(ctx context.Context, agentID string, expiresAt *time.Time) (*Session, error) {
 	rawToken := newAgentToken()
 	tokenHash := hashSessionToken(rawToken)
@@ -2765,38 +2859,6 @@ func (s *SQLiteStore) CreateAgentToken(ctx context.Context, agentID string, expi
 	return &Session{ID: rawToken, AgentID: agentID, ExpiresAt: utcTimePtr(expiresAt), CreatedAt: now}, nil
 }
 
-func (s *SQLiteStore) CreateRotationInvite(ctx context.Context, agentID, createdBy string, expiresAt time.Time) (*Invite, error) {
-	now := time.Now().UTC()
-	token := newInviteToken()
-
-	// Use agent's existing name for the invite record.
-	var agentName string
-	err := s.db.QueryRowContext(ctx, "SELECT name FROM agents WHERE id = ?", agentID).Scan(&agentName)
-	if err != nil {
-		return nil, fmt.Errorf("looking up agent for rotation: %w", err)
-	}
-
-	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO invites (token_hash, agent_name, agent_id, status, created_by, created_at, expires_at)
-		 VALUES (?, ?, ?, 'pending', ?, ?, ?)`,
-		hashToken(token), agentName, agentID, createdBy, now.Format(time.DateTime), expiresAt.UTC().Format(time.DateTime),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("inserting rotation invite: %w", err)
-	}
-
-	inviteID, _ := res.LastInsertId()
-	return &Invite{
-		ID:        int(inviteID),
-		Token:     token,
-		AgentName: agentName,
-		AgentID:   agentID,
-		Status:    "pending",
-		CreatedBy: createdBy,
-		CreatedAt: now,
-		ExpiresAt: expiresAt.UTC(),
-	}, nil
-}
 
 // scanAgent scans a single agent row from a *sql.Row.
 // Expected column order: id, name, status, created_by, created_at, updated_at, revoked_at

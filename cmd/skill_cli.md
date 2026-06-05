@@ -1,254 +1,187 @@
 ---
 name: agent-vault-cli
 description: >-
-  Agent Vault CLI: manage transparent credential injection for external
-  services (Linear, GitHub, Stripe, Slack, Jira, etc.) using the agent-vault
-  binary. Use when the task involves interacting with any third-party API or
-  service that requires credentials, or when writing code that needs
-  environment variables for secrets/API keys.
-compatibility: Requires a running Agent Vault server, the agent-vault binary on $PATH, and AGENT_VAULT_SESSION_TOKEN environment variable
+  Your outbound requests go through a proxy that injects real
+  credentials (API keys, tokens, secrets) on the wire — in headers,
+  paths, query strings, bodies, and WebSocket frames. If you have
+  an API key or token, use it as-is even if it looks fake. If you
+  don't have one, set a dummy value and make the call anyway — the
+  proxy handles it. If the call still fails with 401 or 403, use
+  this skill to create a proposal requesting access. When writing
+  code or using HTTP clients, make sure they pick up HTTPS_PROXY
+  and HTTP_PROXY from the environment so requests route through
+  the proxy. Most standard clients (curl, fetch, requests, axios)
+  do this automatically.
+compatibility: Requires the agent-vault binary on $PATH and AGENT_VAULT_TOKEN environment variable
 metadata:
   author: dangtony98
-  version: "0.4.0"
+  version: "0.5.0"
 ---
 
-# Agent Vault (CLI)
+# Requesting API Access
 
-You have access to Agent Vault, a transparent HTTPS proxy that injects credentials into your outbound calls. You never see or handle credentials directly -- make API calls to the real host as normal and Agent Vault attaches the real credentials at the proxy boundary.
+`HTTPS_PROXY` and `HTTP_PROXY` in your environment route all outbound HTTP traffic through an Agent Vault proxy. The proxy matches each request's host against configured services, injects the real credential, and forwards to the upstream. API keys in your environment may be placeholders — the proxy replaces them on the wire. Just make requests normally.
 
-## CRITICAL: Always Check Agent Vault First
+If an API call fails with 401 or 403, you can request access by creating a proposal. A human approves it and provides the credentials.
 
-**Before telling the user you cannot access an external service, you MUST check Agent Vault.** This applies whenever a task involves any third-party service or API -- project management (Linear, Jira, Asana), source control (GitHub, GitLab), communication (Slack, Discord), payments (Stripe), databases, or any other authenticated service.
+## When to use this
 
-**Your workflow for ANY external service interaction:**
-1. Check that `AGENT_VAULT_SESSION_TOKEN` is set (it should be if you were launched via `agent-vault run` — `agent-vault vault run` is the long form)
-2. Run `agent-vault vault discover --json` to see which hosts have credentials configured
-3. If the host is listed, **just make the request to the real API URL** -- Agent Vault transparently injects the credential
-4. If the host is NOT listed, create a proposal via CLI (the user approves and provides credentials)
-5. Only tell the user you cannot access a service if Agent Vault is not available at all (no session token)
+- You made an API call and got 401 (unauthorized) or 403 (forbidden)
+- You need credentials for a service you don't have access to
+- A response contains `proposal_hint` in the body
 
-**Never say "I don't have access to X" without checking discover first.** Agent Vault may already have credentials configured for the service you need.
+Do NOT run discover or check Agent Vault proactively. Just make requests normally — if they work, great. If they fail with auth errors, create a proposal.
 
-**Not every HTTP request needs Agent Vault credentials.** Unauthenticated requests or requests to hosts not configured in Agent Vault still pass through the proxy unmodified -- no special handling required.
+## Creating a proposal
 
-## Environment Variables
+Look up how the service authenticates (bearer token, API key, basic auth) before creating a proposal. Common services: Stripe (bearer), GitHub (bearer), OpenAI (bearer), Anthropic (api-key, header: x-api-key), Jira (basic — email + token).
 
-| Variable | Description |
-|----------|-------------|
-| `AGENT_VAULT_ADDR` | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
-| `AGENT_VAULT_SESSION_TOKEN` | Bearer token for authenticating with Agent Vault's control-plane endpoints (`discover`, proposals, etc.) |
-| `AGENT_VAULT_VAULT` | Vault name (set for user-scoped sessions via `agent-vault run`) |
+```bash
+# Service + credential
+agent-vault vault proposal create \
+  --name stripe --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY \
+  --credential STRIPE_KEY="Stripe API key" \
+  -m "Need Stripe API key for billing feature" --json
 
-`agent-vault run` also pre-configures `HTTPS_PROXY`, `NO_PROXY`, `NODE_USE_ENV_PROXY`, and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) so HTTPS calls from your process route through the broker transparently. You don't manage these yourself.
+# Credential only (no service needed)
+agent-vault vault proposal create \
+  --credential DB_PASSWORD="Production database password" \
+  -m "Need database credentials" --json
+```
 
-Under `--isolation=container`, the same env shape is injected inside a Docker container, but the proxy URL host is `host.docker.internal` instead of `127.0.0.1` and egress to any other destination is blocked by iptables. From your perspective nothing changes — standard HTTP clients pick up the envvars as normal.
+Auth type flags:
+- **bearer**: `--auth-type bearer --token-key CREDENTIAL_KEY`
+- **basic**: `--auth-type basic --username-key USER_KEY [--password-key PASS_KEY]`
+- **api-key**: `--auth-type api-key --api-key-key KEY [--api-key-header x-api-key]`
+- **passthrough**: `--auth-type passthrough`
 
-## Discover Available Services (Start Here)
+For complex cases (multiple services, URL substitutions), use JSON mode:
 
-**Always run this first** to learn which hosts have credentials configured:
+```bash
+agent-vault vault proposal create -f - --json <<'EOF'
+{
+  "services": [{"action": "set", "name": "stripe", "host": "api.stripe.com", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
+  "credentials": [{"action": "set", "key": "STRIPE_KEY", "description": "Stripe API key"}],
+  "message": "Need Stripe access"
+}
+EOF
+```
+
+## After creating a proposal
+
+1. Show the `approval_url` to the user — e.g. "I need access to Stripe. Click here to connect it: {approval_url}"
+2. Poll `agent-vault vault proposal get <id> --json` every 3s for the first 30s, then every 10s. Stop after 10 minutes — the proposal may have expired.
+3. Once status is `applied`, retry your original request
+
+## Checking what's available
+
+If you need to check what services are already configured:
 
 ```bash
 agent-vault vault discover --json
 ```
 
-Response includes `vault`, `services` (host + description), and `available_credentials` (key names only, values are never exposed). Use `available_credentials` to reference existing credentials in proposals instead of creating duplicate slots.
+## URL substitutions
 
-**Browse service templates:** `agent-vault catalog --json` lists built-in service templates with suggested credential keys and auth types. No auth needed.
-
-## Making Requests
-
-**Just call the real API URL.** When you were launched via `agent-vault run` (or the long form `agent-vault vault run`), your HTTPS traffic already routes through Agent Vault transparently — `HTTPS_PROXY` and the broker's CA cert are pre-configured in your environment. Agent Vault intercepts the call, looks up the host in the vault's services, injects the credential, and forwards over HTTPS.
-
-```bash
-curl https://api.stripe.com/v1/charges
-curl https://api.github.com/user
-```
-
-Your code can leave the upstream auth header blank or set it to a placeholder — Agent Vault attaches the real credential at the proxy boundary, so the value in your env can be anything (or absent). Standard HTTP clients (curl, fetch, requests, axios, the Go stdlib, etc.) honor `HTTPS_PROXY` automatically.
-
-## Proposals -- Requesting and Storing Credentials
-
-Proposals are the primary way to exchange credentials with a human operator. Use them whenever you:
-
-- **Need a credential supplied by a human** -- create a proposal with a credential slot and the human will provide the value at approval time.
-- **Want to store a credential back** -- include the value in a credential slot and the human confirms it at approval.
-- **Need proxy access to a new host** -- propose a service with an `auth` config so Agent Vault can authenticate on your behalf.
-
-When you get a `403` for a host not in discover, the response includes a `proposal_hint` with the denied host.
-
-## Choosing the Right Auth Method
-
-**Before creating a proposal for a new service, you MUST look up how that service authenticates API requests.** If you have internet access, fetch the service's API authentication documentation to determine the correct auth type. Do not guess -- incorrect auth wastes the operator's time and will fail at the proxy.
-
-Agent Vault auth types:
-
-```
-bearer      -- Authorization: Bearer <token>          {"auth": {"type": "bearer", "token": "SECRET_KEY"}}
-basic       -- HTTP Basic (user, optional password)    {"auth": {"type": "basic", "username": "API_KEY"}}
-api-key     -- key in a named header, optional prefix  {"auth": {"type": "api-key", "key": "SECRET", "header": "x-api-key"}}
-custom      -- freeform header templates               {"auth": {"type": "custom", "headers": {"X-Key": "{{ SECRET }}"}}}
-passthrough -- allowlist host only, no credential   {"auth": {"type": "passthrough"}}
-```
-
-Common services: Stripe (bearer), GitHub (bearer), OpenAI (bearer), Ashby (basic -- API key as username), Jira (basic -- email + token), Anthropic (api-key, header: x-api-key). If unlisted, check the API docs.
-
-**Header forwarding.** Agent Vault forwards your request headers to the upstream unchanged, except for hop-by-hop headers (RFC 7230, including `Proxy-Connection`), broker-scoped headers (`X-Vault`, `Proxy-Authorization`), and the specific header(s) the configured auth type manages. With `auth.type: bearer`, for example, the broker overrides `Authorization` and leaves all other client headers untouched — so vendor headers like `anthropic-version` and `OpenAI-Beta` reach the upstream. Custom auth strips every header listed in `auth.headers` and replaces them with the resolved values.
-
-**Passthrough** allowlists a host but does not store or inject a credential. Use it only when the operator has decided their client already holds the credential and wants netguard / audit / MITM coverage without putting the secret in the vault. For the default case (agent needs the credential from the vault), use one of the credentialed types above.
-
-### URL Substitutions
-
-Some APIs want a credential-derived value in the URL path or query string (Twilio's `/Accounts/{AccountSID}/Messages.json`, legacy `?api_key=` services). Auth types only inject headers, so for these you add a `substitutions` field to the service. The broker rewrites a placeholder string in declared surfaces only.
+Some APIs put credentials in the URL path, query string, or request body instead of headers (e.g. Telegram: `/bot<TOKEN>/sendMessage`). Use the `substitutions` field in a proposal to handle these:
 
 ```json
 "substitutions": [
-  {"key": "TWILIO_ACCOUNT_SID", "placeholder": "__account_sid__", "in": ["path"]}
+  {"key": "TELEGRAM_BOT_TOKEN", "placeholder": "__bot_token__", "in": ["path"]}
 ]
 ```
 
-How it works:
-- The operator declares the exact `placeholder` string (e.g. `__account_sid__`). The broker matches it case-sensitively as a literal — no auto-wrapping, no transformations.
-- Your request must embed the placeholder verbatim: `GET https://api.twilio.com/2010-04-01/Accounts/__account_sid__/Messages.json`. The broker resolves `key` from the vault, URL-encodes the value, and substitutes it in.
-- `in` declares which surfaces the broker is allowed to scan: subset of `["path", "query", "header"]`. Defaults to `["path", "query"]` if omitted. `header` must be explicit. `body` is not supported.
-- **Scoping is the security boundary.** The broker only scans surfaces in `in`. Embedding the placeholder anywhere else (a non-declared surface, a body) means the literal string passes through unmodified — there is no way to coerce the broker into substituting somewhere the operator did not authorize.
-- When `header` is in `in`, the broker scans **every outbound header** for the placeholder, not a specific named header. Pick a unique placeholder so it can only appear where you intended.
-- Substitutions compose with auth: a Twilio service uses both `auth: basic` (header injection) and a substitution for the path SID.
-- Placeholder safety: must be ≥4 characters, contain at least one alphanumeric character, contain a `__` boundary or non-`[A-Za-z0-9_]` character (so bare words like `account_sid` are rejected — they would match legitimate URL words), and use only RFC 3986 unreserved characters `[A-Za-z0-9_-.~]`. The recommended convention is `__name__`.
-- Updating an existing service: a `set` proposal that omits `substitutions` (or sends an empty list) preserves the service's existing substitutions, even when `auth` is replaced. To change the list, supply the new non-empty list. To clear all substitutions, delete and recreate the service.
+The proxy finds the placeholder string and replaces it with the real credential. Supported surfaces: `path`, `query`, `header`, `body`, `websocket`. Defaults to `["path", "query"]` if omitted.
 
-Substitutions are configured via JSON only — no flag form. Place a `substitutions` array under any `services[]` entry in `proposal create -f file.json` or `agent-vault service set -f services.yaml`.
+## OAuth credentials
 
-### Creating a Proposal
+Some services use OAuth 2.0 instead of static API keys. Use `type: "oauth"` when the service requires OAuth authorization (e.g., Google APIs, services without long-lived API keys). Use the default (static) when the service provides API keys or personal access tokens.
 
-**Flag-driven mode (common cases):**
+There are two ways to set up an OAuth credential:
+
+### Connect flow (human completes OAuth consent in the browser)
+
+Use when you know the provider's OAuth URLs. The human enters their client ID/secret and clicks "Connect" during approval.
 
 ```bash
-# Service + credential
-agent-vault vault proposal create \
-  --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY \
-  --credential STRIPE_KEY="Stripe API key" \
-  -m "Need Stripe API key for billing feature" --json
-
-# Credential only (no host/service needed)
-agent-vault vault proposal create \
-  --credential DB_PASSWORD="Production database password" \
-  -m "Need database credentials" --json
-
-# Complex/multi-service (JSON mode)
 agent-vault vault proposal create -f - --json <<'EOF'
 {
-  "services": [{"action": "set", "host": "api.stripe.com", "description": "Stripe API", "auth": {"type": "bearer", "token": "STRIPE_KEY"}}],
-  "credentials": [{"action": "set", "key": "STRIPE_KEY", "description": "Stripe API key"}],
-  "message": "Need Stripe access"
-}
-EOF
-
-# Service with URL substitution (Twilio: SID in path + auth header)
-agent-vault vault proposal create -f - --json <<'EOF'
-{
-  "services": [{
+  "services": [{"action": "set", "name": "google-cal", "host": "www.googleapis.com/calendar/*", "auth": {"type": "bearer", "token": "GOOGLE"}}],
+  "credentials": [{
     "action": "set",
-    "host": "api.twilio.com",
-    "auth": {"type": "basic", "username": "TWILIO_ACCOUNT_SID", "password": "TWILIO_AUTH_TOKEN"},
-    "substitutions": [
-      {"key": "TWILIO_ACCOUNT_SID", "placeholder": "__account_sid__", "in": ["path"]}
-    ]
+    "key": "GOOGLE",
+    "type": "oauth",
+    "description": "Google Calendar OAuth",
+    "oauth": {
+      "authorization_url": "https://accounts.google.com/o/oauth2/v2/auth",
+      "token_url": "https://oauth2.googleapis.com/token",
+      "scopes": "https://www.googleapis.com/auth/calendar.readonly"
+    },
+    "obtain_instructions": "Register an OAuth app at console.cloud.google.com, then enter your client ID and secret when approving"
   }],
-  "credentials": [
-    {"action": "set", "key": "TWILIO_ACCOUNT_SID", "description": "Twilio Account SID"},
-    {"action": "set", "key": "TWILIO_AUTH_TOKEN", "description": "Twilio Auth Token"}
-  ],
-  "message": "Twilio messaging — agent embeds __account_sid__ in the URL path"
+  "message": "Need Google Calendar access"
 }
 EOF
 ```
 
-Flag-driven auth flags by type:
-- **bearer**: `--auth-type bearer --token-key CREDENTIAL_KEY`
-- **basic**: `--auth-type basic --username-key USER_KEY [--password-key PASS_KEY]`
-- **api-key**: `--auth-type api-key --api-key-key KEY [--api-key-header x-api-key] [--api-key-prefix "ApiKey "]`
-- **passthrough**: `--auth-type passthrough` (no credential flags; any credential flag is rejected)
+OAuth config fields:
+- `authorization_url` (required for connect flow): the provider's consent page URL
+- `token_url` (required): where to exchange the code for tokens
+- `scopes` (optional): space-separated permissions to request; omit for provider defaults
+- `client_id`, `client_secret`: provided by the human during approval, not in the proposal
 
-Other flags: `--description` (service description), `--user-message` (shown on browser approval page), `--credential KEY=description` (repeatable).
+### Token upload (human pastes tokens they already have)
 
-Key fields (JSON mode):
-- `services[].action` -- `"set"` (upsert, needs `host` + `auth` **or** an `enabled` change) or `"delete"` (needs `host` only)
-- `services[].auth` -- authentication config. Types: `bearer` (`token`), `basic` (`username`, optional `password`), `api-key` (`key` + `header`, optional `prefix`), `custom` (`headers` map with `{{ KEY }}` templates), `passthrough` (no credential fields)
-- `services[].substitutions` -- optional list of URL/header rewrites. Each entry has `key` (UPPER_SNAKE_CASE credential reference), `placeholder` (the exact wire string the broker matches case-sensitively, e.g. `__account_sid__`), and optional `in` (subset of `["path", "query", "header"]`; defaults to `["path", "query"]`). Surfaces not in `in` are not scanned. Must be paired with an `auth` change in the same proposal — substitutions cannot be added on an enable/disable-only update.
-- `services[].enabled` -- optional boolean. Omitted means "enabled" for new services. A `"set"` proposal may supply `enabled` alone (no `auth`) to toggle an existing service's state without replacing its auth config -- useful for staged rollouts
-- `credentials[].action` -- `"set"` (omit `value` for human to supply; include `value` to store back) or `"delete"`
-- `credentials` -- only declare credentials not already in `available_credentials`. Every credential referenced in auth configs must resolve to a slot or existing credential (400 otherwise)
-- `message` -- developer-facing explanation; `user_message` -- shown on the browser approval page
-- `credentials[].obtain` -- URL where the human can get the credential; `obtain_instructions` -- steps to find it
-
-**After creating a proposal:**
-1. Present the `approval_url` to the user conversationally -- e.g. "I need access to your Stripe account. Click here to connect it: -> {approval_url}"
-2. Immediately start polling `GET {AGENT_VAULT_ADDR}/v1/proposals/{id}` -- do NOT wait for the user to say "go on" or confirm. Poll every 3s for the first 30s, then every 10s. Stop after 10 minutes (proposal may have expired).
-3. Once status is `applied`, automatically retry your original request and continue your task
-
-**Check status:** `GET {AGENT_VAULT_ADDR}/v1/proposals/{id}` with `Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}` -- returns `pending`, `applied`, `rejected`, or `expired`
-
-## Request Logs
-
-Agent Vault keeps a per-vault audit log of proxied requests (method, host, path, status, latency -- never bodies or query strings). The CLI does not wrap this yet; fetch via the HTTP API: `GET {AGENT_VAULT_ADDR}/v1/vaults/{vault}/logs` with `Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}`. Requires vault `member` or `admin` role. See `skill_http.md` for query params.
-
-## Building Code That Needs Credentials
-
-When you are writing or modifying application code that requires secrets or API keys (e.g. `process.env.STRIPE_KEY`, `os.Getenv("DB_PASSWORD")`), use Agent Vault to ensure those credentials are tracked and available.
-
-**Workflow:**
-1. Write the code referencing the environment variable as normal (e.g. `process.env.STRIPE_KEY`)
-2. Run `agent-vault vault discover --json` and check `available_credentials` for the key
-3. If the key exists, you're done -- the credential is already stored in the vault
-4. If the key is missing, create a credential-only proposal so the human can provide the value:
+Use when the human already has tokens from a CLI tool (e.g., Claude Code) or another system. Omit `authorization_url` to signal token upload mode.
 
 ```bash
-agent-vault vault proposal create \
-  --credential STRIPE_KEY="Stripe secret key for payment processing" \
-  -m "Adding Stripe integration -- need API key" \
-  --user-message "The app needs a Stripe secret key to process payments. You can find it at https://dashboard.stripe.com/apikeys" \
-  --json
+agent-vault vault proposal create -f - --json <<'EOF'
+{
+  "services": [{"action": "set", "name": "anthropic", "host": "api.anthropic.com", "auth": {"type": "bearer", "token": "ANTHROPIC"}}],
+  "credentials": [{
+    "action": "set",
+    "key": "ANTHROPIC",
+    "type": "oauth",
+    "description": "Anthropic API OAuth",
+    "oauth": {
+      "token_url": "https://console.anthropic.com/v1/oauth/token"
+    },
+    "obtain_instructions": "Paste your access token and refresh token from ~/.claude/.credentials.json"
+  }],
+  "message": "Need Anthropic API access"
+}
+EOF
 ```
 
-5. Present the `approval_url` to the user and poll until approved (same as service proposals)
-6. Update `.env.example` (or equivalent) to document the new variable
+When the human provides a refresh token during upload, it is validated immediately by refreshing against the provider. If the refresh fails, the upload is rejected.
 
-**Multiple credentials at once:** If your code change introduces several env vars, batch them in one proposal:
+### After approval
 
-```bash
-agent-vault vault proposal create \
-  --credential DB_HOST="Database hostname" \
-  --credential DB_PASSWORD="Database password" \
-  -m "Adding database connection -- need credentials" --json
-```
+After the human approves an OAuth proposal, they may still need to complete the connection (enter client credentials, click Connect, or paste tokens). If your first request after `status: applied` returns 502 with `oauth_not_connected`, tell the user: "The OAuth connection isn't complete yet -- please finish connecting in the Agent Vault dashboard." Don't retry in a loop.
 
-**Key points:**
-- Use credential-only proposals (no `--host`/`--auth-type`) when the credential is for the application, not for proxying through Agent Vault
-- Always check `available_credentials` first to avoid proposing duplicates
-- Include `obtain` URLs or `obtain_instructions` in JSON mode proposals to help the human find the credential
+## Reading credentials
 
-## Reading Credentials
-
-To read the decrypted value of a credential (requires member+ vault role):
+To read a stored credential value (e.g. for writing config files or passing to tools that don't go through the proxy):
 
 ```bash
 agent-vault vault credential get <key>
 ```
 
-Prints the raw value to stdout (pipe-friendly). Useful for configuration tasks where you need to read a stored value.
+## WebSocket
 
-## Error Handling
+WSS and WS connections also go through the proxy with credential injection — in the handshake headers and in WebSocket text frames (when `websocket` is in the substitution surfaces). Just connect to the real WebSocket URL.
 
-- 401: Invalid or expired token -- check `AGENT_VAULT_SESSION_TOKEN`
-- 403 `forbidden`: Host not allowed -- create a proposal
-- 403 `service_disabled`: Host is configured but currently disabled by an operator. Don't create a new proposal; surface the error to the user so they can re-enable it (UI toggle, or `agent-vault vault service enable <host>`)
-- 429: Rate limited. The response carries a `Retry-After` header (seconds) and a JSON body `{"error":"too_many_requests", ...}`. Respect `Retry-After` — wait that many seconds before retrying. Don't tight-loop or switch to a different Agent Vault ingress to bypass it (MITM + explicit `/proxy/` share one budget). If this trips on normal work, ask the instance owner to raise the limit in **Manage Instance → Settings → Rate Limiting**.
-- 502: Missing credential or upstream unreachable, tell user a credential may need to be added
+## Error reference
+
+- 401: invalid or expired token
+- 403 with `proposal_hint`: host not allowed — create a proposal
+- 403 `service_disabled`: host is configured but disabled by operator — tell the user
+- 502: missing credential or upstream unreachable
+- 502 `oauth_not_connected`: OAuth credential approved but not yet connected — tell the user to complete the connection in the dashboard
+- 502 `oauth_refresh_failed`: OAuth token expired and refresh failed — tell the user to reconnect in the dashboard
 
 ## Rules
 
-- **Never** attempt to extract, log, or display credentials
-- **Never** hardcode tokens -- always read from `AGENT_VAULT_SESSION_TOKEN`
-- **Only** request hosts returned by discover -- if a host isn't listed, create a proposal
-- If you receive a `credential_not_found` error, inform the user which credential is missing
-- Do not modify or forge the `Authorization` header beyond using your session token
+- Never extract, log, or display credentials
+- Never hardcode tokens
+- Never use `AGENT_VAULT_TOKEN` as an upstream API credential — it authenticates with Agent Vault only

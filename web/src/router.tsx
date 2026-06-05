@@ -15,6 +15,7 @@ import AllUsersTab from "./pages/home/AllUsersTab";
 import AllAgentsTab from "./pages/home/AllAgentsTab";
 import UserInvite from "./pages/UserInvite";
 import ProposalApprove from "./pages/ProposalApprove";
+import OAuthComplete from "./pages/OAuthComplete";
 import VaultLayout from "./components/VaultLayout";
 import ProposalsTab from "./pages/vault/ProposalsTab";
 import LogsTab from "./pages/vault/LogsTab";
@@ -22,12 +23,12 @@ import ServicesTab from "./pages/vault/ServicesTab";
 import CredentialsTab from "./pages/vault/CredentialsTab";
 import UsersTab from "./pages/vault/UsersTab";
 import AgentsTab from "./pages/vault/AgentsTab";
+import TokensTab from "./pages/vault/TokensTab";
 import SettingsTab from "./pages/vault/SettingsTab";
 import InstanceLayout from "./components/InstanceLayout";
 import AccountLayout from "./components/AccountLayout";
 import AccountSettingsTab from "./pages/account/SettingsTab";
 import InstanceSettingsTab from "./pages/instance/SettingsTab";
-import OAuthCallback from "./pages/OAuthCallback";
 
 // --- Types ---
 
@@ -35,13 +36,29 @@ export interface AuthContext {
   email: string;
   role: string;
   is_owner: boolean;
-  has_password: boolean;
-  oauth_providers: string[];
+}
+
+export interface InstanceStatus {
+  initialized?: boolean;
+  needs_first_user?: boolean;
+  allowed_email_domains?: string[];
+  invite_only?: boolean;
+  base_url?: string;
+}
+
+export interface CredentialStoreInfo {
+  kind: string;
+  config?: Record<string, unknown>;
+  poll_interval_seconds?: number;
+  last_sync_status?: string;
+  last_synced_at?: string;
+  last_sync_error?: string;
 }
 
 export interface VaultContext {
   vault_name: string;
   vault_role: string;
+  credential_store?: CredentialStoreInfo;
 }
 
 // --- Root Route ---
@@ -159,13 +176,10 @@ const proposalApproveRoute = createRoute({
   component: ProposalApprove,
 });
 
-const oauthCallbackRoute = createRoute({
+const oauthCompleteRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/oauth/callback",
-  validateSearch: (search: Record<string, unknown>) => ({
-    error: (search.error as string) || "",
-  }),
-  component: OAuthCallback,
+  path: "/oauth/complete",
+  component: OAuthComplete,
 });
 
 // --- Auth Layout (protected routes) ---
@@ -178,15 +192,16 @@ const authLayoutRoute = createRoute({
       apiFetch("/v1/status"),
       apiFetch("/v1/auth/me"),
     ]);
+    let status: InstanceStatus = {};
     if (statusResp.ok) {
-      const status = await statusResp.json();
+      status = await statusResp.json();
       if (!status.initialized) throw redirect({ to: "/register" });
     }
     if (!meResp.ok) {
       throw redirect({ to: "/login" });
     }
     const user: AuthContext = await meResp.json();
-    return { auth: user };
+    return { auth: user, status };
   },
   component: Outlet,
 });
@@ -323,6 +338,12 @@ const agentsTabRoute = createRoute({
   component: AgentsTab,
 });
 
+const tokensTabRoute = createRoute({
+  getParentRoute: () => vaultLayoutRoute,
+  path: "/tokens",
+  component: TokensTab,
+});
+
 const settingsTabRoute = createRoute({
   getParentRoute: () => vaultLayoutRoute,
   path: "/settings",
@@ -337,7 +358,7 @@ const routeTree = rootRoute.addChildren([
   forgotPasswordRoute,
   userInviteRoute,
   proposalApproveRoute,
-  oauthCallbackRoute,
+  oauthCompleteRoute,
   authLayoutRoute.addChildren([
     homeLayoutRoute.addChildren([
       homeIndexRoute,
@@ -360,6 +381,7 @@ const routeTree = rootRoute.addChildren([
       credentialsTabRoute,
       usersTabRoute,
       agentsTabRoute,
+      tokensTabRoute,
       settingsTabRoute,
     ]),
   ]),

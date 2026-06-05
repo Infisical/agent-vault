@@ -8,7 +8,7 @@ A `Vault` is a secure logical container for credentials with services that defin
 Each vault contains:
 
 - **[Credentials](/learn/credentials)**: API keys, database credentials, and other sensitive material that cannot be extracted from the vault.
-- **[Services](/learn/services)**: Definitions of which hosts (e.g. `api.stripe.com`) can be accessed through the vault along with which and how credential(s) must be attached onto each proxy request.
+- **[Services](/learn/services)**: Definitions of which upstreams (scoped by a single `host` pattern that may carry an inline path glob, e.g. `api.stripe.com` or `slack.com/api/apps.connections.*`) can be accessed through the vault along with which and how credential(s) must be attached onto each proxy request.
 - **Members**: Users and agents that can access the vault under specific [roles](/learn/permissions#vault-roles) (`admin`, `member`, `proxy`).
 - **[Proposals](/learn/proposals)**: Requests from agents to set credential(s) and/or add service(s) that use those credentials.
 
@@ -38,27 +38,29 @@ This file is meant to be committed to version control. When present, all team me
 
 Vault resolution priority: `--vault` flag > `AGENT_VAULT_VAULT` env var > `agent-vault.json` > user context > `"default"`.
 
-## Invite agents to a vault
+## Add an agent to a vault
 
-<Tabs>
-  <Tab title="Agent invite">
-    For any agent you can paste a prompt into (cloud-hosted, chat-based, CI pipelines, or always-on assistants).
+For any agent that lives outside `vault run` (cloud-hosted, CI pipelines, always-on assistants), create a named agent and supply its token via `AGENT_VAULT_TOKEN`.
 
-    <Steps>
-      <Step title="Create the invite">
-        ```bash
-        agent-vault agent invite my-agent --vault my-vault:proxy
-        ```
-        Outputs a prompt with the invite URL and usage instructions. Copied to your clipboard
-        automatically. The `--vault` flag pre-assigns vault access (format: `name:role`).
-      </Step>
-      <Step title="Paste into the agent's chat">
-        The agent redeems the invite automatically and receives an agent token.
-      </Step>
-    </Steps>
+<Steps>
+  <Step title="Create the agent">
+    ```bash
+    agent-vault agent create my-agent --vault my-vault:proxy
+    ```
+    Prints the agent token (and copies it to your clipboard). The `--vault` flag pre-assigns
+    vault access (format: `name:role`).
+  </Step>
+  <Step title="Supply the token to the agent's runtime">
+    Set `AGENT_VAULT_TOKEN` and `AGENT_VAULT_ADDR` wherever the agent runs (env vars,
+    secrets store, container config).
+  </Step>
+</Steps>
 
-  </Tab>
-</Tabs>
+If the agent already exists, grant it access to additional vaults with:
+
+```bash
+agent-vault vault agent add my-agent --vault my-vault --role proxy
+```
 
 ## Invite users to a vault
 

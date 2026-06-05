@@ -1,9 +1,10 @@
 import { useState, useEffect, useMemo } from "react";
 import { Link, useNavigate, useRouteContext } from "@tanstack/react-router";
 import type { AuthContext } from "../../router";
-import Modal from "../../components/Modal";
+import Sheet from "../../components/Sheet";
 import FormField from "../../components/FormField";
 import Input from "../../components/Input";
+import Select from "../../components/Select";
 import Button from "../../components/Button";
 import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
 import { ErrorBanner, LoadingSpinner, timeAgo } from "../../components/shared";
@@ -184,7 +185,6 @@ function VaultCard({
 }) {
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState("");
-  const navigate = useNavigate();
 
   async function handleJoin(e: React.MouseEvent) {
     e.preventDefault();
@@ -218,7 +218,6 @@ function VaultCard({
   const card = (
     <div
       className={`bg-surface border border-border rounded-xl p-5 transition-colors ${isImplicit ? "" : "hover:border-border-focus/40 cursor-pointer"}`}
-      onClick={isImplicit ? undefined : () => navigate({ to: "/vaults/$name", params: { name: vault.name } })}
     >
       <div className="flex items-start justify-between mb-3">
         <h3 className="text-base font-semibold text-text tracking-tight">
@@ -296,10 +295,31 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
+  const [availableStores, setAvailableStores] = useState<string[]>(["builtin"]);
+  const [kind, setKind] = useState<string>("builtin");
+
+  // Infisical-only fields.
+  const [projectID, setProjectID] = useState("");
+  const [environment, setEnvironment] = useState("");
+  const [secretPath, setSecretPath] = useState("/");
+
+  useEffect(() => {
+    apiFetch("/v1/instance/credential-stores")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.available) setAvailableStores(data.available);
+      })
+      .catch(() => {/* fall back to builtin only */});
+  }, []);
+
   function close() {
     setOpen(false);
     setName("");
     setError("");
+    setKind("builtin");
+    setProjectID("");
+    setEnvironment("");
+    setSecretPath("/");
   }
 
   async function handleCreate() {
@@ -308,9 +328,31 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
     setError("");
     const trimmed = name.trim();
     try {
+      const body: Record<string, unknown> = { name: trimmed };
+      if (kind === "infisical") {
+        if (!projectID.trim() || !environment.trim()) {
+          setError("Project ID and environment are required for Infisical.");
+          setSubmitting(false);
+          return;
+        }
+        const trimmedPath = secretPath.trim() || "/";
+        if (!trimmedPath.startsWith("/")) {
+          setError('Secret path must start with "/".');
+          setSubmitting(false);
+          return;
+        }
+        body.credential_store = {
+          kind: "infisical",
+          config: {
+            project_id: projectID.trim(),
+            environment: environment.trim(),
+            secret_path: trimmedPath,
+          },
+        };
+      }
       const resp = await apiFetch("/v1/vaults", {
         method: "POST",
-        body: JSON.stringify({ name: trimmed }),
+        body: JSON.stringify(body),
       });
       if (resp.ok) {
         close();
@@ -325,6 +367,8 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
       setSubmitting(false);
     }
   }
+
+  const infisicalAvailable = availableStores.includes("infisical");
 
   return (
     <>
@@ -344,11 +388,11 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
         New vault
       </Button>
 
-      <Modal
+      <Sheet
         open={open}
         onClose={close}
-        title="New Vault"
-        description="Create an isolated environment with its own credentials and proxy rules."
+        eyebrow="Vault"
+        title="New vault"
         footer={
           <>
             <Button variant="secondary" onClick={close}>
@@ -357,17 +401,23 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
             <Button
               onClick={handleCreate}
               loading={submitting}
-              disabled={!name.trim()}
+              disabled={
+                !name.trim() ||
+                (kind === "infisical" && (!projectID.trim() || !environment.trim()))
+              }
             >
               Create
             </Button>
           </>
         }
       >
+        <div className="space-y-4">
+        <p className="text-sm text-text-muted">
+          Create an isolated environment with its own credentials and proxy rules.
+        </p>
         <FormField
           label="Vault Name"
-          helperText="Lowercase letters, numbers, and hyphens. 3–64 characters."
-          error={error}
+          error={error && kind === "builtin" ? error : undefined}
         >
           <Input
             placeholder="e.g. my-project"
@@ -376,11 +426,61 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
             onKeyDown={(e) => {
               if (e.key === "Enter") handleCreate();
             }}
-            error={!!error}
+            error={!!error && kind === "builtin"}
             autoFocus
           />
         </FormField>
-      </Modal>
+
+        <FormField
+          label="Credential store"
+          tooltip={
+            <>
+              Built-in keeps credentials in Agent Vault. Infisical syncs read-only from your Infisical instance.
+              {!infisicalAvailable && (
+                <> Set <code>INFISICAL_URL</code> on the server to enable Infisical-backed vaults.</>
+              )}
+            </>
+          }
+        >
+          <Select
+            value={kind}
+            onChange={(e) => setKind(e.target.value)}
+          >
+            <option value="builtin">Built In</option>
+            <option value="infisical" disabled={!infisicalAvailable}>
+              Infisical
+            </option>
+          </Select>
+        </FormField>
+
+        {kind === "infisical" && (
+          <div className="space-y-3">
+            <FormField label="Project ID" required>
+              <Input
+                placeholder="abcdef..."
+                value={projectID}
+                onChange={(e) => setProjectID(e.target.value)}
+              />
+            </FormField>
+            <FormField label="Environment Slug" required>
+              <Input
+                placeholder="dev"
+                value={environment}
+                onChange={(e) => setEnvironment(e.target.value)}
+              />
+            </FormField>
+            <FormField label="Secret path">
+              <Input
+                placeholder="/"
+                value={secretPath}
+                onChange={(e) => setSecretPath(e.target.value)}
+              />
+            </FormField>
+            {error && <ErrorBanner message={error} />}
+          </div>
+        )}
+        </div>
+      </Sheet>
     </>
   );
 }

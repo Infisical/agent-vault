@@ -5,21 +5,22 @@ import type { ScopedSession } from "../types.js";
  * Options for creating a vault-scoped session.
  */
 export interface CreateSessionOptions {
-  /** Vault role for the scoped session. Default: `"proxy"`. */
-  vaultRole?: "proxy" | "member" | "admin";
-  /** Session TTL in seconds (60-86400). Defaults to server's 24h. */
+  /** Session TTL in seconds (300-604800, i.e. 5 minutes to 7 days).
+   *  Defaults to the server's 24h. */
   ttlSeconds?: number;
 }
 
 /**
- * Container configuration for routing a sandboxed agent's HTTPS traffic
- * through Agent Vault's transparent MITM proxy.
+ * Container configuration for routing a sandboxed agent's HTTP and
+ * HTTPS traffic through Agent Vault's transparent MITM proxy.
  */
 export interface ContainerConfig {
   /** Environment variables to inject into the container. */
   env: {
     /** MITM proxy URL with embedded credentials. */
     HTTPS_PROXY: string;
+    /** Same MITM proxy URL — used for plain http:// upstreams via absolute-form forward-proxy requests. */
+    HTTP_PROXY: string;
     /** Hosts to bypass the proxy. */
     NO_PROXY: string;
   };
@@ -64,8 +65,10 @@ export function buildProxyEnv(
   // Proxy and CA trust variables must stay in sync with augmentEnvWithMITM() in cmd/run.go.
   return {
     HTTPS_PROXY: config.env.HTTPS_PROXY,
+    HTTP_PROXY: config.env.HTTP_PROXY,
     NO_PROXY: config.env.NO_PROXY,
     NODE_USE_ENV_PROXY: "1",
+    OPENCLAW_PROXY_URL: config.env.HTTPS_PROXY,
     SSL_CERT_FILE: certPath,
     NODE_EXTRA_CA_CERTS: certPath,
     REQUESTS_CA_BUNDLE: certPath,
@@ -75,12 +78,11 @@ export function buildProxyEnv(
   };
 }
 
-/** Cached MITM metadata (CA cert, host, port, TLS) — static for the server's lifetime. */
+/** Cached MITM metadata (CA cert, host, port) — static for the server's lifetime. */
 interface MitmInfo {
   caCertificate: string;
   host: string;
   port: number;
-  tls: boolean;
 }
 
 /**
@@ -111,7 +113,6 @@ export class SessionsResource {
     const [res, mitmInfo] = await Promise.all([
       this.httpClient.post<ScopedSession>("/v1/sessions", {
         vault: this.vaultName,
-        vault_role: options?.vaultRole,
         ttl_seconds: options?.ttlSeconds,
       }),
       this.getMitmInfo(),
@@ -119,12 +120,12 @@ export class SessionsResource {
 
     let containerConfig: ContainerConfig | null = null;
     if (mitmInfo) {
-      const scheme = mitmInfo.tls ? "https" : "http";
-      const proxyUrl = `${scheme}://${encodeURIComponent(res.token)}:${encodeURIComponent(this.vaultName)}@${mitmInfo.host}:${mitmInfo.port}`;
+      const proxyUrl = `http://${encodeURIComponent(res.token)}:${encodeURIComponent(this.vaultName)}@${mitmInfo.host}:${mitmInfo.port}`;
       containerConfig = {
         env: {
           HTTPS_PROXY: proxyUrl,
-          NO_PROXY: "localhost,127.0.0.1",
+          HTTP_PROXY: proxyUrl,
+          NO_PROXY: `localhost,127.0.0.1,${mitmInfo.host}`,
         },
         caCertificate: mitmInfo.caCertificate,
       };
@@ -178,8 +179,6 @@ export class SessionsResource {
       // fall back to 127.0.0.1
     }
 
-    const tls = resp.headers.get("X-MITM-TLS") === "1";
-
-    return { caCertificate, host, port, tls };
+    return { caCertificate, host, port };
   }
 }

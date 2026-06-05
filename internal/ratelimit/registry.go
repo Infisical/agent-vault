@@ -115,6 +115,24 @@ func (r *Registry) build(cfg Config) {
 	})
 }
 
+// Check peeks at the current state for tier+key without recording an
+// event. Returns Deny when the budget is exhausted, AllowOK otherwise.
+// Used as a pre-gate before expensive work (auth lookups) so that
+// recording can be deferred to the failure path via Allow. Only
+// sliding-window tiers support a true read-only peek; other tier
+// types fail open so they never silently consume budget.
+func (r *Registry) Check(tier Tier, key string) Decision {
+	if r.cfg.Load().Off || key == "" {
+		return AllowOK(0, 0)
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if sw := r.sliding[tier]; sw != nil {
+		return sw.check(key)
+	}
+	return AllowOK(0, 0)
+}
+
 // Allow records one event against tier for key and returns a Decision.
 // Off configs return AllowOK. Unknown/unset tiers fail open (AllowOK).
 // Empty key fails open too (the middleware treats "" as "skip").
@@ -175,9 +193,8 @@ type ProxyEnforcement struct {
 }
 
 // EnforceProxy runs the two TierProxy checks (token bucket first,
-// concurrency semaphore second) for one proxy request. Shared between
-// /proxy/* and the MITM forward handler so limits apply uniformly
-// regardless of ingress.
+// concurrency semaphore second) for one proxy request on the MITM
+// forward handler.
 func (r *Registry) EnforceProxy(ctx context.Context, actorID, vaultID string) ProxyEnforcement {
 	if r == nil || r.cfg.Load().Off || actorID == "" || vaultID == "" {
 		return ProxyEnforcement{Allowed: true, Release: func() {}}

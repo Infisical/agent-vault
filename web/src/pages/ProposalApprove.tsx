@@ -1,4 +1,4 @@
-import { useState, useRef, type FormEvent } from "react";
+import { useState, useEffect, useRef, type FormEvent } from "react";
 import { useLoaderData } from "@tanstack/react-router";
 import { apiFetch } from "../lib/api";
 import Navbar from "../components/Navbar";
@@ -166,13 +166,128 @@ function ApprovalForm({ data }: { data: ApprovalData }) {
   const [formError, setFormError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  // OAuth state per credential key
+  const [oauthFields, setOauthFields] = useState<Record<string, Record<string, string>>>({});
+  const [oauthConnected, setOauthConnected] = useState<Record<string, boolean>>({});
+  const [oauthConnecting, setOauthConnecting] = useState<Record<string, boolean>>({});
+  const pollTimers = useRef<Record<string, ReturnType<typeof setInterval>>>({});
+
+  useEffect(() => {
+    return () => {
+      Object.values(pollTimers.current).forEach(clearInterval);
+    };
+  }, []);
+
   const setCredentials = (data.credentials ?? []).filter(
     (s) => s.action === "set" && !s.has_value
   );
-  const allFilled = setCredentials.every((s) => (credentialValues[s.key] ?? "").trim() !== "");
+
+  const allFilled = setCredentials.every((s) => {
+    if (s.type === "oauth") {
+      const fields = oauthFields[s.key] ?? {};
+      const isTokenUpload = !s.oauth?.authorization_url && !fields.authorization_url;
+      if (isTokenUpload) {
+        return (fields.access_token ?? "").trim() !== "";
+      }
+      return oauthConnected[s.key] === true;
+    }
+    return (credentialValues[s.key] ?? "").trim() !== "";
+  });
 
   function updateCredential(key: string, value: string) {
     setCredentialValues((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function updateOauthField(credKey: string, field: string, value: string) {
+    setOauthFields((prev) => ({
+      ...prev,
+      [credKey]: { ...(prev[credKey] ?? {}), [field]: value },
+    }));
+  }
+
+  async function handleOAuthConnect(credKey: string) {
+    const fields = oauthFields[credKey] ?? {};
+    const oauth = (data.credentials ?? []).find((c) => c.key === credKey)?.oauth;
+    setOauthConnecting((prev) => ({ ...prev, [credKey]: true }));
+    setFormError("");
+
+    try {
+      const resp = await apiFetch("/v1/credentials/oauth/connect", {
+        method: "POST",
+        body: JSON.stringify({
+          vault: data.vault,
+          key: credKey,
+          authorization_url: fields.authorization_url || oauth?.authorization_url || "",
+          token_url: fields.token_url || oauth?.token_url || "",
+          client_id: fields.client_id || oauth?.client_id || "",
+          client_secret: fields.client_secret || "",
+          scopes: fields.scopes || oauth?.scopes || "",
+        }),
+      });
+      if (!resp.ok) {
+        const result = await resp.json();
+        throw new Error(result.error || "Failed to start OAuth flow.");
+      }
+      const result = await resp.json();
+      window.open(result.authorization_url, "_blank", "noopener,noreferrer");
+
+      const timer = setInterval(async () => {
+        try {
+          const statusResp = await apiFetch(
+            `/v1/credentials/oauth/status?vault=${encodeURIComponent(data.vault ?? "default")}&key=${encodeURIComponent(credKey)}`
+          );
+          if (statusResp.ok) {
+            const statusData = await statusResp.json();
+            if (statusData.connected) {
+              setOauthConnected((prev) => ({ ...prev, [credKey]: true }));
+              setOauthConnecting((prev) => ({ ...prev, [credKey]: false }));
+              clearInterval(timer);
+              delete pollTimers.current[credKey];
+            }
+          }
+        } catch { /* ignore */ }
+      }, 2500);
+      pollTimers.current[credKey] = timer;
+      setTimeout(() => {
+        clearInterval(timer);
+        delete pollTimers.current[credKey];
+        setOauthConnecting((prev) => ({ ...prev, [credKey]: false }));
+      }, 300000);
+    } catch (err: unknown) {
+      setFormError(err instanceof Error ? err.message : "An error occurred.");
+      setOauthConnecting((prev) => ({ ...prev, [credKey]: false }));
+    }
+  }
+
+  async function handleOAuthTokenUpload(credKey: string) {
+    const fields = oauthFields[credKey] ?? {};
+    const oauth = (data.credentials ?? []).find((c) => c.key === credKey)?.oauth;
+    setSubmitting(true);
+    setFormError("");
+    try {
+      const body: Record<string, unknown> = {
+        vault: data.vault,
+        key: credKey,
+        access_token: (fields.access_token ?? "").trim(),
+        token_url: fields.token_url || oauth?.token_url || "",
+        client_id: fields.client_id || oauth?.client_id || "",
+      };
+      if (fields.refresh_token?.trim()) body.refresh_token = fields.refresh_token.trim();
+
+      const resp = await apiFetch("/v1/credentials/oauth/tokens", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) {
+        const result = await resp.json();
+        throw new Error(result.error || "Failed to upload tokens.");
+      }
+      setOauthConnected((prev) => ({ ...prev, [credKey]: true }));
+    } catch (err: unknown) {
+      setFormError(err instanceof Error ? err.message : "An error occurred.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function handleApprove(e: FormEvent) {
@@ -182,6 +297,7 @@ function ApprovalForm({ data }: { data: ApprovalData }) {
 
     const credentials: Record<string, string> = {};
     for (const s of setCredentials) {
+      if (s.type === "oauth") continue;
       credentials[s.key] = (credentialValues[s.key] ?? "").trim();
     }
 
@@ -285,39 +401,154 @@ function ApprovalForm({ data }: { data: ApprovalData }) {
       <form onSubmit={handleApprove} className="mt-6 border-t border-border pt-6">
         {setCredentials.length > 0 && (
           <div className="space-y-5 mb-6">
-            {setCredentials.map((cred) => (
-              <FormField
-                key={cred.key}
-                label={cred.description || cred.key}
-                helperText={
-                  (cred.obtain || cred.obtain_instructions) ? (
-                    <span>
-                      {cred.obtain ? (
-                        <a
-                          href={cred.obtain.startsWith("http") ? cred.obtain : `https://${cred.obtain}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary hover:underline"
-                        >
-                          Get it here
-                        </a>
-                      ) : null}
-                      {cred.obtain && cred.obtain_instructions ? " — " : ""}
-                      {cred.obtain_instructions}
-                    </span>
-                  ) : undefined
-                }
-              >
-                <Input
-                  type="password"
-                  placeholder={`Paste your ${cred.description || cred.key}`}
-                  required
-                  autoComplete="off"
-                  value={credentialValues[cred.key] ?? ""}
-                  onChange={(e) => updateCredential(cred.key, e.target.value)}
-                />
-              </FormField>
-            ))}
+            {setCredentials.map((cred) => {
+              if (cred.type === "oauth") {
+                const fields = oauthFields[cred.key] ?? {};
+                const authUrl = fields.authorization_url ?? cred.oauth?.authorization_url ?? "";
+                const isTokenUpload = !authUrl;
+                const connected = oauthConnected[cred.key];
+                const connecting = oauthConnecting[cred.key];
+
+                return (
+                  <div key={cred.key} className="rounded-lg border border-border p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-sm font-semibold text-text">{cred.key}</span>
+                        {cred.description && <span className="text-sm text-text-muted ml-2">{cred.description}</span>}
+                      </div>
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+                        connected ? "bg-success-bg text-success" : "bg-warning-bg text-warning"
+                      }`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${connected ? "bg-success" : "bg-warning"}`} />
+                        {connected ? "Connected" : "OAuth"}
+                      </span>
+                    </div>
+
+                    {connected ? (
+                      <p className="text-sm text-success">Connected successfully.</p>
+                    ) : (
+                      <>
+                        {cred.obtain_instructions && (
+                          <p className="text-sm text-text-muted">{cred.obtain_instructions}</p>
+                        )}
+                        <div className="grid grid-cols-2 gap-3">
+                          {!cred.oauth?.authorization_url && (
+                            <FormField label="Authorization URL" helperText="Leave empty for token upload">
+                              <Input
+                                placeholder="https://provider.com/oauth/authorize"
+                                value={fields.authorization_url ?? ""}
+                                onChange={(e) => updateOauthField(cred.key, "authorization_url", e.target.value)}
+                              />
+                            </FormField>
+                          )}
+                          {!cred.oauth?.token_url && (
+                            <FormField label="Token URL">
+                              <Input
+                                placeholder="https://provider.com/oauth/token"
+                                value={fields.token_url ?? ""}
+                                onChange={(e) => updateOauthField(cred.key, "token_url", e.target.value)}
+                              />
+                            </FormField>
+                          )}
+                          <FormField label="Client ID">
+                            <Input
+                              placeholder="OAuth app client ID"
+                              value={fields.client_id ?? cred.oauth?.client_id ?? ""}
+                              onChange={(e) => updateOauthField(cred.key, "client_id", e.target.value)}
+                            />
+                          </FormField>
+                          {!isTokenUpload && (
+                            <FormField label="Client Secret">
+                              <Input
+                                type="password"
+                                placeholder="OAuth app client secret"
+                                value={fields.client_secret ?? ""}
+                                onChange={(e) => updateOauthField(cred.key, "client_secret", e.target.value)}
+                              />
+                            </FormField>
+                          )}
+                        </div>
+
+                        {isTokenUpload ? (
+                          <div className="border-t border-border pt-3 space-y-3">
+                            <p className="text-xs text-text-muted">Paste tokens obtained externally:</p>
+                            <FormField label="Access Token">
+                              <Input
+                                type="password"
+                                placeholder="Access token"
+                                value={fields.access_token ?? ""}
+                                onChange={(e) => updateOauthField(cred.key, "access_token", e.target.value)}
+                              />
+                            </FormField>
+                            <FormField label="Refresh Token" helperText="Optional — enables auto-refresh">
+                              <Input
+                                type="password"
+                                placeholder="Refresh token"
+                                value={fields.refresh_token ?? ""}
+                                onChange={(e) => updateOauthField(cred.key, "refresh_token", e.target.value)}
+                              />
+                            </FormField>
+                            <Button
+                              type="button"
+                              onClick={() => handleOAuthTokenUpload(cred.key)}
+                              disabled={!(fields.access_token ?? "").trim() || submitting}
+                              loading={submitting}
+                              className="w-full"
+                            >
+                              Save Tokens
+                            </Button>
+                          </div>
+                        ) : (
+                          <Button
+                            type="button"
+                            onClick={() => handleOAuthConnect(cred.key)}
+                            disabled={connecting || connected}
+                            loading={connecting}
+                            className="w-full"
+                          >
+                            {connecting ? "Waiting for authorization..." : "Connect"}
+                          </Button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                );
+              }
+
+              return (
+                <FormField
+                  key={cred.key}
+                  label={cred.description || cred.key}
+                  helperText={
+                    (cred.obtain || cred.obtain_instructions) ? (
+                      <span>
+                        {cred.obtain ? (
+                          <a
+                            href={cred.obtain.startsWith("http") ? cred.obtain : `https://${cred.obtain}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary hover:underline"
+                          >
+                            Get it here
+                          </a>
+                        ) : null}
+                        {cred.obtain && cred.obtain_instructions ? " — " : ""}
+                        {cred.obtain_instructions}
+                      </span>
+                    ) : undefined
+                  }
+                >
+                  <Input
+                    type="password"
+                    placeholder={`Paste your ${cred.description || cred.key}`}
+                    required
+                    autoComplete="off"
+                    value={credentialValues[cred.key] ?? ""}
+                    onChange={(e) => updateCredential(cred.key, e.target.value)}
+                  />
+                </FormField>
+              );
+            })}
           </div>
         )}
 

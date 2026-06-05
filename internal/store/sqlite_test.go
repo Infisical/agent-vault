@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 )
@@ -28,8 +29,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 40 {
-		t.Fatalf("expected migration version 40, got %d", version)
+	if version != 48 {
+		t.Fatalf("expected migration version 48, got %d", version)
 	}
 }
 
@@ -338,7 +339,11 @@ func TestScopedSessionCRUD(t *testing.T) {
 
 	expires := time.Now().Add(1 * time.Hour).UTC().Truncate(time.Second)
 
-	sess, err := s.CreateScopedSession(ctx, ns.ID, "proxy", &expires)
+	sess, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:   ns.ID,
+		VaultRole: "proxy",
+		ExpiresAt: &expires,
+	})
 	if err != nil {
 		t.Fatalf("CreateScopedSession: %v", err)
 	}
@@ -358,6 +363,223 @@ func TestScopedSessionCRUD(t *testing.T) {
 	}
 	if got.ExpiresAt == nil || !got.ExpiresAt.Equal(expires) {
 		t.Fatalf("expected ExpiresAt %v, got %v", expires, got.ExpiresAt)
+	}
+}
+
+func TestDeleteUserCascadesScopedTokensMintedByUser(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	ns, _ := s.GetVault(ctx, "default")
+	u, err := s.CreateUser(ctx, "minter@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	keeper, err := s.CreateUser(ctx, "keeper@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	if err != nil {
+		t.Fatalf("CreateUser keeper: %v", err)
+	}
+
+	// Token minted by `u`.
+	mintedByU, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:            ns.ID,
+		VaultRole:          "proxy",
+		ExpiresAt:          tp(time.Now().Add(time.Hour)),
+		CreatedByActorID:   u.ID,
+		CreatedByActorType: "user",
+	})
+	if err != nil {
+		t.Fatalf("CreateScopedSession u: %v", err)
+	}
+	// Token minted by `keeper` — must survive `u`'s deletion.
+	mintedByKeeper, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:            ns.ID,
+		VaultRole:          "proxy",
+		ExpiresAt:          tp(time.Now().Add(time.Hour)),
+		CreatedByActorID:   keeper.ID,
+		CreatedByActorType: "user",
+	})
+	if err != nil {
+		t.Fatalf("CreateScopedSession keeper: %v", err)
+	}
+
+	if err := s.DeleteUser(ctx, u.ID); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+
+	if got, _ := s.GetSession(ctx, mintedByU.ID); got != nil {
+		t.Fatal("expected u's minted token to be cascaded away")
+	}
+	if got, err := s.GetSession(ctx, mintedByKeeper.ID); err != nil || got == nil {
+		t.Fatalf("expected keeper's token to survive: got=%v err=%v", got, err)
+	}
+}
+
+func TestRevokeAgentCascadesScopedTokensMintedByAgent(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	ns, _ := s.GetVault(ctx, "default")
+	agent, err := s.CreateAgent(ctx, "minter-agent", "system", "member")
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+
+	// Agent's own auth token (agent_id = agent.ID).
+	agentToken, err := s.CreateAgentToken(ctx, agent.ID, tp(time.Now().Add(time.Hour)))
+	if err != nil {
+		t.Fatalf("CreateAgentToken: %v", err)
+	}
+	// Scoped token the agent minted on behalf of itself for a child process.
+	mintedByAgent, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:            ns.ID,
+		VaultRole:          "proxy",
+		ExpiresAt:          tp(time.Now().Add(time.Hour)),
+		CreatedByActorID:   agent.ID,
+		CreatedByActorType: "agent",
+	})
+	if err != nil {
+		t.Fatalf("CreateScopedSession: %v", err)
+	}
+
+	if err := s.RevokeAgent(ctx, agent.ID); err != nil {
+		t.Fatalf("RevokeAgent: %v", err)
+	}
+
+	if got, _ := s.GetSession(ctx, agentToken.ID); got != nil {
+		t.Fatal("expected agent token to be cascaded away")
+	}
+	if got, _ := s.GetSession(ctx, mintedByAgent.ID); got != nil {
+		t.Fatal("expected scoped token minted by agent to be cascaded away")
+	}
+}
+
+func TestListAndRevokeScopedSessions(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	ns, err := s.GetVault(ctx, "default")
+	if err != nil {
+		t.Fatalf("GetVault: %v", err)
+	}
+
+	// Mint two scoped sessions in `default` and one in a second vault to
+	// confirm vault scoping in both list and revoke.
+	other, err := s.CreateVault(ctx, "other")
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+
+	first, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:            ns.ID,
+		VaultRole:          "proxy",
+		ExpiresAt:          tp(time.Now().Add(time.Hour)),
+		Label:              "ci-bot",
+		CreatedByActorID:   "user-1",
+		CreatedByActorType: "user",
+	})
+	if err != nil {
+		t.Fatalf("CreateScopedSession default#1: %v", err)
+	}
+	// Sleep 1s so the second row sorts strictly after the first by created_at
+	// (sqlite's datetime resolution is per-second).
+	time.Sleep(1100 * time.Millisecond)
+	second, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:   ns.ID,
+		VaultRole: "member",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+	})
+	if err != nil {
+		t.Fatalf("CreateScopedSession default#2: %v", err)
+	}
+	if _, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:   other.ID,
+		VaultRole: "proxy",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+	}); err != nil {
+		t.Fatalf("CreateScopedSession other: %v", err)
+	}
+
+	rows, err := s.ListScopedSessionsByVault(ctx, ns.ID)
+	if err != nil {
+		t.Fatalf("ListScopedSessionsByVault: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows scoped to default, got %d", len(rows))
+	}
+	if rows[0].PublicID != second.PublicID || rows[1].PublicID != first.PublicID {
+		t.Fatalf("expected newest-first ordering: %s,%s — got %s,%s",
+			second.PublicID, first.PublicID, rows[0].PublicID, rows[1].PublicID)
+	}
+	if rows[1].Label != "ci-bot" {
+		t.Fatalf("expected label 'ci-bot' on first row, got %q", rows[1].Label)
+	}
+	if rows[1].CreatedByActorID != "user-1" || rows[1].CreatedByActorType != "user" {
+		t.Fatalf("expected created_by user/user-1, got %s/%s",
+			rows[1].CreatedByActorType, rows[1].CreatedByActorID)
+	}
+
+	// Cross-vault revoke must fail (publicID belongs to default, not other).
+	if err := s.RevokeScopedSession(ctx, other.ID, first.PublicID); err != sql.ErrNoRows {
+		t.Fatalf("expected sql.ErrNoRows on cross-vault revoke, got %v", err)
+	}
+
+	// Same-vault revoke succeeds and removes the row from list.
+	if err := s.RevokeScopedSession(ctx, ns.ID, first.PublicID); err != nil {
+		t.Fatalf("RevokeScopedSession: %v", err)
+	}
+	rows, err = s.ListScopedSessionsByVault(ctx, ns.ID)
+	if err != nil {
+		t.Fatalf("ListScopedSessionsByVault after revoke: %v", err)
+	}
+	if len(rows) != 1 || rows[0].PublicID != second.PublicID {
+		t.Fatalf("expected only second row to remain, got %+v", rows)
+	}
+
+	// Re-revoke is a no-op (sql.ErrNoRows).
+	if err := s.RevokeScopedSession(ctx, ns.ID, first.PublicID); err != sql.ErrNoRows {
+		t.Fatalf("expected sql.ErrNoRows on second revoke, got %v", err)
+	}
+}
+
+func TestListScopedSessionsExcludesExpiredAndUserRows(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	ns, _ := s.GetVault(ctx, "default")
+
+	// Active scoped row → included.
+	active, _ := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:   ns.ID,
+		VaultRole: "proxy",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+	})
+
+	// Expired scoped row → excluded by the SQL filter.
+	if _, err := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:   ns.ID,
+		VaultRole: "proxy",
+		ExpiresAt: tp(time.Now().Add(-time.Hour)),
+	}); err != nil {
+		t.Fatalf("CreateScopedSession (expired): %v", err)
+	}
+
+	// User-login row that happens to carry the same vault_id (none today, but
+	// the list query must defend against future cross-pollution by filtering
+	// user_id IS NULL AND agent_id IS NULL).
+	u, _ := s.CreateUser(ctx, "scoped-list@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	if _, err := s.CreateUserSession(ctx, CreateUserSessionParams{
+		UserID: u.ID, ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateUserSession: %v", err)
+	}
+
+	rows, err := s.ListScopedSessionsByVault(ctx, ns.ID)
+	if err != nil {
+		t.Fatalf("ListScopedSessionsByVault: %v", err)
+	}
+	if len(rows) != 1 || rows[0].PublicID != active.PublicID {
+		t.Fatalf("expected only the active scoped row, got %+v", rows)
 	}
 }
 
@@ -1106,7 +1328,7 @@ func TestApplyProposal(t *testing.T) {
 		"STRIPE_KEY": {Ciphertext: []byte("real-enc"), Nonce: []byte("real-nonce")},
 	}
 
-	err := s.ApplyProposal(ctx, ns.ID, 1, mergedServices, creds, nil)
+	err := s.ApplyProposal(ctx, ns.ID, 1, mergedServices, creds, nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProposal: %v", err)
 	}
@@ -1155,7 +1377,7 @@ func TestApplyProposalWithCredentialDeletion(t *testing.T) {
 		"new_key": {Ciphertext: []byte("new-enc"), Nonce: []byte("new-nonce")},
 	}
 
-	err := s.ApplyProposal(ctx, ns.ID, 1, mergedServices, creds, []string{"old_key"})
+	err := s.ApplyProposal(ctx, ns.ID, 1, mergedServices, creds, []string{"old_key"}, nil)
 	if err != nil {
 		t.Fatalf("ApplyProposal with delete: %v", err)
 	}
@@ -1201,194 +1423,6 @@ func TestCascadeDeleteVaultRemovesProposals(t *testing.T) {
 	}
 }
 
-// --- Invites ---
-
-func TestCreateAgentInvite(t *testing.T) {
-	s := openTestDB(t)
-	ctx := context.Background()
-
-	inv, err := s.CreateAgentInvite(ctx, "testbot", "admin", time.Now().Add(15*time.Minute), 0, "member", nil)
-	if err != nil {
-		t.Fatalf("CreateAgentInvite: %v", err)
-	}
-	if inv.Status != "pending" {
-		t.Fatalf("expected status pending, got %s", inv.Status)
-	}
-	if len(inv.Token) < 7 || inv.Token[:7] != "av_inv_" {
-		t.Fatalf("unexpected token format: %s", inv.Token)
-	}
-	if inv.AgentName != "testbot" {
-		t.Fatalf("expected agent_name testbot, got %s", inv.AgentName)
-	}
-}
-
-func TestRedeemInvite(t *testing.T) {
-	s := openTestDB(t)
-	ctx := context.Background()
-
-	inv, _ := s.CreateAgentInvite(ctx, "redeembot", "admin", time.Now().Add(15*time.Minute), 0, "member", nil)
-
-	err := s.RedeemInvite(ctx, inv.Token, "sess-123")
-	if err != nil {
-		t.Fatalf("RedeemInvite: %v", err)
-	}
-
-	got, err := s.GetInviteByToken(ctx, inv.Token)
-	if err != nil {
-		t.Fatalf("GetInviteByToken: %v", err)
-	}
-	if got.Status != "redeemed" {
-		t.Fatalf("expected status redeemed, got %s", got.Status)
-	}
-	if got.SessionID != "sess-123" {
-		t.Fatalf("expected session_id sess-123, got %s", got.SessionID)
-	}
-	if got.RedeemedAt == nil {
-		t.Fatal("expected redeemed_at to be set")
-	}
-}
-
-func TestRedeemInvite_Expired(t *testing.T) {
-	s := openTestDB(t)
-	ctx := context.Background()
-
-	inv, _ := s.CreateAgentInvite(ctx, "expiredbot", "admin", time.Now().Add(-1*time.Minute), 0, "member", nil)
-
-	err := s.RedeemInvite(ctx, inv.Token, "sess-456")
-	if err != sql.ErrNoRows {
-		t.Fatalf("expected ErrNoRows for expired invite, got %v", err)
-	}
-}
-
-func TestRedeemInvite_AlreadyRedeemed(t *testing.T) {
-	s := openTestDB(t)
-	ctx := context.Background()
-
-	inv, _ := s.CreateAgentInvite(ctx, "doublebot", "admin", time.Now().Add(15*time.Minute), 0, "member", nil)
-	s.RedeemInvite(ctx, inv.Token, "sess-1")
-
-	err := s.RedeemInvite(ctx, inv.Token, "sess-2")
-	if err != sql.ErrNoRows {
-		t.Fatalf("expected ErrNoRows for already-redeemed invite, got %v", err)
-	}
-}
-
-func TestRevokeInvite(t *testing.T) {
-	s := openTestDB(t)
-	ctx := context.Background()
-
-	inv, _ := s.CreateAgentInvite(ctx, "revokebot", "admin", time.Now().Add(15*time.Minute), 0, "member", nil)
-
-	if err := s.RevokeInvite(ctx, inv.Token); err != nil {
-		t.Fatalf("RevokeInvite: %v", err)
-	}
-
-	got, _ := s.GetInviteByToken(ctx, inv.Token)
-	if got.Status != "revoked" {
-		t.Fatalf("expected status revoked, got %s", got.Status)
-	}
-	if got.RevokedAt == nil {
-		t.Fatal("expected revoked_at to be set")
-	}
-}
-
-func TestCountPendingInvites(t *testing.T) {
-	s := openTestDB(t)
-	ctx := context.Background()
-
-	inv1, _ := s.CreateAgentInvite(ctx, "countbot1", "admin", time.Now().Add(15*time.Minute), 0, "member", nil)
-	s.CreateAgentInvite(ctx, "countbot2", "admin", time.Now().Add(15*time.Minute), 0, "member", nil)
-
-	count, err := s.CountPendingInvites(ctx)
-	if err != nil {
-		t.Fatalf("CountPendingInvites: %v", err)
-	}
-	if count != 2 {
-		t.Fatalf("expected 2 pending invites, got %d", count)
-	}
-
-	// Revoke one — count should drop.
-	s.RevokeInvite(ctx, inv1.Token)
-
-	count, _ = s.CountPendingInvites(ctx)
-	if count != 1 {
-		t.Fatalf("expected 1 pending invite after revoke, got %d", count)
-	}
-}
-
-func TestExpirePendingInvites(t *testing.T) {
-	s := openTestDB(t)
-	ctx := context.Background()
-
-	// Create two invites: one already expired, one still valid.
-	s.CreateAgentInvite(ctx, "expirebot1", "admin", time.Now().Add(-1*time.Minute), 0, "member", nil)
-	s.CreateAgentInvite(ctx, "expirebot2", "admin", time.Now().Add(15*time.Minute), 0, "member", nil)
-
-	n, err := s.ExpirePendingInvites(ctx, time.Now())
-	if err != nil {
-		t.Fatalf("ExpirePendingInvites: %v", err)
-	}
-	if n != 1 {
-		t.Fatalf("expected 1 expired invite, got %d", n)
-	}
-
-	pending, _ := s.ListInvites(ctx, "pending")
-	if len(pending) != 1 {
-		t.Fatalf("expected 1 remaining pending invite, got %d", len(pending))
-	}
-}
-
-func TestListInvites(t *testing.T) {
-	s := openTestDB(t)
-	ctx := context.Background()
-
-	s.CreateAgentInvite(ctx, "listbot1", "admin", time.Now().Add(15*time.Minute), 0, "member", nil)
-	inv2, _ := s.CreateAgentInvite(ctx, "listbot2", "admin", time.Now().Add(15*time.Minute), 0, "member", nil)
-	s.RevokeInvite(ctx, inv2.Token)
-
-	// All invites.
-	all, _ := s.ListInvites(ctx, "")
-	if len(all) != 2 {
-		t.Fatalf("expected 2 total invites, got %d", len(all))
-	}
-
-	// Pending only.
-	pending, _ := s.ListInvites(ctx, "pending")
-	if len(pending) != 1 {
-		t.Fatalf("expected 1 pending invite, got %d", len(pending))
-	}
-
-	// Revoked only.
-	revoked, _ := s.ListInvites(ctx, "revoked")
-	if len(revoked) != 1 {
-		t.Fatalf("expected 1 revoked invite, got %d", len(revoked))
-	}
-}
-
-func TestInviteWithVaultPreAssignment(t *testing.T) {
-	s := openTestDB(t)
-	ctx := context.Background()
-	ns, _ := s.GetVault(ctx, "default")
-
-	inv, err := s.CreateAgentInvite(ctx, "vaultbot", "admin", time.Now().Add(15*time.Minute), 0, "member", []AgentInviteVault{
-		{VaultID: ns.ID, VaultRole: "proxy"},
-	})
-	if err != nil {
-		t.Fatalf("CreateAgentInvite with vaults: %v", err)
-	}
-	if len(inv.Vaults) != 1 {
-		t.Fatalf("expected 1 vault pre-assignment, got %d", len(inv.Vaults))
-	}
-	if inv.Vaults[0].VaultRole != "proxy" {
-		t.Fatalf("expected vault role proxy, got %s", inv.Vaults[0].VaultRole)
-	}
-
-	// Fetch and verify vaults are loaded.
-	fetched, _ := s.GetInviteByToken(ctx, inv.Token)
-	if len(fetched.Vaults) != 1 {
-		t.Fatalf("fetched invite: expected 1 vault, got %d", len(fetched.Vaults))
-	}
-}
 
 // --- UUID ---
 
@@ -1653,6 +1687,52 @@ func TestCreateAgent(t *testing.T) {
 	}
 }
 
+func TestCreateAgentWithGrantsAndToken(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	ns, err := s.GetVault(ctx, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ag, sess, err := s.CreateAgentWithGrantsAndToken(ctx, "txbot", "creator-uid", "member",
+		[]AgentVaultGrantSpec{{VaultID: ns.ID, Role: "proxy"}}, nil)
+	if err != nil {
+		t.Fatalf("CreateAgentWithGrantsAndToken: %v", err)
+	}
+	if ag.Name != "txbot" || sess.AgentID != ag.ID || sess.ID == "" {
+		t.Fatalf("unexpected agent/session: ag=%+v sess=%+v", ag, sess)
+	}
+
+	got, err := s.GetAgentByName(ctx, "txbot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Vaults) != 1 || got.Vaults[0].Role != "proxy" {
+		t.Fatalf("expected one proxy grant, got %+v", got.Vaults)
+	}
+	if n, _ := s.CountAgentTokens(ctx, ag.ID); n != 1 {
+		t.Fatalf("expected 1 token, got %d", n)
+	}
+}
+
+func TestCreateAgentWithGrantsAndToken_NoVaults(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	ag, sess, err := s.CreateAgentWithGrantsAndToken(ctx, "barebot", "creator-uid", "member", nil, nil)
+	if err != nil {
+		t.Fatalf("CreateAgentWithGrantsAndToken: %v", err)
+	}
+	if len(ag.Name) == 0 || sess.AgentID != ag.ID {
+		t.Fatalf("unexpected agent/session: ag=%+v sess=%+v", ag, sess)
+	}
+	if n, _ := s.CountAgentTokens(ctx, ag.ID); n != 1 {
+		t.Fatalf("expected 1 token, got %d", n)
+	}
+}
+
 func TestGetAgentByName(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
@@ -1834,7 +1914,11 @@ func TestGetSessionBackwardCompat(t *testing.T) {
 	ctx := context.Background()
 
 	ns, _ := s.GetVault(ctx, "default")
-	sess, _ := s.CreateScopedSession(ctx, ns.ID, "proxy", tp(time.Now().Add(24*time.Hour)))
+	sess, _ := s.CreateScopedSession(ctx, CreateScopedSessionParams{
+		VaultID:   ns.ID,
+		VaultRole: "proxy",
+		ExpiresAt: tp(time.Now().Add(24 * time.Hour)),
+	})
 
 	fetched, err := s.GetSession(ctx, sess.ID)
 	if err != nil {
@@ -1845,54 +1929,6 @@ func TestGetSessionBackwardCompat(t *testing.T) {
 	}
 }
 
-func TestCreateAgentInviteWithVaults(t *testing.T) {
-	s := openTestDB(t)
-	ctx := context.Background()
-
-	ns, _ := s.GetVault(ctx, "default")
-	inv, err := s.CreateAgentInvite(ctx, "mybot", "creator1", time.Now().Add(15*time.Minute), 0, "member", []AgentInviteVault{
-		{VaultID: ns.ID, VaultRole: "proxy"},
-	})
-	if err != nil {
-		t.Fatalf("CreateAgentInvite: %v", err)
-	}
-	if inv.AgentName != "mybot" {
-		t.Fatalf("expected agent_name mybot, got %s", inv.AgentName)
-	}
-	if len(inv.Vaults) != 1 {
-		t.Fatalf("expected 1 vault, got %d", len(inv.Vaults))
-	}
-
-	// Fetch and verify.
-	fetched, _ := s.GetInviteByToken(ctx, inv.Token)
-	if fetched.AgentName != "mybot" {
-		t.Fatalf("fetched agent_name: expected mybot, got %s", fetched.AgentName)
-	}
-	if len(fetched.Vaults) != 1 {
-		t.Fatalf("fetched: expected 1 vault, got %d", len(fetched.Vaults))
-	}
-}
-
-func TestCreateRotationInvite(t *testing.T) {
-	s := openTestDB(t)
-	ctx := context.Background()
-
-	ag, _ := s.CreateAgent(ctx, "rotatebot", "c", "member")
-
-	inv, err := s.CreateRotationInvite(ctx, ag.ID, "creator1", time.Now().Add(15*time.Minute))
-	if err != nil {
-		t.Fatalf("CreateRotationInvite: %v", err)
-	}
-	if inv.AgentID != ag.ID {
-		t.Fatalf("expected agent_id %s, got %s", ag.ID, inv.AgentID)
-	}
-
-	// Fetch and verify.
-	fetched, _ := s.GetInviteByToken(ctx, inv.Token)
-	if fetched.AgentID != ag.ID {
-		t.Fatalf("fetched: expected agent_id %s, got %s", ag.ID, fetched.AgentID)
-	}
-}
 
 func TestDeleteAgentTokens(t *testing.T) {
 	s := openTestDB(t)
@@ -2095,5 +2131,307 @@ func TestListRequestLogsTailOrdering(t *testing.T) {
 	}
 	if tail[0].ID != boundary+1 {
 		t.Fatalf("tail should start at id %d, got %d", boundary+1, tail[0].ID)
+	}
+}
+
+// TestNoAccessRoleAcceptedByMigration verifies migration 045 widened the
+// instance-role CHECK constraint on agents.role. A wire value of "no-access"
+// must persist; an invalid value must still be rejected.
+func TestNoAccessRoleAcceptedByMigration(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	agent, err := s.CreateAgent(ctx, "scoped-agent", "system", "no-access")
+	if err != nil {
+		t.Fatalf("CreateAgent with no-access role: %v", err)
+	}
+	if agent.Role != "no-access" {
+		t.Fatalf("expected role no-access, got %q", agent.Role)
+	}
+
+	if _, err := s.CreateAgent(ctx, "bad-agent", "system", "bogus-role"); err == nil {
+		t.Fatalf("expected CreateAgent with bogus role to fail CHECK constraint")
+	}
+}
+
+// --- External Credential Stores ---
+
+func TestCreateExternalVault(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, err := s.CreateUser(ctx, "ext@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	params := CreateExternalVaultParams{
+		Name:                "ext-vault",
+		Kind:                "infisical",
+		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+		PollIntervalSeconds: 60,
+		Credentials: []EncryptedKV{
+			{Key: "FOO", Ciphertext: []byte("c1"), Nonce: []byte("n1")},
+			{Key: "BAR", Ciphertext: []byte("c2"), Nonce: []byte("n2")},
+		},
+		CreatorActorID:   u.ID,
+		CreatorActorType: "user",
+	}
+
+	v, err := s.CreateExternalVault(ctx, params)
+	if err != nil {
+		t.Fatalf("CreateExternalVault: %v", err)
+	}
+	if v.Name != "ext-vault" || v.ID == "" {
+		t.Fatalf("bad vault: %+v", v)
+	}
+
+	cs, err := s.GetVaultCredentialStore(ctx, v.ID)
+	if err != nil {
+		t.Fatalf("GetVaultCredentialStore: %v", err)
+	}
+	if cs.Kind != "infisical" || cs.PollIntervalSeconds != 60 || cs.LastSyncStatus != "ok" {
+		t.Fatalf("bad credential store: %+v", cs)
+	}
+	if cs.LastSyncedAt == nil {
+		t.Fatalf("expected last_synced_at populated")
+	}
+
+	creds, err := s.ListCredentials(ctx, v.ID)
+	if err != nil {
+		t.Fatalf("ListCredentials: %v", err)
+	}
+	if len(creds) != 2 {
+		t.Fatalf("expected 2 seeded credentials, got %d", len(creds))
+	}
+
+	role, err := s.GetVaultRole(ctx, u.ID, v.ID)
+	if err != nil {
+		t.Fatalf("GetVaultRole: %v", err)
+	}
+	if role != "admin" {
+		t.Fatalf("expected creator admin grant, got %q", role)
+	}
+
+	bc, err := s.GetBrokerConfig(ctx, v.ID)
+	if err != nil {
+		t.Fatalf("GetBrokerConfig: %v", err)
+	}
+	if bc.ServicesJSON != "[]" {
+		t.Fatalf("expected empty services_json, got %q", bc.ServicesJSON)
+	}
+}
+
+func TestCreateExternalVaultRollbackOnDuplicateName(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "ext-dup@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+
+	params := CreateExternalVaultParams{
+		Name:                "dup-vault",
+		Kind:                "infisical",
+		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+		PollIntervalSeconds: 60,
+		Credentials:         []EncryptedKV{{Key: "K", Ciphertext: []byte("c"), Nonce: []byte("n")}},
+		CreatorActorID:      u.ID,
+		CreatorActorType:    "user",
+	}
+
+	if _, err := s.CreateExternalVault(ctx, params); err != nil {
+		t.Fatalf("first CreateExternalVault: %v", err)
+	}
+	// Second attempt with same name must fail and leave no orphan rows.
+	if _, err := s.CreateExternalVault(ctx, params); err == nil {
+		t.Fatalf("expected duplicate-name failure")
+	}
+
+	// Exactly one vault with this name; exactly one credential row across all
+	// of the rejected attempt's keys (the K from the first vault).
+	var vaultCount, credCount int
+	_ = s.db.QueryRow("SELECT COUNT(*) FROM vaults WHERE name = ?", "dup-vault").Scan(&vaultCount)
+	if vaultCount != 1 {
+		t.Fatalf("expected exactly 1 vault, got %d", vaultCount)
+	}
+	_ = s.db.QueryRow("SELECT COUNT(*) FROM credentials WHERE key = ?", "K").Scan(&credCount)
+	if credCount != 1 {
+		t.Fatalf("expected exactly 1 credential row after rollback, got %d", credCount)
+	}
+}
+
+func TestCreateExternalVaultRejectsBelowMinPollInterval(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "min-poll@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	_, err := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+		Name:                "spin-vault",
+		Kind:                "infisical",
+		ConfigJSON:          `{}`,
+		PollIntervalSeconds: 5,
+		CreatorActorID:      u.ID,
+		CreatorActorType:    "user",
+	})
+	if err == nil {
+		t.Fatalf("expected CHECK constraint failure for poll_interval_seconds=5, got nil")
+	}
+}
+
+func TestCascadeDeleteVaultRemovesCredentialStore(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "cascade-cs@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	v, err := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+		Name:                "cascade-cs-vault",
+		Kind:                "infisical",
+		ConfigJSON:          `{}`,
+		PollIntervalSeconds: 60,
+		CreatorActorID:      u.ID,
+		CreatorActorType:    "user",
+	})
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := s.DeleteVault(ctx, v.Name); err != nil {
+		t.Fatalf("DeleteVault: %v", err)
+	}
+	if _, err := s.GetVaultCredentialStore(ctx, v.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows after cascade delete, got %v", err)
+	}
+}
+
+func TestReplaceVaultCredentials(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "replace@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	v, err := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+		Name:                "replace-vault",
+		Kind:                "infisical",
+		ConfigJSON:          `{}`,
+		PollIntervalSeconds: 60,
+		Credentials: []EncryptedKV{
+			{Key: "A", Ciphertext: []byte("c1"), Nonce: []byte("n1")},
+			{Key: "B", Ciphertext: []byte("c2"), Nonce: []byte("n2")},
+		},
+		CreatorActorID:   u.ID,
+		CreatorActorType: "user",
+	})
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Replace: keep A (rotated), drop B, add C.
+	err = s.ReplaceVaultCredentials(ctx, v.ID, []EncryptedKV{
+		{Key: "A", Ciphertext: []byte("c1-new"), Nonce: []byte("n1-new")},
+		{Key: "C", Ciphertext: []byte("c3"), Nonce: []byte("n3")},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceVaultCredentials: %v", err)
+	}
+
+	creds, _ := s.ListCredentials(ctx, v.ID)
+	if len(creds) != 2 {
+		t.Fatalf("expected 2 creds after replace, got %d", len(creds))
+	}
+	keys := map[string]string{}
+	for _, c := range creds {
+		keys[c.Key] = string(c.Ciphertext)
+	}
+	if keys["A"] != "c1-new" {
+		t.Fatalf("A not rotated, got %q", keys["A"])
+	}
+	if _, ok := keys["B"]; ok {
+		t.Fatalf("B should have been deleted")
+	}
+	if keys["C"] != "c3" {
+		t.Fatalf("C not inserted, got %q", keys["C"])
+	}
+}
+
+func TestReplaceVaultCredentialsEmptyWipes(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "wipe@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	v, _ := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+		Name:                "wipe-vault",
+		Kind:                "infisical",
+		ConfigJSON:          `{}`,
+		PollIntervalSeconds: 60,
+		Credentials:         []EncryptedKV{{Key: "ONLY", Ciphertext: []byte("c"), Nonce: []byte("n")}},
+		CreatorActorID:      u.ID,
+		CreatorActorType:    "user",
+	})
+
+	if err := s.ReplaceVaultCredentials(ctx, v.ID, nil); err != nil {
+		t.Fatalf("ReplaceVaultCredentials nil: %v", err)
+	}
+	creds, _ := s.ListCredentials(ctx, v.ID)
+	if len(creds) != 0 {
+		t.Fatalf("expected vault wiped, got %d creds", len(creds))
+	}
+}
+
+func TestUpdateVaultCredentialStoreHealth(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "health@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	v, _ := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+		Name:                "health-vault",
+		Kind:                "infisical",
+		ConfigJSON:          `{}`,
+		PollIntervalSeconds: 60,
+		Credentials:         []EncryptedKV{{Key: "K", Ciphertext: []byte("c"), Nonce: []byte("n")}},
+		CreatorActorID:      u.ID,
+		CreatorActorType:    "user",
+	})
+
+	when := time.Now().UTC().Add(-time.Minute)
+	if err := s.UpdateVaultCredentialStoreHealth(ctx, v.ID, "error", "boom", when); err != nil {
+		t.Fatalf("UpdateVaultCredentialStoreHealth: %v", err)
+	}
+	cs, _ := s.GetVaultCredentialStore(ctx, v.ID)
+	if cs.LastSyncStatus != "error" || cs.LastSyncError != "boom" {
+		t.Fatalf("health not updated: %+v", cs)
+	}
+	// Clear the error on a subsequent ok update.
+	if err := s.UpdateVaultCredentialStoreHealth(ctx, v.ID, "ok", "", time.Now().UTC()); err != nil {
+		t.Fatalf("clear error: %v", err)
+	}
+	cs, _ = s.GetVaultCredentialStore(ctx, v.ID)
+	if cs.LastSyncStatus != "ok" || cs.LastSyncError != "" {
+		t.Fatalf("expected ok with empty error, got %+v", cs)
+	}
+}
+
+func TestListVaultCredentialStoresFiltersBuiltin(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "list@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+
+	// A builtin vault (no row in vault_credential_stores).
+	if _, err := s.CreateVault(ctx, "plain"); err != nil {
+		t.Fatal(err)
+	}
+	// Two external vaults.
+	for _, name := range []string{"ext-a", "ext-b"} {
+		if _, err := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+			Name: name, Kind: "infisical", ConfigJSON: `{}`, PollIntervalSeconds: 60,
+			Credentials:      []EncryptedKV{{Key: "K", Ciphertext: []byte("c"), Nonce: []byte("n")}},
+			CreatorActorID:   u.ID,
+			CreatorActorType: "user",
+		}); err != nil {
+			t.Fatalf("CreateExternalVault %s: %v", name, err)
+		}
+	}
+
+	list, err := s.ListVaultCredentialStores(ctx)
+	if err != nil {
+		t.Fatalf("ListVaultCredentialStores: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected 2 external stores, got %d (%+v)", len(list), list)
 	}
 }

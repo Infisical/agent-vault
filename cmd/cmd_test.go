@@ -3,7 +3,10 @@ package cmd
 import (
 	"bytes"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -256,8 +259,15 @@ func TestServerCmd_RefusesWhenPIDFileLive(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	// Seed the PID file with our own PID — guaranteed to be a live process.
-	owner := os.Getpid()
+	ownerProcess := exec.Command("sleep", "30")
+	if err := ownerProcess.Start(); err != nil {
+		t.Fatalf("start pid owner: %v", err)
+	}
+	defer func() {
+		_ = ownerProcess.Process.Kill()
+		_, _ = ownerProcess.Process.Wait()
+	}()
+	owner := ownerProcess.Process.Pid
 	if err := pidfile.Write(owner); err != nil {
 		t.Fatalf("seed pidfile: %v", err)
 	}
@@ -454,7 +464,7 @@ func TestAgentSubcommandsRegistered(t *testing.T) {
 }
 
 func TestTopAgentSubcommandsRegistered(t *testing.T) {
-	// Instance-level agent commands: list, info, revoke, rotate, rename, invite
+	// Instance-level agent commands: list, info, delete, rotate, rename, create, set-role
 	agCmd := findSubcommand(rootCmd, "agent")
 	if agCmd == nil {
 		t.Fatal("agent command not found")
@@ -465,7 +475,7 @@ func TestTopAgentSubcommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"list", "info", "delete", "rotate", "rename", "invite"}
+	expected := []string{"list", "info", "delete", "rotate", "rename", "create", "set-role"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected agent subcommand %q to be registered, but it was not", name)
@@ -473,32 +483,20 @@ func TestTopAgentSubcommandsRegistered(t *testing.T) {
 	}
 }
 
-func TestAgentInviteSubcommandsRegistered(t *testing.T) {
+func TestAgentCreateFlags(t *testing.T) {
 	agCmd := findSubcommand(rootCmd, "agent")
 	if agCmd == nil {
 		t.Fatal("agent command not found")
 	}
-	invCmd := findSubcommand(agCmd, "invite")
-	if invCmd == nil {
-		t.Fatal("invite command not found under agent")
+	createCmd := findSubcommand(agCmd, "create")
+	if createCmd == nil {
+		t.Fatal("create command not found under agent")
 	}
 
-	registered := make(map[string]bool)
-	for _, c := range invCmd.Commands() {
-		registered[c.Name()] = true
-	}
-
-	expected := []string{"list", "revoke"}
-	for _, name := range expected {
-		if !registered[name] {
-			t.Errorf("expected agent invite subcommand %q to be registered, but it was not", name)
+	for _, name := range []string{"vault", "role", "token-only"} {
+		if createCmd.Flags().Lookup(name) == nil {
+			t.Errorf("expected agent create flag --%s to be registered", name)
 		}
-	}
-
-	// Verify --vault flag on invite command
-	f := invCmd.Flags().Lookup("vault")
-	if f == nil {
-		t.Fatal("expected --vault flag on agent invite command")
 	}
 }
 
@@ -643,13 +641,16 @@ func TestResolveVaultWithEnvVar(t *testing.T) {
 }
 
 func TestResolveSessionFromEnvVars(t *testing.T) {
-	t.Run("returns session from env vars", func(t *testing.T) {
-		t.Setenv("AGENT_VAULT_SESSION_TOKEN", "test-token-123")
+	t.Run("returns session from new env var name", func(t *testing.T) {
+		t.Setenv("AGENT_VAULT_TOKEN", "test-token-123")
 		t.Setenv("AGENT_VAULT_ADDR", "http://localhost:9999")
 
-		sess, err := resolveSession()
+		sess, tokenSource, err := resolveSession()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if tokenSource != "AGENT_VAULT_TOKEN" {
+			t.Errorf("expected tokenSource=AGENT_VAULT_TOKEN, got %q", tokenSource)
 		}
 		if sess.Token != "test-token-123" {
 			t.Errorf("expected token %q, got %q", "test-token-123", sess.Token)
@@ -659,11 +660,24 @@ func TestResolveSessionFromEnvVars(t *testing.T) {
 		}
 	})
 
+	t.Run("token without addr is a clear error", func(t *testing.T) {
+		t.Setenv("AGENT_VAULT_TOKEN", "test-token")
+		t.Setenv("AGENT_VAULT_ADDR", "")
+
+		_, _, err := resolveSession()
+		if err == nil {
+			t.Fatal("expected error when token is set but addr is missing")
+		}
+		if !strings.Contains(err.Error(), "AGENT_VAULT_ADDR") {
+			t.Errorf("error should mention AGENT_VAULT_ADDR; got: %v", err)
+		}
+	})
+
 	t.Run("trims trailing slash from address", func(t *testing.T) {
-		t.Setenv("AGENT_VAULT_SESSION_TOKEN", "test-token")
+		t.Setenv("AGENT_VAULT_TOKEN", "test-token")
 		t.Setenv("AGENT_VAULT_ADDR", "http://localhost:9999/")
 
-		sess, err := resolveSession()
+		sess, _, err := resolveSession()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -671,6 +685,70 @@ func TestResolveSessionFromEnvVars(t *testing.T) {
 			t.Errorf("expected address without trailing slash, got %q", sess.Address)
 		}
 	})
+}
+
+func TestValidateEnvToken(t *testing.T) {
+	t.Run("happy path: 200 OK with matching vault", func(t *testing.T) {
+		var gotAuth, gotVault string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotAuth = r.Header.Get("Authorization")
+			gotVault = r.Header.Get("X-Vault")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"vault":"myvault"}`))
+		}))
+		defer srv.Close()
+
+		if err := validateEnvToken(srv.URL, "tok123", "myvault", "AGENT_VAULT_TOKEN"); err != nil {
+			t.Fatalf("expected nil err, got %v", err)
+		}
+		if gotAuth != "Bearer tok123" {
+			t.Errorf("Authorization header = %q, want Bearer tok123", gotAuth)
+		}
+		if gotVault != "myvault" {
+			t.Errorf("X-Vault header = %q, want myvault", gotVault)
+		}
+	})
+
+	t.Run("401 produces friendly error naming the env var", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer srv.Close()
+
+		err := validateEnvToken(srv.URL, "bad", "v", "AGENT_VAULT_TOKEN")
+		if err == nil {
+			t.Fatal("expected error on 401")
+		}
+		if !strings.Contains(err.Error(), "rejected by broker") {
+			t.Errorf("expected friendly 'rejected by broker' message; got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "AGENT_VAULT_TOKEN") {
+			t.Errorf("expected error to name the env var; got: %v", err)
+		}
+	})
+
+	t.Run("vault mismatch is rejected", func(t *testing.T) {
+		// Broker returns the session's baked-in vault, ignoring the
+		// X-Vault header on a vault-scoped session token.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"vault":"actual-vault","services":[],"available_credentials":[]}`))
+		}))
+		defer srv.Close()
+
+		err := validateEnvToken(srv.URL, "tok", "requested-vault", "AGENT_VAULT_TOKEN")
+		if err == nil {
+			t.Fatal("expected mismatch error")
+		}
+		if !strings.Contains(err.Error(), "vault mismatch") {
+			t.Errorf("expected 'vault mismatch' wording; got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "actual-vault") || !strings.Contains(err.Error(), "requested-vault") {
+			t.Errorf("expected both vault names in error; got: %v", err)
+		}
+	})
+
 }
 
 func TestProposalCreateFlagsRegistered(t *testing.T) {
@@ -687,7 +765,7 @@ func TestProposalCreateFlagsRegistered(t *testing.T) {
 		t.Fatal("create command not found under proposal")
 	}
 
-	expectedFlags := []string{"file", "host", "auth-type", "token-key", "credential", "message", "user-message", "json", "description", "username-key", "password-key", "api-key-key", "api-key-header", "api-key-prefix"}
+	expectedFlags := []string{"file", "name", "host", "auth-type", "token-key", "credential", "message", "user-message", "json", "username-key", "password-key", "api-key-key", "api-key-header", "api-key-prefix"}
 	for _, name := range expectedFlags {
 		if createCmd.Flags().Lookup(name) == nil {
 			t.Errorf("expected flag --%s on proposal create command", name)
@@ -798,12 +876,12 @@ func TestResolveLogLevel(t *testing.T) {
 	t.Setenv("AGENT_VAULT_LOG_LEVEL", "")
 
 	cases := []struct {
-		name        string
-		flag        string
-		changed     bool
-		env         string
-		wantLevel   string // "info" | "debug"
-		wantErr     bool
+		name      string
+		flag      string
+		changed   bool
+		env       string
+		wantLevel string // "info" | "debug"
+		wantErr   bool
 	}{
 		{name: "default", flag: "info", changed: false, wantLevel: "info"},
 		{name: "flag_debug", flag: "debug", changed: true, wantLevel: "debug"},

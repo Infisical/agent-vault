@@ -1,9 +1,9 @@
 ---
 title: "Agent protocol"
-description: "How agents authenticate, discover services, route requests through HTTPS_PROXY, and propose changes through Agent Vault."
+description: "How agents authenticate, discover services, route requests through HTTPS_PROXY/HTTP_PROXY, and propose changes through Agent Vault."
 ---
 
-Agent Vault agents follow a standard HTTP protocol to interact with the server. Agents handle this automatically — the instructions are embedded in every invite response and in the [agent skill files](https://github.com/Infisical/agent-vault/blob/main/cmd/skill_http.md). This page is a reference for understanding what happens under the hood.
+Agent Vault agents follow a standard HTTP protocol to interact with the server. Agents handle this automatically — the canonical reference lives in the [agent skill file](https://github.com/Infisical/agent-vault/blob/main/cmd/skill_cli.md), also served at `/v1/skills/cli`. This page is a reference for understanding what happens under the hood.
 
 <Warning>
 Agents must never extract, log, or display credential values. They reference credentials by key name only.
@@ -15,30 +15,30 @@ Every request an agent makes to Agent Vault requires a bearer token. How the age
 
 | Method | How the agent gets a token |
 |---|---|
-| `agent-vault vault run` | Agent Vault sets `AGENT_VAULT_SESSION_TOKEN` on the child process automatically |
-| Agent invite | Agent calls `POST {invite_url}` and receives an agent token |
+| `agent-vault vault run` | Agent Vault sets `AGENT_VAULT_TOKEN` on the child process automatically |
+| `agent-vault agent create` | Operator runs the command, supplies the returned token via `AGENT_VAULT_TOKEN` |
 
 Both methods deliver the same core connection details:
 
 | Variable | Description |
 |---|---|
 | `AGENT_VAULT_ADDR` | Base URL of the Agent Vault server (e.g. `http://127.0.0.1:14321`) |
-| `AGENT_VAULT_SESSION_TOKEN` | Bearer token for all Agent Vault requests |
+| `AGENT_VAULT_TOKEN` | Bearer token for all Agent Vault requests. |
 
 ### Session types
 
 There are two session types:
 
 - **Vault-scoped sessions** — created by `agent-vault vault run`. The vault is embedded in the session. No extra headers needed.
-- **Instance-level agent tokens** — created via agent invites. The agent must include an `X-Vault` header on every vault-scoped request to select which vault to use.
+- **Instance-level agent tokens** — created via `agent-vault agent create`. The agent must include an `X-Vault` header on `/discover` and `/v1/proposals` requests to select which vault to use.
 
 ### The X-Vault header
 
-Instance-level agent tokens must include `X-Vault: {vault_name}` on all vault-scoped requests (discover, proposals, credentials):
+Instance-level agent tokens must include `X-Vault: {vault_name}` on `/discover` and `/v1/proposals` requests:
 
 ```
 GET {AGENT_VAULT_ADDR}/discover
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Authorization: Bearer {AGENT_VAULT_TOKEN}
 X-Vault: my-vault
 ```
 
@@ -50,7 +50,7 @@ Before making any proxied request, the agent calls `/discover` to learn which ho
 
 ```
 GET {AGENT_VAULT_ADDR}/discover
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Authorization: Bearer {AGENT_VAULT_TOKEN}
 X-Vault: my-vault
 ```
 
@@ -61,22 +61,22 @@ The `X-Vault` header is required for instance-level agent tokens. Vault-scoped s
 ```json Response
 {
   "vault": "my-vault",
-  "proxy_url": "http://127.0.0.1:14321/proxy",
   "services": [
-    { "host": "api.stripe.com", "description": "Stripe API" },
-    { "host": "*.github.com", "description": "GitHub API" }
+    { "name": "stripe", "host": "api.stripe.com" },
+    { "name": "github", "host": "*.github.com" },
+    { "name": "slack-bot", "host": "slack.com/api/*" },
+    { "name": "slack-conn", "host": "slack.com/api/apps.connections.*" }
   ],
-  "available_credentials": ["GITHUB_TOKEN", "STRIPE_KEY"]
+  "available_credentials": ["GITHUB_TOKEN", "SLACK_BOT_TOKEN", "SLACK_CONNECTION_TOKEN", "STRIPE_KEY"]
 }
 ```
 
-- **`services`** lists the hosts the agent can reach through Agent Vault (defined by the vault's [services](/learn/services)). Requests to any other host go direct.
+- **`services`** lists the services the agent can reach through Agent Vault (each entry has `name` and `host`; `host` carries the joined inline form, so a path-scoped service shows up as e.g. `slack.com/api/*`). Requests to any other host go direct. When two services share the same bare host but scope to different paths (e.g. Slack here), distinguish them by `name` in subsequent operations.
 - **`available_credentials`** lists [credential](/learn/credentials) key names in the vault (values are never exposed). Agents use these to avoid creating duplicate slots in [proposals](/learn/proposals).
-- **`proxy_url`** is the fallback endpoint for clients that can't honor `HTTPS_PROXY`. See [Explicit proxy endpoint](#explicit-proxy-endpoint-fallback).
 
-## Route requests through HTTPS_PROXY
+## Route requests through HTTPS_PROXY / HTTP_PROXY
 
-The canonical way for an agent to reach an upstream host is to call the real URL directly. `agent-vault vault run` pre-configures `HTTPS_PROXY` and the CA trust chain on the child process, so every standard HTTP client — `curl`, `fetch`, `requests`, `axios`, the Go stdlib, SDKs like `stripe-node`, CLIs like `gh` and `stripe` — transparently routes through the broker. Agent Vault intercepts the CONNECT, matches the target host against the vault's [services](/learn/services), and injects the stored credential into the auth header for that service. Other client headers (vendor headers like `anthropic-version`, tracing IDs, etc.) flow through unchanged — see [Header forwarding](/learn/services#header-forwarding) for the precise rules.
+The canonical way for an agent to reach an upstream host is to call the real URL directly. `agent-vault vault run` pre-configures `HTTPS_PROXY`/`HTTP_PROXY` and the CA trust chain on the child process, so every standard HTTP client — `curl`, `fetch`, `requests`, `axios`, the Go stdlib, SDKs like `stripe-node`, CLIs like `gh` and `stripe` — transparently routes through the broker. Agent Vault intercepts the CONNECT (for `https://` upstreams) or the absolute-form forward-proxy request (for `http://` upstreams), matches the target host against the vault's [services](/learn/services), and injects the stored credential into the auth header for that service. Other client headers (vendor headers like `anthropic-version`, tracing IDs, etc.) flow through unchanged — see [Header forwarding](/learn/services#header-forwarding) for the precise rules.
 
 ```
 GET https://api.stripe.com/v1/charges?limit=10
@@ -88,42 +88,15 @@ The agent writes this line unchanged. No URL rewriting. No `Authorization` heade
 
 | Variable | Purpose |
 |---|---|
-| `HTTPS_PROXY` | Points at the MITM listener (`http://{token}:{vault}@host:14322`) |
+| `HTTPS_PROXY` | Points at the MITM listener (`http://{token}:{vault}@host:14322`) — plain HTTP, deploy on a trusted/private network |
+| `HTTP_PROXY` | Same URL as `HTTPS_PROXY` — plain `http://` upstreams route through the same listener via absolute-form forward-proxy requests |
 | `NO_PROXY` | `localhost,127.0.0.1` — so agent-to-vault traffic skips the proxy |
-| `NODE_USE_ENV_PROXY` | `1` — enables Node.js v22.21+ built-in `HTTPS_PROXY` support for `fetch()` and `https.get()` |
-| `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT` | Point standard HTTP libraries at the Agent Vault root CA so the proxied TLS handshake validates |
+| `NODE_USE_ENV_PROXY` | `1` — enables Node.js v22.21+ built-in proxy support for `fetch()` and `http.get()`/`https.get()` |
+| `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT` | Point standard HTTP libraries at the Agent Vault root CA so the re-signed upstream TLS certificates validate |
 
 <Tip>
-HTTP_PROXY is intentionally not set. The MITM listener only handles HTTPS (CONNECT) and would 405 on plain `http://` requests.
+The MITM listener accepts both `CONNECT host:port` (HTTPS upstreams) and absolute-form forward-proxy requests (`POST http://host/path HTTP/1.1`) on the same port. Plain-HTTP upstreams are intercepted, audited, and credential-injected just like HTTPS upstreams.
 </Tip>
-
-### Explicit proxy endpoint (fallback)
-
-For clients that can't honor `HTTPS_PROXY` — HTTP/2-terminating edges, constrained runtimes, sandboxes without CA-mounting — Agent Vault exposes an explicit endpoint:
-
-```
-{AGENT_VAULT_ADDR}/proxy/{target_host}/{path}[?query]
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-```
-
-Rewrite the upstream URL to this shape and Agent Vault applies the same credential-injection logic — strips the agent's `Authorization` header, attaches credentials from the vault's [services](/learn/services), forwards over HTTPS.
-
-<CodeGroup>
-
-```bash GET
-GET http://127.0.0.1:14321/proxy/api.stripe.com/v1/charges?limit=10
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-```
-
-```bash POST
-POST http://127.0.0.1:14321/proxy/api.stripe.com/v1/charges
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
-Content-Type: application/x-www-form-urlencoded
-
-amount=2000&currency=usd
-```
-
-</CodeGroup>
 
 ## Propose changes
 
@@ -131,15 +104,15 @@ When an agent needs access to a service that is not in the vault's services, it 
 
 ```json
 POST {AGENT_VAULT_ADDR}/v1/proposals
-Authorization: Bearer {AGENT_VAULT_SESSION_TOKEN}
+Authorization: Bearer {AGENT_VAULT_TOKEN}
 Content-Type: application/json
 
 {
   "services": [
     {
       "action": "set",
+      "name": "stripe",
       "host": "api.stripe.com",
-      "description": "Stripe API",
       "auth": { "type": "bearer", "token": "STRIPE_KEY" }
     }
   ],
@@ -181,15 +154,20 @@ See [Proposals](/learn/proposals) for the full proposal lifecycle, including sto
 
 | Status | Meaning | What the agent does |
 |---|---|---|
-| 401 | Invalid or expired token | Re-check `AGENT_VAULT_SESSION_TOKEN`. Contact operator for a new token or [rotation](/agents/overview#rotating-an-agent-token). |
-| 403 `forbidden` | Host not allowed | Create a proposal to request access. The response includes a `proposal_hint`. |
+| 401 | Invalid or expired token | Re-check `AGENT_VAULT_TOKEN`. Contact operator for a new token or [rotation](/agents/overview#rotating-an-agent-token). |
+| 403 `forbidden` | Host not allowed (only fires when the vault has `unmatched_host_policy=deny`; the default is passthrough) | Create a proposal to request access. The response includes a `proposal_hint`. |
 | 403 `service_disabled` | Host is configured but disabled | Surface to the user — don't create a duplicate proposal. |
-| 429 | Rate limited | Respect the `Retry-After` header. The MITM and `/proxy` paths share one budget. |
+| 409 `multiple services match host …` | Service mutation (`PATCH`/`DELETE`) used a bare host that matches several path-scoped services | Retry with the canonical service `name` from `/discover`. The response body includes a `candidates` array. |
+| 429 | Rate limited | Respect the `Retry-After` header. |
 | 502 | Missing credential or upstream unreachable | Tell the user a credential may need to be added. |
+
+<Note>
+Path-based service matching changed how request log rows are filtered. The `matched_service` field in `GET /v1/vaults/{vault}/logs` rows holds the canonical service **name** for new rows; rows written before the upgrade still carry the matched **host**. Operators querying `?service=` should use the slug for new rows and the host for old rows. The matched service's `host` pattern is not returned in log rows — recover it by listing `GET /v1/vaults/{vault}/services` and filtering by `name`, or reading `/discover`.
+</Note>
 
 ## Security constraints
 
 - Never extract, log, or display credential values
-- Never hardcode tokens. Always read from `AGENT_VAULT_SESSION_TOKEN`.
+- Never hardcode tokens. Always read from `AGENT_VAULT_TOKEN`.
 - Only reach hosts returned by `/discover`. For unlisted hosts, create a proposal.
 - If a `credential_not_found` error occurs, inform the user which key is missing.

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"errors"
 	"fmt"
@@ -19,10 +20,11 @@ import (
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/crypto"
+	"github.com/Infisical/agent-vault/internal/infisical"
+	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/mitm"
 	"github.com/Infisical/agent-vault/internal/netguard"
 	"github.com/Infisical/agent-vault/internal/notify"
-	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/pidfile"
 	"github.com/Infisical/agent-vault/internal/ratelimit"
 	"github.com/Infisical/agent-vault/internal/requestlog"
@@ -61,9 +63,7 @@ type Server struct {
 	notifier       *notify.Notifier
 	initialized    bool   // true when at least one owner account exists
 	baseURL        string // externally-reachable base URL (e.g. "https://sb.example.com")
-	oauthProviders map[string]oauth.Provider
 	skillCLI       []byte       // embedded CLI skill content (served at GET /v1/skills/cli)
-	skillHTTP      []byte       // embedded HTTP skill content (served at GET /v1/skills/http)
 	mitm           *mitm.Proxy          // transparent MITM proxy; nil only when --mitm-port 0
 	logger         *slog.Logger         // structured logger for per-request observability
 	rateLimit      *ratelimit.Registry  // tiered rate limiter; shared with the MITM ingress
@@ -76,6 +76,27 @@ type Server struct {
 	// backstop. Bounded by a periodic prune (see runTouchCachePruner)
 	// that drops entries past the throttle window.
 	touchCache sync.Map // raw token (string) -> time.Time
+	// vaultServiceMu serializes the load → mutate → save cycle for
+	// /services handlers and proposal apply. SQLite's MaxOpenConns(1)
+	// only serializes individual statements; without this lock two
+	// concurrent upserts can both pass collision checks against the
+	// same pre-state.
+	vaultServiceMu sync.Map // vaultID (string) -> *sync.Mutex
+	// infisicalClient is nil when INFISICAL_URL is unset; create handlers
+	// reject kind="infisical" then.
+	infisicalClient *infisical.Client
+	// infisicalSyncer is built in Run; exposed for manual-refresh RefreshOnce.
+	infisicalSyncer *infisical.Syncer
+	oauthRefresher  *oauth.Refresher
+}
+
+// lockVaultServices acquires the per-vault mutation lock. Callers MUST
+// defer the returned unlock func.
+func (s *Server) lockVaultServices(vaultID string) func() {
+	v, _ := s.vaultServiceMu.LoadOrStore(vaultID, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // RateLimit returns the server's rate-limit registry. Exported so the
@@ -86,6 +107,14 @@ func (s *Server) RateLimit() *ratelimit.Registry { return s.rateLimit }
 // is bound to this Server: Start launches it, and SIGINT/SIGTERM/Shutdown
 // stops it alongside the HTTP server.
 func (s *Server) AttachMITM(p *mitm.Proxy) { s.mitm = p }
+
+// AttachInfisical registers the Infisical client. Must be called before Start.
+func (s *Server) AttachInfisical(c *infisical.Client) { s.infisicalClient = c }
+
+// AttachInfisicalSyncer pre-wires a syncer instead of letting Start build one
+// from the attached client. Used by tests to inject a fake fetcher; in prod
+// Start auto-builds one when the field is nil.
+func (s *Server) AttachInfisicalSyncer(syncer *infisical.Syncer) { s.infisicalSyncer = syncer }
 
 // AttachLogSink swaps the per-request log sink. Safe to call once at
 // startup, before the HTTP server begins accepting connections. nil
@@ -110,12 +139,40 @@ func (s *Server) SessionResolver() brokercore.SessionResolver {
 // CredentialProvider returns a brokercore.CredentialProvider backed by
 // this server's store and encryption key.
 func (s *Server) CredentialProvider() brokercore.CredentialProvider {
-	return brokercore.NewStoreCredentialProvider(s.store, s.encKey)
+	return &brokercore.StoreCredentialProvider{
+		Store:      credentialStoreAdapter{s.store},
+		OAuthStore: credentialStoreAdapter{s.store},
+		EncKey:     s.encKey,
+		Refresher:  s.oauthRefresher,
+	}
+}
+
+// credentialStoreAdapter satisfies brokercore.CredentialStore by adding
+// the typed UnmatchedHostPolicy lookup on top of the generic store.
+// The setting key lives at the server layer; the store stays a generic
+// key/value sink.
+type credentialStoreAdapter struct {
+	Store
+}
+
+func (a credentialStoreAdapter) UnmatchedHostPolicy(ctx context.Context, vaultID string) (brokercore.UnmatchedHostPolicy, error) {
+	return readUnmatchedHostPolicy(ctx, a.Store, vaultID)
+}
+
+func (a credentialStoreAdapter) GetCredentialOAuth(ctx context.Context, vaultID, key string) (*store.CredentialOAuth, error) {
+	return a.Store.GetCredentialOAuth(ctx, vaultID, key)
+}
+
+func (a credentialStoreAdapter) UpdateCredentialOAuthTokens(ctx context.Context, vaultID, key string, accessCT, accessNonce, refreshCT, refreshNonce []byte, expiresAt *time.Time) error {
+	return a.Store.UpdateCredentialOAuthTokens(ctx, vaultID, key, accessCT, accessNonce, refreshCT, refreshNonce, expiresAt)
+}
+
+func (a credentialStoreAdapter) UpdateCredentialOAuthError(ctx context.Context, vaultID, key, errMsg string) error {
+	return a.Store.UpdateCredentialOAuthError(ctx, vaultID, key, errMsg)
 }
 
 // Logger returns the server's structured logger. Callers (e.g. the MITM
-// proxy constructed outside the server) use this to share a single logger
-// across ingress paths.
+// proxy constructed outside the server) use this to share a single logger.
 func (s *Server) Logger() *slog.Logger { return s.logger }
 
 // BaseURL returns the externally-reachable base URL of the server
@@ -135,13 +192,15 @@ type Store interface {
 	CountUsers(ctx context.Context) (int, error)
 	RegisterFirstUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, defaultVaultID string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*store.User, error)
 	CreateUserSession(ctx context.Context, p store.CreateUserSessionParams) (*store.Session, error)
-	CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*store.Session, error)
+	CreateScopedSession(ctx context.Context, p store.CreateScopedSessionParams) (*store.Session, error)
 	GetSession(ctx context.Context, id string) (*store.Session, error)
 	DeleteSession(ctx context.Context, id string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
 	TouchSession(ctx context.Context, rawToken, ip, userAgent string) error
 	ListUserSessions(ctx context.Context, userID string) ([]store.Session, error)
 	RevokeUserSession(ctx context.Context, userID, publicID string) error
+	ListScopedSessionsByVault(ctx context.Context, vaultID string) ([]store.Session, error)
+	RevokeScopedSession(ctx context.Context, vaultID, publicID string) error
 
 	// Vaults
 	CreateVault(ctx context.Context, name string) (*store.Vault, error)
@@ -170,6 +229,18 @@ type Store interface {
 	ListCredentials(ctx context.Context, vaultID string) ([]store.Credential, error)
 	DeleteCredential(ctx context.Context, vaultID, key string) error
 
+	// OAuth credentials
+	GetCredentialOAuth(ctx context.Context, vaultID, key string) (*store.CredentialOAuth, error)
+	SetCredentialOAuth(ctx context.Context, oauth *store.CredentialOAuth) error
+	UpdateCredentialOAuthTokens(ctx context.Context, vaultID, key string, accessCT, accessNonce, refreshCT, refreshNonce []byte, expiresAt *time.Time) error
+	UpdateCredentialOAuthError(ctx context.Context, vaultID, key string, errMsg string) error
+
+	// OAuth states (CSRF + PKCE for consent flow)
+	CreateCredentialOAuthState(ctx context.Context, state *store.CredentialOAuthState) error
+	GetCredentialOAuthStateByHash(ctx context.Context, stateHash string) (*store.CredentialOAuthState, error)
+	DeleteCredentialOAuthState(ctx context.Context, id string) error
+	ExpireCredentialOAuthStates(ctx context.Context, before time.Time) (int, error)
+
 	// Broker configs
 	GetBrokerConfig(ctx context.Context, vaultID string) (*store.BrokerConfig, error)
 	SetBrokerConfig(ctx context.Context, vaultID, servicesJSON string) (*store.BrokerConfig, error)
@@ -182,27 +253,8 @@ type Store interface {
 	CountPendingProposals(ctx context.Context, vaultID string) (int, error)
 	UpdateProposalStatus(ctx context.Context, vaultID string, id int, status, reviewNote string) error
 	GetProposalCredentials(ctx context.Context, vaultID string, proposalID int) (map[string]store.EncryptedCredential, error)
-	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string) error
+	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []store.OAuthCredentialConfig) error
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
-
-	// Agent invites (instance-level)
-	CreateAgentInvite(ctx context.Context, agentName, createdBy string, expiresAt time.Time, sessionTTLSeconds int, agentRole string, vaults []store.AgentInviteVault) (*store.Invite, error)
-	CreateRotationInvite(ctx context.Context, agentID, createdBy string, expiresAt time.Time) (*store.Invite, error)
-	GetInviteByToken(ctx context.Context, token string) (*store.Invite, error)
-	ListInvites(ctx context.Context, status string) ([]store.Invite, error)
-	ListInvitesByVault(ctx context.Context, vaultID, status string) ([]store.Invite, error)
-	RedeemInvite(ctx context.Context, token, sessionID string) error
-	UpdateInviteSessionID(ctx context.Context, inviteID int, sessionID string) error
-	RevokeInvite(ctx context.Context, token string) error
-	GetInviteByID(ctx context.Context, id int) (*store.Invite, error)
-	RevokeInviteByID(ctx context.Context, id int) error
-	CountPendingInvites(ctx context.Context) (int, error)
-	HasPendingInviteByAgentName(ctx context.Context, name string) (bool, error)
-	GetPendingInviteByAgentName(ctx context.Context, name string) (*store.Invite, error)
-	AddAgentInviteVault(ctx context.Context, inviteID int, vaultID, role string) error
-	RemoveAgentInviteVault(ctx context.Context, inviteID int, vaultID string) error
-	UpdateAgentInviteVaultRole(ctx context.Context, inviteID int, vaultID, role string) error
-	ExpirePendingInvites(ctx context.Context, before time.Time) (int, error)
 
 	// User invites (instance-level)
 	CreateUserInvite(ctx context.Context, email, createdBy, role string, expiresAt time.Time, vaults []store.UserInviteVault) (*store.UserInvite, error)
@@ -228,30 +280,26 @@ type Store interface {
 	CountPendingPasswordResets(ctx context.Context, email string) (int, error)
 	ExpirePendingPasswordResets(ctx context.Context, before time.Time) (int, error)
 
-	// OAuth accounts
-	CreateOAuthAccount(ctx context.Context, userID, provider, providerUserID, email, name, avatarURL string) (*store.OAuthAccount, error)
-	GetOAuthAccount(ctx context.Context, provider, providerUserID string) (*store.OAuthAccount, error)
-	GetOAuthAccountByUser(ctx context.Context, userID, provider string) (*store.OAuthAccount, error)
-	ListUserOAuthAccounts(ctx context.Context, userID string) ([]store.OAuthAccount, error)
-	DeleteOAuthAccount(ctx context.Context, userID, provider string) error
-
-	// OAuth state
-	CreateOAuthState(ctx context.Context, stateHash, codeVerifier, nonce, redirectURL, mode, userID string, expiresAt time.Time) (*store.OAuthState, error)
-	GetOAuthStateByHash(ctx context.Context, stateHash string) (*store.OAuthState, error)
-	DeleteOAuthState(ctx context.Context, id string) error
-	ExpireOAuthStates(ctx context.Context, before time.Time) (int, error)
-
-	// OAuth user creation
-	CreateOAuthUser(ctx context.Context, email, role string) (*store.User, error)
-	CreateOAuthUserAndAccount(ctx context.Context, email, role, provider, providerUserID, oauthEmail, name, avatarURL string) (*store.User, *store.OAuthAccount, error)
-
 	// Instance settings
 	GetSetting(ctx context.Context, key string) (string, error)
 	SetSetting(ctx context.Context, key, value string) error
 	GetAllSettings(ctx context.Context) (map[string]string, error)
 
+	// Vault settings (per-vault key/value)
+	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
+	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
+	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
+
+	// External credential stores
+	CreateExternalVault(ctx context.Context, p store.CreateExternalVaultParams) (*store.Vault, error)
+	GetVaultCredentialStore(ctx context.Context, vaultID string) (*store.VaultCredentialStore, error)
+	ListVaultCredentialStores(ctx context.Context) ([]store.VaultCredentialStore, error)
+	UpdateVaultCredentialStoreHealth(ctx context.Context, vaultID, status, errMsg string, syncedAt time.Time) error
+	ReplaceVaultCredentials(ctx context.Context, vaultID string, items []store.EncryptedKV) error
+
 	// Agents
 	CreateAgent(ctx context.Context, name, createdBy, role string) (*store.Agent, error)
+	CreateAgentWithGrantsAndToken(ctx context.Context, name, createdBy, role string, vaultGrants []store.AgentVaultGrantSpec, tokenExpiresAt *time.Time) (*store.Agent, *store.Session, error)
 	GetAgentByID(ctx context.Context, id string) (*store.Agent, error)
 	GetAgentByName(ctx context.Context, name string) (*store.Agent, error)
 	ListAgents(ctx context.Context, vaultID string) ([]store.Agent, error)
@@ -262,6 +310,7 @@ type Store interface {
 	CountAgentTokens(ctx context.Context, agentID string) (int, error)
 	GetLatestAgentTokenExpiry(ctx context.Context, agentID string) (*time.Time, error)
 	DeleteAgentTokens(ctx context.Context, agentID string) error
+	RotateAgentToken(ctx context.Context, agentID string, tokenExpiresAt *time.Time) (*store.Session, error)
 	CreateAgentToken(ctx context.Context, agentID string, expiresAt *time.Time) (*store.Session, error)
 	CountAllOwners(ctx context.Context) (int, error)
 
@@ -291,13 +340,25 @@ func sessionFromContext(ctx context.Context) *store.Session {
 type Actor struct {
 	ID    string       // user.ID or agent.ID
 	Type  string       // "user" or "agent"
-	Role  string       // "owner" or "member" (instance-level)
+	Role  string       // "owner", "member", or "no-access" (instance-level)
 	User  *store.User  // non-nil for user actors
 	Agent *store.Agent // non-nil for agent actors
 }
 
 // IsOwner returns true if the actor has the instance-level owner role.
 func (a *Actor) IsOwner() bool { return a.Role == "owner" }
+
+// Hierarchy: no-access(0) < member(1) < owner(2).
+var instanceRoleRank = map[string]int{"no-access": 0, "member": 1, "owner": 2}
+
+func validInstanceRole(s string) bool {
+	_, ok := instanceRoleRank[s]
+	return ok
+}
+
+func instanceRoleSatisfies(role, required string) bool {
+	return satisfiesRank(instanceRoleRank, role, required)
+}
 
 // DisplayLabel returns a human-readable label for the actor (email for users, name for agents).
 func (a *Actor) DisplayLabel() string {
@@ -308,6 +369,27 @@ func (a *Actor) DisplayLabel() string {
 		return a.Agent.Name
 	}
 	return a.ID
+}
+
+// actorByID hydrates an Actor from a stored (id, type) pair. Used when an
+// actor is referenced by foreign-key columns (e.g. created_by on a scoped
+// session row) rather than by the calling session.
+func (s *Server) actorByID(ctx context.Context, actorID, actorType string) (*Actor, error) {
+	switch actorType {
+	case "user":
+		user, err := s.store.GetUserByID(ctx, actorID)
+		if err != nil || user == nil {
+			return nil, fmt.Errorf("user not found")
+		}
+		return &Actor{ID: user.ID, Type: "user", Role: user.Role, User: user}, nil
+	case "agent":
+		agent, err := s.store.GetAgentByID(ctx, actorID)
+		if err != nil || agent == nil {
+			return nil, fmt.Errorf("agent not found")
+		}
+		return &Actor{ID: agent.ID, Type: "agent", Role: agent.Role, Agent: agent}, nil
+	}
+	return nil, fmt.Errorf("unknown actor type: %s", actorType)
 }
 
 // actorFromSession resolves any session to an Actor.
@@ -352,6 +434,21 @@ func (s *Server) requireOwnerActor(w http.ResponseWriter, r *http.Request) (*Act
 	if !actor.IsOwner() {
 		jsonError(w, http.StatusForbidden, "Owner role required")
 		return nil, fmt.Errorf("not owner")
+	}
+	return actor, nil
+}
+
+// requireInstanceMember rejects no-access actors. Use for instance-scoped
+// actions (create vault, create invites, list actors) that don't already
+// require owner. Auth and own-profile reads should keep using requireActor.
+func (s *Server) requireInstanceMember(w http.ResponseWriter, r *http.Request) (*Actor, error) {
+	actor, err := s.requireActor(w, r)
+	if err != nil {
+		return nil, err
+	}
+	if !instanceRoleSatisfies(actor.Role, "member") {
+		jsonError(w, http.StatusForbidden, "Instance member role required")
+		return nil, fmt.Errorf("instance role too low: %s", actor.Role)
 	}
 	return actor, nil
 }
@@ -452,12 +549,17 @@ func (s *Server) requireVaultAdmin(w http.ResponseWriter, r *http.Request, vault
 	return actor, nil
 }
 
-// roleSatisfies returns true if role is at least as privileged as requiredRole.
 // Hierarchy: proxy(0) < member(1) < admin(2).
 var roleRank = map[string]int{"proxy": 0, "member": 1, "admin": 2}
 
+// satisfiesRank reports whether role meets or exceeds required in the given rank table.
+// Unknown roles rank as 0; unknown required values are satisfied by anything in rank.
+func satisfiesRank(rank map[string]int, role, required string) bool {
+	return rank[role] >= rank[required]
+}
+
 func roleSatisfies(role, requiredRole string) bool {
-	return roleRank[role] >= roleRank[requiredRole]
+	return satisfiesRank(roleRank, role, requiredRole)
 }
 
 // requireVaultMember checks that the session has member+ access to the vault.
@@ -502,9 +604,27 @@ func (s *Server) requireVaultMember(w http.ResponseWriter, r *http.Request, vaul
 	return actor, nil
 }
 
+// assertBuiltinCredentialStore writes 409 and returns false when the vault
+// is external-backed. Fails closed (500) on transient lookup errors.
+func (s *Server) assertBuiltinCredentialStore(w http.ResponseWriter, ctx context.Context, vaultID, vaultName string) bool {
+	cs, err := s.store.GetVaultCredentialStore(ctx, vaultID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		jsonError(w, http.StatusInternalServerError, "Failed to verify credential store")
+		return false
+	}
+	if cs != nil && cs.Kind != "" {
+		jsonCodedError(w, http.StatusConflict, "external_credential_store",
+			fmt.Sprintf("Vault %q uses an external credential store (%s). Manage credentials in the upstream system.", vaultName, cs.Kind))
+		return false
+	}
+	return true
+}
+
 // requireProposalReview checks proposal approve/reject access.
-// Scoped sessions require admin role (proxy-role actors cannot self-approve).
-// Instance-level sessions require any vault access (member or admin — by design).
+// Scoped sessions require admin role (proxy-scoped sessions cannot self-approve).
+// Instance-level sessions require member+ — proxy-role actors are forbidden so
+// that a proxy cannot approve a proposal it raised and trick the broker into
+// injecting credentials toward an attacker-controlled host.
 func (s *Server) requireProposalReview(w http.ResponseWriter, r *http.Request, vaultID string) (*Actor, error) {
 	sess := sessionFromContext(r.Context())
 	if sess == nil {
@@ -525,8 +645,8 @@ func (s *Server) requireProposalReview(w http.ResponseWriter, r *http.Request, v
 		return nil, nil
 	}
 
-	// Instance-level session: any vault member can review proposals.
-	return s.requireVaultAccess(w, r, vaultID)
+	// Instance-level session: require member+ (proxy-role actors cannot self-approve).
+	return s.requireVaultMember(w, r, vaultID)
 }
 
 
@@ -557,13 +677,8 @@ func limitBody(next http.HandlerFunc) http.HandlerFunc {
 // The initialized parameter indicates whether at least one owner account exists.
 // When false, all endpoints except /health and POST /v1/init return 503.
 // logger must be non-nil; tests can pass slog.New(slog.DiscardHandler).
-func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string, oauthProviders map[string]oauth.Provider, logger *slog.Logger) *Server {
+func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
-
-	// Initialize proxy client once (reads AGENT_VAULT_ALLOW_PRIVATE_RANGES after env is configured).
-	if proxyClient == nil {
-		proxyClient = newProxyClient()
-	}
 
 	rlCfg, _ := ratelimit.LoadFromEnv()
 	rl := ratelimit.New(rlCfg)
@@ -582,14 +697,19 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 		notifier:       notifier,
 		initialized:    initialized,
 		baseURL:        strings.TrimRight(baseURL, "/"),
-		oauthProviders: oauthProviders,
 		logger:         logger,
 		rateLimit:      rl,
 		logSink:        requestlog.Nop{},
+		oauthRefresher: oauth.NewRefresher(),
 	}
 
+	// Apply SSRF protection to OAuth token endpoint requests.
+	oauthTransport := http.DefaultTransport.(*http.Transport).Clone()
+	oauthTransport.Proxy = nil
+	oauthTransport.DialContext = netguard.SafeDialContext(netguard.AllowPrivateFromEnv())
+	oauth.TokenClient = &http.Client{Timeout: 30 * time.Second, Transport: oauthTransport}
+
 	ipAuth := s.tier(ratelimit.TierAuth, s.ipKeyer())
-	ipInviteToken := s.tier(ratelimit.TierAuth, s.tokenKeyer("token"))
 
 	// /health, /v1/status, and other public static routes rely on the
 	// server-wide TierGlobal backstop; no per-route limit is useful.
@@ -611,21 +731,24 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/auth/sessions", s.requireInitialized(s.requireAuth(actorAuthed(s.handleListUserSessions))))
 	mux.HandleFunc("DELETE /v1/auth/sessions/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleRevokeUserSession))))
 	mux.HandleFunc("POST /v1/sessions", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleScopedSession)))))
+	mux.HandleFunc("GET /v1/sessions", s.requireInitialized(s.requireAuth(actorAuthed(s.handleListScopedSessions))))
+	mux.HandleFunc("DELETE /v1/sessions/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleRevokeScopedSession))))
 	mux.HandleFunc("GET /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(s.handleCredentialsList))))
 	mux.HandleFunc("POST /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleCredentialsSet)))))
 	mux.HandleFunc("DELETE /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleCredentialsDelete)))))
+
+	// OAuth credential flow
+	mux.HandleFunc("POST /v1/credentials/oauth/connect", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleOAuthConnect)))))
+	mux.HandleFunc("GET /v1/oauth/callback", s.requireInitialized(s.handleOAuthCallback))
+	mux.HandleFunc("GET /v1/credentials/oauth/status", s.requireInitialized(s.requireAuth(actorAuthed(s.handleOAuthStatus))))
+	mux.HandleFunc("POST /v1/credentials/oauth/tokens", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleOAuthTokenUpload)))))
+
 	mux.HandleFunc("GET /discover", s.requireInitialized(s.requireAuth(actorAuthed(s.handleDiscover))))
 	mux.HandleFunc("POST /v1/proposals", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleProposalCreate)))))
 	mux.HandleFunc("GET /v1/proposals/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleProposalGet))))
 	mux.HandleFunc("GET /v1/proposals", s.requireInitialized(s.requireAuth(actorAuthed(s.handleProposalList))))
 	mux.HandleFunc("POST /v1/admin/proposals/{id}/approve", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAdminProposalApprove)))))
 	mux.HandleFunc("POST /v1/admin/proposals/{id}/reject", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAdminProposalReject)))))
-	// /proxy/ enforces its rate limit inside the handler (needs the resolved vault).
-	mux.HandleFunc("/proxy/", s.requireInitialized(s.requireAuth(s.handleProxy)))
-
-	// Agent invite redemption (no auth — token is the credential)
-	mux.HandleFunc("GET /invite/{token}", s.requireInitialized(ipInviteToken(s.handleInviteRedeem)))
-	mux.HandleFunc("POST /invite/{token}", s.requireInitialized(ipInviteToken(limitBody(s.handlePersistentInviteRedeem))))
 
 	ipUserInviteToken := s.tier(ratelimit.TierAuth, ratelimit.IPTokenKey(clientIP, func(r *http.Request) string {
 		return r.PathValue("token")
@@ -633,18 +756,9 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	ipApprovalToken := s.tier(ratelimit.TierAuth, ratelimit.IPTokenKey(clientIP, func(r *http.Request) string {
 		return r.URL.Query().Get("token")
 	}))
-	// OAuth callback: keyed on the hashed state query param.
-	ipOAuthCallback := s.tier(ratelimit.TierAuth, ratelimit.IPTokenKey(clientIP, func(r *http.Request) string {
-		return r.URL.Query().Get("state")
-	}))
-
-	// Agent invites (instance-level, requires auth)
-	mux.HandleFunc("POST /v1/agents/invites", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAgentInviteCreate)))))
-	mux.HandleFunc("GET /v1/agents/invites", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentInviteList))))
-	mux.HandleFunc("DELETE /v1/agents/invites/{token}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentInviteRevoke))))
-	mux.HandleFunc("DELETE /v1/agents/invites/by-id/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentInviteRevokeByID))))
 
 	// Agent management (instance-level)
+	mux.HandleFunc("POST /v1/agents", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAgentCreate)))))
 	mux.HandleFunc("GET /v1/agents", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentList))))
 	mux.HandleFunc("GET /v1/agents/{name}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentGet))))
 	mux.HandleFunc("DELETE /v1/agents/{name}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAgentRevoke))))
@@ -673,11 +787,15 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 
 	// Vault management (any auth'd user)
 	mux.HandleFunc("GET /v1/vaults/{name}/context", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultContext))))
+	mux.HandleFunc("POST /v1/vaults/{name}/sync", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultSyncNow))))
+	mux.HandleFunc("GET /v1/instance/credential-stores", s.requireInitialized(s.requireAuth(actorAuthed(s.handleInstanceCredentialStores))))
 	mux.HandleFunc("POST /v1/vaults", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultCreate)))))
 	mux.HandleFunc("GET /v1/vaults", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultList))))
 	mux.HandleFunc("DELETE /v1/vaults/{name}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultDelete))))
 	mux.HandleFunc("POST /v1/vaults/{name}/rename", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultRename)))))
 	mux.HandleFunc("POST /v1/vaults/{name}/join", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultJoin)))))
+	mux.HandleFunc("GET /v1/vaults/{name}/settings", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultSettingsGet))))
+	mux.HandleFunc("PATCH /v1/vaults/{name}/settings", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultSettingsPatch)))))
 
 	// Vault admin (owner-only)
 	mux.HandleFunc("GET /v1/admin/vaults", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAdminVaultList))))
@@ -695,7 +813,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	// (re-mount poll) without defending any real surface.
 	mux.HandleFunc("GET /v1/service-catalog", s.requireInitialized(s.handleServiceCatalog))
 	mux.HandleFunc("GET /v1/skills/cli", s.requireInitialized(s.handleSkillCLI))
-	mux.HandleFunc("GET /v1/skills/http", s.requireInitialized(s.handleSkillHTTP))
 	// CA PEM is not wrapped in requireInitialized — the CA lifecycle is
 	// tied to --mitm-port, not owner registration.
 	mux.HandleFunc("GET /v1/mitm/ca.pem", s.handleMITMCA)
@@ -726,13 +843,6 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 
 	mux.HandleFunc("POST /v1/auth/logout", s.requireInitialized(ipAuth(s.handleLogout)))
 
-	// OAuth
-	mux.HandleFunc("GET /v1/auth/oauth/providers", ipAuth(s.handleOAuthProviders))
-	mux.HandleFunc("GET /v1/auth/oauth/{provider}/login", s.requireInitialized(ipAuth(s.optionalAuth(s.handleOAuthLogin))))
-	mux.HandleFunc("GET /v1/auth/oauth/{provider}/callback", s.requireInitialized(ipOAuthCallback(s.handleOAuthCallback)))
-	mux.HandleFunc("POST /v1/auth/oauth/{provider}/connect", s.requireInitialized(s.requireAuth(actorAuthed(s.handleOAuthConnect))))
-	mux.HandleFunc("DELETE /v1/auth/oauth/{provider}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleOAuthDisconnect))))
-
 	// React app static assets (Vite outputs to /assets/ with base "/")
 	webFS, _ := fs.Sub(webDistFS, "webdist")
 	mux.Handle("GET /assets/", http.FileServer(http.FS(webFS)))
@@ -741,13 +851,16 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	// SPA catch-all: serve index.html for all frontend routes
 	mux.HandleFunc("GET /login", s.handleSPA)
 	mux.HandleFunc("GET /register", s.handleSPA)
+	mux.HandleFunc("GET /forgot-password", s.handleSPA)
+	mux.HandleFunc("GET /users", s.handleSPA)
+	mux.HandleFunc("GET /agents", s.handleSPA)
 	mux.HandleFunc("GET /vaults/{$}", s.handleSPA)
 	mux.HandleFunc("GET /vaults/{name...}", s.handleSPA)
 	mux.HandleFunc("GET /invite/{token...}", s.handleSPA)
 	mux.HandleFunc("GET /approve/{id...}", s.handleSPA)
+	mux.HandleFunc("GET /oauth/complete", s.handleSPA)
 	mux.HandleFunc("GET /manage/{path...}", s.handleSPA)
 	mux.HandleFunc("GET /change-password", s.handleSPA)
-	mux.HandleFunc("GET /oauth/callback", s.handleSPA)
 	mux.HandleFunc("GET /account/{path...}", s.handleSPA)
 	mux.HandleFunc("GET /{$}", s.handleSPA)
 
@@ -789,9 +902,26 @@ func (s *Server) Start() error {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-	pruneCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	pruneCtx, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
 	go s.runTouchCachePruner(pruneCtx)
+
+	// syncerDone closes once Syncer.Run has returned AND drained its in-flight
+	// refresh goroutines. We block on it before WipeBytes so a refresh mid-
+	// AES-GCM never reads a zeroed s.encKey (silently produces garbage
+	// ciphertext that lands in the credentials table).
+	syncerDone := make(chan struct{})
+	if s.infisicalSyncer == nil && s.infisicalClient != nil {
+		s.infisicalSyncer = infisical.NewSyncer(s.store, s.infisicalClient, s.encKey, s.logger)
+	}
+	if s.infisicalSyncer != nil {
+		go func() {
+			defer close(syncerDone)
+			s.infisicalSyncer.Run(pruneCtx)
+		}()
+	} else {
+		close(syncerDone)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -848,6 +978,17 @@ func (s *Server) Start() error {
 	if err := s.httpServer.Shutdown(ctx); err != nil {
 		return fmt.Errorf("server shutdown: %w", err)
 	}
+
+	// Stop background workers (syncer + touch-cache pruner) and wait for the
+	// syncer's in-flight refreshes to drain before zeroing s.encKey.
+	stopWorkers()
+	select {
+	case <-syncerDone:
+	case <-time.After(5 * time.Second):
+		fmt.Fprintln(os.Stderr, "warning: infisical syncer did not stop within 5s; skipping key wipe to avoid racing in-flight encrypts")
+		return nil
+	}
+
 	fmt.Println("server shut down gracefully")
 	crypto.WipeBytes(s.encKey)
 	return nil
@@ -954,15 +1095,6 @@ func (s *Server) actorKeyer() ratelimit.Keyer {
 	})
 }
 
-// tokenKeyer returns a ratelimit.Keyer that combines clientIP with a
-// hashed URL path value so token-enumeration attempts are bounded by
-// both the caller's IP and the token being probed.
-func (s *Server) tokenKeyer(pathValue string) ratelimit.Keyer {
-	return ratelimit.IPTokenKey(clientIP, func(r *http.Request) string {
-		return r.PathValue(pathValue)
-	})
-}
-
 // tier wraps handler with a rate-limit check for tier keyed by keyer.
 // On denial the middleware writes a 429 with standard headers; on
 // allow, it calls handler. This is the canonical way new routes in
@@ -1006,32 +1138,6 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		ctx := context.WithValue(r.Context(), sessionContextKey, sess)
 		next(w, r.WithContext(ctx))
-	}
-}
-
-// optionalAuth is like requireAuth but does not reject unauthenticated
-// requests. If a valid session token is present it is placed in context;
-// otherwise the handler runs without a session.
-func (s *Server) optionalAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var token string
-		header := r.Header.Get("Authorization")
-		if strings.HasPrefix(header, "Bearer ") {
-			token = strings.TrimPrefix(header, "Bearer ")
-		} else if c, err := r.Cookie("av_session"); err == nil && c.Value != "" {
-			token = c.Value
-		}
-
-		if token != "" {
-			if sess, err := s.store.GetSession(r.Context(), token); err == nil && sess != nil && !sess.IsExpired(time.Now()) {
-				s.maybeTouchSession(r.Context(), sess, token, clientIP(r), r.UserAgent())
-				ctx := context.WithValue(r.Context(), sessionContextKey, sess)
-				next(w, r.WithContext(ctx))
-				return
-			}
-		}
-
-		next(w, r)
 	}
 }
 
@@ -1093,6 +1199,16 @@ const (
 	scopedSessionDefaultTTL = 24 * time.Hour // when ttl_seconds is unset
 )
 
+// isSecureRequest reports whether the request arrived over TLS, deriving
+// the verdict from the trusted server-side baseURL when r.TLS is nil so
+// X-Forwarded-Proto cannot spoof it.
+func isSecureRequest(r *http.Request, baseURL string) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.HasPrefix(baseURL, "https://")
+}
+
 // sessionCookie builds an av_session cookie with all hardening flags set.
 // Secure is set based on TLS state or the server's configured baseURL.
 func sessionCookie(r *http.Request, baseURL, value string, maxAge int) *http.Cookie {
@@ -1125,3 +1241,7 @@ const settingAllowedDomains = "allowed_email_domains"
 const settingInviteOnly = "invite_only"
 
 const settingRateLimitConfig = "ratelimit_config"
+
+// settingUnmatchedHostPolicy is the per-vault key in vault_settings that
+// controls whether requests to unmatched hosts passthrough or are denied.
+const settingUnmatchedHostPolicy = "unmatched_host_policy"

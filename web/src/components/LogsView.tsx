@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { apiFetch } from "../lib/api";
+import { apiFetch, isAbortError } from "../lib/api";
 import { ErrorBanner, LoadingSpinner, timeAgo } from "./shared";
 import DataTable, { type Column } from "./DataTable";
 import Button from "./Button";
@@ -105,7 +105,7 @@ export default function LogsView({
       latestIdRef.current = data.latest_id || 0;
       initializedRef.current = true;
     } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
+      if (isAbortError(err)) return;
       setError("Network error.");
     } finally {
       setLoading(false);

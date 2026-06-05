@@ -17,6 +17,7 @@ export function useVaultParams() {
   return {
     vaultName: vaultContext.vault_name,
     vaultRole: vaultContext.vault_role,
+    credentialStore: vaultContext.credential_store,
     email: auth.email,
     isOwner: auth.is_owner,
   };

@@ -67,8 +67,7 @@ All tokens are generated from `crypto/rand` (256 bits of entropy) and hashed bef
 | ----- | ------ | ------------ | --- | ----- |
 | User session | `av_sess_` | SHA-256 | 1 year absolute, 30-day idle | Bumped on each authenticated request |
 | Scoped session | `av_sess_` | SHA-256 | Configurable (5 min – 7 days, default 24h) | Vault-bound, minted by `vault run` |
-| Agent token | `av_agt_` | SHA-256 | Configurable (or no expiry) | Instance-level agent identity |
-| Invite | `av_inv_` | SHA-256 | 15 minutes | Single-use, burned on redemption |
+| Agent token | `av_agt_` | SHA-256 | No expiry | Instance-level agent identity |
 | Approval | `av_appr_` | SHA-256 | 24 hours | Grants read-only access to a [proposal](/learn/proposals) |
 | Vault invite | `av_uinv_` | SHA-256 | 48 hours | For onboarding human users |
 
@@ -106,7 +105,7 @@ Agent Vault resolves hostnames to IP addresses, validates every resolved IP agai
 
 ## Transport security
 
-All proxied requests are forwarded over **HTTPS**, regardless of how the agent connects to Agent Vault locally. The agent's session token never reaches the target service: on the explicit `/proxy` ingress it travels in `Authorization` and is stripped; on the transparent `HTTPS_PROXY` ingress it travels in `Proxy-Authorization` (which is hop-by-hop and never forwarded). Real credentials are injected server-side based on the vault's [services](/learn/services).
+All proxied requests are forwarded over **HTTPS**. The agent's session token never reaches the target service: it travels in `Proxy-Authorization` (which is hop-by-hop and never forwarded). Real credentials are injected server-side based on the vault's [services](/learn/services).
 
 Other client request headers — vendor headers like `anthropic-version`, conditional request headers, tracing IDs — flow through to the upstream unchanged. The broker only takes over the headers it is responsible for injecting (the auth slot for the configured auth type) plus hop-by-hop and broker-scoped headers; see [Header forwarding](/learn/services#header-forwarding) for the precise rules.
 
@@ -115,37 +114,23 @@ This means:
 - The agent's token never reaches the target service.
 - Credential values only exist in the outbound request headers, never in the agent's address space.
 
-### Transparent proxy (HTTPS_PROXY) transport
+### Transparent proxy transport
 
-The MITM listener that backs `HTTPS_PROXY` is itself TLS-wrapped with a cert signed by the software-backed root CA. This means the CONNECT handshake carrying the agent's session token is encrypted end-to-end between the client and the broker — session tokens are never exposed in plaintext on the wire, even on an untrusted local network.
+The MITM listener that backs `HTTPS_PROXY` and `HTTP_PROXY` is a plain HTTP forward proxy. The `Proxy-Authorization` header carrying the session token travels in cleartext between agent and broker. Deploy Agent Vault on a trusted or private network (localhost, VPN, private subnet). CONNECT tunnels to upstream HTTPS destinations are end-to-end encrypted inside the proxy connection.
 
 - **Root CA private key** is encrypted at rest with the DEK (same key that wraps credentials). See [Encryption at rest](#encryption-at-rest).
-- **DNS rebinding protection** and **[netguard](#network-security)** apply to both the transparent proxy and the explicit `/proxy` endpoint — every outbound connection is resolved and validated against the IP blocklist before Agent Vault dials the upstream.
-- **Rate limiting** shares one `(actor, vault)` budget across both ingress paths; switching from one to the other does not bypass the limit.
+- **DNS rebinding protection** and **[netguard](#network-security)** — every outbound connection is resolved and validated against the IP blocklist before Agent Vault dials the upstream.
+- **Rate limiting** is enforced per `(actor, vault)` budget.
 
 ## Access control
 
 Agent Vault enforces access at two independent layers. For full details, see [Permissions](/learn/permissions).
 
-- **Instance roles** (`owner`, `member`) control who can manage users, vaults, and server settings. Both users and agents have instance-level roles. Owners can see and join any vault, but must explicitly join to access vault contents.
+- **Instance roles** (`owner`, `member`, `no-access`) control who can manage users, vaults, and server settings. Both users and agents have instance-level roles. Owners can see and join any vault, but must explicitly join to access vault contents. The `no-access` role grants zero instance-scoped capabilities and is used for actors whose only authority is a per-vault grant.
 - **Vault roles** (`admin`, `member`, `proxy`) control who can approve [proposals](/learn/proposals), manage agents, and use the proxy within a specific [vault](/learn/vaults).
 - **Agents** are instance-level entities that can access multiple vaults via the `X-Vault` header. Vault-scoped sessions (from `vault run`) are limited to a single vault.
 - **Proposal approval** requires a valid user session. Read-only approval tokens let you view the proposal, but submitting an approval (providing credentials, clicking "Allow") requires logging in.
-- **Email domain restrictions** -- Owners can restrict signups to specific email domains (e.g., `@acme.com`). This applies to email/password registration, Google OAuth signup, and vault invite acceptance. The first user (owner) is exempt. Configure via **Manage > Settings** in the web UI or `agent-vault owner settings set --allowed-domains`.
-
-## OAuth security
-
-When [Google OAuth](/guides/oauth) is enabled, Agent Vault applies several security measures:
-
-- **No automatic account linking** -- OAuth callbacks never link to existing accounts from unauthenticated contexts. If a Google email matches an existing email/password user, sign-in is rejected with a generic error. This prevents pre-hijack attacks.
-- **Safe linking from settings** -- Authenticated users can connect OAuth providers from account settings, where identity is already proven.
-- **PKCE (S256)** -- All OAuth flows use Proof Key for Code Exchange to prevent authorization code interception.
-- **CSRF state parameter** -- 32-byte random state, SHA-256 hashed in the database, single-use, 10-minute expiry.
-- **ID token validation** -- RS256 signature verified against Google's JWKS (cached 1 hour), with issuer (`accounts.google.com`), audience (client ID), and expiry checks.
-- **No token storage** -- Google access and refresh tokens are not stored. Only ID token claims are used at login time.
-- **Generic error messages** -- OAuth errors do not reveal whether an email is registered.
-- **Timing attack prevention** -- Login attempts for OAuth-only users run a dummy KDF hash to prevent timing-based auth method detection.
-- **Owner protection** -- The first user must register with email/password. OAuth login is rejected when no users exist.
+- **Email domain restrictions** -- Owners can restrict signups to specific email domains (e.g., `@acme.com`). This applies to email/password registration and vault invite acceptance. The first user (owner) is exempt. Configure via **Manage > Settings** in the web UI or `agent-vault owner settings set --allowed-domains`.
 
 ## Rate limits
 
@@ -155,14 +140,14 @@ Agent Vault enforces a tiered, in-memory rate limiter on every HTTP ingress. Eac
 
 | Tier | Keyed on | Covers |
 | ---- | -------- | ------ |
-| `AUTH` | Client IP | Anonymous endpoints (login, registration, OAuth callback) |
-| `AUTHED` | Session token hash | Invite redemption, proposal approval, authenticated CRUD |
+| `AUTH` | Client IP | Anonymous endpoints (login, registration, password reset) and proxy auth failures |
+| `AUTHED` | Session token hash | Proposal approval, authenticated CRUD |
 | `PROXY` | `(actor, vault)` scope | Proxy path and MITM ingress |
 | `GLOBAL` | Server-wide | In-flight request ceiling and RPS backstop |
 
 Requests that exceed a tier return `429 Too Many Requests` with a `Retry-After` header so clients can back off.
 
-Operators pick a profile via `AGENT_VAULT_RATELIMIT_PROFILE` (`default`, `strict`, `loose`, `off`) or tune individual tiers in **Manage Instance → Settings → Rate Limiting**. Setting `AGENT_VAULT_RATELIMIT_LOCK=true` pins limits to env vars and makes the UI read-only, which is recommended on PaaS deployments. See [environment variables](/self-hosting/environment-variables) for the full knob list.
+Operators pick a profile via `AGENT_VAULT_RATELIMIT_PROFILE` (`default`, `strict`, `loose`, `off`) or tune individual tiers in **Manage Instance → Settings → Rate Limiting**. The default proxy tier is sized for normal agent fan-out while anonymous auth remains tighter. Setting `AGENT_VAULT_RATELIMIT_LOCK=true` pins limits to env vars and makes the UI read-only, which is recommended on PaaS deployments. See [environment variables](/self-hosting/environment-variables) for the full knob list.
 
 ### Resource caps
 
@@ -171,7 +156,6 @@ Hard caps prevent unbounded growth in vault state:
 | Resource | Limit |
 | -------- | ----- |
 | Pending [proposals](/learn/proposals) per vault | 20 |
-| Pending agent invites per vault | 10 |
 | Pending user invites per vault | 50 |
 | Active sessions per agent | 10 |
 | Rules per proposal | 10 |

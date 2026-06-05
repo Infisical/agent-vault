@@ -1,0 +1,12 @@
+{
+  "name": "agent-vault-daytona-openai-realtime-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node run.mjs"
+  },
+  "dependencies": {
+    "@daytonaio/sdk": "^0.169.0",
+    "dotenv": "^17.2.3"
+  }
+}

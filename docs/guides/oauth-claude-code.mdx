@@ -1,0 +1,137 @@
+---
+title: "OAuth for Claude Code"
+description: "Manage Claude Code's OAuth tokens through Agent Vault so agents never hold real credentials."
+---
+
+This guide sets up Agent Vault to manage Claude Code's Anthropic OAuth tokens. The machine where the agent runs has only a placeholder credential file while Agent Vault injects the real token and handles refresh automatically.
+
+## Prerequisites
+
+- A running [Agent Vault instance](/self-hosting/overview).
+- Claude Code logged in on a machine where you have access to `~/.claude/.credentials.json`.
+- An agent token from Agent Vault with **proxy** role on a vault.
+
+## 1. Get the tokens
+
+On the machine where Claude Code is already logged in, view the credentials file:
+
+```bash
+cat ~/.claude/.credentials.json
+```
+
+You'll need the `accessToken` and `refreshToken` values from this file.
+
+## 2. Create the OAuth credential
+
+In the Agent Vault dashboard, go to your vault's **Credentials** tab and click **Add credential**.
+
+1. Switch to **OAuth** then **Paste tokens**
+2. Fill in:
+
+| Field | Value |
+|-------|-------|
+| Credential Key | `ANTHROPIC` |
+| Token URL | `https://console.anthropic.com/v1/oauth/token` |
+| Client ID | `9d1c250a-e61b-44d9-88ed-5944d1962f5e` |
+| Auth Method | None |
+| Access Token | *(paste `accessToken` from step 1)* |
+| Refresh Token | *(paste `refreshToken` from step 1)* |
+
+The Client ID `9d1c250a-e61b-44d9-88ed-5944d1962f5e` is Anthropic's public OAuth client ID used by Claude Code. It is a public client (no client secret), which is why Auth Method is set to **None**.
+
+3. Click **Add**. The refresh token is validated immediately against Anthropic's token endpoint. If validation fails, check that the Client ID and Token URL are correct.
+
+## 3. Create the services
+
+Claude Code communicates with three Anthropic hosts. All three need a service pointing to the same `ANTHROPIC` credential.
+
+In the **Services** tab, add:
+
+| Name | Host | Auth Type | Token Key |
+|------|------|-----------|-----------|
+| `anthropic-api` | `api.anthropic.com` | Bearer | `ANTHROPIC` |
+| `claude-platform` | `platform.claude.com` | Bearer | `ANTHROPIC` |
+| `claude-mcp` | `mcp-proxy.anthropic.com` | Bearer | `ANTHROPIC` |
+
+- `api.anthropic.com` handles the main API (chat, models, settings).
+- `platform.claude.com` handles OAuth validation and token refresh.
+- `mcp-proxy.anthropic.com` handles cloud MCP connectors (Slack, Gmail, Linear, etc.).
+
+<Accordion title="Using a proposal instead">
+If you already have another agent connected to Agent Vault (e.g., using a different LLM provider or an API key), that agent can propose all three services and the OAuth credential in a single proposal:
+
+```json
+{
+  "services": [
+    {"action": "set", "name": "anthropic-api", "host": "api.anthropic.com", "auth": {"type": "bearer", "token": "ANTHROPIC"}},
+    {"action": "set", "name": "claude-platform", "host": "platform.claude.com", "auth": {"type": "bearer", "token": "ANTHROPIC"}},
+    {"action": "set", "name": "claude-mcp", "host": "mcp-proxy.anthropic.com", "auth": {"type": "bearer", "token": "ANTHROPIC"}}
+  ],
+  "credentials": [{
+    "action": "set",
+    "key": "ANTHROPIC",
+    "type": "oauth",
+    "oauth": {
+      "token_url": "https://console.anthropic.com/v1/oauth/token",
+      "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+    },
+    "description": "Anthropic OAuth (Claude Code)",
+    "obtain_instructions": "Paste tokens from ~/.claude/.credentials.json"
+  }],
+  "message": "Need Anthropic API access for Claude Code"
+}
+```
+
+You approve the proposal and paste your tokens on the approval page.
+</Accordion>
+
+## 4. Set up the agent machine
+
+On the machine where the agent will run, create a placeholder credentials file so Claude Code skips the login screen:
+
+```bash
+mkdir -p ~/.claude
+cat > ~/.claude/.credentials.json << 'EOF'
+{
+  "claudeAiOauth": {
+    "accessToken": "__PLACEHOLDER__",
+    "refreshToken": "dummy",
+    "expiresAt": 9999999999999,
+    "scopes": ["user:file_upload", "user:inference", "user:mcp_servers", "user:profile", "user:sessions:claude_code"],
+    "subscriptionType": "team",
+    "rateLimitTier": "default_claude_max_5x"
+  }
+}
+```
+
+Adjust the `scopes`, `subscriptionType`, and `rateLimitTier` values to match your source machine's `~/.claude/.credentials.json`.
+
+You also need the `.claude.json` onboarding file from the source machine. Copy it to `~/.claude.json` on the agent machine. This file contains `hasCompletedOnboarding: true` and cached config that Claude Code needs to skip the initial setup flow.
+
+## 5. Run Claude Code
+
+```bash
+export AGENT_VAULT_ADDR="http://<your-agent-vault-host>:14321"
+export AGENT_VAULT_TOKEN="av_agt_..."
+export AGENT_VAULT_VAULT="default"
+agent-vault run -- claude
+```
+
+Claude Code starts with the placeholder token. The proxy intercepts every API call to `api.anthropic.com`, `platform.claude.com`, and `mcp-proxy.anthropic.com`, replaces `__PLACEHOLDER__` with the real token from Agent Vault, and forwards to the upstream.
+
+## How refresh works
+
+When the access token nears expiry (within 5 minutes), the proxy automatically refreshes it by calling Anthropic's token endpoint with the stored refresh token. The new access token and expiry are stored. Agents never see a token expiry or need to re-authenticate.
+
+If the refresh token itself is revoked (e.g., you deauthorize the app on Anthropic's side), proxied requests return `502 oauth_refresh_failed`. Re-upload fresh tokens from a new `claude login` session.
+
+## Verify
+
+Confirm the placeholder is still on the agent machine:
+
+```bash
+cat ~/.claude/.credentials.json
+# Should show "__PLACEHOLDER__" as the accessToken
+```
+
+Check the Agent Vault **Logs** tab to see proxied requests with `status: 200` and `matched_service: anthropic-api`.

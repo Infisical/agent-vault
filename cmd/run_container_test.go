@@ -72,7 +72,6 @@ func TestValidateIsolationFlagConflicts(t *testing.T) {
 		{"host mode rejects --home-volume-shared", IsolationHost, []string{"--home-volume-shared"}, "--home-volume-shared requires --isolation=container"},
 		{"host mode rejects --share-agent-dir", IsolationHost, []string{"--share-agent-dir"}, "--share-agent-dir requires --isolation=container"},
 		{"container mode accepts --share-agent-dir alone", IsolationContainer, []string{"--share-agent-dir"}, ""},
-		{"container mode rejects --no-mitm", IsolationContainer, []string{"--no-mitm"}, "--no-mitm requires --isolation=host"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -140,6 +139,5 @@ func newRunCommandForTest() *cobra.Command {
 	c.Flags().Bool("no-firewall", false, "")
 	c.Flags().Bool("home-volume-shared", false, "")
 	c.Flags().Bool("share-agent-dir", false, "")
-	c.Flags().Bool("no-mitm", false, "")
 	return c
 }

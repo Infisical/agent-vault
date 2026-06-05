@@ -231,7 +231,7 @@ func TestIntegration_EgressBlocked_Bypasses(t *testing.T) {
 			"curl --max-time 3 -fsS --noproxy '*' https://example.com >/dev/null && echo REACHED || echo BLOCKED",
 			"--noproxy bypass must still hit kernel-level block"},
 		{"ProxyEnvStripped",
-			"env -u HTTPS_PROXY -u https_proxy curl --max-time 3 -fsS https://example.com >/dev/null && echo REACHED || echo BLOCKED",
+			"env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy curl --max-time 3 -fsS https://example.com >/dev/null && echo REACHED || echo BLOCKED",
 			"env-stripped bypass must still hit kernel-level block"},
 	}
 	for _, tc := range cases {

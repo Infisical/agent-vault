@@ -144,12 +144,19 @@ var serviceClearCmd = &cobra.Command{
 
 var serviceAddCmd = &cobra.Command{
 	Use:   "add",
-	Short: "Add or update services (upsert by host)",
-	Long: `Add one or more services to the vault (upsert by host).
-If a service with the same host already exists, it is replaced.
+	Short: "Add or update services (upsert by name)",
+	Long: `Add one or more services to the vault (upsert by name).
+If a service with the same name already exists, it is replaced.
 
-Flag-driven mode:
-  agent-vault vault service add --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY
+--host accepts a bare hostname (api.stripe.com), a one-level wildcard
+(*.github.com), or an inline path-scoped form (slack.com/api/*) — the
+broker splits the path off the host on ingest.
+
+Flag-driven mode. --host is required; --name is required for new services
+(the server adopts the existing name when --host uniquely matches an entry
+already in the vault — same pattern as 'service remove' by host):
+  agent-vault vault service add --name stripe --host api.stripe.com --auth-type bearer --token-key STRIPE_KEY
+  agent-vault vault service add --name slack-bot --host 'slack.com/api/*' --auth-type bearer --token-key SLACK_BOT_TOKEN
 
 File mode (upsert, not replace-all):
   agent-vault vault service add -f services.yaml`,
@@ -183,10 +190,11 @@ File mode (upsert, not replace-all):
 				return err
 			}
 
-			svc := broker.Service{Host: host, Auth: *auth}
-			if desc, _ := cmd.Flags().GetString("description"); desc != "" {
-				svc.Description = &desc
-			}
+			name, _ := cmd.Flags().GetString("name")
+
+			host, path := broker.SplitInlineHost(host, "")
+
+			svc := broker.Service{Name: name, Host: host, Path: path, Auth: *auth}
 			if disabled, _ := cmd.Flags().GetBool("disabled"); disabled {
 				f := false
 				svc.Enabled = &f
@@ -223,24 +231,27 @@ File mode (upsert, not replace-all):
 			return fmt.Errorf("parsing response: %w", err)
 		}
 
-		for _, h := range resp.Upserted {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s Service added: %s (%d services total)\n", successText("✓"), h, resp.ServicesCount)
+		for _, n := range resp.Upserted {
+			fmt.Fprintf(cmd.OutOrStdout(), "%s Service added: %s (%d services total)\n", successText("✓"), n, resp.ServicesCount)
 		}
 		return nil
 	},
 }
 
 var serviceRemoveCmd = &cobra.Command{
-	Use:   "remove <host>",
-	Short: "Remove a service by host",
-	Args:  cobra.ExactArgs(1),
+	Use:   "remove <name-or-host>",
+	Short: "Remove a service by name (canonical) or host (when unique)",
+	Long: `Remove a service. The argument is matched against service names first,
+then host. If multiple services share the host, the server returns a
+409 with the candidate names — retry with the specific name.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vault := resolveVault(cmd)
-		host := args[0]
+		ref := args[0]
 		yes, _ := cmd.Flags().GetBool("yes")
 
 		if !yes {
-			fmt.Fprintf(cmd.OutOrStderr(), "Remove service %q from vault %q? [y/N] ", host, vault)
+			fmt.Fprintf(cmd.OutOrStderr(), "Remove service %q from vault %q? [y/N] ", ref, vault)
 			reader := bufio.NewReader(os.Stdin)
 			answer, err := reader.ReadString('\n')
 			if err != nil {
@@ -258,7 +269,7 @@ var serviceRemoveCmd = &cobra.Command{
 			return err
 		}
 
-		url := fmt.Sprintf("%s/v1/vaults/%s/services/%s", sess.Address, vault, url.PathEscape(host))
+		url := fmt.Sprintf("%s/v1/vaults/%s/services/%s", sess.Address, vault, url.PathEscape(ref))
 		respBody, err := doAdminRequestWithBody("DELETE", url, sess.Token, nil)
 		if err != nil {
 			return err
@@ -267,39 +278,47 @@ var serviceRemoveCmd = &cobra.Command{
 		var resp struct {
 			ServicesCount int    `json:"services_count"`
 			Removed       string `json:"removed"`
+			RemovedHost   string `json:"removed_host"`
 		}
 		if err := json.Unmarshal(respBody, &resp); err != nil {
 			return fmt.Errorf("parsing response: %w", err)
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "%s Service removed: %s (%d services remaining)\n", successText("✓"), resp.Removed, resp.ServicesCount)
+		display := resp.Removed
+		if resp.RemovedHost != "" && resp.RemovedHost != resp.Removed {
+			display = fmt.Sprintf("%s (host=%s)", resp.Removed, resp.RemovedHost)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s Service removed: %s (%d services remaining)\n", successText("✓"), display, resp.ServicesCount)
 		return nil
 	},
 }
 
 var serviceEnableCmd = &cobra.Command{
-	Use:   "enable <host>",
-	Short: "Enable a service so proxy traffic to the host resumes",
-	Long:  `Re-enable a previously disabled service. Idempotent — no error if already enabled.`,
-	Args:  cobra.ExactArgs(1),
+	Use:   "enable <name-or-host>",
+	Short: "Enable a service so proxy traffic resumes",
+	Long: `Re-enable a previously disabled service. The argument is matched
+against service names first, then host. Idempotent — no error if
+already enabled.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return patchServiceEnabled(cmd, args[0], true)
 	},
 }
 
 var serviceDisableCmd = &cobra.Command{
-	Use:   "disable <host>",
-	Short: "Disable a service so proxy requests to the host return 403",
+	Use:   "disable <name-or-host>",
+	Short: "Disable a service so proxy requests return 403",
 	Long: `Disable a service while preserving its configuration. Agents proxying
-to the host receive 403 with error code "service_disabled" until the
-service is re-enabled. Idempotent.`,
+to it receive 403 with error code "service_disabled" until the service
+is re-enabled. The argument is matched against service names first,
+then host. Idempotent.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return patchServiceEnabled(cmd, args[0], false)
 	},
 }
 
-func patchServiceEnabled(cmd *cobra.Command, host string, enabled bool) error {
+func patchServiceEnabled(cmd *cobra.Command, ref string, enabled bool) error {
 	vault := resolveVault(cmd)
 
 	sess, err := ensureSession()
@@ -312,13 +331,14 @@ func patchServiceEnabled(cmd *cobra.Command, host string, enabled bool) error {
 		return err
 	}
 
-	reqURL := fmt.Sprintf("%s/v1/vaults/%s/services/%s", sess.Address, vault, url.PathEscape(host))
+	reqURL := fmt.Sprintf("%s/v1/vaults/%s/services/%s", sess.Address, vault, url.PathEscape(ref))
 	respBody, err := doAdminRequestWithBody("PATCH", reqURL, sess.Token, body)
 	if err != nil {
 		return err
 	}
 
 	var resp struct {
+		Name    string `json:"name"`
 		Host    string `json:"host"`
 		Enabled bool   `json:"enabled"`
 	}
@@ -330,11 +350,16 @@ func patchServiceEnabled(cmd *cobra.Command, host string, enabled bool) error {
 	if resp.Enabled {
 		verb = "enabled"
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "%s Service %s: %s\n", successText("✓"), verb, resp.Host)
+	display := resp.Name
+	if resp.Host != "" && resp.Host != resp.Name {
+		display = fmt.Sprintf("%s (host=%s)", resp.Name, resp.Host)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s Service %s: %s\n", successText("✓"), verb, display)
 	return nil
 }
 
-// loadServicesFromFile reads and validates a broker config from a YAML file path ("-" for stdin).
+// loadServicesFromFile parses a services YAML file ("-" for stdin) and
+// applies the inline-host split. Validation runs server-side.
 func loadServicesFromFile(filePath, vault string) ([]broker.Service, error) {
 	var data []byte
 	var err error
@@ -351,8 +376,8 @@ func loadServicesFromFile(filePath, vault string) ([]broker.Service, error) {
 		return nil, fmt.Errorf("parsing yaml: %w", err)
 	}
 	cfg.Vault = vault
-	if err := broker.Validate(&cfg); err != nil {
-		return nil, fmt.Errorf("invalid services: %w", err)
+	for i := range cfg.Services {
+		cfg.Services[i].Host, cfg.Services[i].Path = broker.SplitInlineHost(cfg.Services[i].Host, cfg.Services[i].Path)
 	}
 	return cfg.Services, nil
 }
@@ -376,8 +401,8 @@ func init() {
 
 	// service add flags
 	serviceAddCmd.Flags().StringP("file", "f", "", "Path to services YAML file (upsert mode)")
-	serviceAddCmd.Flags().String("host", "", "Target service host (e.g. api.stripe.com)")
-	serviceAddCmd.Flags().String("description", "", "Service description")
+	serviceAddCmd.Flags().String("name", "", "Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required for new services; may be omitted when --host uniquely matches an existing service (the server adopts that name).")
+	serviceAddCmd.Flags().String("host", "", "Target service host. Accepts api.stripe.com, *.github.com, or inline path form like slack.com/api/*.")
 	serviceAddCmd.Flags().String("auth-type", "", "Auth type: bearer, basic, api-key, custom, passthrough")
 	serviceAddCmd.Flags().String("token-key", "", "Credential key for bearer auth")
 	serviceAddCmd.Flags().String("username-key", "", "Credential key for basic auth username")

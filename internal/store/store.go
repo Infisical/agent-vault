@@ -39,10 +39,66 @@ type Credential struct {
 	ID         string
 	VaultID    string
 	Key        string
+	Type       string // "static" (default) or "oauth"
 	Ciphertext []byte
 	Nonce      []byte
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+}
+
+// CredentialOAuth stores the OAuth configuration and refresh state for
+// an OAuth-type credential. The access token lives in credentials.ciphertext;
+// this table stores everything needed to refresh it.
+type CredentialOAuth struct {
+	VaultID           string
+	CredentialKey     string
+	AuthorizationURL  string // empty = token upload mode
+	TokenURL          string
+	ClientID          string
+	ClientSecretCT    []byte // nil for public clients
+	ClientSecretNonce []byte
+	Scopes            string
+	ScopeSeparator    string
+	DisablePKCE       bool
+	TokenAuthMethod   string // "client_secret_post" or "client_secret_basic"
+	RefreshTokenCT    []byte
+	RefreshTokenNonce []byte
+	TokenExpiresAt    *time.Time
+	ConnectedAt       *time.Time
+	LastRefreshedAt   *time.Time
+	LastRefreshError  string
+	LastRefreshErrorAt *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+// CredentialOAuthState holds a CSRF state + PKCE verifier for an
+// in-flight OAuth consent redirect.
+type CredentialOAuthState struct {
+	ID            string
+	StateHash     string
+	CodeVerifier  string
+	VaultID       string
+	CredentialKey string
+	RedirectURL   string
+	CreatedAt     time.Time
+	ExpiresAt     time.Time
+}
+
+// OAuthCredentialConfig bridges the handler layer to the store for
+// ApplyProposal — carries the OAuth provider config for a credential
+// slot being created or updated.
+type OAuthCredentialConfig struct {
+	Key               string
+	AuthorizationURL  string
+	TokenURL          string
+	ClientID          string
+	ClientSecretCT    []byte
+	ClientSecretNonce []byte
+	Scopes            string
+	ScopeSeparator    string
+	DisablePKCE       bool
+	TokenAuthMethod   string
 }
 
 // MasterKeyRecord holds the KEK/DEK key-wrapping artifacts.
@@ -82,6 +138,14 @@ type Session struct {
 	DeviceLabel   string        // user-visible label, e.g. hostname
 	LastIP        string
 	LastUserAgent string
+
+	// Scoped-session metadata (populated only for vault-scoped tokens; left
+	// empty on user login sessions and agent tokens). Label is a
+	// user-supplied tag shown in the Tokens UI; CreatedByActorID/Type
+	// record the actor that minted the token.
+	Label              string
+	CreatedByActorID   string
+	CreatedByActorType string
 }
 
 // IsExpired reports whether the session is past its absolute expiry or its
@@ -98,8 +162,8 @@ func (s *Session) IsExpired(now time.Time) bool {
 }
 
 // CreateUserSessionParams carries all the fields persisted on a fresh
-// user-login session. Captured as a struct so login, OAuth callback, and
-// password-change call sites stay aligned without positional drift.
+// user-login session. Captured as a struct so login and password-change
+// call sites stay aligned without positional drift.
 type CreateUserSessionParams struct {
 	UserID        string
 	ExpiresAt     time.Time
@@ -107,6 +171,18 @@ type CreateUserSessionParams struct {
 	DeviceLabel   string
 	LastIP        string
 	LastUserAgent string
+}
+
+// CreateScopedSessionParams carries the fields persisted on a vault-scoped
+// session token. ExpiresAt is optional (nil = never expires); Label and
+// the CreatedBy fields are optional metadata for the Tokens UI.
+type CreateScopedSessionParams struct {
+	VaultID            string
+	VaultRole          string
+	ExpiresAt          *time.Time
+	Label              string
+	CreatedByActorID   string
+	CreatedByActorType string // "user" or "agent"
 }
 
 // User represents a human user account.
@@ -118,7 +194,7 @@ type User struct {
 	KDFTime      uint32 // Argon2id time parameter used when password was hashed
 	KDFMemory    uint32 // Argon2id memory parameter (KiB) used when password was hashed
 	KDFThreads   uint8  // Argon2id threads parameter used when password was hashed
-	Role         string // "owner" or "member"
+	Role         string // "owner", "member", or "no-access"
 	IsActive     bool   // false until email is verified (first user is auto-active)
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
@@ -158,6 +234,51 @@ type EncryptedCredential struct {
 	Nonce      []byte
 }
 
+// EncryptedKV pairs a credential key with its AES-256-GCM ciphertext+nonce.
+type EncryptedKV struct {
+	Key        string
+	Ciphertext []byte
+	Nonce      []byte
+}
+
+// Wire-protocol values for VaultCredentialStore.Kind. KindBuiltin is the
+// API sentinel for "no external store" and is never persisted.
+const (
+	CredentialStoreBuiltin   = "builtin"
+	CredentialStoreInfisical = "infisical"
+)
+
+// Wire-protocol values for VaultCredentialStore.LastSyncStatus.
+const (
+	SyncStatusOK    = "ok"
+	SyncStatusError = "error"
+)
+
+// VaultCredentialStore is the per-vault external-source row; absence means built-in.
+type VaultCredentialStore struct {
+	VaultID             string
+	Kind                string // CredentialStoreInfisical
+	ConfigJSON          string // per-kind config blob
+	PollIntervalSeconds int
+	LastSyncedAt        *time.Time
+	LastSyncStatus      string // SyncStatus*
+	LastSyncError       string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+// CreateExternalVaultParams carries inputs to CreateExternalVault. The
+// creator is persisted as an admin vault_grants row in the same transaction.
+type CreateExternalVaultParams struct {
+	Name                string
+	Kind                string
+	ConfigJSON          string
+	PollIntervalSeconds int
+	Credentials         []EncryptedKV
+	CreatorActorID      string
+	CreatorActorType    string // "user" or "agent"
+}
+
 // RequestLog is a persisted record of a single proxied request. Secret-free
 // by construction: no header values, no bodies, no query strings — only
 // metadata already safe to log (see internal/brokercore/logging.go).
@@ -191,38 +312,12 @@ type ListRequestLogsOpts struct {
 	Limit          int   // capped at 200 by handler; store trusts caller
 }
 
-// Invite represents a named agent invite with optional vault pre-assignments.
-// All invites create named, instance-level agents on redemption.
-type Invite struct {
-	ID                int
-	Token             string
-	AgentName         string             // required: agent name (3-64 chars, lowercase alphanumeric + hyphens)
-	AgentID           string             // set for rotation invites (references existing agent)
-	AgentRole         string             // "owner" or "member" — instance role for the agent
-	SessionTTLSeconds int                // desired session lifetime when redeemed (0 = no expiry)
-	Status            string             // pending, redeemed, expired, revoked
-	SessionID         string             // populated after redemption
-	CreatedBy         string             // session ID of the creator
-	Vaults            []AgentInviteVault // pre-assigned vault access
-	CreatedAt         time.Time
-	ExpiresAt         time.Time
-	RedeemedAt        *time.Time
-	RevokedAt         *time.Time
-}
-
-// AgentInviteVault represents a pre-assigned vault grant on an agent invite.
-type AgentInviteVault struct {
-	VaultID   string
-	VaultName string // populated via JOIN on reads
-	VaultRole string // "proxy", "member", or "admin"
-}
-
 // Agent represents a named, instance-level agent entity.
 // Agents have multi-vault access via VaultGrant records and an instance-level role.
 type Agent struct {
 	ID        string
 	Name      string
-	Role      string // "owner" or "member" (instance-level role, like users)
+	Role      string // "owner", "member", or "no-access" (instance-level role, like users)
 	Status    string // "active" or "revoked"
 	CreatedBy string // user ID of the creator
 	Vaults    []VaultGrant
@@ -231,13 +326,19 @@ type Agent struct {
 	RevokedAt *time.Time
 }
 
+// AgentVaultGrantSpec is a vault ID + vault role pair used when creating an agent.
+type AgentVaultGrantSpec struct {
+	VaultID string
+	Role    string
+}
+
 // UserInvite represents an instance-level invitation for a new user.
 // Invites bring users into the instance, with optional vault pre-assignment.
 type UserInvite struct {
 	ID         int
 	Token      string // only populated on creation (not stored in DB)
 	Email      string
-	Role       string // "owner" or "member" — instance role for the invited user
+	Role       string // "owner", "member", or "no-access" — instance role for the invited user
 	Status     string // pending, accepted, expired, revoked
 	CreatedBy  string // user ID of the inviter
 	CreatedAt  time.Time
@@ -273,32 +374,6 @@ type PasswordReset struct {
 	ExpiresAt time.Time
 }
 
-// OAuthAccount links a user to an external OAuth provider identity.
-type OAuthAccount struct {
-	ID             string
-	UserID         string
-	Provider       string // "google", "github", etc.
-	ProviderUserID string // unique ID from provider (e.g. "sub" claim)
-	Email          string // email from provider (for display)
-	Name           string
-	AvatarURL      string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-}
-
-// OAuthState holds CSRF state and PKCE verifier for an in-progress OAuth flow.
-type OAuthState struct {
-	ID           string
-	StateHash    string // SHA-256 of the state parameter
-	CodeVerifier string // PKCE code_verifier
-	Nonce        string // OIDC nonce for ID token binding
-	RedirectURL  string // where to redirect after auth
-	Mode         string // "login" or "connect"
-	UserID       string // set when mode is "connect" (authenticated linking)
-	CreatedAt    time.Time
-	ExpiresAt    time.Time
-}
-
 // Store is the persistence interface for Agent Vault.
 // All methods are safe for concurrent use.
 type Store interface {
@@ -315,6 +390,18 @@ type Store interface {
 	GetCredential(ctx context.Context, vaultID, key string) (*Credential, error)
 	ListCredentials(ctx context.Context, vaultID string) ([]Credential, error)
 	DeleteCredential(ctx context.Context, vaultID, key string) error
+
+	// OAuth credentials
+	GetCredentialOAuth(ctx context.Context, vaultID, key string) (*CredentialOAuth, error)
+	SetCredentialOAuth(ctx context.Context, oauth *CredentialOAuth) error
+	UpdateCredentialOAuthTokens(ctx context.Context, vaultID, key string, accessCT, accessNonce, refreshCT, refreshNonce []byte, expiresAt *time.Time) error
+	UpdateCredentialOAuthError(ctx context.Context, vaultID, key string, errMsg string) error
+
+	// OAuth states (CSRF + PKCE for consent flow)
+	CreateCredentialOAuthState(ctx context.Context, state *CredentialOAuthState) error
+	GetCredentialOAuthStateByHash(ctx context.Context, stateHash string) (*CredentialOAuthState, error)
+	DeleteCredentialOAuthState(ctx context.Context, id string) error
+	ExpireCredentialOAuthStates(ctx context.Context, before time.Time) (int, error)
 
 	// Users
 	CreateUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, role string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*User, error)
@@ -346,9 +433,15 @@ type Store interface {
 
 	// Sessions
 	CreateUserSession(ctx context.Context, p CreateUserSessionParams) (*Session, error)
-	CreateScopedSession(ctx context.Context, vaultID, vaultRole string, expiresAt *time.Time) (*Session, error)
+	CreateScopedSession(ctx context.Context, p CreateScopedSessionParams) (*Session, error)
 	GetSession(ctx context.Context, id string) (*Session, error)
 	DeleteSession(ctx context.Context, id string) error
+	// ListScopedSessionsByVault returns active vault-scoped tokens for the
+	// vault, most recent first. Used by the Tokens tab.
+	ListScopedSessionsByVault(ctx context.Context, vaultID string) ([]Session, error)
+	// RevokeScopedSession deletes one scoped session by (vaultID, publicID).
+	// Vault scoping prevents cross-vault revocation.
+	RevokeScopedSession(ctx context.Context, vaultID, publicID string) error
 	// TouchSession bumps last_used_at for the given raw token and
 	// refreshes last_ip + last_user_agent (empty values leave the
 	// existing column unchanged). Throttled internally so per-request
@@ -380,26 +473,7 @@ type Store interface {
 	CountPendingProposals(ctx context.Context, vaultID string) (int, error)
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
 	GetProposalCredentials(ctx context.Context, vaultID string, proposalID int) (map[string]EncryptedCredential, error)
-	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string) error
-
-	// Agent invites (instance-level)
-	CreateAgentInvite(ctx context.Context, agentName, createdBy string, expiresAt time.Time, sessionTTLSeconds int, agentRole string, vaults []AgentInviteVault) (*Invite, error)
-	CreateRotationInvite(ctx context.Context, agentID, createdBy string, expiresAt time.Time) (*Invite, error)
-	GetInviteByToken(ctx context.Context, token string) (*Invite, error)
-	ListInvites(ctx context.Context, status string) ([]Invite, error)
-	ListInvitesByVault(ctx context.Context, vaultID, status string) ([]Invite, error)
-	RedeemInvite(ctx context.Context, token, sessionID string) error
-	UpdateInviteSessionID(ctx context.Context, inviteID int, sessionID string) error
-	RevokeInvite(ctx context.Context, token string) error
-	GetInviteByID(ctx context.Context, id int) (*Invite, error)
-	RevokeInviteByID(ctx context.Context, id int) error
-	CountPendingInvites(ctx context.Context) (int, error)
-	HasPendingInviteByAgentName(ctx context.Context, name string) (bool, error)
-	GetPendingInviteByAgentName(ctx context.Context, name string) (*Invite, error)
-	AddAgentInviteVault(ctx context.Context, inviteID int, vaultID, role string) error
-	RemoveAgentInviteVault(ctx context.Context, inviteID int, vaultID string) error
-	UpdateAgentInviteVaultRole(ctx context.Context, inviteID int, vaultID, role string) error
-	ExpirePendingInvites(ctx context.Context, before time.Time) (int, error)
+	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []OAuthCredentialConfig) error
 
 	// User invites (instance-level)
 	CreateUserInvite(ctx context.Context, email, createdBy, role string, expiresAt time.Time, vaults []UserInviteVault) (*UserInvite, error)
@@ -425,26 +499,12 @@ type Store interface {
 	CountPendingPasswordResets(ctx context.Context, email string) (int, error)
 	ExpirePendingPasswordResets(ctx context.Context, before time.Time) (int, error)
 
-	// OAuth accounts
-	CreateOAuthAccount(ctx context.Context, userID, provider, providerUserID, email, name, avatarURL string) (*OAuthAccount, error)
-	GetOAuthAccount(ctx context.Context, provider, providerUserID string) (*OAuthAccount, error)
-	GetOAuthAccountByUser(ctx context.Context, userID, provider string) (*OAuthAccount, error)
-	ListUserOAuthAccounts(ctx context.Context, userID string) ([]OAuthAccount, error)
-	DeleteOAuthAccount(ctx context.Context, userID, provider string) error
-
-	// OAuth state (CSRF + PKCE)
-	CreateOAuthState(ctx context.Context, stateHash, codeVerifier, nonce, redirectURL, mode, userID string, expiresAt time.Time) (*OAuthState, error)
-	GetOAuthStateByHash(ctx context.Context, stateHash string) (*OAuthState, error)
-	DeleteOAuthState(ctx context.Context, id string) error
-	ExpireOAuthStates(ctx context.Context, before time.Time) (int, error)
-
-	// User creation without password (for OAuth registration)
-	CreateOAuthUser(ctx context.Context, email, role string) (*User, error)
-	// CreateOAuthUserAndAccount atomically creates a passwordless user and links an OAuth identity.
-	CreateOAuthUserAndAccount(ctx context.Context, email, role, provider, providerUserID, oauthEmail, name, avatarURL string) (*User, *OAuthAccount, error)
-
 	// Agents
 	CreateAgent(ctx context.Context, name, createdBy, role string) (*Agent, error)
+	// CreateAgentWithGrantsAndToken creates an agent, its vault grants, and its
+	// first agent token in a single transaction so partial failures cannot strand
+	// an agent row without a token or with half-applied grants.
+	CreateAgentWithGrantsAndToken(ctx context.Context, name, createdBy, role string, vaultGrants []AgentVaultGrantSpec, tokenExpiresAt *time.Time) (*Agent, *Session, error)
 	GetAgentByID(ctx context.Context, id string) (*Agent, error)
 	GetAgentByName(ctx context.Context, name string) (*Agent, error)
 	ListAgents(ctx context.Context, vaultID string) ([]Agent, error)
@@ -455,6 +515,9 @@ type Store interface {
 	CountAgentTokens(ctx context.Context, agentID string) (int, error)
 	GetLatestAgentTokenExpiry(ctx context.Context, agentID string) (*time.Time, error)
 	DeleteAgentTokens(ctx context.Context, agentID string) error
+	// RotateAgentToken deletes the agent's existing tokens and mints a new one
+	// in a single transaction so the agent is never stranded without a token.
+	RotateAgentToken(ctx context.Context, agentID string, tokenExpiresAt *time.Time) (*Session, error)
 	CreateAgentToken(ctx context.Context, agentID string, expiresAt *time.Time) (*Session, error)
 	CountAllOwners(ctx context.Context) (int, error)
 
@@ -462,6 +525,19 @@ type Store interface {
 	GetSetting(ctx context.Context, key string) (string, error)
 	SetSetting(ctx context.Context, key, value string) error
 	GetAllSettings(ctx context.Context) (map[string]string, error)
+
+	// Vault settings (per-vault key/value)
+	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
+	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
+	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
+
+	// External credential stores (per vault)
+	CreateExternalVault(ctx context.Context, p CreateExternalVaultParams) (*Vault, error)
+	GetVaultCredentialStore(ctx context.Context, vaultID string) (*VaultCredentialStore, error)
+	ListVaultCredentialStores(ctx context.Context) ([]VaultCredentialStore, error)
+	UpdateVaultCredentialStoreHealth(ctx context.Context, vaultID, status, errMsg string, syncedAt time.Time) error
+	// ReplaceVaultCredentials atomically wipes and rewrites the vault's credentials.
+	ReplaceVaultCredentials(ctx context.Context, vaultID string, items []EncryptedKV) error
 
 	// Request logs
 	InsertRequestLogs(ctx context.Context, rows []RequestLog) error

@@ -59,7 +59,6 @@ func runInteractiveServiceSet(cmd *cobra.Command) error {
 		return handleAbort(cmd, err)
 	}
 
-	// Merge
 	finalServices := mergeServices(existingServices, newServices, strategy)
 
 	// Validate
@@ -147,6 +146,14 @@ func fetchServices(client *session.ClientSession, nsName string) ([]broker.Servi
 	if err := json.Unmarshal(resp.Services, &services); err != nil {
 		return nil, nil
 	}
+	// The wire shape carries Host in joined inline form (e.g.
+	// `slack.com/api/*`); split it back into bare Host + Path so the
+	// matcher invariant — Host has no '/' — holds before any downstream
+	// broker.Validate (e.g. when the user appends in the interactive
+	// builder).
+	for i := range services {
+		services[i].Host, services[i].Path = broker.SplitInlineHost(services[i].Host, services[i].Path)
+	}
 	return services, nil
 }
 
@@ -229,9 +236,8 @@ func serviceBuilderLoop(client *session.ClientSession, nsName string, cmd *cobra
 		}
 		services = append(services, *service)
 
-		// Warn on duplicate hosts
-		for _, dup := range findDuplicateHosts(services) {
-			fmt.Fprintf(cmd.ErrOrStderr(), "%s multiple services for host %q — the last service wins\n", warningText("Warning:"), dup)
+		for _, dup := range findDuplicateMatchers(services) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "%s multiple services for matcher %q — the first declared wins on tie\n", warningText("Warning:"), dup)
 		}
 
 		if len(services) > 0 {
@@ -256,12 +262,12 @@ func serviceBuilderLoop(client *session.ClientSession, nsName string, cmd *cobra
 
 // buildService guides the user through creating a single service.
 func buildService(client *session.ClientSession, nsName string, cmd *cobra.Command) (*broker.Service, error) {
-	host, err := promptHost(cmd)
+	name, err := promptServiceName()
 	if err != nil {
 		return nil, err
 	}
 
-	desc, err := promptDescription()
+	host, err := promptHost(cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -271,11 +277,31 @@ func buildService(client *session.ClientSession, nsName string, cmd *cobra.Comma
 		return nil, err
 	}
 
+	bareHost, path := broker.SplitInlineHost(host, "")
 	return &broker.Service{
-		Host:        host,
-		Description: desc,
-		Auth:        auth,
+		Name: name,
+		Host: bareHost,
+		Path: path,
+		Auth: auth,
 	}, nil
+}
+
+// promptServiceName collects a slug-shaped service name and validates it
+// against ValidateSlug so the user sees the constraint at prompt time
+// rather than via a server-side 400.
+func promptServiceName() (string, error) {
+	var name string
+	err := huh.NewInput().
+		Title("Service name (slug, e.g. stripe, slack-bot):").
+		Value(&name).
+		Validate(func(s string) error {
+			return broker.ValidateSlug(strings.TrimSpace(s))
+		}).
+		Run()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(name), nil
 }
 
 // promptAuth asks the user to select an auth method and configure it.
@@ -433,24 +459,6 @@ func promptHost(cmd *cobra.Command) (string, error) {
 	}
 
 	return host, nil
-}
-
-// promptDescription asks for an optional description.
-func promptDescription() (*string, error) {
-	var desc string
-	err := huh.NewInput().
-		Title("Description (optional):").
-		Value(&desc).
-		Run()
-	if err != nil {
-		return nil, err
-	}
-
-	desc = strings.TrimSpace(desc)
-	if desc == "" {
-		return nil, nil
-	}
-	return &desc, nil
 }
 
 // headerBuilderLoop collects at least one header per service.
@@ -706,16 +714,16 @@ func hostWarnings(host string) []string {
 	return warnings
 }
 
-// findDuplicateHosts returns host patterns that appear more than once in the service list.
-func findDuplicateHosts(services []broker.Service) []string {
+// findDuplicateMatchers returns matcher patterns that appear more than once.
+func findDuplicateMatchers(services []broker.Service) []string {
 	seen := make(map[string]int)
 	for _, s := range services {
-		seen[s.Host]++
+		seen[s.MatcherPattern()]++
 	}
 	var dups []string
-	for host, count := range seen {
+	for matcher, count := range seen {
 		if count > 1 {
-			dups = append(dups, host)
+			dups = append(dups, matcher)
 		}
 	}
 	return dups

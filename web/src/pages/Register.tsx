@@ -4,7 +4,6 @@ import { apiFetch } from "../lib/api";
 import Navbar from "../components/Navbar";
 import Button from "../components/Button";
 import { ErrorBanner } from "../components/shared";
-import { OAuthSection } from "../components/GoogleButton";
 import { DomainNotice } from "../components/DomainNotice";
 
 export default function Register() {
@@ -371,8 +370,6 @@ function RegisterForm({ isFirstUser, onStepChange }: { isFirstUser: boolean; onS
       </p>
 
       {!isFirstUser && <DomainNotice className="mb-6" />}
-
-      {!isFirstUser && <OAuthSection />}
 
       <form onSubmit={handleRegister} autoComplete="off">
         <div className="mb-6">

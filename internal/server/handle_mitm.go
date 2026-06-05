@@ -12,8 +12,8 @@ import (
 // Gated on IsListening, not just non-nil: when the proxy fails to bind
 // (port conflict with default-on MITM), s.mitm is still attached but
 // nothing is accepting connections. Returning a PEM in that state would
-// lead operators to install a cert and configure HTTPS_PROXY for a port
-// that silently refuses connections.
+// lead operators to install a cert and configure HTTPS_PROXY/HTTP_PROXY
+// for a port that silently refuses connections.
 //
 // The X-MITM-Port response header advertises the port the proxy is bound
 // to. Clients (e.g. `agent-vault vault run`) use this instead of a
@@ -28,7 +28,6 @@ func (s *Server) handleMITMCA(w http.ResponseWriter, _ *http.Request) {
 	if _, port, err := net.SplitHostPort(s.mitm.Addr()); err == nil && port != "" && port != "0" {
 		w.Header().Set("X-MITM-Port", port)
 	}
-	w.Header().Set("X-MITM-TLS", "1")
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.Header().Set("Content-Disposition", `attachment; filename="agent-vault-ca.pem"`)
 	_, _ = w.Write(s.mitm.RootPEM())

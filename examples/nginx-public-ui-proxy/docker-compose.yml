@@ -1,0 +1,32 @@
+services:
+  agent-vault:
+    image: infisical/agent-vault:latest
+    environment:
+      AGENT_VAULT_MASTER_PASSWORD: changeme-for-local-testing
+      # Public URL the user hits — drives av_session Secure flag and email links.
+      AGENT_VAULT_ADDR: http://localhost:8080
+      # Demo only: trust the whole compose network. Scope to the reverse proxy CIDR in prod.
+      AGENT_VAULT_TRUSTED_PROXIES: 0.0.0.0/0
+    volumes:
+      - agent-vault-data:/data
+
+  reverse-proxy:
+    build: .
+    environment:
+      PORT: 8080
+      AGENT_VAULT_UPSTREAM: agent-vault:14321
+    ports:
+      - "8080:8080"
+    depends_on:
+      - agent-vault
+
+  # Verification harness for trust-header stripping: uncomment, then in the
+  # reverse-proxy service set AGENT_VAULT_UPSTREAM=echo:8080.
+  #
+  # echo:
+  #   image: mendhak/http-https-echo:34
+  #   environment:
+  #     HTTP_PORT: 8080
+
+volumes:
+  agent-vault-data:

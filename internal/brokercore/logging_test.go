@@ -78,7 +78,7 @@ func TestLogProxyEvent_NoSecretLeak(t *testing.T) {
 			}
 
 			provider := NewStoreCredentialProvider(f, encKey)
-			result, err := provider.Inject(context.Background(), "v1", "api.example.com")
+			result, err := provider.Inject(context.Background(), "v1", "api.example.com", "/")
 			if err != nil {
 				t.Fatalf("Inject: %v", err)
 			}
@@ -94,7 +94,7 @@ func TestLogProxyEvent_NoSecretLeak(t *testing.T) {
 				Method:         "GET",
 				Host:           "api.example.com",
 				Path:           "/v1/users",
-				MatchedService: result.MatchedHost,
+				MatchedService: result.MatchedName,
 				CredentialKeys: result.CredentialKeys,
 				Status:         200,
 				TotalMs:        42,
@@ -129,7 +129,7 @@ func TestLogProxyEvent_CredentialMissingCarriesMetadata(t *testing.T) {
 	// Deliberately don't seed MISSING_TOKEN — Resolve will fail.
 
 	provider := NewStoreCredentialProvider(f, encKey)
-	result, err := provider.Inject(context.Background(), "v1", "api.example.com")
+	result, err := provider.Inject(context.Background(), "v1", "api.example.com", "/")
 	if err == nil {
 		t.Fatal("expected ErrCredentialMissing, got nil")
 	}
@@ -156,14 +156,14 @@ func TestLogProxyEvent_Shape(t *testing.T) {
 			name: "explicit_success",
 			event: ProxyEvent{
 				Ingress: "explicit", Method: "GET", Host: "api.example.com",
-				Path: "/v1/users", MatchedService: "api.example.com",
+				Path: "/v1/users", MatchedService: "api-example-com",
 				CredentialKeys: []string{"API_KEY"}, Status: 200, TotalMs: 17,
 			},
 			want: []string{
 				"ingress=explicit",
 				"method=GET",
 				"status=200",
-				"matched_service=api.example.com",
+				"matched_service=api-example-com",
 				"API_KEY",
 			},
 		},

@@ -124,8 +124,8 @@ POST /v1/proposals
   "services": [
     {
       "action": "set",
+      "name": "stripe",
       "host": "api.stripe.com",
-      "description": "Stripe API",
       "auth": { "type": "bearer", "token": "STRIPE_KEY" }
     }
   ],
@@ -149,18 +149,45 @@ The response includes an `approval_url` that the agent presents to the user in c
 
 Each service and credential slot carries an `action` field:
 
-- `set`: idempotent upsert (add or replace). Services require `host` + `auth`; credential slots require `key`.
-- `delete`: remove an existing entry. Services only need `host`; credential slots only need `key`.
+- `set`: idempotent upsert (add or replace). Services require `name` + `host` + `auth` — pick the `name` deliberately, the server does not derive one from `host` — and credential slots require `key`. To layer two credentials on the same host, give each entry its own `name` and embed different inline path globs in `host` (e.g. `slack.com/api/*` vs `slack.com/api/apps.connections.*`).
+- `delete`: remove an existing entry. Services delete by `name` (canonical); when `name` is omitted, the server resolves uniquely against `host` — and returns 409 with the candidate names if multiple services share that host. Credential slots only need `key`.
 
 ### Credential slots
 
-A credential slot can work in three ways:
+A credential slot can work in four ways:
 
-| Scenario                        | `value` field | What happens                                               |
-| ------------------------------- | ------------- | ---------------------------------------------------------- |
-| Human supplies the credential   | omitted       | Human enters the value at approval time                    |
-| Agent stores a credential back  | included      | Value is encrypted at creation; human confirms at approval |
-| Delete a credential             | n/a           | `action: "delete"` removes the key                         |
+| Scenario                        | `type`  | `value` field | What happens                                               |
+| ------------------------------- | ------- | ------------- | ---------------------------------------------------------- |
+| Human supplies the credential   | `static` (default) | omitted       | Human enters the value at approval time                    |
+| Agent stores a credential back  | `static` | included      | Value is encrypted at creation; human confirms at approval |
+| OAuth credential                | `oauth` | omitted       | Human connects via OAuth or pastes tokens at approval time |
+| Delete a credential             | n/a     | n/a           | `action: "delete"` removes the key                         |
+
+For OAuth credential slots, include an `oauth` config object:
+
+```json
+{
+  "action": "set",
+  "key": "GITHUB",
+  "type": "oauth",
+  "oauth": {
+    "authorization_url": "https://github.com/login/oauth/authorize",
+    "token_url": "https://github.com/login/oauth/access_token",
+    "scopes": "repo user",
+    "client_id": "optional-pre-fill"
+  },
+  "description": "GitHub OAuth",
+  "obtain_instructions": "Register an OAuth app at github.com/settings/developers"
+}
+```
+
+OAuth config fields:
+- `authorization_url` (optional): if present, approval shows a Connect button for the browser consent flow. If omitted, approval shows token paste fields.
+- `token_url` (required): the provider's token endpoint, used for token exchange and refresh.
+- `scopes` (optional): space-separated permissions to request during the consent flow.
+- `client_id` (optional): pre-fill the client ID field on the approval page.
+
+The `value` field must not be set for OAuth slots -- tokens are obtained through the connect flow or pasted by the human.
 
 Every credential key referenced in a service's `auth` config must resolve to either a credential slot in the proposal or an existing [credential](/learn/credentials) in the [vault](/learn/vaults). Credential keys use `UPPER_SNAKE_CASE` format.
 
@@ -173,7 +200,7 @@ Every credential key referenced in a service's `auth` config must resolve to eit
 | Max pending proposals per vault | 20          |
 | `message` length                | 2,000 chars |
 | `user_message` length           | 5,000 chars |
-| `description` length            | 500 chars   |
+| Credential `description` length | 500 chars   |
 | `obtain` length                 | 500 chars   |
 | `obtain_instructions` length    | 1,000 chars |
 | Proposal TTL                    | 7 days      |

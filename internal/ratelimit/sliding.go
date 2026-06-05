@@ -106,6 +106,46 @@ func (l *slidingWindow) allow(key string) Decision {
 	return AllowOK(l.max-len(recent)-1, l.max)
 }
 
+// check peeks at the current state for key without recording a new
+// event. Used by the MITM proxy to pre-gate requests before running
+// auth — only auth failures are recorded via allow().
+func (l *slidingWindow) check(key string) Decision {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.now()
+	cutoff := now.Add(-l.window)
+
+	recent := l.attempts[key][:0]
+	for _, t := range l.attempts[key] {
+		if t.After(cutoff) {
+			recent = append(recent, t)
+		}
+	}
+	l.attempts[key] = recent
+
+	if len(recent) >= l.max {
+		var wait time.Duration
+		if len(recent) > 0 {
+			wait = recent[0].Add(l.window).Sub(now)
+		}
+		if wait < time.Second {
+			wait = time.Second
+		}
+		return Deny("rate", wait, l.max)
+	}
+
+	if l.maxKeys > 0 && len(l.attempts) > l.maxKeys {
+		for k, v := range l.attempts {
+			if len(v) == 0 || v[len(v)-1].Before(cutoff) {
+				delete(l.attempts, k)
+			}
+		}
+	}
+
+	return AllowOK(l.max-len(recent), l.max)
+}
+
 // size returns the number of tracked keys (for gauges/tests).
 func (l *slidingWindow) size() int {
 	l.mu.Lock()

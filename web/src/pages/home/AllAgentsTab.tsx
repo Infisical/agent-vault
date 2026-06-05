@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo, useCallback, type ReactNode } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, type ReactNode } from "react";
 import { useRouteContext } from "@tanstack/react-router";
-import { LoadingSpinner, ErrorBanner, StatusBadge, timeAgo } from "../../components/shared";
+import { LoadingSpinner, ErrorBanner, StatusBadge, timeAgo, formatInstanceRole, INSTANCE_ROLE_OPTIONS, type InstanceRole } from "../../components/shared";
 import DataTable, { type Column } from "../../components/DataTable";
 import DropdownMenu from "../../components/DropdownMenu";
 import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
@@ -10,17 +10,16 @@ import Input from "../../components/Input";
 import FormField from "../../components/FormField";
 import CopyButton from "../../components/CopyButton";
 import Select from "../../components/Select";
-import { apiFetch } from "../../lib/api";
-import type { AuthContext } from "../../router";
+import SegmentedTabs from "../../components/SegmentedTabs";
+import { apiFetch, isAbortError } from "../../lib/api";
+import type { AuthContext, InstanceStatus } from "../../router";
 
 interface AgentRow {
   name: string;
-  role: string; // instance-level role: "owner" or "member"
+  role: string;
   status: string;
   created_at: string;
   vaults: { vault_name: string; vault_role: string }[];
-  // For pending invites shown inline
-  invite_id?: number;
 }
 
 interface VaultOption {
@@ -34,49 +33,39 @@ function RowActions({
   isOwner,
   onRevoke,
   onDone,
+  onError,
 }: {
   agent: AgentRow;
   isOwner: boolean;
   onRevoke: (agent: AgentRow) => void;
   onDone: () => void;
+  onError: (msg: string) => void;
 }) {
   if (agent.status === "revoked") return null;
 
-  if (agent.status === "pending" && agent.invite_id) {
-    return (
-      <DropdownMenu
-        width={192}
-        items={[
-          {
-            label: "Revoke invite",
-            onClick: async () => {
-              await apiFetch(
-                `/v1/agents/invites/by-id/${agent.invite_id}`,
-                { method: "DELETE" }
-              );
-              onDone();
-            },
-            variant: "danger",
-          },
-        ]}
-      />
+  async function setRoleTo(newRole: InstanceRole) {
+    const resp = await apiFetch(
+      `/v1/agents/${encodeURIComponent(agent.name)}/role`,
+      { method: "POST", body: JSON.stringify({ role: newRole }) }
     );
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      onError(data.error || "Failed to change role");
+      return;
+    }
+    onDone();
   }
 
   const items: { label: string; onClick: () => void; variant?: "danger" }[] = [];
 
   if (isOwner) {
-    const targetRole = agent.role === "owner" ? "member" : "owner";
-    items.push({
-      label: `Set role: ${targetRole}`,
-      onClick: async () => {
-        await apiFetch(
-          `/v1/agents/${encodeURIComponent(agent.name)}/role`,
-          { method: "POST", body: JSON.stringify({ role: targetRole }) }
-        );
-        onDone();
-      },
-    });
+    for (const opt of INSTANCE_ROLE_OPTIONS) {
+      if (opt.role === agent.role) continue;
+      items.push({
+        label: `Set role: ${opt.label}`,
+        onClick: () => setRoleTo(opt.role),
+      });
+    }
   }
 
   items.push({ label: "Revoke agent", onClick: () => onRevoke(agent), variant: "danger" });
@@ -90,7 +79,7 @@ function RowActions({
 }
 
 export default function AllAgentsTab() {
-  const { auth } = useRouteContext({ from: "/_auth" }) as { auth: AuthContext };
+  const { auth, status } = useRouteContext({ from: "/_auth" }) as { auth: AuthContext; status: InstanceStatus };
   const [rows, setRows] = useState<AgentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -98,10 +87,7 @@ export default function AllAgentsTab() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [agentsResp, invResp] = await Promise.all([
-        apiFetch("/v1/agents"),
-        apiFetch("/v1/agents/invites?status=pending"),
-      ]);
+      const agentsResp = await apiFetch("/v1/agents");
 
       if (!agentsResp.ok) {
         const data = await agentsResp.json();
@@ -110,7 +96,7 @@ export default function AllAgentsTab() {
       }
 
       const agentsData = await agentsResp.json();
-      const activeRows: AgentRow[] = (agentsData.agents ?? []).map(
+      const nextRows: AgentRow[] = (agentsData.agents ?? []).map(
         (a: { name: string; role: string; status: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
           name: a.name,
           role: a.role || "member",
@@ -120,27 +106,7 @@ export default function AllAgentsTab() {
         })
       );
 
-      let pendingRows: AgentRow[] = [];
-      if (invResp.ok) {
-        const invData = await invResp.json();
-        const agentNames = new Set(activeRows.map((a) => a.name));
-        pendingRows = (invData.invites ?? [])
-          .filter((inv: { agent_name: string; status: string }) =>
-            inv.status === "pending" && !agentNames.has(inv.agent_name)
-          )
-          .map(
-            (inv: { id: number; agent_name: string; agent_role?: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
-              name: inv.agent_name,
-              role: inv.agent_role || "member",
-              status: "pending",
-              created_at: inv.created_at,
-              vaults: inv.vaults ?? [],
-              invite_id: inv.id,
-            })
-          );
-      }
-
-      setRows([...activeRows, ...pendingRows]);
+      setRows(nextRows);
     } catch {
       setError("Network error.");
     } finally {
@@ -172,7 +138,7 @@ export default function AllAgentsTab() {
         key: "role",
         header: "Role",
         render: (agent) => (
-          <span className="text-sm text-text-muted capitalize">{agent.role}</span>
+          <span className="text-sm text-text-muted">{formatInstanceRole(agent.role)}</span>
         ),
       },
       {
@@ -206,7 +172,7 @@ export default function AllAgentsTab() {
         header: "",
         align: "right" as const,
         render: (agent: AgentRow) => (
-          <RowActions agent={agent} isOwner={auth.is_owner} onRevoke={setRevokeTarget} onDone={fetchData} />
+          <RowActions agent={agent} isOwner={auth.is_owner} onRevoke={setRevokeTarget} onDone={fetchData} onError={setError} />
         ),
       },
     ];
@@ -224,7 +190,7 @@ export default function AllAgentsTab() {
             All agents across the instance.
           </p>
         </div>
-        <InviteAgentButton onInvited={fetchData} isOwner={auth.is_owner} />
+        <AddAgentButton onCreated={fetchData} isOwner={auth.is_owner} baseURL={status.base_url} />
       </div>
 
       {loading ? (
@@ -235,9 +201,9 @@ export default function AllAgentsTab() {
         <DataTable
           columns={columns}
           data={rows}
-          rowKey={(row) => row.invite_id ? `invite-${row.invite_id}` : row.name}
+          rowKey={(row) => row.name}
           emptyTitle="No agents"
-          emptyDescription="Invite an agent to give it access to your instance."
+          emptyDescription="Add an agent to give it access to your instance."
         />
       )}
 
@@ -272,21 +238,24 @@ interface VaultAssignment {
   vault_role: "proxy" | "member" | "admin";
 }
 
-function InviteAgentButton({
-  onInvited,
+function AddAgentButton({
+  onCreated,
   isOwner,
+  baseURL,
 }: {
-  onInvited: () => void;
+  onCreated: () => void;
   isOwner: boolean;
+  baseURL?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
-  const [agentRole, setAgentRole] = useState<"owner" | "member">("member");
+  const [agentRole, setAgentRole] = useState<InstanceRole>("no-access");
   const [vaultAssignments, setVaultAssignments] = useState<VaultAssignment[]>([]);
   const [availableVaults, setAvailableVaults] = useState<VaultOption[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [inviteResult, setInviteResult] = useState<{ token: string } | null>(null);
+  const [createResult, setCreateResult] = useState<{ agentToken: string; vaults: VaultAssignment[] } | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -301,13 +270,23 @@ function InviteAgentButton({
       .catch(() => {});
   }, [open, isOwner]);
 
+  // Unmount paths that bypass close() (browser back, programmatic redirect)
+  // would otherwise let an in-flight create land its token on an unmounted
+  // component and disappear.
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
   function close() {
+    abortRef.current?.abort();
     setOpen(false);
     setName("");
-    setAgentRole("member");
+    setAgentRole("no-access");
     setVaultAssignments([]);
     setError("");
-    setInviteResult(null);
+    setCreateResult(null);
   }
 
   function addVault() {
@@ -330,50 +309,56 @@ function InviteAgentButton({
 
   async function handleCreate() {
     if (!name.trim()) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setSubmitting(true);
     setError("");
     try {
-      const payload: Record<string, unknown> = { name: name.trim() };
-      if (isOwner && agentRole !== "member") {
-        payload.role = agentRole;
-      }
+      const payload: Record<string, unknown> = {
+        name: name.trim(),
+        // Non-owners don't see the picker, so agentRole stays at "no-access".
+        role: agentRole,
+      };
       if (vaultAssignments.length > 0) {
         payload.vaults = vaultAssignments;
       }
-      const resp = await apiFetch("/v1/agents/invites", {
+      const createResp = await apiFetch("/v1/agents", {
         method: "POST",
         body: JSON.stringify(payload),
+        signal: controller.signal,
       });
-      const data = await resp.json();
-      if (resp.ok) {
-        onInvited();
-        setInviteResult({ token: data.token });
-      } else {
-        setError(data.error || "Failed to create invite.");
+      const createData = await createResp.json().catch((err) => {
+        if (isAbortError(err)) throw err;
+        return {};
+      });
+      // Refresh regardless of outcome: the server may have committed the
+      // agent even if the response failed to deserialize, and the operator
+      // needs to see the resulting row.
+      onCreated();
+      if (!createResp.ok) {
+        setError(createData.error || "Failed to create agent.");
+        return;
       }
-    } catch {
+      if (!createData.av_agent_token) {
+        setError("Server returned no agent token. Try again.");
+        return;
+      }
+      setCreateResult({
+        agentToken: createData.av_agent_token,
+        vaults: createData.vaults ?? vaultAssignments,
+      });
+    } catch (err) {
+      // Server may have committed the create before the abort or drop, so
+      // refresh so any new agent shows up.
+      onCreated();
+      if (isAbortError(err)) return;
       setError("Network error.");
     } finally {
-      setSubmitting(false);
+      // Skip if a re-entrant handleCreate has taken over: that call already
+      // set submitting=true on entry and owns clearing it.
+      if (abortRef.current === controller) setSubmitting(false);
     }
-  }
-
-  function buildPrompt(): string {
-    const inviteUrl = `${window.location.origin}/invite/${inviteResult?.token}`;
-    return [
-      "You are being invited to register as an agent with Agent Vault, a local HTTP proxy that lets you call external APIs without seeing credentials.",
-      "",
-      "To accept this invite, make the following HTTP request:",
-      "",
-      `POST ${inviteUrl}`,
-      "Content-Type: application/json",
-      "",
-      "{}",
-      "",
-      "The response contains your agent token and usage instructions.",
-      "",
-      "This invite expires in 15 minutes and can only be used once.",
-    ].join("\n");
   }
 
   const assignedNames = new Set(vaultAssignments.map((a) => a.vault_name));
@@ -402,29 +387,29 @@ function InviteAgentButton({
           <line x1="1" y1="9" x2="4" y2="9" />
           <line x1="1" y1="14" x2="4" y2="14" />
         </svg>
-        Invite agent
+        Add agent
       </Button>
 
       <Modal
         open={open}
         onClose={close}
-        title={inviteResult ? "Connect Your Agent" : "Invite Agent"}
-        description={inviteResult ? "Paste this into your agent's chat." : "Invite an AI agent to the instance."}
+        title={createResult ? "Connect Your Agent" : "Add Agent"}
+        description={createResult ? "The Agent Vault CLI runs alongside your agent and reads these env vars to bootstrap its environment, so every outbound API call routes through Agent Vault for credential injection." : "Connect an agent, app, or service to Agent Vault."}
         footer={
-          inviteResult ? (
+          createResult ? (
             <Button onClick={close}>Done</Button>
           ) : (
             <>
               <Button variant="secondary" onClick={close}>Cancel</Button>
               <Button onClick={handleCreate} disabled={!name.trim()} loading={submitting}>
-                Create invite
+                Add
               </Button>
             </>
           )
         }
       >
-        {inviteResult ? (
-          <InviteResultView token={inviteResult.token} buildPrompt={buildPrompt} onRedeemed={onInvited} />
+        {createResult ? (
+          <ConnectAgentView agentToken={createResult.agentToken} vaults={createResult.vaults} baseURL={baseURL} />
         ) : (
           <div className="space-y-4">
             <FormField
@@ -443,14 +428,19 @@ function InviteAgentButton({
             {isOwner && (
               <FormField
                 label="Instance role"
-                helperText={agentRole === "owner"
-                  ? "This agent will be able to manage users, vaults, and instance settings."
-                  : "This agent will have standard access, scoped to its assigned vaults."}
+                helperText={
+                  agentRole === "owner"
+                    ? "This agent will be able to manage users, vaults, and instance settings."
+                    : agentRole === "member"
+                    ? "This agent will have standard access, scoped to its assigned vaults."
+                    : "This agent has no instance-level access. It can only operate within vaults you grant it below."
+                }
               >
                 <Select
                   value={agentRole}
-                  onChange={(e) => setAgentRole(e.target.value as "owner" | "member")}
+                  onChange={(e) => setAgentRole(e.target.value as InstanceRole)}
                 >
+                  <option value="no-access">No Access</option>
                   <option value="member">Member</option>
                   <option value="owner">Owner</option>
                 </Select>
@@ -480,21 +470,22 @@ function InviteAgentButton({
                 <div className="space-y-2">
                   {vaultAssignments.map((assignment, idx) => (
                     <div key={idx} className="flex items-center gap-2">
-                      <select
-                        value={assignment.vault_name}
-                        onChange={(e) => updateVault(idx, "vault_name", e.target.value)}
-                        className="flex-1 px-3 py-2 bg-surface border border-border rounded-lg text-text text-sm outline-none"
-                      >
-                        {availableVaults.map((v) => (
-                          <option
-                            key={v.name}
-                            value={v.name}
-                            disabled={assignedNames.has(v.name) && v.name !== assignment.vault_name}
-                          >
-                            {v.name}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="flex-1">
+                        <Select
+                          value={assignment.vault_name}
+                          onChange={(e) => updateVault(idx, "vault_name", e.target.value)}
+                        >
+                          {availableVaults.map((v) => (
+                            <option
+                              key={v.name}
+                              value={v.name}
+                              disabled={assignedNames.has(v.name) && v.name !== assignment.vault_name}
+                            >
+                              {v.name}
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
                       <Select
                         value={assignment.vault_role}
                         onChange={(e) => updateVault(idx, "vault_role", e.target.value)}
@@ -529,222 +520,97 @@ function InviteAgentButton({
   );
 }
 
-type InviteTab = "prompt" | "manual";
+type InstallTab = "shell" | "docker";
 
-function InviteResultView({
-  token,
-  buildPrompt,
-  onRedeemed,
-}: {
-  token: string;
-  buildPrompt: () => string;
-  onRedeemed: () => void;
-}) {
-  const [tab, setTab] = useState<InviteTab>("prompt");
-  const [redeeming, setRedeeming] = useState(false);
-  const [redeemError, setRedeemError] = useState("");
-  const [sessionToken, setSessionToken] = useState<string | null>(null);
-  const prompt = buildPrompt();
+const INSTALL_SNIPPETS: Record<InstallTab, string> = {
+  shell: "curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://get.agent-vault.dev | sh",
+  docker: "COPY --from=infisical/agent-vault:latest /usr/local/bin/agent-vault /usr/local/bin/agent-vault",
+};
 
-  async function handleRedeem() {
-    setRedeeming(true);
-    setRedeemError("");
-    try {
-      const resp = await apiFetch(`/invite/${token}`, {
-        method: "POST",
-        body: "{}",
-      });
-      if (!resp.ok) {
-        const data = await resp.json().catch(() => ({}));
-        setRedeemError(data.message || data.error || "Failed to redeem invite.");
-        return;
-      }
-      const data = await resp.json();
-      setSessionToken(data.av_agent_token);
-      onRedeemed();
-    } catch {
-      setRedeemError("Network error.");
-    } finally {
-      setRedeeming(false);
+const RUN_SNIPPETS: Record<InstallTab, string> = {
+  shell: "agent-vault run -- claude",
+  docker: `ENTRYPOINT ["agent-vault", "run", "--", "claude"]`,
+};
+
+// Loopback and bind-wildcard values almost never reach a remote agent,
+// so treat them as unset and let the operator fill in the right hostname.
+function resolveAgentVaultAddr(baseURL?: string): string {
+  const placeholder = "<AGENT_VAULT_ADDR>";
+  if (!baseURL) return placeholder;
+  try {
+    const host = new URL(baseURL).hostname;
+    // URL.hostname preserves IPv6 brackets per WHATWG URL host serializer.
+    if (
+      host === "localhost" ||
+      host === "[::1]" ||
+      host === "[::]" ||
+      host === "0.0.0.0" ||
+      /^127\./.test(host)
+    ) {
+      return placeholder;
     }
+  } catch {
+    return placeholder;
   }
-
-  return (
-    <div className="space-y-4">
-      <div className="inline-flex rounded-lg bg-bg p-0.5 border border-border">
-        {([
-          { key: "prompt" as const, label: "Chat prompt" },
-          { key: "manual" as const, label: "Manual setup" },
-        ]).map(({ key, label }) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-              tab === key
-                ? "bg-surface text-text shadow-sm"
-                : "text-text-muted hover:text-text"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {tab === "prompt" ? (
-        <>
-          <p className="text-sm text-text-muted">
-            Paste this into your agent's chat and it will connect automatically.
-          </p>
-          <div className="relative">
-            <textarea
-              readOnly
-              value={prompt}
-              rows={10}
-              className="w-full px-4 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono outline-none select-all resize-none leading-relaxed"
-              onFocus={(e) => e.target.select()}
-            />
-            <CopyButton
-              value={prompt}
-              className="absolute top-2 right-2 px-3 py-1.5 bg-primary text-primary-text rounded-md text-xs font-semibold hover:bg-primary-hover transition-colors"
-            />
-          </div>
-          <p className="text-xs text-text-dim">
-            Works with Claude Code, Cursor, ChatGPT, and other chat-based agents. For agents you can't paste into, see <strong>Manual setup</strong>.
-          </p>
-        </>
-      ) : (
-        <ManualSetupView
-          sessionToken={sessionToken}
-          redeeming={redeeming}
-          redeemError={redeemError}
-          onRedeem={handleRedeem}
-        />
-      )}
-    </div>
-  );
+  return baseURL;
 }
 
-type TrustTab = "macos" | "linux" | "node" | "python";
-
-function ManualSetupView({
-  sessionToken,
-  redeeming,
-  redeemError,
-  onRedeem,
+function ConnectAgentView({
+  agentToken,
+  vaults,
+  baseURL,
 }: {
-  sessionToken: string | null;
-  redeeming: boolean;
-  redeemError: string;
-  onRedeem: () => Promise<void>;
+  agentToken: string;
+  vaults: VaultAssignment[];
+  baseURL?: string;
 }) {
-  const [mitm, setMitm] = useState<{ available: boolean; port: string } | null>(null);
-  const [trustTab, setTrustTab] = useState<TrustTab>("macos");
+  const [installTab, setInstallTab] = useState<InstallTab>("shell");
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/v1/mitm/ca.pem")
-      .then((r) => {
-        if (cancelled) return;
-        if (r.ok) {
-          setMitm({ available: true, port: r.headers.get("X-MITM-Port") ?? "14322" });
-        } else {
-          setMitm({ available: false, port: "" });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setMitm({ available: false, port: "" });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (mitm === null) {
-    return <LoadingSpinner />;
-  }
-
-  if (!mitm.available) {
-    return (
-      <div className="px-4 py-3 bg-bg border border-border rounded-lg">
-        <p className="text-sm text-text">Transparent proxy is disabled on this server.</p>
-        <p className="text-xs text-text-muted mt-1">
-          Restart Agent Vault with <code className="text-text-muted">--mitm-port</code> greater than 0 to enable it, or use the <strong>Chat prompt</strong> flow.
-        </p>
-      </div>
-    );
-  }
-
-  const host = window.location.hostname;
-  const tokenDisplay = sessionToken ?? "<TOKEN>";
-  const httpsProxy = `https://${tokenDisplay}@${host}:${mitm.port}`;
-  const trustSnippets: Record<TrustTab, string> = {
-    macos: `sudo security add-trusted-cert -d -r trustRoot \\\n  -k /Library/Keychains/System.keychain agent-vault-ca.pem`,
-    linux: `sudo cp agent-vault-ca.pem /usr/local/share/ca-certificates/agent-vault-ca.crt\nsudo update-ca-certificates`,
-    node: `export NODE_EXTRA_CA_CERTS="$(pwd)/agent-vault-ca.pem"`,
-    python: `export REQUESTS_CA_BUNDLE="$(pwd)/agent-vault-ca.pem"`,
-  };
-  const trustTabs: { key: TrustTab; label: string }[] = [
-    { key: "macos", label: "macOS" },
-    { key: "linux", label: "Linux" },
-    { key: "node", label: "Node" },
-    { key: "python", label: "Python" },
-  ];
+  const addr = resolveAgentVaultAddr(baseURL);
+  const vaultHint = vaults.length > 0 ? vaults[0].vault_name : "<VAULT_NAME>";
+  const envSnippet = [
+    `export AGENT_VAULT_ADDR="${addr}"`,
+    `export AGENT_VAULT_TOKEN="${agentToken}"`,
+    `export AGENT_VAULT_VAULT="${vaultHint}"`,
+  ].join("\n");
 
   return (
     <div className="space-y-5">
-      <ManualStep n={1} title="Download the root CA">
+      <SegmentedTabs<InstallTab>
+        ariaLabel="Install method"
+        value={installTab}
+        onChange={setInstallTab}
+        options={[
+          { value: "shell", label: "Shell" },
+          { value: "docker", label: "Dockerfile" },
+        ]}
+      />
+
+      <ManualStep n={1} title="Install the Agent Vault CLI">
         <p className="text-sm text-text-muted">
-          Agent Vault's transparent proxy presents TLS leaves signed by its own CA. Save the certificate and trust it so your agent's HTTPS client can verify those leaves.
+          Add the <code className="text-text-muted">agent-vault</code> binary to the environment where your agent runs.
         </p>
-        <a
-          href="/v1/mitm/ca.pem"
-          download="agent-vault-ca.pem"
-          className="inline-flex items-center gap-2 px-3 py-2 bg-primary text-primary-text rounded-lg text-sm font-semibold hover:bg-primary-hover transition-colors"
-        >
-          Download CA
-        </a>
+        <Snippet value={INSTALL_SNIPPETS[installTab]} />
       </ManualStep>
 
-      <ManualStep n={2} title="Trust the CA">
-        <div className="inline-flex rounded-lg bg-bg p-0.5 border border-border">
-          {trustTabs.map(({ key, label }) => (
-            <button
-              key={key}
-              onClick={() => setTrustTab(key)}
-              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                trustTab === key
-                  ? "bg-surface text-text shadow-sm"
-                  : "text-text-muted hover:text-text"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <Snippet value={trustSnippets[trustTab]} />
-      </ManualStep>
-
-      <ManualStep n={3} title="Point the agent at the proxy">
+      <ManualStep n={2} title="Set environment variables">
         <p className="text-sm text-text-muted">
-          The session token is embedded in the proxy URL — HTTP clients send it as <code className="text-text-muted">Proxy-Authorization</code> on every CONNECT handshake.
+          The CLI reads these on launch to authenticate with Agent Vault and scope its session to the right vault.
         </p>
-        <Snippet value={`export HTTPS_PROXY="${httpsProxy}"`} />
-        {!sessionToken && (
-          <div className="flex items-center gap-2">
-            <Button onClick={onRedeem} loading={redeeming}>
-              Reveal token
-            </Button>
-            {redeemError && <span className="text-sm text-danger">{redeemError}</span>}
-          </div>
+        <Snippet value={envSnippet} />
+        {vaults.length > 1 && (
+          <p className="text-xs text-text-muted">
+            Multiple vaults were pre-assigned; this snippet uses <code className="text-text-muted">{vaults[0].vault_name}</code>. Edit <code className="text-text-muted">AGENT_VAULT_VAULT</code> to pick a different one for this run.
+          </p>
         )}
-        <p className="text-xs text-text-dim">
-          If Agent Vault is behind a reverse proxy, replace <code className="text-text-muted">{host}</code> with the externally reachable hostname.
-        </p>
       </ManualStep>
 
-      <p className="text-xs text-text-dim pt-3 border-t border-border">
-        <code className="text-text-muted">agent-vault run --vault &lt;name&gt; -- &lt;command&gt;</code> does all of this automatically.
-      </p>
+      <ManualStep n={3} title="Run your agent under agent-vault">
+        <p className="text-sm text-text-muted">
+          <code className="text-text-muted">agent-vault run</code> launches your agent with <code className="text-text-muted">HTTPS_PROXY</code> and <code className="text-text-muted">HTTP_PROXY</code> pre-set so both its HTTPS and plain HTTP calls route through Agent Vault for credential injection.
+        </p>
+        <Snippet value={RUN_SNIPPETS[installTab]} />
+      </ManualStep>
     </div>
   );
 }
@@ -772,7 +638,7 @@ function ManualStep({
 function Snippet({ value }: { value: string }) {
   return (
     <div className="relative">
-      <pre className="px-4 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono overflow-x-auto whitespace-pre">{value}</pre>
+      <pre className="pl-4 pr-20 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono overflow-x-auto whitespace-pre">{value}</pre>
       <CopyButton
         value={value}
         className="absolute top-2 right-2 px-3 py-1.5 bg-primary text-primary-text rounded-md text-xs font-semibold hover:bg-primary-hover transition-colors"

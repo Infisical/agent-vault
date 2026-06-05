@@ -7,16 +7,19 @@ import (
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
-// MaxProxyBodyBytes caps forwarded request bodies on both proxy
-// ingresses. Distinct from the generic 1 MB limitBody wrapper used
-// on control-plane endpoints: proxy bodies are legitimately larger
-// (file uploads, bulk API payloads) but must still be bounded to
-// protect RAM under the proxy concurrency semaphore.
-const MaxProxyBodyBytes = 64 << 20
+// DefaultMaxRequestBytes is the default cap for request bodies forwarded
+// on the MITM proxy ingress. Distinct from the generic 1 MB limitBody
+// wrapper used on control-plane endpoints.
+const DefaultMaxRequestBytes int64 = 1 << 30 // 1 GiB
+
+// MaxMaterializeBytes caps request bodies that must be buffered in RAM
+// for body-surface substitutions. Kept small because body substitutions
+// target API payloads (JSON, form-encoded), not large file uploads.
+const MaxMaterializeBytes int64 = 64 << 20 // 64 MiB
 
 // ProxyScope is the resolved identity + vault context for a proxy request.
-// It is produced once per ingress (per request for /proxy, per CONNECT for
-// MITM) and carried through to credential injection.
+// It is produced once per CONNECT on the MITM ingress and carried through
+// to credential injection.
 type ProxyScope struct {
 	AgentID   string // non-empty for agent tokens
 	UserID    string // non-empty for user sessions
@@ -35,10 +38,9 @@ func (s *ProxyScope) ActorID() string {
 	return s.AgentID
 }
 
-// SessionResolver collapses bearer-token validation and vault selection into
-// one call. Both ingresses use the same resolver; MITM passes a vault hint
-// parsed from Proxy-Authorization, /proxy passes r.Header.Get("X-Vault").
-// An empty hint means "infer from session".
+// SessionResolver collapses bearer-token validation and vault selection
+// into one call. The MITM ingress passes a vault hint parsed from
+// Proxy-Authorization. An empty hint means "infer from session".
 type SessionResolver interface {
 	ResolveForProxy(ctx context.Context, token, vaultHint string) (*ProxyScope, error)
 }

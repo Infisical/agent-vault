@@ -2,12 +2,8 @@ package proposal
 
 import (
 	"fmt"
-	"net"
 	"net/url"
-	"os"
-	"regexp"
 	"strings"
-	"unicode"
 
 	"github.com/Infisical/agent-vault/internal/broker"
 )
@@ -23,78 +19,6 @@ const (
 	MaxObtainInstructionsLen = 1000
 )
 
-// hostLabelPattern matches a valid hostname (RFC 952 / RFC 1123 style).
-var hostLabelPattern = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
-
-// internalHosts are names blocked unless AGENT_VAULT_DEV_MODE=true.
-var internalHosts = []string{
-	"localhost", "localhost.localdomain", "internal",
-	"kubernetes", "kubernetes.default",
-	"metadata.google.internal", "metadata.google",
-	"instance-data",
-}
-
-// ValidateHost checks that a host string is safe and well-formed.
-func ValidateHost(host string) error {
-	h := strings.TrimSpace(host)
-	if h == "" {
-		return fmt.Errorf("host is empty")
-	}
-
-	// Reject forbidden characters.
-	for _, ch := range h {
-		if ch == '@' || ch == '?' || ch == '#' || ch == ' ' || unicode.IsControl(ch) {
-			return fmt.Errorf("host %q contains invalid character %q", host, ch)
-		}
-	}
-
-	// Reject raw IP addresses.
-	if net.ParseIP(h) != nil {
-		return fmt.Errorf("host %q must be a hostname, not an IP address", host)
-	}
-
-	// Handle wildcard patterns.
-	if strings.HasPrefix(h, "*") {
-		if h == "*" {
-			return fmt.Errorf("host %q: bare wildcard is not allowed", host)
-		}
-		if !strings.HasPrefix(h, "*.") {
-			return fmt.Errorf("host %q: wildcard must be in the form *.example.com", host)
-		}
-		suffix := h[2:] // after "*."
-		// Must have at least 2 dots in the suffix to avoid *.com or *.co.uk style patterns.
-		// e.g. *.example.com → suffix is "example.com" which has 1 dot → OK
-		// *.com → suffix is "com" which has 0 dots → reject
-		// *.co.uk → suffix is "co.uk" which has 1 dot → reject (need 2+ labels before TLD)
-		// We require at least one dot in the suffix (i.e. suffix must be a multi-label domain).
-		if !strings.Contains(suffix, ".") {
-			return fmt.Errorf("host %q: wildcard must have at least two domain levels (e.g. *.example.com)", host)
-		}
-		// Validate the suffix as a hostname.
-		if !hostLabelPattern.MatchString(suffix) {
-			return fmt.Errorf("host %q: invalid hostname in wildcard pattern", host)
-		}
-		return nil
-	}
-
-	// Block internal hostnames unless dev mode.
-	devMode := strings.EqualFold(os.Getenv("AGENT_VAULT_DEV_MODE"), "true")
-	if !devMode {
-		lower := strings.ToLower(h)
-		for _, internal := range internalHosts {
-			if lower == internal {
-				return fmt.Errorf("host %q is a local/internal name and is not allowed (set AGENT_VAULT_DEV_MODE=true to override)", host)
-			}
-		}
-	}
-
-	// Validate as a proper hostname.
-	if !hostLabelPattern.MatchString(h) {
-		return fmt.Errorf("host %q is not a valid hostname", host)
-	}
-
-	return nil
-}
 
 // ValidateMessages checks length limits for proposal-level message fields.
 func ValidateMessages(message, userMessage string) error {
@@ -119,6 +43,7 @@ func Validate(services []Service, credentials []CredentialSlot) error {
 		return fmt.Errorf("too many credential slots (max %d)", MaxCredentials)
 	}
 
+	nameSet := make(map[string]int, len(services))
 	for i, s := range services {
 		if s.Action != ActionSet && s.Action != ActionDelete {
 			return fmt.Errorf("service %d: invalid action %q (must be %q or %q)", i, s.Action, ActionSet, ActionDelete)
@@ -126,11 +51,24 @@ func Validate(services []Service, credentials []CredentialSlot) error {
 		if s.Host == "" {
 			return fmt.Errorf("service %d: host is required", i)
 		}
-		if err := ValidateHost(s.Host); err != nil {
+		if strings.Contains(s.Host, "/") {
+			return fmt.Errorf("service %d: host %q must not contain %q after ingest (entry should have been split into host + path)", i, s.Host, "/")
+		}
+		if err := broker.ValidateHost(s.Host); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
-		if len(s.Description) > MaxDescriptionLen {
-			return fmt.Errorf("service %d: description too long (max %d characters)", i, MaxDescriptionLen)
+		if s.Name == "" {
+			return fmt.Errorf("service %d: name is required", i)
+		}
+		if err := broker.ValidateSlug(s.Name); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
+		}
+		if prev, dup := nameSet[s.Name]; dup {
+			return fmt.Errorf("service %d: duplicate name %q (also at service %d)", i, s.Name, prev)
+		}
+		nameSet[s.Name] = i
+		if err := broker.ValidatePath(s.Path); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
 		}
 		if s.Action == ActionSet {
 			if s.Auth == nil && s.Enabled == nil {
@@ -205,6 +143,40 @@ func Validate(services []Service, credentials []CredentialSlot) error {
 			return fmt.Errorf("credential slot %q: obtain_instructions too long (max %d characters)", c.Key, MaxObtainInstructionsLen)
 		}
 
+		if c.Type != "" && c.Type != "static" && c.Type != "oauth" {
+			return fmt.Errorf("credential slot %q: unsupported type %q (supported: static, oauth)", c.Key, c.Type)
+		}
+		if c.Type == "oauth" {
+			if c.OAuth == nil {
+				return fmt.Errorf("credential slot %q: \"oauth\" config is required when type is \"oauth\"", c.Key)
+			}
+			if c.OAuth.TokenURL == "" {
+				return fmt.Errorf("credential slot %q: oauth.token_url is required", c.Key)
+			}
+			if c.OAuth.AuthorizationURL != "" {
+				u, err := url.Parse(c.OAuth.AuthorizationURL)
+				if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+					return fmt.Errorf("credential slot %q: oauth.authorization_url must be an https:// or http:// URL", c.Key)
+				}
+			}
+			{
+				u, err := url.Parse(c.OAuth.TokenURL)
+				if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+					return fmt.Errorf("credential slot %q: oauth.token_url must be an https:// or http:// URL", c.Key)
+				}
+			}
+			if c.Value != nil {
+				return fmt.Errorf("credential slot %q: \"value\" must not be set for oauth credentials (tokens are obtained via the connect flow)", c.Key)
+			}
+			if c.OAuth.TokenAuthMethod != "" {
+				switch c.OAuth.TokenAuthMethod {
+				case "client_secret_post", "client_secret_basic":
+				default:
+					return fmt.Errorf("credential slot %q: oauth.token_auth_method must be \"client_secret_post\" or \"client_secret_basic\"", c.Key)
+				}
+			}
+		}
+
 		// If services exist, set-action slots must be referenced by a service auth config.
 		// Credential-only proposals (no services) are allowed for storing credentials back.
 		if len(services) > 0 && c.Action == ActionSet && !refs[c.Key] {
@@ -236,14 +208,18 @@ func ValidateCredentialRefs(services []Service, slots []CredentialSlot, existing
 		if svc.Action != ActionSet || svc.Auth == nil {
 			continue
 		}
+		ref := svc.Name
+		if ref == "" {
+			ref = svc.Host
+		}
 		for _, key := range svc.Auth.CredentialKeys() {
 			if !available[key] {
-				return fmt.Errorf("credential %q referenced in service for %q is not provided in this proposal and does not exist in the vault", key, svc.Host)
+				return fmt.Errorf("credential %q referenced in service %q is not provided in this proposal and does not exist in the vault", key, ref)
 			}
 		}
 		for _, sub := range svc.Substitutions {
 			if !available[sub.Key] {
-				return fmt.Errorf("credential %q referenced in substitution for %q is not provided in this proposal and does not exist in the vault", sub.Key, svc.Host)
+				return fmt.Errorf("credential %q referenced in substitution for %q is not provided in this proposal and does not exist in the vault", sub.Key, ref)
 			}
 		}
 	}

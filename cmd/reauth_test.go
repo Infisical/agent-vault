@@ -63,7 +63,7 @@ func TestRequestScopedSession_401MessagePreservesPrefix(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := requestScopedSession(srv.URL, "tok", "default", "", 0)
+	_, err := requestScopedSession(srv.URL, "tok", "default", 0)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -96,7 +96,7 @@ func TestRequestScopedSession_401WrapsErrSessionExpired(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := requestScopedSession(srv.URL, "stale-token", "default", "", 0)
+	_, err := requestScopedSession(srv.URL, "stale-token", "default", 0)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -189,7 +189,7 @@ func TestMintScopedSession_VaultResolutionMemoized(t *testing.T) {
 	cmd.Flags().String("vault", "", "")
 
 	sess := &session.ClientSession{Token: "stale", Address: srv.URL}
-	vault, token, err := mintScopedSession(cmd, sess, srv.URL, "", 0)
+	vault, token, err := mintScopedSession(cmd, sess, srv.URL, 0)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}

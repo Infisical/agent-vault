@@ -132,13 +132,13 @@ release:
     ## Verify
 
     ```bash
-    # Verify checksum
-    sha256sum --check checksums.txt
+    # Verify checksum (portable across macOS and Linux)
+    shasum -a 256 --ignore-missing -c checksums.txt
 
-    # Verify signature (requires cosign)
+    # Verify signature (requires cosign v2+)
     cosign verify-blob \
-      --bundle checksums.txt.bundle \
-      --certificate-identity-regexp "github.com/Infisical/agent-vault" \
+      --bundle checksums.txt.sig \
+      --certificate-identity-regexp "^https://github\.com/Infisical/agent-vault/\.github/workflows/release\.yml@refs/tags/" \
       --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
       checksums.txt
 

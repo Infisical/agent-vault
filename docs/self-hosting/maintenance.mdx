@@ -1,0 +1,61 @@
+---
+title: "Maintenance"
+description: "Verify release signatures and upgrade an existing Agent Vault installation."
+---
+
+import InstallCommand from "/snippets/install-command.mdx";
+
+## Verify a release
+
+Every release includes SHA-256 checksums and a [cosign](https://github.com/sigstore/cosign) signature for supply-chain security. There are no keys to manage; verification uses GitHub's OIDC identity.
+
+```bash
+# Download checksums.txt and checksums.txt.sig from the release page, then:
+
+# 1. Verify the binary hasn't been tampered with (portable across macOS and Linux)
+shasum -a 256 --ignore-missing -c checksums.txt
+
+# 2. Verify the checksums were signed by the Infisical/agent-vault GitHub Actions workflow
+cosign verify-blob \
+  --bundle checksums.txt.sig \
+  --certificate-identity-regexp "^https://github\.com/Infisical/agent-vault/\.github/workflows/release\.yml@refs/tags/" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  checksums.txt
+```
+
+## Upgrade
+
+<Tabs>
+  <Tab title="Script">
+    Re-run the install command. The script detects the existing installation, stops the running server, backs up your database, and installs the latest version.
+
+    <InstallCommand />
+
+    Restart the server afterward:
+
+    ```bash
+    agent-vault server
+    ```
+  </Tab>
+  <Tab title="Docker">
+    Pull the latest image and recreate the container. Data is preserved on the named volume.
+
+    ```bash
+    docker pull infisical/agent-vault:latest
+    docker stop agent-vault && docker rm agent-vault
+    docker run -it -p 14321:14321 -v agent-vault-data:/data infisical/agent-vault
+    ```
+  </Tab>
+  <Tab title="From source">
+    Pull the latest changes and rebuild.
+
+    ```bash
+    cd agent-vault
+    git pull
+    make build
+    sudo mv agent-vault /usr/local/bin/
+    ```
+  </Tab>
+</Tabs>
+
+Database migrations run automatically on server startup. No manual steps required.
