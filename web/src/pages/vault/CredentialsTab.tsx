@@ -489,7 +489,7 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
     setOauthAuthUrl(p.authorizationUrl);
     setOauthTokenUrl(p.tokenUrl);
     setOauthTokenAuthMethod(p.tokenAuthMethod);
-    setOauthKey(p.suggestedKey);
+    if (!isEdit) setOauthKey(p.suggestedKey);
   }
 
   async function handleOAuthConnect() {
