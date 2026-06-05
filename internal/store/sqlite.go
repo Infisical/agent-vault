@@ -1878,12 +1878,24 @@ func (s *SQLiteStore) ApplyProposal(ctx context.Context, vaultID string, proposa
 			   authorization_url = excluded.authorization_url,
 			   token_url = excluded.token_url,
 			   client_id = excluded.client_id,
-			   client_secret_ct = COALESCE(excluded.client_secret_ct, credential_oauth.client_secret_ct),
-			   client_secret_nonce = COALESCE(excluded.client_secret_nonce, credential_oauth.client_secret_nonce),
+			   client_secret_ct = CASE WHEN excluded.token_url = credential_oauth.token_url
+			     THEN COALESCE(excluded.client_secret_ct, credential_oauth.client_secret_ct)
+			     ELSE excluded.client_secret_ct END,
+			   client_secret_nonce = CASE WHEN excluded.token_url = credential_oauth.token_url
+			     THEN COALESCE(excluded.client_secret_nonce, credential_oauth.client_secret_nonce)
+			     ELSE excluded.client_secret_nonce END,
 			   scopes = excluded.scopes,
 			   scope_separator = excluded.scope_separator,
 			   disable_pkce = excluded.disable_pkce,
 			   token_auth_method = excluded.token_auth_method,
+			   refresh_token_ct = CASE WHEN excluded.token_url = credential_oauth.token_url
+			     THEN credential_oauth.refresh_token_ct ELSE NULL END,
+			   refresh_token_nonce = CASE WHEN excluded.token_url = credential_oauth.token_url
+			     THEN credential_oauth.refresh_token_nonce ELSE NULL END,
+			   token_expires_at = CASE WHEN excluded.token_url = credential_oauth.token_url
+			     THEN credential_oauth.token_expires_at ELSE NULL END,
+			   connected_at = CASE WHEN excluded.token_url = credential_oauth.token_url
+			     THEN credential_oauth.connected_at ELSE NULL END,
 			   updated_at = excluded.updated_at`,
 			vaultID, oc.Key, nullableString(oc.AuthorizationURL), oc.TokenURL, oc.ClientID,
 			oc.ClientSecretCT, oc.ClientSecretNonce, nullableString(oc.Scopes), scopeSep, disablePKCE, tokenAuthMethod,
