@@ -93,6 +93,72 @@ Some APIs put credentials in the URL path, query string, or request body instead
 
 The proxy finds the placeholder string and replaces it with the real credential. Supported surfaces: `path`, `query`, `header`, `body`, `websocket`. Defaults to `["path", "query"]` if omitted.
 
+## OAuth credentials
+
+Some services use OAuth 2.0 instead of static API keys. Use `type: "oauth"` when the service requires OAuth authorization (e.g., Google APIs, services without long-lived API keys). Use the default (static) when the service provides API keys or personal access tokens.
+
+There are two ways to set up an OAuth credential:
+
+### Connect flow (human completes OAuth consent in the browser)
+
+Use when you know the provider's OAuth URLs. The human enters their client ID/secret and clicks "Connect" during approval.
+
+```bash
+agent-vault vault proposal create -f - --json <<'EOF'
+{
+  "services": [{"action": "set", "name": "google-cal", "host": "www.googleapis.com/calendar/*", "auth": {"type": "bearer", "token": "GOOGLE"}}],
+  "credentials": [{
+    "action": "set",
+    "key": "GOOGLE",
+    "type": "oauth",
+    "description": "Google Calendar OAuth",
+    "oauth": {
+      "authorization_url": "https://accounts.google.com/o/oauth2/v2/auth",
+      "token_url": "https://oauth2.googleapis.com/token",
+      "scopes": "https://www.googleapis.com/auth/calendar.readonly"
+    },
+    "obtain_instructions": "Register an OAuth app at console.cloud.google.com, then enter your client ID and secret when approving"
+  }],
+  "message": "Need Google Calendar access"
+}
+EOF
+```
+
+OAuth config fields:
+- `authorization_url` (required for connect flow): the provider's consent page URL
+- `token_url` (required): where to exchange the code for tokens
+- `scopes` (optional): space-separated permissions to request; omit for provider defaults
+- `client_id`, `client_secret`: provided by the human during approval, not in the proposal
+
+### Token upload (human pastes tokens they already have)
+
+Use when the human already has tokens from a CLI tool (e.g., Claude Code) or another system. Omit `authorization_url` to signal token upload mode.
+
+```bash
+agent-vault vault proposal create -f - --json <<'EOF'
+{
+  "services": [{"action": "set", "name": "anthropic", "host": "api.anthropic.com", "auth": {"type": "bearer", "token": "ANTHROPIC"}}],
+  "credentials": [{
+    "action": "set",
+    "key": "ANTHROPIC",
+    "type": "oauth",
+    "description": "Anthropic API OAuth",
+    "oauth": {
+      "token_url": "https://console.anthropic.com/v1/oauth/token"
+    },
+    "obtain_instructions": "Paste your access token and refresh token from ~/.claude/.credentials.json"
+  }],
+  "message": "Need Anthropic API access"
+}
+EOF
+```
+
+When the human provides a refresh token during upload, it is validated immediately by refreshing against the provider. If the refresh fails, the upload is rejected.
+
+### After approval
+
+After the human approves an OAuth proposal, they may still need to complete the connection (enter client credentials, click Connect, or paste tokens). If your first request after `status: applied` returns 502 with `oauth_not_connected`, tell the user: "The OAuth connection isn't complete yet -- please finish connecting in the Agent Vault dashboard." Don't retry in a loop.
+
 ## Reading credentials
 
 To read a stored credential value (e.g. for writing config files or passing to tools that don't go through the proxy):
@@ -111,6 +177,8 @@ WSS and WS connections also go through the proxy with credential injection — i
 - 403 with `proposal_hint`: host not allowed — create a proposal
 - 403 `service_disabled`: host is configured but disabled by operator — tell the user
 - 502: missing credential or upstream unreachable
+- 502 `oauth_not_connected`: OAuth credential approved but not yet connected — tell the user to complete the connection in the dashboard
+- 502 `oauth_refresh_failed`: OAuth token expired and refresh failed — tell the user to reconnect in the dashboard
 
 ## Rules
 

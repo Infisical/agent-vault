@@ -42,4 +42,12 @@ var (
 	// ErrServiceNotFound so agents can tell "configured but off" from "not
 	// configured". Callers surface 403 with error code "service_disabled".
 	ErrServiceDisabled = errors.New("brokercore: broker service is disabled")
+
+	// ErrOAuthNotConnected means the credential is an OAuth type but
+	// the consent flow hasn't completed yet (no access token stored).
+	ErrOAuthNotConnected = errors.New("brokercore: oauth credential not yet connected")
+
+	// ErrOAuthRefreshFailed means the credential's access token expired
+	// and the automatic refresh attempt failed.
+	ErrOAuthRefreshFailed = errors.New("brokercore: oauth token refresh failed")
 )

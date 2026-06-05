@@ -365,7 +365,7 @@ func (m *mockStore) GetProposalCredentials(_ context.Context, vaultID string, pr
 	return map[string]store.EncryptedCredential{}, nil
 }
 
-func (m *mockStore) ApplyProposal(_ context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string) error {
+func (m *mockStore) ApplyProposal(_ context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string, _ []store.OAuthCredentialConfig) error {
 	// Update proposal status to applied.
 	css := m.proposals[vaultID]
 	for i, cs := range css {
@@ -1123,6 +1123,31 @@ func (m *mockStore) UpdateVaultCredentialStoreHealth(_ context.Context, vaultID,
 }
 func (m *mockStore) ReplaceVaultCredentials(_ context.Context, _ string, _ []store.EncryptedKV) error {
 	return nil
+}
+
+func (m *mockStore) GetCredentialOAuth(_ context.Context, _, _ string) (*store.CredentialOAuth, error) {
+	return nil, nil
+}
+func (m *mockStore) SetCredentialOAuth(_ context.Context, _ *store.CredentialOAuth) error {
+	return nil
+}
+func (m *mockStore) UpdateCredentialOAuthTokens(_ context.Context, _, _ string, _, _, _, _ []byte, _ *time.Time) error {
+	return nil
+}
+func (m *mockStore) UpdateCredentialOAuthError(_ context.Context, _, _, _ string) error {
+	return nil
+}
+func (m *mockStore) CreateCredentialOAuthState(_ context.Context, _ *store.CredentialOAuthState) error {
+	return nil
+}
+func (m *mockStore) GetCredentialOAuthStateByHash(_ context.Context, _ string) (*store.CredentialOAuthState, error) {
+	return nil, nil
+}
+func (m *mockStore) DeleteCredentialOAuthState(_ context.Context, _ string) error {
+	return nil
+}
+func (m *mockStore) ExpireCredentialOAuthStates(_ context.Context, _ time.Time) (int, error) {
+	return 0, nil
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -2263,8 +2288,11 @@ func TestCredentialsListNoRevealBackwardCompat(t *testing.T) {
 	if len(resp.Keys) != 1 || resp.Keys[0] != "FOO" {
 		t.Fatalf("expected keys [FOO], got %v", resp.Keys)
 	}
-	if len(resp.Credentials) != 0 {
-		t.Fatalf("expected no credentials in non-reveal response, got %d", len(resp.Credentials))
+	if len(resp.Credentials) != 1 {
+		t.Fatalf("expected 1 credential entry with type info, got %d", len(resp.Credentials))
+	}
+	if resp.Credentials[0].Value != "" {
+		t.Fatalf("expected no value in non-reveal response, got %q", resp.Credentials[0].Value)
 	}
 }
 

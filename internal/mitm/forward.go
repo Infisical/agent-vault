@@ -335,6 +335,32 @@ func (p *Proxy) forwardRequest(
 		emit(http.StatusBadGateway, "upstream_error")
 		return
 	}
+
+	// OAuth 401 retry: if the upstream rejected the token and we have an
+	// OAuth credential, force-refresh and retry once. Only safe methods
+	// (GET/HEAD) are retried — the request body is consumed and cannot be replayed.
+	if resp.StatusCode == http.StatusUnauthorized && inject != nil && !inject.Passthrough &&
+		(r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		_ = resp.Body.Close()
+		retryInject, retryErr := p.creds.Inject(r.Context(), scope.VaultID, host, r.URL.Path)
+		if retryErr == nil && retryInject != nil && retryInject.Headers != nil {
+			retryReq := outReq.Clone(outReq.Context())
+			for k, v := range retryInject.Headers {
+				retryReq.Header.Set(k, v)
+			}
+			retryReq.Body = http.NoBody
+			retryReq.ContentLength = 0
+			if retryResp, retryRTErr := p.upstream.RoundTrip(retryReq); retryRTErr == nil {
+				resp = retryResp
+				p.logger.Debug("oauth 401 retry succeeded",
+					slog.String("host", host),
+					slog.String("path", r.URL.Path),
+					slog.Int("status", resp.StatusCode),
+				)
+			}
+		}
+	}
+
 	defer func() { _ = resp.Body.Close() }()
 
 	if p.maxResponseBytes > 0 && resp.ContentLength > 0 && resp.ContentLength > p.maxResponseBytes {

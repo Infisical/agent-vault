@@ -201,6 +201,12 @@ func WriteInjectError(w http.ResponseWriter, err error, targetHost, vaultName, b
 	case errors.Is(err, ErrServiceDisabled):
 		writeProxyErrorWithHelp(w, http.StatusForbidden, "service_disabled",
 			fmt.Sprintf("Broker service matching host %q in vault %q is currently disabled", targetHost, vaultName), baseURL)
+	case errors.Is(err, ErrOAuthNotConnected):
+		writeProxyErrorWithHelp(w, http.StatusBadGateway, "oauth_not_connected",
+			"OAuth credential is approved but not yet connected — complete the connection in the Agent Vault dashboard", baseURL)
+	case errors.Is(err, ErrOAuthRefreshFailed):
+		writeProxyErrorWithHelp(w, http.StatusBadGateway, "oauth_refresh_failed",
+			"OAuth token expired and refresh failed — reconnect in the Agent Vault dashboard", baseURL)
 	case errors.Is(err, ErrCredentialMissing):
 		writeProxyErrorWithHelp(w, http.StatusBadGateway, "credential_not_found",
 			"A required credential could not be resolved; check vault configuration", baseURL)

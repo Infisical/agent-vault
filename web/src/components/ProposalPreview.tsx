@@ -31,13 +31,25 @@ export interface Service {
   substitutions?: Substitution[];
 }
 
+export interface OAuthConfig {
+  authorization_url?: string;
+  token_url?: string;
+  client_id?: string;
+  scopes?: string;
+  scope_separator?: string;
+  disable_pkce?: boolean;
+  token_auth_method?: string;
+}
+
 export interface CredentialSlot {
   action: string;
   key: string;
+  type?: string;
   description?: string;
   obtain?: string;
   obtain_instructions?: string;
   has_value?: boolean;
+  oauth?: OAuthConfig;
 }
 
 export interface ProposalData {

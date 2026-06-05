@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"time"
 
 	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/crypto"
+	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
@@ -70,11 +72,21 @@ type CredentialStore interface {
 	UnmatchedHostPolicy(ctx context.Context, vaultID string) (UnmatchedHostPolicy, error)
 }
 
+// OAuthStore is the store surface for OAuth token refresh.
+// Passed separately to StoreCredentialProvider to keep CredentialStore minimal.
+type OAuthStore interface {
+	GetCredentialOAuth(ctx context.Context, vaultID, key string) (*store.CredentialOAuth, error)
+	UpdateCredentialOAuthTokens(ctx context.Context, vaultID, key string, accessCT, accessNonce, refreshCT, refreshNonce []byte, expiresAt *time.Time) error
+	UpdateCredentialOAuthError(ctx context.Context, vaultID, key string, errMsg string) error
+}
+
 // StoreCredentialProvider injects credentials using a CredentialStore and a
 // 32-byte AES-256-GCM key held in memory for the lifetime of the process.
 type StoreCredentialProvider struct {
-	Store  CredentialStore
-	EncKey []byte
+	Store      CredentialStore
+	OAuthStore OAuthStore       // nil = no OAuth refresh
+	EncKey     []byte
+	Refresher  *oauth.Refresher // nil = no OAuth refresh
 }
 
 // NewStoreCredentialProvider constructs a provider. encKey must be 32 bytes.
@@ -153,11 +165,24 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 		if err != nil || cred == nil {
 			return "", fmt.Errorf("credential %q not found", key)
 		}
+
 		plaintext, err := crypto.Decrypt(cred.Ciphertext, cred.Nonce, p.EncKey)
 		if err != nil {
 			return "", fmt.Errorf("failed to decrypt credential %q", key)
 		}
 		s := string(plaintext)
+
+		if cred.Type == "oauth" && s == "" {
+			return "", fmt.Errorf("%w: credential %q", ErrOAuthNotConnected, key)
+		}
+
+		if cred.Type == "oauth" && p.Refresher != nil && p.OAuthStore != nil {
+			s, err = p.maybeRefreshOAuth(ctx, vaultID, key, s)
+			if err != nil {
+				return "", err
+			}
+		}
+
 		cache[key] = s
 		return s, nil
 	}
@@ -204,4 +229,87 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	result.Headers = headers
 	result.Substitutions = resolvedSubs
 	return result, nil
+}
+
+const oauthRefreshBuffer = 5 * time.Minute
+
+func (p *StoreCredentialProvider) maybeRefreshOAuth(ctx context.Context, vaultID, key, currentToken string) (string, error) {
+	oauthCfg, err := p.OAuthStore.GetCredentialOAuth(ctx, vaultID, key)
+	if err != nil {
+		return currentToken, nil
+	}
+
+	if oauthCfg.TokenExpiresAt == nil {
+		return currentToken, nil
+	}
+	if time.Until(*oauthCfg.TokenExpiresAt) > oauthRefreshBuffer {
+		return currentToken, nil
+	}
+
+	if len(oauthCfg.RefreshTokenCT) == 0 {
+		return currentToken, nil
+	}
+
+	sfKey := vaultID + "|" + key
+	result := p.Refresher.Do(sfKey, func() oauth.RefreshResult {
+		refreshToken, err := crypto.Decrypt(oauthCfg.RefreshTokenCT, oauthCfg.RefreshTokenNonce, p.EncKey)
+		if err != nil {
+			return oauth.RefreshResult{Err: fmt.Errorf("%w: decrypt refresh token: %v", ErrOAuthRefreshFailed, err)}
+		}
+
+		var clientSecret string
+		if len(oauthCfg.ClientSecretCT) > 0 {
+			cs, err := crypto.Decrypt(oauthCfg.ClientSecretCT, oauthCfg.ClientSecretNonce, p.EncKey)
+			if err != nil {
+				return oauth.RefreshResult{Err: fmt.Errorf("%w: decrypt client secret: %v", ErrOAuthRefreshFailed, err)}
+			}
+			clientSecret = string(cs)
+		}
+
+		tok, err := oauth.Refresh(ctx, oauth.RefreshConfig{
+			TokenURL:        oauthCfg.TokenURL,
+			ClientID:        oauthCfg.ClientID,
+			ClientSecret:    clientSecret,
+			RefreshToken:    string(refreshToken),
+			Scopes:          oauthCfg.Scopes,
+			ScopeSeparator:  oauthCfg.ScopeSeparator,
+			TokenAuthMethod: oauthCfg.TokenAuthMethod,
+		})
+		if err != nil {
+			_ = p.OAuthStore.UpdateCredentialOAuthError(ctx, vaultID, key, err.Error())
+			return oauth.RefreshResult{Err: fmt.Errorf("%w: %v", ErrOAuthRefreshFailed, err)}
+		}
+
+		accessCT, accessNonce, err := crypto.Encrypt([]byte(tok.AccessToken), p.EncKey)
+		if err != nil {
+			return oauth.RefreshResult{Err: fmt.Errorf("%w: encrypt access token: %v", ErrOAuthRefreshFailed, err)}
+		}
+
+		var newRefreshCT, newRefreshNonce []byte
+		if tok.RefreshToken != "" {
+			newRefreshCT, newRefreshNonce, err = crypto.Encrypt([]byte(tok.RefreshToken), p.EncKey)
+			if err != nil {
+				return oauth.RefreshResult{Err: fmt.Errorf("%w: encrypt refresh token: %v", ErrOAuthRefreshFailed, err)}
+			}
+		}
+
+		var expiresAt *time.Time
+		if !tok.ExpiresAt.IsZero() {
+			expiresAt = &tok.ExpiresAt
+		}
+
+		if err := p.OAuthStore.UpdateCredentialOAuthTokens(ctx, vaultID, key, accessCT, accessNonce, newRefreshCT, newRefreshNonce, expiresAt); err != nil {
+			return oauth.RefreshResult{Err: fmt.Errorf("%w: store tokens: %v", ErrOAuthRefreshFailed, err)}
+		}
+
+		return oauth.RefreshResult{AccessToken: tok.AccessToken, Refreshed: true}
+	})
+
+	if result.Err != nil {
+		return "", result.Err
+	}
+	if result.Refreshed {
+		return result.AccessToken, nil
+	}
+	return currentToken, nil
 }

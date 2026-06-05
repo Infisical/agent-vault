@@ -21,6 +21,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/infisical"
+	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/mitm"
 	"github.com/Infisical/agent-vault/internal/netguard"
 	"github.com/Infisical/agent-vault/internal/notify"
@@ -86,6 +87,7 @@ type Server struct {
 	infisicalClient *infisical.Client
 	// infisicalSyncer is built in Run; exposed for manual-refresh RefreshOnce.
 	infisicalSyncer *infisical.Syncer
+	oauthRefresher  *oauth.Refresher
 }
 
 // lockVaultServices acquires the per-vault mutation lock. Callers MUST
@@ -137,7 +139,12 @@ func (s *Server) SessionResolver() brokercore.SessionResolver {
 // CredentialProvider returns a brokercore.CredentialProvider backed by
 // this server's store and encryption key.
 func (s *Server) CredentialProvider() brokercore.CredentialProvider {
-	return brokercore.NewStoreCredentialProvider(credentialStoreAdapter{s.store}, s.encKey)
+	return &brokercore.StoreCredentialProvider{
+		Store:      credentialStoreAdapter{s.store},
+		OAuthStore: credentialStoreAdapter{s.store},
+		EncKey:     s.encKey,
+		Refresher:  s.oauthRefresher,
+	}
 }
 
 // credentialStoreAdapter satisfies brokercore.CredentialStore by adding
@@ -150,6 +157,18 @@ type credentialStoreAdapter struct {
 
 func (a credentialStoreAdapter) UnmatchedHostPolicy(ctx context.Context, vaultID string) (brokercore.UnmatchedHostPolicy, error) {
 	return readUnmatchedHostPolicy(ctx, a.Store, vaultID)
+}
+
+func (a credentialStoreAdapter) GetCredentialOAuth(ctx context.Context, vaultID, key string) (*store.CredentialOAuth, error) {
+	return a.Store.GetCredentialOAuth(ctx, vaultID, key)
+}
+
+func (a credentialStoreAdapter) UpdateCredentialOAuthTokens(ctx context.Context, vaultID, key string, accessCT, accessNonce, refreshCT, refreshNonce []byte, expiresAt *time.Time) error {
+	return a.Store.UpdateCredentialOAuthTokens(ctx, vaultID, key, accessCT, accessNonce, refreshCT, refreshNonce, expiresAt)
+}
+
+func (a credentialStoreAdapter) UpdateCredentialOAuthError(ctx context.Context, vaultID, key, errMsg string) error {
+	return a.Store.UpdateCredentialOAuthError(ctx, vaultID, key, errMsg)
 }
 
 // Logger returns the server's structured logger. Callers (e.g. the MITM
@@ -210,6 +229,18 @@ type Store interface {
 	ListCredentials(ctx context.Context, vaultID string) ([]store.Credential, error)
 	DeleteCredential(ctx context.Context, vaultID, key string) error
 
+	// OAuth credentials
+	GetCredentialOAuth(ctx context.Context, vaultID, key string) (*store.CredentialOAuth, error)
+	SetCredentialOAuth(ctx context.Context, oauth *store.CredentialOAuth) error
+	UpdateCredentialOAuthTokens(ctx context.Context, vaultID, key string, accessCT, accessNonce, refreshCT, refreshNonce []byte, expiresAt *time.Time) error
+	UpdateCredentialOAuthError(ctx context.Context, vaultID, key string, errMsg string) error
+
+	// OAuth states (CSRF + PKCE for consent flow)
+	CreateCredentialOAuthState(ctx context.Context, state *store.CredentialOAuthState) error
+	GetCredentialOAuthStateByHash(ctx context.Context, stateHash string) (*store.CredentialOAuthState, error)
+	DeleteCredentialOAuthState(ctx context.Context, id string) error
+	ExpireCredentialOAuthStates(ctx context.Context, before time.Time) (int, error)
+
 	// Broker configs
 	GetBrokerConfig(ctx context.Context, vaultID string) (*store.BrokerConfig, error)
 	SetBrokerConfig(ctx context.Context, vaultID, servicesJSON string) (*store.BrokerConfig, error)
@@ -222,7 +253,7 @@ type Store interface {
 	CountPendingProposals(ctx context.Context, vaultID string) (int, error)
 	UpdateProposalStatus(ctx context.Context, vaultID string, id int, status, reviewNote string) error
 	GetProposalCredentials(ctx context.Context, vaultID string, proposalID int) (map[string]store.EncryptedCredential, error)
-	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string) error
+	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []store.OAuthCredentialConfig) error
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
 
 	// User invites (instance-level)
@@ -669,6 +700,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 		logger:         logger,
 		rateLimit:      rl,
 		logSink:        requestlog.Nop{},
+		oauthRefresher: oauth.NewRefresher(),
 	}
 
 	ipAuth := s.tier(ratelimit.TierAuth, s.ipKeyer())
@@ -698,6 +730,13 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(s.handleCredentialsList))))
 	mux.HandleFunc("POST /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleCredentialsSet)))))
 	mux.HandleFunc("DELETE /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleCredentialsDelete)))))
+
+	// OAuth credential flow
+	mux.HandleFunc("POST /v1/credentials/oauth/connect", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleOAuthConnect)))))
+	mux.HandleFunc("GET /v1/oauth/callback", s.requireInitialized(s.handleOAuthCallback))
+	mux.HandleFunc("GET /v1/credentials/oauth/status", s.requireInitialized(s.requireAuth(actorAuthed(s.handleOAuthStatus))))
+	mux.HandleFunc("POST /v1/credentials/oauth/tokens", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleOAuthTokenUpload)))))
+
 	mux.HandleFunc("GET /discover", s.requireInitialized(s.requireAuth(actorAuthed(s.handleDiscover))))
 	mux.HandleFunc("POST /v1/proposals", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleProposalCreate)))))
 	mux.HandleFunc("GET /v1/proposals/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleProposalGet))))
@@ -813,6 +852,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /vaults/{name...}", s.handleSPA)
 	mux.HandleFunc("GET /invite/{token...}", s.handleSPA)
 	mux.HandleFunc("GET /approve/{id...}", s.handleSPA)
+	mux.HandleFunc("GET /oauth/complete", s.handleSPA)
 	mux.HandleFunc("GET /manage/{path...}", s.handleSPA)
 	mux.HandleFunc("GET /change-password", s.handleSPA)
 	mux.HandleFunc("GET /account/{path...}", s.handleSPA)

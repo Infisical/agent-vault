@@ -71,11 +71,24 @@ func (s Service) MarshalJSON() ([]byte, error) {
 // If omitted, the human must supply it during approval.
 // For "delete": only key is required.
 type CredentialSlot struct {
-	Action             Action  `json:"action"`
-	Key                string  `json:"key"`
-	Description        string  `json:"description,omitempty"`
-	Obtain             string  `json:"obtain,omitempty"`
-	ObtainInstructions string  `json:"obtain_instructions,omitempty"` // short step-by-step text (e.g. "Developers → API Keys → Reveal test key")
-	Value              *string `json:"value,omitempty"`
-	HasValue           bool    `json:"has_value,omitempty"`
+	Action             Action       `json:"action"`
+	Key                string       `json:"key"`
+	Type               string       `json:"type,omitempty"`
+	Description        string       `json:"description,omitempty"`
+	Obtain             string       `json:"obtain,omitempty"`
+	ObtainInstructions string       `json:"obtain_instructions,omitempty"`
+	Value              *string      `json:"value,omitempty"`
+	HasValue           bool         `json:"has_value,omitempty"`
+	OAuth              *OAuthConfig `json:"oauth,omitempty"`
+}
+
+// OAuthConfig holds the OAuth parameters in a credential slot proposal.
+type OAuthConfig struct {
+	AuthorizationURL string `json:"authorization_url,omitempty"`
+	TokenURL         string `json:"token_url"`
+	ClientID         string `json:"client_id,omitempty"`
+	Scopes           string `json:"scopes,omitempty"`
+	ScopeSeparator   string `json:"scope_separator,omitempty"`
+	DisablePKCE      bool   `json:"disable_pkce,omitempty"`
+	TokenAuthMethod  string `json:"token_auth_method,omitempty"`
 }

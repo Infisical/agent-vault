@@ -29,8 +29,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 47 {
-		t.Fatalf("expected migration version 47, got %d", version)
+	if version != 48 {
+		t.Fatalf("expected migration version 48, got %d", version)
 	}
 }
 
@@ -1328,7 +1328,7 @@ func TestApplyProposal(t *testing.T) {
 		"STRIPE_KEY": {Ciphertext: []byte("real-enc"), Nonce: []byte("real-nonce")},
 	}
 
-	err := s.ApplyProposal(ctx, ns.ID, 1, mergedServices, creds, nil)
+	err := s.ApplyProposal(ctx, ns.ID, 1, mergedServices, creds, nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProposal: %v", err)
 	}
@@ -1377,7 +1377,7 @@ func TestApplyProposalWithCredentialDeletion(t *testing.T) {
 		"new_key": {Ciphertext: []byte("new-enc"), Nonce: []byte("new-nonce")},
 	}
 
-	err := s.ApplyProposal(ctx, ns.ID, 1, mergedServices, creds, []string{"old_key"})
+	err := s.ApplyProposal(ctx, ns.ID, 1, mergedServices, creds, []string{"old_key"}, nil)
 	if err != nil {
 		t.Fatalf("ApplyProposal with delete: %v", err)
 	}

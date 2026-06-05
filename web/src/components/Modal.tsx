@@ -31,11 +31,11 @@ export default function Modal({ open, onClose, title, description, children, foo
 
       {/* Card */}
       <div
-        className="relative w-full max-w-[560px] mx-4 bg-surface rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.12)] overflow-hidden"
+        className="relative w-full max-w-[560px] max-h-[90vh] mx-4 bg-surface rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.12)] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="px-6 pt-6 pb-0">
+        <div className="px-6 pt-6 pb-0 flex-shrink-0">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold text-text">{title}</h2>
             <button
@@ -57,11 +57,11 @@ export default function Modal({ open, onClose, title, description, children, foo
         </div>
 
         {/* Body */}
-        <div className="px-6 py-5">{children}</div>
+        <div className="px-6 py-5 overflow-y-auto flex-1 min-h-0" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>{children}</div>
 
         {/* Footer */}
         {footer && (
-          <div className="px-6 py-4 flex items-center justify-end gap-3">
+          <div className="px-6 py-4 flex items-center justify-end gap-3 flex-shrink-0 border-t border-border">
             {footer}
           </div>
         )}
