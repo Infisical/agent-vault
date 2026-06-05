@@ -54,7 +54,7 @@ signs:
 
 docker_signs:
   - cmd: cosign
-    artifacts: all
+    artifacts: manifests
     output: true
     args:
       - "sign"
@@ -144,6 +144,6 @@ release:
 
     # Verify Docker image signature (requires cosign)
     cosign verify infisical/agent-vault:{{ .Version }} \
-      --certificate-identity-regexp "github.com/Infisical/agent-vault" \
+      --certificate-identity-regexp "^https://github\.com/Infisical/agent-vault/\.github/workflows/release\.yml@refs/tags/" \
       --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
     ```
