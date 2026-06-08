@@ -3,6 +3,7 @@ import {
   useVaultParams,
   LoadingSpinner,
   ErrorBanner,
+  timeAgo,
 } from "./shared";
 import DropdownMenu from "../../components/DropdownMenu";
 import DataTable, { type Column } from "../../components/DataTable";
@@ -57,6 +58,17 @@ const AUTH_TYPE_OPTIONS: { value: AuthType; label: string }[] = [
   { value: "custom", label: "Custom" },
 ];
 
+function slugifyHost(host: string): string {
+  let slug = host
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-|-$/g, "");
+  if (slug.length > 64) slug = slug.slice(0, 64).replace(/-$/, "");
+  if (slug.length < 3) slug = slug || "svc";
+  return slug;
+}
+
 export default function ServicesTab() {
   const { vaultName, vaultRole } = useVaultParams();
   const [services, setServices] = useState<Service[]>([]);
@@ -72,9 +84,19 @@ export default function ServicesTab() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
 
+  // Discovered hosts state
+  const [discoveredHosts, setDiscoveredHosts] = useState<
+    { host: string; request_count: number; last_seen: string }[]
+  >([]);
+  const [discoveredTotal, setDiscoveredTotal] = useState(0);
+  const [discoveredExpanded, setDiscoveredExpanded] = useState(false);
+  const [discoveredCollapsed, setDiscoveredCollapsed] = useState(false);
+  const [addWithHost, setAddWithHost] = useState<string | null>(null);
+
   useEffect(() => {
     fetchServices();
     fetchCatalog();
+    fetchDiscoveredHosts();
   }, []);
 
   async function fetchCatalog() {
@@ -107,6 +129,21 @@ export default function ServicesTab() {
     }
   }
 
+  async function fetchDiscoveredHosts(limit = 5) {
+    try {
+      const resp = await apiFetch(
+        `/v1/vaults/${encodeURIComponent(vaultName)}/discovered-hosts?limit=${limit}`
+      );
+      if (resp.ok) {
+        const data = await resp.json();
+        setDiscoveredHosts(data.hosts ?? []);
+        setDiscoveredTotal(data.total ?? 0);
+      }
+    } catch {
+      // Discovered hosts are supplementary; degrade silently.
+    }
+  }
+
   async function saveServices(updatedServices: Service[]) {
     const resp = await apiFetch(
       `/v1/vaults/${encodeURIComponent(vaultName)}/services`,
@@ -122,6 +159,7 @@ export default function ServicesTab() {
     // Re-fetch so the local copy always reflects exactly what the
     // server stored (e.g. inline-host re-joining for the read surface).
     await fetchServices();
+    fetchDiscoveredHosts(discoveredExpanded ? 100 : 5);
   }
 
   async function toggleEnabled(index: number, next: boolean) {
@@ -255,6 +293,65 @@ export default function ServicesTab() {
         )}
       </div>
 
+      {discoveredTotal > 0 && !loading && (
+        <div className="mb-6 rounded-lg border border-purple-500/20 bg-purple-500/5">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between px-4 py-3 text-left"
+            onClick={() => setDiscoveredCollapsed((c) => !c)}
+          >
+            <span className="flex items-center gap-2 text-sm font-medium text-purple-300">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5"/><path d="M8 5v3M8 10h.01" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+              {discoveredTotal} {discoveredTotal === 1 ? "host" : "hosts"} detected in recent traffic
+            </span>
+            <svg
+              className={`w-4 h-4 text-text-muted transition-transform ${discoveredCollapsed ? "" : "rotate-180"}`}
+              viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+          {!discoveredCollapsed && (
+            <div className="border-t border-purple-500/20 px-4 pb-3">
+              {discoveredHosts.map((dh) => (
+                <div key={dh.host} className="flex items-center justify-between py-2.5 border-b border-border last:border-b-0">
+                  <div>
+                    <span className="font-mono text-sm text-text">{dh.host}</span>
+                    <span className="ml-3 text-xs text-text-muted">
+                      {dh.request_count} {dh.request_count === 1 ? "request" : "requests"} &middot; {timeAgo(dh.last_seen)}
+                    </span>
+                  </div>
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      className="rounded border border-border bg-surface px-2.5 py-1 text-xs text-text-muted hover:bg-surface-hover hover:text-text transition-colors"
+                      onClick={() => {
+                        setAddWithHost(dh.host);
+                        setEditingIndex(-1);
+                      }}
+                    >
+                      Add as service
+                    </button>
+                  )}
+                </div>
+              ))}
+              {discoveredTotal > 5 && !discoveredExpanded && (
+                <button
+                  type="button"
+                  className="mt-2 text-xs text-purple-400 hover:text-purple-300"
+                  onClick={() => {
+                    setDiscoveredExpanded(true);
+                    fetchDiscoveredHosts(100);
+                  }}
+                >
+                  Show all ({discoveredTotal})
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {loading ? (
         <LoadingSpinner />
       ) : error ? (
@@ -304,8 +401,13 @@ export default function ServicesTab() {
         <ServiceModal
           title={editingIndex === -1 ? "Add Service" : "Edit Service"}
           initial={editingIndex >= 0 ? services[editingIndex] : undefined}
+          defaultHost={editingIndex === -1 ? addWithHost ?? undefined : undefined}
+          defaultName={editingIndex === -1 && addWithHost ? slugifyHost(addWithHost) : undefined}
           catalog={catalog}
-          onClose={() => setEditingIndex(null)}
+          onClose={() => {
+            setEditingIndex(null);
+            setAddWithHost(null);
+          }}
           onSave={async (service) => {
             const updated = [...services];
             if (editingIndex === -1) {
@@ -315,6 +417,7 @@ export default function ServicesTab() {
             }
             await saveServices(updated);
             setEditingIndex(null);
+            setAddWithHost(null);
           }}
         />
       )}
@@ -327,18 +430,22 @@ export default function ServicesTab() {
 function ServiceModal({
   title,
   initial,
+  defaultHost,
+  defaultName,
   catalog,
   onClose,
   onSave,
 }: {
   title: string;
   initial?: Service;
+  defaultHost?: string;
+  defaultName?: string;
   catalog: CatalogTemplate[];
   onClose: () => void;
   onSave: (service: Service) => Promise<void>;
 }) {
-  const [name, setName] = useState(initial?.name ?? "");
-  const [pattern, setPattern] = useState(initial?.host ?? "");
+  const [name, setName] = useState(initial?.name ?? defaultName ?? "");
+  const [pattern, setPattern] = useState(initial?.host ?? defaultHost ?? "");
   const [enabled, setEnabled] = useState(initial ? initial.enabled !== false : true);
   const [authType, setAuthType] = useState<AuthType>((initial?.auth?.type as AuthType) ?? "passthrough");
 

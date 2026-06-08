@@ -578,6 +578,19 @@ func matchHostPattern(pattern, host string) (tier int, ok bool) {
 	return 0, false
 }
 
+// AnyHostMatches reports whether any service's host pattern matches
+// host, ignoring paths. Used to filter discovered hosts against the
+// current service list so hosts that are already covered by a
+// configured service (even path-scoped or disabled) are excluded.
+func AnyHostMatches(host string, services []Service) bool {
+	for i := range services {
+		if _, ok := matchHostPattern(services[i].Host, host); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // matchPathGlob reports whether pattern matches path and returns the
 // literal-prefix length. Empty pattern is a catch-all. '*' is greedy
 // across '/'.

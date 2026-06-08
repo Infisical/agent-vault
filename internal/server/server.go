@@ -317,6 +317,7 @@ type Store interface {
 	// Request logs
 	InsertRequestLogs(ctx context.Context, rows []store.RequestLog) error
 	ListRequestLogs(ctx context.Context, opts store.ListRequestLogsOpts) ([]store.RequestLog, error)
+	ListUnmatchedHosts(ctx context.Context, vaultID string) ([]store.UnmatchedHost, error)
 	DeleteOldRequestLogs(ctx context.Context, before time.Time) (int64, error)
 	TrimRequestLogsToCap(ctx context.Context, vaultID string, cap int64) (int64, error)
 	VaultIDsWithLogs(ctx context.Context) ([]string, error)
@@ -807,6 +808,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("DELETE /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServicesClear))))
 	mux.HandleFunc("GET /v1/vaults/{name}/services/credential-usage", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServicesCredentialUsage))))
 	mux.HandleFunc("GET /v1/vaults/{name}/logs", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultLogsList))))
+	mux.HandleFunc("GET /v1/vaults/{name}/discovered-hosts", s.requireInitialized(s.requireAuth(actorAuthed(s.handleDiscoveredHosts))))
 	// Public static reads — immutable payloads with no credentials on
 	// the wire. TierGlobal is the only useful backstop; TierAuth would
 	// punish `vault run` (CA fetch per invocation) and the dashboard

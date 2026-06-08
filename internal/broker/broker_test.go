@@ -1042,3 +1042,36 @@ func TestServiceCredentialKeysOnlyAuth(t *testing.T) {
 		t.Fatalf("expected [MY_KEY], got %v", keys)
 	}
 }
+
+func TestAnyHostMatches(t *testing.T) {
+	services := []Service{
+		{Host: "api.stripe.com", Auth: Auth{Type: "bearer", Token: "K"}},
+		{Host: "*.github.com", Auth: Auth{Type: "bearer", Token: "K"}},
+		{Host: "slack.com", Path: "/api/*", Auth: Auth{Type: "bearer", Token: "K"}},
+	}
+
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"api.stripe.com", true},
+		{"api.github.com", true},
+		{"raw.github.com", true},
+		{"github.com", false},
+		{"a.b.github.com", false},
+		{"slack.com", true},
+		{"api.unknown.com", false},
+		{"example.com", false},
+	}
+	for _, tt := range tests {
+		got := AnyHostMatches(tt.host, services)
+		if got != tt.want {
+			t.Errorf("AnyHostMatches(%q) = %v, want %v", tt.host, got, tt.want)
+		}
+	}
+
+	// Nil services: nothing matches.
+	if AnyHostMatches("anything.com", nil) {
+		t.Error("AnyHostMatches with nil services should return false")
+	}
+}

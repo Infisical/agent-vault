@@ -2435,3 +2435,93 @@ func TestListVaultCredentialStoresFiltersBuiltin(t *testing.T) {
 		t.Fatalf("expected 2 external stores, got %d (%+v)", len(list), list)
 	}
 }
+
+func TestListUnmatchedHosts(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	vA, err := s.CreateVault(ctx, "vault-a")
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+	vB, err := s.CreateVault(ctx, "vault-b")
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+
+	now := time.Now().UTC()
+	rows := []RequestLog{
+		// Unmatched, denied by proxy (error_code=no_match) -- should appear
+		{VaultID: vA.ID, Ingress: "mitm", Method: "GET", Host: "api.stripe.com:443", Path: "/", MatchedService: "", Status: 403, ErrorCode: "no_match", CreatedAt: now.Add(-1 * time.Minute)},
+		{VaultID: vA.ID, Ingress: "mitm", Method: "POST", Host: "api.stripe.com:443", Path: "/v1/charges", MatchedService: "", Status: 403, ErrorCode: "no_match", CreatedAt: now},
+
+		// Unmatched, passthrough with upstream 401 -- should appear
+		{VaultID: vA.ID, Ingress: "mitm", Method: "GET", Host: "api.openai.com:443", Path: "/v1/models", MatchedService: "", Status: 401, ErrorCode: "", CreatedAt: now.Add(-30 * time.Second)},
+
+		// Unmatched, passthrough with upstream 403 -- should appear
+		{VaultID: vA.ID, Ingress: "mitm", Method: "GET", Host: "hooks.slack.com:443", Path: "/", MatchedService: "", Status: 403, ErrorCode: "", CreatedAt: now.Add(-2 * time.Minute)},
+
+		// Matched service -- should NOT appear (matched_service != '')
+		{VaultID: vA.ID, Ingress: "mitm", Method: "GET", Host: "api.github.com:443", Path: "/", MatchedService: "github", Status: 200, ErrorCode: "", CreatedAt: now},
+
+		// Unmatched, passthrough success (200) -- should NOT appear
+		{VaultID: vA.ID, Ingress: "mitm", Method: "GET", Host: "public-api.example.com:443", Path: "/", MatchedService: "", Status: 200, ErrorCode: "", CreatedAt: now},
+
+		// Unmatched, passthrough 500 (server error, not auth) -- should NOT appear
+		{VaultID: vA.ID, Ingress: "mitm", Method: "GET", Host: "buggy.example.com:443", Path: "/", MatchedService: "", Status: 500, ErrorCode: "", CreatedAt: now},
+
+		// Vault B: unmatched denied -- should NOT appear in vault A query
+		{VaultID: vB.ID, Ingress: "mitm", Method: "GET", Host: "vault-b-only.com:443", Path: "/", MatchedService: "", Status: 403, ErrorCode: "no_match", CreatedAt: now},
+
+		// Disabled service produces matched_service='' and error_code=no_match -- should appear at store level
+		{VaultID: vA.ID, Ingress: "mitm", Method: "GET", Host: "disabled.example.com:443", Path: "/", MatchedService: "", Status: 403, ErrorCode: "no_match", CreatedAt: now.Add(-5 * time.Minute)},
+	}
+	if err := s.InsertRequestLogs(ctx, rows); err != nil {
+		t.Fatalf("InsertRequestLogs: %v", err)
+	}
+
+	hosts, err := s.ListUnmatchedHosts(ctx, vA.ID)
+	if err != nil {
+		t.Fatalf("ListUnmatchedHosts: %v", err)
+	}
+
+	// Expected: api.stripe.com:443 (2 requests), api.openai.com:443 (1), hooks.slack.com:443 (1), disabled.example.com:443 (1)
+	if len(hosts) != 4 {
+		t.Fatalf("expected 4 unmatched hosts, got %d: %+v", len(hosts), hosts)
+	}
+
+	// Sorted by last_seen DESC: stripe (now), openai (now-30s), slack (now-2m), disabled (now-5m)
+	if hosts[0].Host != "api.stripe.com:443" {
+		t.Errorf("expected first host to be api.stripe.com:443, got %q", hosts[0].Host)
+	}
+	if hosts[0].RequestCount != 2 {
+		t.Errorf("expected api.stripe.com to have 2 requests, got %d", hosts[0].RequestCount)
+	}
+	if hosts[1].Host != "api.openai.com:443" {
+		t.Errorf("expected second host to be api.openai.com:443, got %q", hosts[1].Host)
+	}
+	if hosts[2].Host != "hooks.slack.com:443" {
+		t.Errorf("expected third host to be hooks.slack.com:443, got %q", hosts[2].Host)
+	}
+	if hosts[3].Host != "disabled.example.com:443" {
+		t.Errorf("expected fourth host to be disabled.example.com:443, got %q", hosts[3].Host)
+	}
+
+	// Vault B query should only return its own host
+	hostsB, err := s.ListUnmatchedHosts(ctx, vB.ID)
+	if err != nil {
+		t.Fatalf("ListUnmatchedHosts vault B: %v", err)
+	}
+	if len(hostsB) != 1 || hostsB[0].Host != "vault-b-only.com:443" {
+		t.Fatalf("vault B expected 1 host (vault-b-only.com:443), got %+v", hostsB)
+	}
+
+	// Empty vault should return nothing
+	empty, err := s.ListUnmatchedHosts(ctx, "nonexistent-vault-id")
+	if err != nil {
+		t.Fatalf("ListUnmatchedHosts empty: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected 0 hosts for nonexistent vault, got %d", len(empty))
+	}
+}

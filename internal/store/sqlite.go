@@ -3124,6 +3124,39 @@ func (s *SQLiteStore) ListRequestLogs(ctx context.Context, opts ListRequestLogsO
 	return out, rows.Err()
 }
 
+// ListUnmatchedHosts returns distinct hostnames from request_logs that did
+// not match any configured service and resulted in an auth failure (401/403)
+// or proxy denial (error_code 'no_match'). Results are ordered by most
+// recent failure first. Capped at 500 rows as a defense-in-depth limit.
+func (s *SQLiteStore) ListUnmatchedHosts(ctx context.Context, vaultID string) ([]UnmatchedHost, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT host, COUNT(*) AS request_count, MAX(created_at) AS last_seen
+		FROM request_logs
+		WHERE vault_id = ?
+		  AND matched_service = ''
+		  AND host != ''
+		  AND (error_code = 'no_match' OR status IN (401, 403))
+		GROUP BY host
+		ORDER BY MAX(created_at) DESC, host ASC
+		LIMIT 500`, vaultID)
+	if err != nil {
+		return nil, fmt.Errorf("listing unmatched hosts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []UnmatchedHost
+	for rows.Next() {
+		var uh UnmatchedHost
+		var lastSeen string
+		if err := rows.Scan(&uh.Host, &uh.RequestCount, &lastSeen); err != nil {
+			return nil, fmt.Errorf("scanning unmatched host: %w", err)
+		}
+		uh.LastSeen, _ = time.Parse(time.DateTime, lastSeen)
+		out = append(out, uh)
+	}
+	return out, rows.Err()
+}
+
 // DeleteOldRequestLogs deletes rows older than before across all vaults.
 // Returns the number of rows affected.
 func (s *SQLiteStore) DeleteOldRequestLogs(ctx context.Context, before time.Time) (int64, error) {
