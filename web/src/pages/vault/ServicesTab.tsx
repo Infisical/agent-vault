@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useSearch } from "@tanstack/react-router";
 import {
   useVaultParams,
   LoadingSpinner,
@@ -71,10 +72,12 @@ function slugifyHost(host: string): string {
 
 export default function ServicesTab() {
   const { vaultName, vaultRole } = useVaultParams();
+  const { preset: presetParam } = useSearch({ strict: false }) as { preset?: string };
   const [services, setServices] = useState<Service[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [catalog, setCatalog] = useState<CatalogTemplate[]>([]);
+  const presetApplied = useRef(false);
 
   // Add/Edit modal state: null = closed, -1 = add, 0+ = edit index
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
@@ -98,6 +101,16 @@ export default function ServicesTab() {
     fetchCatalog();
     fetchDiscoveredHosts();
   }, []);
+
+  useEffect(() => {
+    if (presetParam && catalog.length > 0 && !presetApplied.current) {
+      const match = catalog.find((t) => t.id === presetParam);
+      if (match) {
+        presetApplied.current = true;
+        setEditingIndex(-1);
+      }
+    }
+  }, [presetParam, catalog]);
 
   async function fetchCatalog() {
     try {
@@ -405,6 +418,7 @@ export default function ServicesTab() {
           defaultName={editingIndex === -1 && addWithHost ? slugifyHost(addWithHost.host) : undefined}
           defaultAuthScheme={editingIndex === -1 ? addWithHost?.authScheme : undefined}
           defaultAuthHeader={editingIndex === -1 ? addWithHost?.authHeader : undefined}
+          defaultPreset={editingIndex === -1 && !addWithHost ? presetParam : undefined}
           catalog={catalog}
           onClose={() => {
             setEditingIndex(null);
@@ -436,6 +450,7 @@ function ServiceModal({
   defaultName,
   defaultAuthScheme,
   defaultAuthHeader,
+  defaultPreset,
   catalog,
   onClose,
   onSave,
@@ -446,6 +461,7 @@ function ServiceModal({
   defaultName?: string;
   defaultAuthScheme?: string;
   defaultAuthHeader?: string;
+  defaultPreset?: string;
   catalog: CatalogTemplate[];
   onClose: () => void;
   onSave: (service: Service) => Promise<void>;
@@ -502,6 +518,7 @@ function ServiceModal({
   const [catalogSnapshot] = useState<CatalogTemplate[]>(() => catalog);
   const [selectedPreset, setSelectedPreset] = useState("");
   const showPresets = !initial && catalogSnapshot.length > 0;
+  const presetInitialized = useRef(false);
 
   function resetFields() {
     setName("");
@@ -535,6 +552,13 @@ function ServiceModal({
       setApiKeyPrefix(tpl.prefix ?? "");
     }
   }
+
+  useEffect(() => {
+    if (defaultPreset && !presetInitialized.current) {
+      presetInitialized.current = true;
+      applyPreset(defaultPreset);
+    }
+  }, [defaultPreset]);
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");

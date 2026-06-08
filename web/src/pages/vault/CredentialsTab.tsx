@@ -11,7 +11,8 @@ import FormField from "../../components/FormField";
 import Select from "../../components/Select";
 import Combobox from "../../components/Combobox";
 import CreatableSelect from "../../components/CreatableSelect";
-import { apiFetch } from "../../lib/api";
+import { Link } from "@tanstack/react-router";
+import { apiFetch, apiRequest } from "../../lib/api";
 import { OAUTH_PROVIDERS } from "../../lib/oauthProviders";
 
 export default function CredentialsTab() {
@@ -51,9 +52,55 @@ export default function CredentialsTab() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
 
+  // Service suggestions: credentials matching catalog entries that aren't used by any service
+  interface CatalogTemplate { id: string; name: string; host: string; suggested_credential_key: string; }
+  interface ServiceInfo { name: string; host: string; auth: { type: string; token?: string; username?: string; password?: string; key?: string; headers?: Record<string, string> }; }
+  const [catalog, setCatalog] = useState<CatalogTemplate[]>([]);
+  const [usedCredentialKeys, setUsedCredentialKeys] = useState<Set<string>>(new Set());
+
   useEffect(() => {
     fetchKeys();
+    fetchCatalogAndServices();
   }, []);
+
+  async function fetchCatalogAndServices() {
+    try {
+      const [catalogResp, servicesResp] = await Promise.all([
+        apiRequest<{ services: CatalogTemplate[] }>("/v1/service-catalog"),
+        apiFetch(`/v1/vaults/${encodeURIComponent(vaultName)}/services`),
+      ]);
+      setCatalog(catalogResp.services ?? []);
+      if (servicesResp.ok) {
+        const data = await servicesResp.json();
+        const services: ServiceInfo[] = data.services ?? [];
+        const keys = new Set<string>();
+        for (const svc of services) {
+          if (svc.auth.token) keys.add(svc.auth.token);
+          if (svc.auth.username) keys.add(svc.auth.username);
+          if (svc.auth.password) keys.add(svc.auth.password);
+          if (svc.auth.key) keys.add(svc.auth.key);
+          if (svc.auth.headers) {
+            for (const v of Object.values(svc.auth.headers)) {
+              const matches = v.matchAll(/\{\{\s*(\w+)\s*\}\}/g);
+              for (const m of matches) keys.add(m[1]);
+            }
+          }
+        }
+        setUsedCredentialKeys(keys);
+      }
+    } catch {
+      // Supplementary -- degrade silently.
+    }
+  }
+
+  const suggestions = credentials
+    .map((cred) => {
+      const template = catalog.find((t) => t.suggested_credential_key === cred.key);
+      if (!template) return null;
+      if (usedCredentialKeys.has(cred.key)) return null;
+      return { credKey: cred.key, template };
+    })
+    .filter(Boolean) as { credKey: string; template: CatalogTemplate }[];
 
   async function fetchKeys() {
     try {
@@ -307,6 +354,23 @@ export default function CredentialsTab() {
           </Button>
         )}
       </div>
+
+      {suggestions.map((s) => (
+        <div key={s.credKey} className="mb-4 flex items-center justify-between rounded-lg border border-warning/20 bg-warning-bg px-4 py-3">
+          <span className="text-sm text-text">
+            <span className="font-mono text-warning">{s.credKey}</span>
+            {" "}is unused. Add <span className="font-medium">{s.template.name}</span> ({s.template.host}) as a service?
+          </span>
+          <Link
+            to="/vaults/$name/services"
+            params={{ name: vaultName }}
+            search={{ preset: s.template.id }}
+            className="rounded border border-border bg-surface px-2.5 py-1 text-xs text-text-muted hover:bg-surface-hover hover:text-text transition-colors whitespace-nowrap"
+          >
+            Add as service
+          </Link>
+        </div>
+      ))}
 
       {isExternal && (
         <>
