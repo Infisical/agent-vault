@@ -294,13 +294,13 @@ export default function ServicesTab() {
       </div>
 
       {discoveredTotal > 0 && !loading && (
-        <div className="mb-6 rounded-lg border border-purple-500/20 bg-purple-500/5">
+        <div className="mb-6 rounded-lg border border-warning/20 bg-warning-bg">
           <button
             type="button"
             className="flex w-full items-center justify-between px-4 py-3 text-left"
             onClick={() => setDiscoveredCollapsed((c) => !c)}
           >
-            <span className="flex items-center gap-2 text-sm font-medium text-purple-300">
+            <span className="flex items-center gap-2 text-sm font-medium text-warning">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5"/><path d="M8 5v3M8 10h.01" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
               {discoveredTotal} {discoveredTotal === 1 ? "host" : "hosts"} detected in recent traffic
             </span>
@@ -312,14 +312,14 @@ export default function ServicesTab() {
             </svg>
           </button>
           {!discoveredCollapsed && (
-            <div className="border-t border-purple-500/20 px-4 pb-3">
+            <div className="border-t border-info/20 px-4 pb-3">
               {discoveredHosts.map((dh) => (
                 <div key={dh.host} className="flex items-center justify-between py-2.5 border-b border-border last:border-b-0">
                   <div>
-                    <span className="font-mono text-sm text-text">{dh.host}</span>
-                    <span className="ml-3 text-xs text-text-muted">
+                    <div className="font-mono text-sm text-text">{dh.host}</div>
+                    <div className="text-xs text-text-muted mt-0.5">
                       {dh.request_count} {dh.request_count === 1 ? "request" : "requests"} &middot; {timeAgo(dh.last_seen)}
-                    </span>
+                    </div>
                   </div>
                   {isAdmin && (
                     <button
@@ -338,7 +338,7 @@ export default function ServicesTab() {
               {discoveredTotal > 5 && !discoveredExpanded && (
                 <button
                   type="button"
-                  className="mt-2 text-xs text-purple-400 hover:text-purple-300"
+                  className="mt-2 text-xs text-warning hover:text-warning/80"
                   onClick={() => {
                     setDiscoveredExpanded(true);
                     fetchDiscoveredHosts(100);
@@ -831,7 +831,7 @@ function ServiceModal({
                   onClick={() =>
                     setCustomHeaders((prev) => [...prev, { _id: nextRowId(), name: "", value: "" }])
                   }
-                  className="text-sm font-medium text-primary hover:text-primary-hover transition-colors"
+                  className="text-sm font-medium text-warning hover:text-primary-hover transition-colors"
                 >
                   + Add another
                 </button>
@@ -935,7 +935,7 @@ function ServiceModal({
                   { _id: nextRowId(), key: "", placeholder: "", in: [...DEFAULT_SUBSTITUTION_SURFACES] },
                 ])
               }
-              className="text-sm font-medium text-primary hover:text-primary-hover transition-colors"
+              className="text-sm font-medium text-warning hover:text-primary-hover transition-colors"
             >
               + Add substitution
             </button>
