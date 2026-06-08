@@ -188,11 +188,14 @@ func (p *Proxy) forwardRequest(
 	scope *brokercore.ProxyScope,
 ) {
 	start := time.Now()
+	authScheme, authHeader := detectAuthFromHeaders(r.Header)
 	event := brokercore.ProxyEvent{
-		Ingress: brokercore.IngressMITM,
-		Method:  r.Method,
-		Host:    target,
-		Path:    r.URL.Path,
+		Ingress:    brokercore.IngressMITM,
+		Method:     r.Method,
+		Host:       target,
+		Path:       r.URL.Path,
+		AuthScheme: authScheme,
+		AuthHeader: authHeader,
 	}
 	actorType, actorID := actorFromScope(scope)
 	emit := func(status int, errCode string) {
@@ -413,4 +416,30 @@ func (p *Proxy) forwardRequest(
 	}
 
 	emit(resp.StatusCode, "")
+}
+
+// knownAPIKeyHeaders are non-Authorization headers that commonly carry
+// API keys. Checked by exact canonical match -- no heuristic scanning.
+var knownAPIKeyHeaders = []string{"X-Api-Key", "Api-Key"}
+
+// detectAuthFromHeaders inspects request headers to determine the auth
+// scheme and header name. Returns ("", "") when no recognizable auth
+// pattern is found.
+func detectAuthFromHeaders(h http.Header) (scheme, header string) {
+	if auth := h.Get("Authorization"); auth != "" {
+		switch {
+		case strings.HasPrefix(auth, "Bearer ") || strings.HasPrefix(auth, "bearer "):
+			return "bearer", "Authorization"
+		case strings.HasPrefix(auth, "Basic ") || strings.HasPrefix(auth, "basic "):
+			return "basic", "Authorization"
+		default:
+			return "api-key", "Authorization"
+		}
+	}
+	for _, name := range knownAPIKeyHeaders {
+		if h.Get(name) != "" {
+			return "api-key", http.CanonicalHeaderKey(name)
+		}
+	}
+	return "", ""
 }

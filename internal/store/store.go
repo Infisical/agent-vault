@@ -296,6 +296,8 @@ type RequestLog struct {
 	Status         int
 	LatencyMs      int64
 	ErrorCode      string
+	AuthScheme     string
+	AuthHeader     string
 	CreatedAt      time.Time
 }
 
@@ -319,6 +321,8 @@ type UnmatchedHost struct {
 	Host         string
 	RequestCount int
 	LastSeen     time.Time
+	AuthScheme   string
+	AuthHeader   string
 }
 
 // Agent represents a named, instance-level agent entity.

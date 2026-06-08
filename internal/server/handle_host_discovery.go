@@ -20,6 +20,8 @@ type discoveredHost struct {
 	Host         string `json:"host"`
 	RequestCount int    `json:"request_count"`
 	LastSeen     string `json:"last_seen"`
+	AuthScheme   string `json:"auth_scheme,omitempty"`
+	AuthHeader   string `json:"auth_header,omitempty"`
 
 	lastSeenTime time.Time
 }
@@ -79,12 +81,16 @@ func (s *Server) handleDiscoveredHosts(w http.ResponseWriter, r *http.Request) {
 			if uh.LastSeen.After(existing.lastSeenTime) {
 				existing.lastSeenTime = uh.LastSeen
 				existing.LastSeen = uh.LastSeen.Format(time.RFC3339)
+				existing.AuthScheme = uh.AuthScheme
+				existing.AuthHeader = uh.AuthHeader
 			}
 		} else {
 			deduped[h] = &discoveredHost{
 				Host:         h,
 				RequestCount: uh.RequestCount,
 				LastSeen:     uh.LastSeen.Format(time.RFC3339),
+				AuthScheme:   uh.AuthScheme,
+				AuthHeader:   uh.AuthHeader,
 				lastSeenTime: uh.LastSeen,
 			}
 		}

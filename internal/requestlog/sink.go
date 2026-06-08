@@ -33,6 +33,8 @@ type Record struct {
 	Status         int
 	LatencyMs      int64
 	ErrorCode      string
+	AuthScheme     string
+	AuthHeader     string
 }
 
 // Sink accepts records on the hot proxy path. Implementations MUST NOT
@@ -84,6 +86,8 @@ func FromEvent(ev brokercore.ProxyEvent, vaultID, actorType, actorID string) Rec
 		Status:         ev.Status,
 		LatencyMs:      ev.TotalMs,
 		ErrorCode:      ev.Err,
+		AuthScheme:     ev.AuthScheme,
+		AuthHeader:     ev.AuthHeader,
 	}
 }
 
@@ -104,5 +108,7 @@ func toStoreRow(r Record) store.RequestLog {
 		Status:         r.Status,
 		LatencyMs:      r.LatencyMs,
 		ErrorCode:      r.ErrorCode,
+		AuthScheme:     r.AuthScheme,
+		AuthHeader:     r.AuthHeader,
 	}
 }

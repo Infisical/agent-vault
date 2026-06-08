@@ -731,3 +731,78 @@ func TestMITMForwardAuthRateLimitCountsFailures(t *testing.T) {
 		t.Fatalf("forward 4 got %d, want 429 after budget exhausted", resp.StatusCode)
 	}
 }
+
+func TestDetectAuthFromHeaders(t *testing.T) {
+	tests := []struct {
+		name       string
+		headers    http.Header
+		wantScheme string
+		wantHeader string
+	}{
+		{
+			name:       "bearer",
+			headers:    http.Header{"Authorization": {"Bearer sk-xxx"}},
+			wantScheme: "bearer",
+			wantHeader: "Authorization",
+		},
+		{
+			name:       "bearer_lowercase",
+			headers:    http.Header{"Authorization": {"bearer sk-xxx"}},
+			wantScheme: "bearer",
+			wantHeader: "Authorization",
+		},
+		{
+			name:       "basic",
+			headers:    http.Header{"Authorization": {"Basic dXNlcjpwYXNz"}},
+			wantScheme: "basic",
+			wantHeader: "Authorization",
+		},
+		{
+			name:       "api_key_via_authorization",
+			headers:    http.Header{"Authorization": {"Token abc123"}},
+			wantScheme: "api-key",
+			wantHeader: "Authorization",
+		},
+		{
+			name:       "x_api_key",
+			headers:    http.Header{"X-Api-Key": {"key123"}},
+			wantScheme: "api-key",
+			wantHeader: "X-Api-Key",
+		},
+		{
+			name:       "api_key_header",
+			headers:    http.Header{"Api-Key": {"key123"}},
+			wantScheme: "api-key",
+			wantHeader: "Api-Key",
+		},
+		{
+			name:       "no_auth",
+			headers:    http.Header{"Content-Type": {"application/json"}},
+			wantScheme: "",
+			wantHeader: "",
+		},
+		{
+			name:       "empty_headers",
+			headers:    http.Header{},
+			wantScheme: "",
+			wantHeader: "",
+		},
+		{
+			name:       "authorization_takes_precedence",
+			headers:    http.Header{"Authorization": {"Bearer tok"}, "X-Api-Key": {"key"}},
+			wantScheme: "bearer",
+			wantHeader: "Authorization",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme, header := detectAuthFromHeaders(tt.headers)
+			if scheme != tt.wantScheme {
+				t.Errorf("scheme = %q, want %q", scheme, tt.wantScheme)
+			}
+			if header != tt.wantHeader {
+				t.Errorf("header = %q, want %q", header, tt.wantHeader)
+			}
+		})
+	}
+}

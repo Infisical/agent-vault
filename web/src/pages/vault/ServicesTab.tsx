@@ -86,12 +86,12 @@ export default function ServicesTab() {
 
   // Discovered hosts state
   const [discoveredHosts, setDiscoveredHosts] = useState<
-    { host: string; request_count: number; last_seen: string }[]
+    { host: string; request_count: number; last_seen: string; auth_scheme?: string; auth_header?: string }[]
   >([]);
   const [discoveredTotal, setDiscoveredTotal] = useState(0);
   const [discoveredExpanded, setDiscoveredExpanded] = useState(false);
   const [discoveredCollapsed, setDiscoveredCollapsed] = useState(false);
-  const [addWithHost, setAddWithHost] = useState<string | null>(null);
+  const [addWithHost, setAddWithHost] = useState<{ host: string; authScheme?: string; authHeader?: string } | null>(null);
 
   useEffect(() => {
     fetchServices();
@@ -326,7 +326,7 @@ export default function ServicesTab() {
                       type="button"
                       className="rounded border border-border bg-surface px-2.5 py-1 text-xs text-text-muted hover:bg-surface-hover hover:text-text transition-colors"
                       onClick={() => {
-                        setAddWithHost(dh.host);
+                        setAddWithHost({ host: dh.host, authScheme: dh.auth_scheme, authHeader: dh.auth_header });
                         setEditingIndex(-1);
                       }}
                     >
@@ -401,8 +401,10 @@ export default function ServicesTab() {
         <ServiceModal
           title={editingIndex === -1 ? "Add Service" : "Edit Service"}
           initial={editingIndex >= 0 ? services[editingIndex] : undefined}
-          defaultHost={editingIndex === -1 ? addWithHost ?? undefined : undefined}
-          defaultName={editingIndex === -1 && addWithHost ? slugifyHost(addWithHost) : undefined}
+          defaultHost={editingIndex === -1 ? addWithHost?.host : undefined}
+          defaultName={editingIndex === -1 && addWithHost ? slugifyHost(addWithHost.host) : undefined}
+          defaultAuthScheme={editingIndex === -1 ? addWithHost?.authScheme : undefined}
+          defaultAuthHeader={editingIndex === -1 ? addWithHost?.authHeader : undefined}
           catalog={catalog}
           onClose={() => {
             setEditingIndex(null);
@@ -432,6 +434,8 @@ function ServiceModal({
   initial,
   defaultHost,
   defaultName,
+  defaultAuthScheme,
+  defaultAuthHeader,
   catalog,
   onClose,
   onSave,
@@ -440,6 +444,8 @@ function ServiceModal({
   initial?: Service;
   defaultHost?: string;
   defaultName?: string;
+  defaultAuthScheme?: string;
+  defaultAuthHeader?: string;
   catalog: CatalogTemplate[];
   onClose: () => void;
   onSave: (service: Service) => Promise<void>;
@@ -447,7 +453,7 @@ function ServiceModal({
   const [name, setName] = useState(initial?.name ?? defaultName ?? "");
   const [pattern, setPattern] = useState(initial?.host ?? defaultHost ?? "");
   const [enabled, setEnabled] = useState(initial ? initial.enabled !== false : true);
-  const [authType, setAuthType] = useState<AuthType>((initial?.auth?.type as AuthType) ?? "passthrough");
+  const [authType, setAuthType] = useState<AuthType>((initial?.auth?.type as AuthType) ?? (defaultAuthScheme as AuthType) ?? "passthrough");
 
   // Bearer fields
   const [token, setToken] = useState(initial?.auth?.token ?? "");
@@ -458,7 +464,7 @@ function ServiceModal({
 
   // API key fields
   const [apiKey, setApiKey] = useState(initial?.auth?.key ?? "");
-  const [apiKeyHeader, setApiKeyHeader] = useState(initial?.auth?.header ?? "");
+  const [apiKeyHeader, setApiKeyHeader] = useState(initial?.auth?.header ?? (defaultAuthScheme === "api-key" ? defaultAuthHeader ?? "" : ""));
   const [apiKeyPrefix, setApiKeyPrefix] = useState(initial?.auth?.prefix ?? "");
 
   // Stable row IDs so React reconciliation keys editable rows by identity
