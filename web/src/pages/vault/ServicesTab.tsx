@@ -855,7 +855,7 @@ function ServiceModal({
                   onClick={() =>
                     setCustomHeaders((prev) => [...prev, { _id: nextRowId(), name: "", value: "" }])
                   }
-                  className="text-sm font-medium text-warning hover:text-primary-hover transition-colors"
+                  className="text-sm font-medium text-primary hover:text-primary-hover transition-colors"
                 >
                   + Add another
                 </button>
@@ -959,7 +959,7 @@ function ServiceModal({
                   { _id: nextRowId(), key: "", placeholder: "", in: [...DEFAULT_SUBSTITUTION_SURFACES] },
                 ])
               }
-              className="text-sm font-medium text-warning hover:text-primary-hover transition-colors"
+              className="text-sm font-medium text-primary hover:text-primary-hover transition-colors"
             >
               + Add substitution
             </button>
