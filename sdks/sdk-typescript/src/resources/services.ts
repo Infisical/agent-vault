@@ -89,19 +89,16 @@ export interface Substitution {
  *
  * `host` is the single matcher field on the wire. Accepts a bare
  * hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`),
- * or an inline path-scoped form (`slack.com/api/*` or `localhost:8080/api/*`).
- * The server splits the path (and port) off the host on ingest and resolves
- * overlapping rules deterministically: exact-host beats wildcard-host, then
- * longer literal path prefix wins, then port-matched beats non-port-matched,
- * with declaration order as the final tiebreak.
+ * or an inline path-scoped form (`slack.com/api/*`). The server splits
+ * the path off the host on ingest and resolves overlapping rules
+ * deterministically: exact-host beats wildcard-host, then longer
+ * literal path prefix wins, with declaration order as the final tiebreak.
  */
 export interface ServiceInput {
   /** Service name (slug, 3–64 chars, lowercase alphanumeric and hyphens). Required on write. */
   name?: string;
-  /** Host pattern. Accepts `api.stripe.com`, `*.github.com`, or an inline path form like `slack.com/api/*` or `localhost:8080/api/*`. */
+  /** Host pattern. Accepts `api.stripe.com`, `*.github.com`, or an inline path form like `slack.com/api/*`. */
   host: string;
-  /** Port number for matching (e.g. "8080"). Omitted or empty means match any port. */
-  port?: string;
   /** Whether the service is active. Omitted/undefined is treated as enabled. */
   enabled?: boolean;
   /** Authentication configuration. */
@@ -113,17 +110,16 @@ export interface ServiceInput {
 /**
  * Read shape for a vault service.
  *
- * `host` carries the joined inline form on reads (`slack.com/api/*` or
- * `localhost:8080/api/*`) — the single matcher field. Port is embedded
- * inline; there is no separate `port` field on reads even when the write
- * used `ServiceInput.port`. Composed (not extended) from `ServiceInput`
- * so a read value can't be passed to a write method without an explicit
- * conversion.
+ * Mirrors {@link ServiceInput} symmetrically: `host` carries the joined
+ * inline form on reads (`slack.com/api/*`) just as it does on writes,
+ * so callers see the same single-field matcher pattern they sent.
+ * Composed (not extended) from `ServiceInput` so a read value can't be
+ * passed to a write method without an explicit conversion.
  */
 export interface Service {
   /** Service name (slug). Server populates this on reads. */
   name?: string;
-  /** Host pattern. Joined inline form: `api.stripe.com`, `*.github.com`, `slack.com/api/*`, or `localhost:8080/api/*`. */
+  /** Host pattern. Joined inline form: `api.stripe.com`, `*.github.com`, or `slack.com/api/*`. */
   host: string;
   /** Whether the service is active. Omitted/undefined is treated as enabled. */
   enabled?: boolean;
