@@ -15,6 +15,7 @@ import AllUsersTab from "./pages/home/AllUsersTab";
 import AllAgentsTab from "./pages/home/AllAgentsTab";
 import UserInvite from "./pages/UserInvite";
 import ProposalApprove from "./pages/ProposalApprove";
+import OAuthComplete from "./pages/OAuthComplete";
 import VaultLayout from "./components/VaultLayout";
 import ProposalsTab from "./pages/vault/ProposalsTab";
 import LogsTab from "./pages/vault/LogsTab";
@@ -175,6 +176,12 @@ const proposalApproveRoute = createRoute({
   component: ProposalApprove,
 });
 
+const oauthCompleteRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/oauth/complete",
+  component: OAuthComplete,
+});
+
 // --- Auth Layout (protected routes) ---
 
 const authLayoutRoute = createRoute({
@@ -311,6 +318,11 @@ const servicesTabRoute = createRoute({
   getParentRoute: () => vaultLayoutRoute,
   path: "/services",
   component: ServicesTab,
+  validateSearch: (search: Record<string, unknown>) => {
+    const result: { preset?: string } = {};
+    if (search.preset) result.preset = search.preset as string;
+    return result;
+  },
 });
 
 const credentialsTabRoute = createRoute({
@@ -351,6 +363,7 @@ const routeTree = rootRoute.addChildren([
   forgotPasswordRoute,
   userInviteRoute,
   proposalApproveRoute,
+  oauthCompleteRoute,
   authLayoutRoute.addChildren([
     homeLayoutRoute.addChildren([
       homeIndexRoute,

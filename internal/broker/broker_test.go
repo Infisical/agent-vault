@@ -930,12 +930,21 @@ func TestValidateSubstitutionsRejectsLowerCaseKey(t *testing.T) {
 	}
 }
 
-func TestValidateSubstitutionsRejectsBodySurface(t *testing.T) {
+func TestValidateSubstitutionsAcceptsBodySurface(t *testing.T) {
 	s := Service{Host: "api.example.com", Substitutions: []Substitution{
 		{Key: "K_X", Placeholder: "__sid__", In: []string{"body"}},
 	}}
-	if err := s.ValidateSubstitutions(); err == nil {
-		t.Fatal("expected error for body surface (deferred in v1)")
+	if err := s.ValidateSubstitutions(); err != nil {
+		t.Fatalf("body surface should be valid: %v", err)
+	}
+}
+
+func TestValidateSubstitutionsAcceptsWebsocketSurface(t *testing.T) {
+	s := Service{Host: "api.example.com", Substitutions: []Substitution{
+		{Key: "K_X", Placeholder: "__sid__", In: []string{"websocket"}},
+	}}
+	if err := s.ValidateSubstitutions(); err != nil {
+		t.Fatalf("websocket surface should be valid: %v", err)
 	}
 }
 
@@ -1031,5 +1040,38 @@ func TestServiceCredentialKeysOnlyAuth(t *testing.T) {
 	keys := s.CredentialKeys()
 	if len(keys) != 1 || keys[0] != "MY_KEY" {
 		t.Fatalf("expected [MY_KEY], got %v", keys)
+	}
+}
+
+func TestAnyHostMatches(t *testing.T) {
+	services := []Service{
+		{Host: "api.stripe.com", Auth: Auth{Type: "bearer", Token: "K"}},
+		{Host: "*.github.com", Auth: Auth{Type: "bearer", Token: "K"}},
+		{Host: "slack.com", Path: "/api/*", Auth: Auth{Type: "bearer", Token: "K"}},
+	}
+
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"api.stripe.com", true},
+		{"api.github.com", true},
+		{"raw.github.com", true},
+		{"github.com", false},
+		{"a.b.github.com", false},
+		{"slack.com", true},
+		{"api.unknown.com", false},
+		{"example.com", false},
+	}
+	for _, tt := range tests {
+		got := AnyHostMatches(tt.host, services)
+		if got != tt.want {
+			t.Errorf("AnyHostMatches(%q) = %v, want %v", tt.host, got, tt.want)
+		}
+	}
+
+	// Nil services: nothing matches.
+	if AnyHostMatches("anything.com", nil) {
+		t.Error("AnyHostMatches with nil services should return false")
 	}
 }

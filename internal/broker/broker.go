@@ -101,8 +101,8 @@ var SupportedAuthTypes = []string{"bearer", "basic", "api-key", "custom", "passt
 var CredentialKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
 // SubstitutionSurfaces lists the surfaces a substitution may declare in
-// its In list. "body" is reserved for a future version.
-var SubstitutionSurfaces = []string{"path", "query", "header"}
+// its In list.
+var SubstitutionSurfaces = []string{"path", "query", "header", "body", "websocket"}
 
 // DefaultSubstitutionSurfaces is applied when a substitution omits In.
 // "header" is a deliberate opt-in (CRLF guard required) so it is not
@@ -448,9 +448,6 @@ func validateSubstitutionSurfaces(in []string) error {
 	}
 	seen := make(map[string]bool, len(in))
 	for _, surface := range in {
-		if surface == "body" {
-			return fmt.Errorf("substitution surface \"body\" is reserved for a future version — pick from %s", strings.Join(SubstitutionSurfaces, ", "))
-		}
 		if !allowed[surface] {
 			return fmt.Errorf("invalid substitution surface %q — must be one of %s", surface, strings.Join(SubstitutionSurfaces, ", "))
 		}
@@ -579,6 +576,19 @@ func matchHostPattern(pattern, host string) (tier int, ok bool) {
 		}
 	}
 	return 0, false
+}
+
+// AnyHostMatches reports whether any service's host pattern matches
+// host, ignoring paths. Used to filter discovered hosts against the
+// current service list so hosts that are already covered by a
+// configured service (even path-scoped or disabled) are excluded.
+func AnyHostMatches(host string, services []Service) bool {
+	for i := range services {
+		if _, ok := matchHostPattern(services[i].Host, host); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // matchPathGlob reports whether pattern matches path and returns the

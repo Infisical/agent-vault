@@ -39,10 +39,66 @@ type Credential struct {
 	ID         string
 	VaultID    string
 	Key        string
+	Type       string // "static" (default) or "oauth"
 	Ciphertext []byte
 	Nonce      []byte
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+}
+
+// CredentialOAuth stores the OAuth configuration and refresh state for
+// an OAuth-type credential. The access token lives in credentials.ciphertext;
+// this table stores everything needed to refresh it.
+type CredentialOAuth struct {
+	VaultID           string
+	CredentialKey     string
+	AuthorizationURL  string // empty = token upload mode
+	TokenURL          string
+	ClientID          string
+	ClientSecretCT    []byte // nil for public clients
+	ClientSecretNonce []byte
+	Scopes            string
+	ScopeSeparator    string
+	DisablePKCE       bool
+	TokenAuthMethod   string // "client_secret_post" or "client_secret_basic"
+	RefreshTokenCT    []byte
+	RefreshTokenNonce []byte
+	TokenExpiresAt    *time.Time
+	ConnectedAt       *time.Time
+	LastRefreshedAt   *time.Time
+	LastRefreshError  string
+	LastRefreshErrorAt *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+// CredentialOAuthState holds a CSRF state + PKCE verifier for an
+// in-flight OAuth consent redirect.
+type CredentialOAuthState struct {
+	ID            string
+	StateHash     string
+	CodeVerifier  string
+	VaultID       string
+	CredentialKey string
+	RedirectURL   string
+	CreatedAt     time.Time
+	ExpiresAt     time.Time
+}
+
+// OAuthCredentialConfig bridges the handler layer to the store for
+// ApplyProposal — carries the OAuth provider config for a credential
+// slot being created or updated.
+type OAuthCredentialConfig struct {
+	Key               string
+	AuthorizationURL  string
+	TokenURL          string
+	ClientID          string
+	ClientSecretCT    []byte
+	ClientSecretNonce []byte
+	Scopes            string
+	ScopeSeparator    string
+	DisablePKCE       bool
+	TokenAuthMethod   string
 }
 
 // MasterKeyRecord holds the KEK/DEK key-wrapping artifacts.
@@ -240,6 +296,8 @@ type RequestLog struct {
 	Status         int
 	LatencyMs      int64
 	ErrorCode      string
+	AuthScheme     string
+	AuthHeader     string
 	CreatedAt      time.Time
 }
 
@@ -254,6 +312,17 @@ type ListRequestLogsOpts struct {
 	Before         int64 // rows with id < Before (pagination going back)
 	After          int64 // rows with id > After (polling for new rows)
 	Limit          int   // capped at 200 by handler; store trusts caller
+}
+
+// UnmatchedHost is a hostname seen in proxy traffic that did not match
+// any configured service and resulted in an auth failure (401/403) or
+// proxy denial (no_match). Returned by ListUnmatchedHosts.
+type UnmatchedHost struct {
+	Host         string
+	RequestCount int
+	LastSeen     time.Time
+	AuthScheme   string
+	AuthHeader   string
 }
 
 // Agent represents a named, instance-level agent entity.
@@ -335,6 +404,18 @@ type Store interface {
 	ListCredentials(ctx context.Context, vaultID string) ([]Credential, error)
 	DeleteCredential(ctx context.Context, vaultID, key string) error
 
+	// OAuth credentials
+	GetCredentialOAuth(ctx context.Context, vaultID, key string) (*CredentialOAuth, error)
+	SetCredentialOAuth(ctx context.Context, oauth *CredentialOAuth) error
+	UpdateCredentialOAuthTokens(ctx context.Context, vaultID, key string, accessCT, accessNonce, refreshCT, refreshNonce []byte, expiresAt *time.Time) error
+	UpdateCredentialOAuthError(ctx context.Context, vaultID, key string, errMsg string) error
+
+	// OAuth states (CSRF + PKCE for consent flow)
+	CreateCredentialOAuthState(ctx context.Context, state *CredentialOAuthState) error
+	GetCredentialOAuthStateByHash(ctx context.Context, stateHash string) (*CredentialOAuthState, error)
+	DeleteCredentialOAuthState(ctx context.Context, id string) error
+	ExpireCredentialOAuthStates(ctx context.Context, before time.Time) (int, error)
+
 	// Users
 	CreateUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, role string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*User, error)
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
@@ -405,7 +486,7 @@ type Store interface {
 	CountPendingProposals(ctx context.Context, vaultID string) (int, error)
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
 	GetProposalCredentials(ctx context.Context, vaultID string, proposalID int) (map[string]EncryptedCredential, error)
-	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string) error
+	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []OAuthCredentialConfig) error
 
 	// User invites (instance-level)
 	CreateUserInvite(ctx context.Context, email, createdBy, role string, expiresAt time.Time, vaults []UserInviteVault) (*UserInvite, error)
@@ -474,6 +555,7 @@ type Store interface {
 	// Request logs
 	InsertRequestLogs(ctx context.Context, rows []RequestLog) error
 	ListRequestLogs(ctx context.Context, opts ListRequestLogsOpts) ([]RequestLog, error)
+	ListUnmatchedHosts(ctx context.Context, vaultID string) ([]UnmatchedHost, error)
 	DeleteOldRequestLogs(ctx context.Context, before time.Time) (int64, error)
 	TrimRequestLogsToCap(ctx context.Context, vaultID string, cap int64) (int64, error)
 	VaultIDsWithLogs(ctx context.Context) ([]string, error)

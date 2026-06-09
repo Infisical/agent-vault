@@ -67,8 +67,8 @@ func TestHandleMITMCA(t *testing.T) {
 			t.Fatalf("Content-Disposition: got %q, want filename=agent-vault-ca.pem", cd)
 		}
 
-		if got := rec.Header().Get("X-MITM-TLS"); got != "1" {
-			t.Errorf("X-MITM-TLS = %q, want \"1\"", got)
+		if got := rec.Header().Get("X-MITM-TLS"); got != "" {
+			t.Errorf("X-MITM-TLS = %q, want empty (plain HTTP proxy)", got)
 		}
 
 		block, _ := pem.Decode(rec.Body.Bytes())

@@ -3,9 +3,13 @@ package mitm
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/binary"
 	"fmt"
 	"io"
+	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/textproto"
@@ -52,6 +56,7 @@ func (p *Proxy) forwardWebSocket(
 	w http.ResponseWriter,
 	r *http.Request,
 	outReq *http.Request,
+	wsSubs []brokercore.ResolvedSubstitution,
 	emit func(status int, errCode string),
 ) {
 	upstreamConn, upstreamReader, resp, err := p.dialWebSocketUpstream(r.Context(), outReq)
@@ -68,6 +73,15 @@ func (p *Proxy) forwardWebSocket(
 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		defer func() { _ = resp.Body.Close() }()
+
+		if p.maxResponseBytes > 0 && resp.ContentLength > 0 && resp.ContentLength > p.maxResponseBytes {
+			brokercore.WriteProxyError(w, http.StatusBadGateway, "response_too_large",
+				fmt.Sprintf("Upstream response body (%d bytes) exceeds the proxy response-size limit (%d bytes).",
+					resp.ContentLength, p.maxResponseBytes))
+			emit(http.StatusBadGateway, "response_too_large")
+			return
+		}
+
 		for k, vv := range resp.Header {
 			if brokercore.ShouldStripResponseHeader(k) {
 				continue
@@ -77,7 +91,31 @@ func (p *Proxy) forwardWebSocket(
 			}
 		}
 		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, io.LimitReader(resp.Body, brokercore.MaxResponseBytes))
+
+		var src io.Reader = resp.Body
+		if p.maxResponseBytes > 0 {
+			src = io.LimitReader(resp.Body, p.maxResponseBytes)
+		}
+		var dst io.Writer = w
+		if f, ok := w.(http.Flusher); ok {
+			dst = &flushingWriter{w: w, f: f}
+		}
+		n, _ := io.Copy(dst, src)
+
+		if p.maxResponseBytes > 0 && n == p.maxResponseBytes {
+			var probe [1]byte
+			if extra, _ := resp.Body.Read(probe[:]); extra > 0 {
+				p.logger.Warn("response body truncated mid-stream, aborting connection",
+					slog.String("host", outReq.URL.Host),
+					slog.String("path", outReq.URL.Path),
+					slog.Int64("bytes_streamed", n),
+					slog.Int64("max_response_bytes", p.maxResponseBytes),
+				)
+				emit(resp.StatusCode, "response_truncated")
+				panic(http.ErrAbortHandler)
+			}
+		}
+
 		emit(resp.StatusCode, "")
 		return
 	}
@@ -108,7 +146,7 @@ func (p *Proxy) forwardWebSocket(
 	_ = clientConn.SetWriteDeadline(time.Time{})
 	emit(http.StatusSwitchingProtocols, "")
 
-	pipeWebSocket(clientConn, clientBuf.Reader, upstreamConn, upstreamReader)
+	pipeWebSocket(clientConn, clientBuf.Reader, upstreamConn, upstreamReader, wsSubs)
 }
 
 // Without an idle deadline, a stalled or abandoned WebSocket would pin a
@@ -255,7 +293,7 @@ func isSafeWebSocketSwitchHeader(name string) bool {
 	}
 }
 
-func pipeWebSocket(clientConn net.Conn, clientReader *bufio.Reader, upstreamConn net.Conn, upstreamReader *bufio.Reader) {
+func pipeWebSocket(clientConn net.Conn, clientReader *bufio.Reader, upstreamConn net.Conn, upstreamReader *bufio.Reader, wsSubs []brokercore.ResolvedSubstitution) {
 	done := make(chan struct{}, 2)
 	var closeOnce sync.Once
 	closeBoth := func() {
@@ -269,7 +307,12 @@ func pipeWebSocket(clientConn net.Conn, clientReader *bufio.Reader, upstreamConn
 			done <- struct{}{}
 			closeBoth()
 		}()
-		copyWithIdleTimeout(upstreamConn, io.MultiReader(clientReader, clientConn), clientConn, wsIdleTimeout)
+		src := io.MultiReader(clientReader, clientConn)
+		if len(wsSubs) > 0 {
+			copyWSFramesWithSubstitution(upstreamConn, src, clientConn, wsIdleTimeout, wsSubs)
+		} else {
+			copyWithIdleTimeout(upstreamConn, src, clientConn, wsIdleTimeout)
+		}
 	}()
 	go func() {
 		defer func() {
@@ -299,6 +342,218 @@ func copyWithIdleTimeout(dst io.Writer, src io.Reader, srcConn net.Conn, idle ti
 			}
 		}
 		if err != nil {
+			return
+		}
+	}
+}
+
+// maxWSSubstitutionPayload caps the frame payload size we'll buffer for
+// substitution. Frames larger than this are streamed through without
+// substitution. Auth payloads are tiny; this prevents memory exhaustion.
+const maxWSSubstitutionPayload = 1 << 20 // 1 MB
+
+// WebSocket frame opcodes (RFC 6455 §11.8).
+const (
+	wsOpText  = 0x1
+	wsOpBin   = 0x2
+	wsOpClose = 0x8
+	wsOpPing  = 0x9
+	wsOpPong  = 0xA
+)
+
+func filterWebSocketSubs(subs []brokercore.ResolvedSubstitution) []brokercore.ResolvedSubstitution {
+	var out []brokercore.ResolvedSubstitution
+	for _, sub := range subs {
+		for _, s := range sub.In {
+			if s == "websocket" {
+				out = append(out, sub)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// copyWSFramesWithSubstitution reads WebSocket frames from src, applies
+// placeholder substitutions to unfragmented text frames, and writes them
+// to dst. Non-text, compressed (RSV1), fragmented, and oversized frames
+// are forwarded without modification.
+func copyWSFramesWithSubstitution(dst io.Writer, src io.Reader, srcConn net.Conn, idle time.Duration, subs []brokercore.ResolvedSubstitution) {
+	r := bufio.NewReaderSize(src, 32*1024)
+	for {
+		_ = srcConn.SetReadDeadline(time.Now().Add(idle))
+
+		// --- Read frame header (2 bytes minimum) ---
+		hdr := make([]byte, 2)
+		if _, err := io.ReadFull(r, hdr); err != nil {
+			return
+		}
+
+		fin := hdr[0]&0x80 != 0
+		rsv1 := hdr[0]&0x40 != 0
+		opcode := hdr[0] & 0x0F
+		masked := hdr[1]&0x80 != 0
+		payloadLen := uint64(hdr[1] & 0x7F)
+
+		// Extended payload length.
+		var extHdr []byte
+		switch payloadLen {
+		case 126:
+			extHdr = make([]byte, 2)
+			if _, err := io.ReadFull(r, extHdr); err != nil {
+				return
+			}
+			payloadLen = uint64(binary.BigEndian.Uint16(extHdr))
+		case 127:
+			extHdr = make([]byte, 8)
+			if _, err := io.ReadFull(r, extHdr); err != nil {
+				return
+			}
+			payloadLen = binary.BigEndian.Uint64(extHdr)
+			// RFC 6455 §5.2: MSB must be 0. Reject to prevent int64 overflow
+			// in io.CopyN which would desynchronize the frame parser.
+			if payloadLen > math.MaxInt64 {
+				return
+			}
+		}
+
+		// Masking key (4 bytes if masked).
+		var maskKey [4]byte
+		if masked {
+			if _, err := io.ReadFull(r, maskKey[:]); err != nil {
+				return
+			}
+		}
+
+		// --- Decide: substitute or pass through ---
+		canSubstitute := opcode == wsOpText && fin && !rsv1 && payloadLen <= maxWSSubstitutionPayload
+		if !canSubstitute {
+			if opcode == wsOpText && !fin {
+				slog.Default().Warn("fragmented WebSocket text frame on connection with substitutions; passing through without substitution")
+			} else if opcode == wsOpText && payloadLen > maxWSSubstitutionPayload {
+				slog.Default().Warn("WebSocket text frame exceeds substitution size limit; passing through without substitution",
+					slog.Uint64("payload_len", payloadLen),
+					slog.Int("max_substitution_payload", maxWSSubstitutionPayload))
+			}
+			// Stream the frame through: write the already-read header bytes,
+			// then copy the payload with io.CopyN.
+			if _, err := dst.Write(hdr); err != nil {
+				return
+			}
+			if len(extHdr) > 0 {
+				if _, err := dst.Write(extHdr); err != nil {
+					return
+				}
+			}
+			if masked {
+				if _, err := dst.Write(maskKey[:]); err != nil {
+					return
+				}
+			}
+			if payloadLen > 0 {
+				if _, err := io.CopyN(dst, r, int64(payloadLen)); err != nil {
+					return
+				}
+			}
+			if opcode == wsOpClose {
+				return
+			}
+			continue
+		}
+
+		// --- Read and unmask payload ---
+		payload := make([]byte, payloadLen)
+		if _, err := io.ReadFull(r, payload); err != nil {
+			return
+		}
+
+		// Keep a copy of the raw frame for the no-change fast path.
+		rawPayload := make([]byte, len(payload))
+		copy(rawPayload, payload)
+		rawHdr := hdr
+		rawExtHdr := extHdr
+		rawMaskKey := maskKey
+
+		// Unmask.
+		if masked {
+			for i := range payload {
+				payload[i] ^= maskKey[i%4]
+			}
+		}
+
+		// Apply substitutions to the unmasked text.
+		text := string(payload)
+		for _, sub := range subs {
+			text = strings.ReplaceAll(text, sub.Placeholder, sub.Value)
+		}
+
+		// Fast path: nothing changed — write the original raw bytes.
+		if text == string(payload) {
+			if _, err := dst.Write(rawHdr); err != nil {
+				return
+			}
+			if len(rawExtHdr) > 0 {
+				if _, err := dst.Write(rawExtHdr); err != nil {
+					return
+				}
+			}
+			if masked {
+				if _, err := dst.Write(rawMaskKey[:]); err != nil {
+					return
+				}
+			}
+			if _, err := dst.Write(rawPayload); err != nil {
+				return
+			}
+			continue
+		}
+
+		// --- Rewrite frame with substituted payload ---
+		modified := []byte(text)
+		newLen := uint64(len(modified))
+
+		// Generate a new masking key (RFC 6455 §5.3 requires unpredictable).
+		var newMask [4]byte
+		if masked {
+			if _, err := rand.Read(newMask[:]); err != nil {
+				return
+			}
+			for i := range modified {
+				modified[i] ^= newMask[i%4]
+			}
+		}
+
+		// Build frame header with correct length encoding.
+		var frame []byte
+		firstByte := hdr[0] // preserves FIN, RSV bits, opcode
+		switch {
+		case newLen <= 125:
+			secondByte := byte(newLen)
+			if masked {
+				secondByte |= 0x80
+			}
+			frame = append(frame, firstByte, secondByte)
+		case newLen <= 65535:
+			secondByte := byte(126)
+			if masked {
+				secondByte |= 0x80
+			}
+			frame = append(frame, firstByte, secondByte)
+			frame = binary.BigEndian.AppendUint16(frame, uint16(newLen))
+		default:
+			secondByte := byte(127)
+			if masked {
+				secondByte |= 0x80
+			}
+			frame = append(frame, firstByte, secondByte)
+			frame = binary.BigEndian.AppendUint64(frame, newLen)
+		}
+		if masked {
+			frame = append(frame, newMask[:]...)
+		}
+		frame = append(frame, modified...)
+
+		if _, err := dst.Write(frame); err != nil {
 			return
 		}
 	}

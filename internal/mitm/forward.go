@@ -2,6 +2,7 @@ package mitm
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -14,6 +15,19 @@ import (
 	"github.com/Infisical/agent-vault/internal/ratelimit"
 	"github.com/Infisical/agent-vault/internal/requestlog"
 )
+
+type flushingWriter struct {
+	w io.Writer
+	f http.Flusher
+}
+
+func (fw *flushingWriter) Write(p []byte) (int, error) {
+	n, err := fw.w.Write(p)
+	if n > 0 {
+		fw.f.Flush()
+	}
+	return n, err
+}
 
 // actorFromScope returns the (type, id) pair used in request log rows.
 // Empty strings when neither principal is set on the scope.
@@ -62,16 +76,15 @@ func isAbsoluteForwardProxyRequest(r *http.Request) bool {
 
 // handleForward serves an absolute-form forward-proxy request for an
 // http:// upstream. Compared to the CONNECT path: no hijack (the
-// response is a normal HTTP/1.1 reply over the existing TLS-wrapped
-// connection), and the scope is resolved per request rather than once
+// response is a normal HTTP/1.1 reply over the existing connection),
+// and the scope is resolved per request rather than once
 // per tunnel.
 func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
-	// Per-IP flood gate before ParseProxyAuth + session lookup so a
-	// bad-auth flood can't burn CPU. Loopback is exempt — see
-	// isLoopbackPeer. Shares the TierAuth budget and key shape with
-	// CONNECT: one peer = one budget regardless of ingress shape.
+	// Read-only pre-gate: reject if this IP's auth-failure budget is
+	// exhausted. Only auth failures are recorded (below). Shares the
+	// TierAuth budget and key shape with CONNECT. Loopback is exempt.
 	if p.rateLimit != nil && !isLoopbackPeer(r) {
-		if d := p.rateLimit.Allow(ratelimit.TierAuth, mitmIPKey(r)); !d.Allow {
+		if d := p.rateLimit.Check(ratelimit.TierAuth, mitmIPKey(r)); !d.Allow {
 			ratelimit.WriteDenial(w, d, "Too many proxy requests")
 			return
 		}
@@ -111,11 +124,13 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 
 	token, hint, err := brokercore.ParseProxyAuth(r)
 	if err != nil {
+		p.recordAuthFailure(r)
 		writeProxyAuthChallenge(w, "Proxy-Authorization required")
 		return
 	}
 	scope, err := p.sessions.ResolveForProxy(r.Context(), token, hint)
 	if err != nil {
+		p.recordAuthFailure(r)
 		writeAuthError(w, err)
 		return
 	}
@@ -173,11 +188,14 @@ func (p *Proxy) forwardRequest(
 	scope *brokercore.ProxyScope,
 ) {
 	start := time.Now()
+	authScheme, authHeader := detectAuthFromHeaders(r.Header)
 	event := brokercore.ProxyEvent{
-		Ingress: brokercore.IngressMITM,
-		Method:  r.Method,
-		Host:    target,
-		Path:    r.URL.Path,
+		Ingress:    brokercore.IngressMITM,
+		Method:     r.Method,
+		Host:       target,
+		Path:       r.URL.Path,
+		AuthScheme: authScheme,
+		AuthHeader: authHeader,
 	}
 	actorType, actorID := actorFromScope(scope)
 	emit := func(status int, errCode string) {
@@ -193,7 +211,7 @@ func (p *Proxy) forwardRequest(
 	}
 	defer enf.Release()
 
-	r.Body = http.MaxBytesReader(w, r.Body, brokercore.MaxProxyBodyBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, p.maxRequestBytes)
 
 	scheme := "http"
 	if useTLSUpstream {
@@ -207,22 +225,11 @@ func (p *Proxy) forwardRequest(
 		RawQuery: r.URL.RawQuery,
 	}
 
-	body, contentLength, err := brokercore.MaterializeRequestBody(r.Body)
-	if err != nil {
-		status, code := brokercore.RequestBodyErrorCode(err)
-		http.Error(w, http.StatusText(status), status)
-		emit(status, code)
+	if r.ContentLength > 0 && r.ContentLength > p.maxRequestBytes {
+		http.Error(w, http.StatusText(http.StatusRequestEntityTooLarge), http.StatusRequestEntityTooLarge)
+		emit(http.StatusRequestEntityTooLarge, "request_too_large")
 		return
 	}
-
-	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, outURL.String(), body)
-	if err != nil {
-		http.Error(w, "bad gateway", http.StatusBadGateway)
-		emit(http.StatusBadGateway, "internal")
-		return
-	}
-	outReq.Host = hostHeaderForScheme(scheme, target)
-	outReq.ContentLength = contentLength
 
 	inject, err := p.creds.Inject(r.Context(), scope.VaultID, host, r.URL.Path)
 	if inject != nil {
@@ -245,40 +252,82 @@ func (p *Proxy) forwardRequest(
 		return
 	}
 
+	var body io.ReadCloser
+	var contentLength int64
+
+	hasSubs := brokercore.HasBodySubstitutions(inject.Substitutions)
+	canStream := !hasSubs && r.ContentLength >= 0
+
+	if canStream {
+		body = r.Body
+		contentLength = r.ContentLength
+	} else {
+		r.Body = http.MaxBytesReader(w, r.Body, brokercore.MaxMaterializeBytes)
+		body, contentLength, err = brokercore.MaterializeRequestBody(r.Body)
+		if err != nil {
+			status, code := brokercore.RequestBodyErrorCode(err)
+			http.Error(w, http.StatusText(status), status)
+			emit(status, code)
+			return
+		}
+	}
+
+	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, outURL.String(), body)
+	if err != nil {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+		emit(http.StatusBadGateway, "internal")
+		return
+	}
+	outReq.Host = hostHeaderForScheme(scheme, target)
+	outReq.ContentLength = contentLength
+
 	wsUpgrade := isWebSocketUpgrade(r)
 
-	// WS handshake needs Connection/Upgrade through, but ApplyInjection
-	// would drop them as hop-by-hop. Copy the full handshake set
-	// manually, then tell ApplyInjection to skip them so the
-	// non-hop-by-hop ones (Origin, Sec-*) aren't duplicated. Injection
-	// still wins on overlapping names (Authorization etc.) because
-	// inject.Headers is Set last by ApplyInjection.
 	if wsUpgrade {
 		copyWebSocketHandshakeHeaders(r.Header, outReq.Header)
 		brokercore.ApplyInjection(r.Header, outReq.Header, inject, websocketHandshakeHeaderNames...)
 	} else {
-		// No extraStrip: Proxy-Authorization is already in the broker
-		// denylist, and Authorization is the client's upstream header.
 		brokercore.ApplyInjection(r.Header, outReq.Header, inject)
 	}
 
-	// Apply any declared substitutions to the outbound URL and
-	// headers. Surfaces not listed in the substitution's `in:` are
-	// not scanned — scope is the security boundary.
 	if err := brokercore.ApplySubstitutions(outReq.URL, outReq.Header, inject.Substitutions); err != nil {
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		emit(http.StatusBadGateway, "substitution_error")
 		return
 	}
 
+	if ce := outReq.Header.Get("Content-Encoding"); ce != "" {
+		p.logger.Debug("skipping body substitution for compressed request",
+			slog.String("content_encoding", ce),
+			slog.String("host", host),
+		)
+	} else {
+		newBody, newLen, modified, bErr := brokercore.ApplyBodySubstitutions(
+			outReq.Body, outReq.ContentLength,
+			outReq.Header.Get("Content-Type"), inject.Substitutions)
+		if bErr != nil {
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			emit(http.StatusBadGateway, "substitution_error")
+			return
+		}
+		outReq.Body = newBody
+		if modified {
+			outReq.ContentLength = newLen
+			outReq.Header.Set("Content-Length", fmt.Sprintf("%d", newLen))
+		}
+	}
+
 	if wsUpgrade {
-		p.forwardWebSocket(w, r, outReq, emit)
+		wsSubs := filterWebSocketSubs(inject.Substitutions)
+		if len(wsSubs) > 0 {
+			outReq.Header.Del("Sec-Websocket-Extensions")
+		}
+		p.forwardWebSocket(w, r, outReq, wsSubs, emit)
 		return
 	}
 
 	resp, err := p.upstream.RoundTrip(outReq)
 	if err != nil {
-		// Log the actual error for operators while sending generic message to client.
 		p.logger.Debug("upstream request failed",
 			slog.String("vault_id", scope.VaultID),
 			slog.String("vault_name", scope.VaultName),
@@ -289,7 +338,48 @@ func (p *Proxy) forwardRequest(
 		emit(http.StatusBadGateway, "upstream_error")
 		return
 	}
+
+	// OAuth 401 retry: if the upstream rejected the token and we have an
+	// OAuth credential, force-refresh and retry once. Only safe methods
+	// (GET/HEAD) are retried — the request body is consumed and cannot be replayed.
+	if resp.StatusCode == http.StatusUnauthorized && inject != nil && !inject.Passthrough &&
+		(r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		_ = resp.Body.Close()
+		retryInject, retryErr := p.creds.Inject(r.Context(), scope.VaultID, host, r.URL.Path)
+		if retryErr == nil && retryInject != nil && retryInject.Headers != nil {
+			retryReq := outReq.Clone(outReq.Context())
+			for k, v := range retryInject.Headers {
+				retryReq.Header.Set(k, v)
+			}
+			retryReq.Body = http.NoBody
+			retryReq.ContentLength = 0
+			if retryResp, retryRTErr := p.upstream.RoundTrip(retryReq); retryRTErr == nil {
+				resp = retryResp
+				p.logger.Debug("oauth 401 retry succeeded",
+					slog.String("host", host),
+					slog.String("path", r.URL.Path),
+					slog.Int("status", resp.StatusCode),
+				)
+			}
+		}
+	}
+
 	defer func() { _ = resp.Body.Close() }()
+
+	if p.maxResponseBytes > 0 && resp.ContentLength > 0 && resp.ContentLength > p.maxResponseBytes {
+		_ = resp.Body.Close()
+		p.logger.Warn("response body exceeds limit",
+			slog.String("host", target),
+			slog.String("path", r.URL.Path),
+			slog.Int64("content_length", resp.ContentLength),
+			slog.Int64("max_response_bytes", p.maxResponseBytes),
+		)
+		brokercore.WriteProxyError(w, http.StatusBadGateway, "response_too_large",
+			fmt.Sprintf("Upstream response body (%d bytes) exceeds the proxy response-size limit (%d bytes).",
+				resp.ContentLength, p.maxResponseBytes))
+		emit(http.StatusBadGateway, "response_too_large")
+		return
+	}
 
 	for k, vv := range resp.Header {
 		if brokercore.ShouldStripResponseHeader(k) {
@@ -300,6 +390,56 @@ func (p *Proxy) forwardRequest(
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, io.LimitReader(resp.Body, brokercore.MaxResponseBytes))
+
+	var src io.Reader = resp.Body
+	if p.maxResponseBytes > 0 {
+		src = io.LimitReader(resp.Body, p.maxResponseBytes)
+	}
+	var dst io.Writer = w
+	if f, ok := w.(http.Flusher); ok {
+		dst = &flushingWriter{w: w, f: f}
+	}
+	n, _ := io.Copy(dst, src)
+
+	if p.maxResponseBytes > 0 && n == p.maxResponseBytes {
+		var probe [1]byte
+		if extra, _ := resp.Body.Read(probe[:]); extra > 0 {
+			p.logger.Warn("response body truncated mid-stream, aborting connection",
+				slog.String("host", target),
+				slog.String("path", r.URL.Path),
+				slog.Int64("bytes_streamed", n),
+				slog.Int64("max_response_bytes", p.maxResponseBytes),
+			)
+			emit(resp.StatusCode, "response_truncated")
+			panic(http.ErrAbortHandler)
+		}
+	}
+
 	emit(resp.StatusCode, "")
+}
+
+// knownAPIKeyHeaders are non-Authorization headers that commonly carry
+// API keys. Checked by exact canonical match -- no heuristic scanning.
+var knownAPIKeyHeaders = []string{"X-Api-Key", "Api-Key"}
+
+// detectAuthFromHeaders inspects request headers to determine the auth
+// scheme and header name. Returns ("", "") when no recognizable auth
+// pattern is found.
+func detectAuthFromHeaders(h http.Header) (scheme, header string) {
+	if auth := h.Get("Authorization"); auth != "" {
+		switch {
+		case strings.HasPrefix(auth, "Bearer ") || strings.HasPrefix(auth, "bearer "):
+			return "bearer", "Authorization"
+		case strings.HasPrefix(auth, "Basic ") || strings.HasPrefix(auth, "basic "):
+			return "basic", "Authorization"
+		default:
+			return "api-key", "Authorization"
+		}
+	}
+	for _, name := range knownAPIKeyHeaders {
+		if h.Get(name) != "" {
+			return "api-key", http.CanonicalHeaderKey(name)
+		}
+	}
+	return "", ""
 }

@@ -5,10 +5,14 @@ description: "Learn how to connect OpenClaw to Agent Vault so it can make authen
 
 import InstallCommand from "/snippets/install-command.mdx";
 
+<Tip>
+Running OpenClaw on a remote VPS instead of your laptop? Follow [Run OpenClaw on a VPS](/guides/openclaw-on-vps). It covers the same brokering pattern as a two-VPS deployment with systemd, a Slack bot, and an optional egress firewall.
+</Tip>
+
 ## Prerequisites
 
 - A running Agent Vault instance on a separate host from where OpenClaw runs ([see installation guide](/installation)).
-- [OpenClaw](https://openclaw.ai) installed.
+- [OpenClaw](https://openclaw.ai) installed (>= 2026.3.2).
 - An agent token from Agent Vault (create one under **Agents → Add agent**).
 
 Install the Agent Vault CLI on the host or in the container image where OpenClaw runs, and point it at your Agent Vault instance. The CLI bootstraps OpenClaw's environment so every outbound API call routes through Agent Vault for credential injection.
@@ -33,11 +37,29 @@ Install the Agent Vault CLI on the host or in the container image where OpenClaw
 
     ### 3. Run the OpenClaw gateway under agent-vault
 
-    `agent-vault run` launches the OpenClaw gateway with `HTTPS_PROXY` and `HTTP_PROXY` pre-set so both its HTTPS and plain HTTP calls route through Agent Vault for credential injection.
-
     ```bash
     agent-vault run -- openclaw gateway run
     ```
+
+    `agent-vault run` automatically configures OpenClaw's managed proxy (`proxy.enabled`) and trusted env proxy for `web_fetch`, sets `OPENCLAW_PROXY_URL`, `HTTPS_PROXY`, `HTTP_PROXY`, and CA trust variables, and installs the Agent Vault skill. No manual OpenClaw configuration needed.
+
+    <Warning>
+      `agent-vault run` persists two settings in OpenClaw's config:
+
+      ```
+      proxy.enabled = true
+      tools.web.fetch.useTrustedEnvProxy = true
+      ```
+
+      If you later want to run `openclaw gateway run` without Agent Vault, OpenClaw will refuse to start until you revert these settings.
+
+      **Commands to revert:**
+
+      ```bash
+      openclaw config set proxy.enabled false
+      openclaw config set tools.web.fetch.useTrustedEnvProxy false
+      ```
+    </Warning>
 
   </Tab>
   <Tab title="Dockerfile">
@@ -50,8 +72,6 @@ Install the Agent Vault CLI on the host or in the container image where OpenClaw
     ```
 
     ### 2. Set the entrypoint
-
-    `agent-vault run` launches the OpenClaw gateway with `HTTPS_PROXY` and `HTTP_PROXY` pre-set so both its HTTPS and plain HTTP calls route through Agent Vault for credential injection.
 
     ```dockerfile
     ENTRYPOINT ["agent-vault", "run", "--", "openclaw", "gateway", "run"]
@@ -70,11 +90,44 @@ Install the Agent Vault CLI on the host or in the container image where OpenClaw
     ```
 
   </Tab>
+  <Tab title="Manual config (systemd / launchd)">
+    If OpenClaw is managed by a service supervisor and you cannot wrap it with `agent-vault run`, configure the proxy directly in `openclaw.json`:
+
+    ```json5
+    {
+      "proxy": {
+        "enabled": true,
+        "proxyUrl": "http://<token>:<vault>@<agent-vault-host>:14322",
+        "tls": {
+          "caFile": "/path/to/agent-vault-mitm-ca.pem"
+        }
+      },
+      "tools": {
+        "web": {
+          "fetch": {
+            "useTrustedEnvProxy": true
+          }
+        }
+      }
+    }
+    ```
+
+    Export the Agent Vault CA certificate:
+
+    ```bash
+    curl -o /etc/openclaw/agent-vault-ca.pem http://<agent-vault-host>:14321/v1/mitm/ca.pem
+    ```
+
+    `proxy.tls.caFile` scopes CA trust to proxy connections only, which is cleaner than the process-global `NODE_EXTRA_CA_CERTS` that `agent-vault run` uses.
+  </Tab>
 </Tabs>
 
 ## Next steps
 
-<CardGroup cols={2}>
+<CardGroup cols={3}>
+  <Card title="Run OpenClaw on a VPS" icon="server" href="/guides/openclaw-on-vps">
+    Production pattern with brokered credentials on a separate host.
+  </Card>
   <Card title="Agent protocol" icon="code" href="/agents/protocol">
     Full request lifecycle end-to-end.
   </Card>

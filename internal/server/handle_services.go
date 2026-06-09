@@ -662,18 +662,13 @@ func (s *Server) handleServiceCatalog(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"services": catalog.GetAll()})
 }
 
-// SetSkills sets the embedded skill content for the CLI and HTTP skills.
-func (s *Server) SetSkills(cli, httpSkill string) {
+// SetSkills sets the embedded skill content.
+func (s *Server) SetSkills(cli string) {
 	s.skillCLI = []byte(cli)
-	s.skillHTTP = []byte(httpSkill)
 }
 
 func (s *Server) handleSkillCLI(w http.ResponseWriter, r *http.Request) {
 	s.serveSkill(w, r, s.skillCLI)
-}
-
-func (s *Server) handleSkillHTTP(w http.ResponseWriter, r *http.Request) {
-	s.serveSkill(w, r, s.skillHTTP)
 }
 
 func (s *Server) serveSkill(w http.ResponseWriter, r *http.Request, content []byte) {

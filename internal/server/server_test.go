@@ -45,6 +45,7 @@ type mockStore struct {
 	settings           map[string]string                     // instance settings
 	vaultSettings      map[string]map[string]string          // per-vault: vaultID -> key -> value
 	credStores         map[string]*store.VaultCredentialStore // per-vault external credential store config
+	unmatchedHosts     map[string][]store.UnmatchedHost      // keyed by vaultID
 	sessionCounter     int
 }
 
@@ -365,7 +366,7 @@ func (m *mockStore) GetProposalCredentials(_ context.Context, vaultID string, pr
 	return map[string]store.EncryptedCredential{}, nil
 }
 
-func (m *mockStore) ApplyProposal(_ context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string) error {
+func (m *mockStore) ApplyProposal(_ context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string, _ []store.OAuthCredentialConfig) error {
 	// Update proposal status to applied.
 	css := m.proposals[vaultID]
 	for i, cs := range css {
@@ -398,6 +399,10 @@ func (m *mockStore) InsertRequestLogs(_ context.Context, _ []store.RequestLog) e
 
 func (m *mockStore) ListRequestLogs(_ context.Context, _ store.ListRequestLogsOpts) ([]store.RequestLog, error) {
 	return nil, nil
+}
+
+func (m *mockStore) ListUnmatchedHosts(_ context.Context, vaultID string) ([]store.UnmatchedHost, error) {
+	return m.unmatchedHosts[vaultID], nil
 }
 
 func (m *mockStore) DeleteOldRequestLogs(_ context.Context, _ time.Time) (int64, error) {
@@ -1123,6 +1128,31 @@ func (m *mockStore) UpdateVaultCredentialStoreHealth(_ context.Context, vaultID,
 }
 func (m *mockStore) ReplaceVaultCredentials(_ context.Context, _ string, _ []store.EncryptedKV) error {
 	return nil
+}
+
+func (m *mockStore) GetCredentialOAuth(_ context.Context, _, _ string) (*store.CredentialOAuth, error) {
+	return nil, nil
+}
+func (m *mockStore) SetCredentialOAuth(_ context.Context, _ *store.CredentialOAuth) error {
+	return nil
+}
+func (m *mockStore) UpdateCredentialOAuthTokens(_ context.Context, _, _ string, _, _, _, _ []byte, _ *time.Time) error {
+	return nil
+}
+func (m *mockStore) UpdateCredentialOAuthError(_ context.Context, _, _, _ string) error {
+	return nil
+}
+func (m *mockStore) CreateCredentialOAuthState(_ context.Context, _ *store.CredentialOAuthState) error {
+	return nil
+}
+func (m *mockStore) GetCredentialOAuthStateByHash(_ context.Context, _ string) (*store.CredentialOAuthState, error) {
+	return nil, nil
+}
+func (m *mockStore) DeleteCredentialOAuthState(_ context.Context, _ string) error {
+	return nil
+}
+func (m *mockStore) ExpireCredentialOAuthStates(_ context.Context, _ time.Time) (int, error) {
+	return 0, nil
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -2263,8 +2293,11 @@ func TestCredentialsListNoRevealBackwardCompat(t *testing.T) {
 	if len(resp.Keys) != 1 || resp.Keys[0] != "FOO" {
 		t.Fatalf("expected keys [FOO], got %v", resp.Keys)
 	}
-	if len(resp.Credentials) != 0 {
-		t.Fatalf("expected no credentials in non-reveal response, got %d", len(resp.Credentials))
+	if len(resp.Credentials) != 1 {
+		t.Fatalf("expected 1 credential entry with type info, got %d", len(resp.Credentials))
+	}
+	if resp.Credentials[0].Value != "" {
+		t.Fatalf("expected no value in non-reveal response, got %q", resp.Credentials[0].Value)
 	}
 }
 
@@ -2382,7 +2415,7 @@ func TestDiscoverSuccess(t *testing.T) {
 
 // TestDiscoverHealsLegacyUnnamedServices pins that /discover returns
 // auto-slugged Names for legacy entries persisted without `name`.
-// Agents identify services by Name (per skill_http.md); a blank Name
+// Agents identify services by Name (per skill_cli.md); a blank Name
 // here makes the service un-addressable until an unrelated write
 // triggers a heal elsewhere.
 func TestDiscoverHealsLegacyUnnamedServices(t *testing.T) {
@@ -4007,6 +4040,30 @@ func TestAgentRotate(t *testing.T) {
 	}
 }
 
+func TestAgentRotate_MemberCannotRotateOwnerRoleAgent(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	// Agent created by the member but promoted to owner role.
+	ms.agents["admin-bot"] = &store.Agent{
+		ID: "a1", Name: "admin-bot", Status: "active",
+		Role: "owner", CreatedBy: "member-user-id",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/admin-bot/rotate", nil)
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "owner-role agents") {
+		t.Errorf("expected owner-role error message, got: %s", rec.Body.String())
+	}
+}
+
 func TestAgentRename(t *testing.T) {
 	srv, ms, sessID := setupAgentTest(t)
 
@@ -5439,6 +5496,71 @@ func TestResendVerificationTooManyPending(t *testing.T) {
 	}
 }
 
+// --- Re-registration Security Tests ---
+
+func TestReRegisterInactiveUserDoesNotOverwritePassword(t *testing.T) {
+	ms := setupMockStoreWithInactiveUser(t, "victim@test.com", "original-password")
+	srv := newTestServer(withStore(ms))
+
+	// Attacker re-registers with the victim's email and a different password.
+	regBody := `{"email":"victim@test.com","password":"attacker-password"}`
+	regRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(regRec, httptest.NewRequest(http.MethodPost, "/v1/auth/register", strings.NewReader(regBody)))
+	if regRec.Code != http.StatusCreated {
+		t.Fatalf("re-register: expected 201, got %d: %s", regRec.Code, regRec.Body.String())
+	}
+
+	// A verification code should have been generated.
+	if len(ms.emailVerifications) != 1 {
+		t.Fatalf("expected 1 verification code, got %d", len(ms.emailVerifications))
+	}
+	code := ms.emailVerifications[0].Code
+
+	// Victim verifies with the code.
+	verifyBody := fmt.Sprintf(`{"email":"victim@test.com","code":"%s"}`, code)
+	verifyRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(verifyRec, httptest.NewRequest(http.MethodPost, "/v1/auth/verify", strings.NewReader(verifyBody)))
+	if verifyRec.Code != http.StatusOK {
+		t.Fatalf("verify: expected 200, got %d: %s", verifyRec.Code, verifyRec.Body.String())
+	}
+
+	// Login with original password should succeed.
+	loginOK := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(loginOK, httptest.NewRequest(http.MethodPost, "/v1/auth/login",
+		strings.NewReader(`{"email":"victim@test.com","password":"original-password"}`)))
+	if loginOK.Code != http.StatusOK {
+		t.Fatalf("login with original password: expected 200, got %d: %s", loginOK.Code, loginOK.Body.String())
+	}
+
+	// Login with attacker's password must fail.
+	loginFail := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(loginFail, httptest.NewRequest(http.MethodPost, "/v1/auth/login",
+		strings.NewReader(`{"email":"victim@test.com","password":"attacker-password"}`)))
+	if loginFail.Code != http.StatusUnauthorized {
+		t.Fatalf("login with attacker password: expected 401, got %d: %s", loginFail.Code, loginFail.Body.String())
+	}
+}
+
+func TestReRegisterInactiveUserUniformResponse(t *testing.T) {
+	ms := setupMockStoreWithInactiveUser(t, "existing@test.com", "password123")
+	srv := newTestServer(withStore(ms))
+
+	// Re-register an inactive account.
+	regBody := `{"email":"existing@test.com","password":"different-password"}`
+	regRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(regRec, httptest.NewRequest(http.MethodPost, "/v1/auth/register", strings.NewReader(regBody)))
+	if regRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", regRec.Code, regRec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(regRec.Body).Decode(&resp)
+
+	if resp["message"] != registerUniformMessage {
+		t.Fatalf("expected uniform message %q, got %q", registerUniformMessage, resp["message"])
+	}
+}
+
 // --- Services Upsert Tests ---
 
 func TestServicesUpsertRejectsDeprecatedDescription(t *testing.T) {
@@ -6726,4 +6848,277 @@ func TestSPACatchAllRoutes(t *testing.T) {
 			t.Fatalf("expected 404 for unregistered path, got %d: %s", rec.Code, rec.Body.String())
 		}
 	})
+}
+
+// --- Discovered Hosts Tests ---
+
+func setupDiscoveredHostsTest(t *testing.T, servicesJSON string, hosts []store.UnmatchedHost) (*mockStore, string) {
+	t.Helper()
+	ms := newMockStore()
+
+	sess, err := ms.CreateScopedSession(context.Background(), store.CreateScopedSessionParams{
+		VaultID:   "root-ns-id",
+		VaultRole: "member",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+	})
+	if err != nil {
+		t.Fatalf("CreateScopedSession: %v", err)
+	}
+
+	if servicesJSON != "" {
+		ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+			ID: "bc-1", VaultID: "root-ns-id", ServicesJSON: servicesJSON,
+		}
+	}
+
+	if ms.unmatchedHosts == nil {
+		ms.unmatchedHosts = make(map[string][]store.UnmatchedHost)
+	}
+	ms.unmatchedHosts["root-ns-id"] = hosts
+
+	return ms, sess.ID
+}
+
+func TestDiscoveredHostsBasic(t *testing.T) {
+	now := time.Now().UTC()
+	hosts := []store.UnmatchedHost{
+		{Host: "api.stripe.com:443", RequestCount: 10, LastSeen: now},
+		{Host: "api.openai.com:443", RequestCount: 5, LastSeen: now.Add(-1 * time.Minute)},
+		{Host: "hooks.slack.com:443", RequestCount: 2, LastSeen: now.Add(-5 * time.Minute)},
+	}
+
+	ms, token := setupDiscoveredHostsTest(t, "", hosts)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/discovered-hosts", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Hosts []struct {
+			Host         string `json:"host"`
+			RequestCount int    `json:"request_count"`
+			LastSeen     string `json:"last_seen"`
+		} `json:"hosts"`
+		Total int `json:"total"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if resp.Total != 3 {
+		t.Fatalf("expected total=3, got %d", resp.Total)
+	}
+	if len(resp.Hosts) != 3 {
+		t.Fatalf("expected 3 hosts, got %d", len(resp.Hosts))
+	}
+	// Port-stripped hostnames
+	if resp.Hosts[0].Host != "api.stripe.com" {
+		t.Errorf("expected first host api.stripe.com, got %q", resp.Hosts[0].Host)
+	}
+	if resp.Hosts[0].RequestCount != 10 {
+		t.Errorf("expected 10 requests, got %d", resp.Hosts[0].RequestCount)
+	}
+}
+
+func TestDiscoveredHostsFilterConfiguredService(t *testing.T) {
+	now := time.Now().UTC()
+	hosts := []store.UnmatchedHost{
+		{Host: "api.stripe.com:443", RequestCount: 10, LastSeen: now},
+		{Host: "api.github.com:443", RequestCount: 5, LastSeen: now.Add(-1 * time.Minute)},
+		{Host: "raw.github.com:443", RequestCount: 3, LastSeen: now.Add(-2 * time.Minute)},
+		{Host: "hooks.slack.com:443", RequestCount: 2, LastSeen: now.Add(-3 * time.Minute)},
+	}
+
+	servicesJSON := `[{"name":"github","host":"*.github.com","auth":{"type":"bearer","token":"GH_TOKEN"}},{"name":"stripe","host":"api.stripe.com/v1/*","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
+	ms, token := setupDiscoveredHostsTest(t, servicesJSON, hosts)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/discovered-hosts?limit=100", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Hosts []struct{ Host string `json:"host"` } `json:"hosts"`
+		Total int                                    `json:"total"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// api.stripe.com filtered (host-only match against api.stripe.com/v1/*),
+	// api.github.com and raw.github.com filtered (wildcard *.github.com),
+	// only hooks.slack.com remains
+	if resp.Total != 1 {
+		t.Fatalf("expected total=1, got %d (hosts: %+v)", resp.Total, resp.Hosts)
+	}
+	if resp.Hosts[0].Host != "hooks.slack.com" {
+		t.Errorf("expected hooks.slack.com, got %q", resp.Hosts[0].Host)
+	}
+}
+
+func TestDiscoveredHostsPortDedup(t *testing.T) {
+	now := time.Now().UTC()
+	hosts := []store.UnmatchedHost{
+		{Host: "api.stripe.com:443", RequestCount: 10, LastSeen: now},
+		{Host: "api.stripe.com:80", RequestCount: 3, LastSeen: now.Add(-1 * time.Minute)},
+	}
+
+	ms, token := setupDiscoveredHostsTest(t, "", hosts)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/discovered-hosts", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	var resp struct {
+		Hosts []struct {
+			Host         string `json:"host"`
+			RequestCount int    `json:"request_count"`
+		} `json:"hosts"`
+		Total int `json:"total"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if resp.Total != 1 {
+		t.Fatalf("expected total=1 (deduped), got %d", resp.Total)
+	}
+	if resp.Hosts[0].Host != "api.stripe.com" {
+		t.Errorf("expected api.stripe.com, got %q", resp.Hosts[0].Host)
+	}
+	if resp.Hosts[0].RequestCount != 13 {
+		t.Errorf("expected 13 (10+3 merged), got %d", resp.Hosts[0].RequestCount)
+	}
+}
+
+func TestDiscoveredHostsLimitZeroCountOnly(t *testing.T) {
+	now := time.Now().UTC()
+	hosts := []store.UnmatchedHost{
+		{Host: "a.com:443", RequestCount: 1, LastSeen: now},
+		{Host: "b.com:443", RequestCount: 1, LastSeen: now},
+	}
+
+	ms, token := setupDiscoveredHostsTest(t, "", hosts)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/discovered-hosts?limit=0", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	var resp struct {
+		Hosts []struct{ Host string } `json:"hosts"`
+		Total int                     `json:"total"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2, got %d", resp.Total)
+	}
+	if len(resp.Hosts) != 0 {
+		t.Fatalf("expected empty hosts array for limit=0, got %d", len(resp.Hosts))
+	}
+}
+
+func TestDiscoveredHostsLimitPagination(t *testing.T) {
+	now := time.Now().UTC()
+	var hosts []store.UnmatchedHost
+	for i := 0; i < 8; i++ {
+		hosts = append(hosts, store.UnmatchedHost{
+			Host: fmt.Sprintf("host-%d.com:443", i), RequestCount: 1,
+			LastSeen: now.Add(-time.Duration(i) * time.Minute),
+		})
+	}
+
+	ms, token := setupDiscoveredHostsTest(t, "", hosts)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/discovered-hosts?limit=5", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	var resp struct {
+		Hosts []struct{ Host string } `json:"hosts"`
+		Total int                     `json:"total"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if resp.Total != 8 {
+		t.Fatalf("expected total=8, got %d", resp.Total)
+	}
+	if len(resp.Hosts) != 5 {
+		t.Fatalf("expected 5 hosts with limit=5, got %d", len(resp.Hosts))
+	}
+}
+
+func TestDiscoveredHostsProxyRoleRejected(t *testing.T) {
+	ms := newMockStore()
+	sess, err := ms.CreateScopedSession(context.Background(), store.CreateScopedSessionParams{
+		VaultID:   "root-ns-id",
+		VaultRole: "proxy",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+	})
+	if err != nil {
+		t.Fatalf("CreateScopedSession: %v", err)
+	}
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/discovered-hosts", nil)
+	req.Header.Set("Authorization", "Bearer "+sess.ID)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for proxy role, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDiscoveredHostsNoBrokerConfig(t *testing.T) {
+	now := time.Now().UTC()
+	hosts := []store.UnmatchedHost{
+		{Host: "api.stripe.com:443", RequestCount: 5, LastSeen: now},
+	}
+
+	ms, token := setupDiscoveredHostsTest(t, "", hosts)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/discovered-hosts", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Hosts []struct{ Host string } `json:"hosts"`
+		Total int                     `json:"total"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// No broker config = no services to filter against, all hosts pass through
+	if resp.Total != 1 {
+		t.Fatalf("expected total=1, got %d", resp.Total)
+	}
 }

@@ -72,11 +72,44 @@ description: "Deploy Agent Vault to Fly.io with persistent storage"
 
 ## Key details
 
-- **Config**: `fly.toml` exposes port 14321 via Fly's HTTP service (force HTTPS, auto-stop/auto-start) and port 14322 via TCP passthrough for the transparent MITM proxy — the MITM listener's own TLS cert handles the handshake, so Fly doesn't terminate TLS on that port
-- **Agent `HTTPS_PROXY` / `HTTP_PROXY`**: `https://<token>:<vault>@your-app.fly.dev:14322` (the same URL serves both HTTPS via `CONNECT` and plain `http://` via absolute-form forward-proxy requests) — the root CA must be trusted by the agent's HTTP client (fetch with [`agent-vault ca fetch --address https://your-app.fly.dev`](docs/reference/cli.mdx))
+- **Config**: `fly.toml` exposes port 14321 via Fly's HTTP service (force HTTPS, auto-stop/auto-start). The MITM proxy on port 14322 is only reachable via [Fly's private networking](https://fly.io/docs/networking/private-networking/) (`.internal` DNS over IPv6) — it is not exposed to the public internet. The server must bind to `::` (all interfaces) so the proxy is reachable via Fly's 6PN IPv6 mesh — pass `--host ::` instead of `--host 0.0.0.0`.
+- **Agent connectivity**: agents connect to the proxy via the private network. Agents running on Fly (same org) use `http://<token>:<vault>@your-app.internal:14322`. Agents outside Fly connect via [WireGuard](https://fly.io/docs/networking/private-networking/#flyctl-wireguard) (`fly wireguard create`).
 - **Entrypoint**: `scripts/docker-entrypoint.sh` forwards arguments to the `agent-vault` binary, which natively reads `AGENT_VAULT_MASTER_PASSWORD` from the environment
 - **Storage**: Persistent volume `agent_vault_data` mounted at `/data` -- all state is in a single SQLite file
 - **Cold starts**: `min_machines_running` defaults to `0`, so the app scales to zero when idle. The first request after sleep incurs a few seconds of cold-start latency. Set it to `1` in `fly.toml` if you need always-on availability.
+
+## Connecting agents
+
+<Tabs>
+  <Tab title="Agent on Fly (same org)">
+    Agents running as Fly apps in the same organization reach the proxy via `.internal` DNS — no public internet involved.
+
+    ```bash
+    export HTTPS_PROXY="http://<token>:<vault>@your-app.internal:14322"
+    export HTTP_PROXY="$HTTPS_PROXY"
+    ```
+  </Tab>
+  <Tab title="Agent outside Fly">
+    Create a WireGuard tunnel to join your Fly org's private network:
+
+    ```bash
+    fly wireguard create my-org sjc agent-peer
+    ```
+
+    Import the generated `.conf` file into WireGuard on the agent machine, activate the tunnel, then set the proxy:
+
+    ```bash
+    export HTTPS_PROXY="http://<token>:<vault>@your-app.internal:14322"
+    export HTTP_PROXY="$HTTPS_PROXY"
+    ```
+  </Tab>
+</Tabs>
+
+Fetch the root CA so the agent trusts MITM-signed upstream certificates:
+
+```bash
+agent-vault ca fetch --address https://your-app.fly.dev -o /path/to/ca.pem
+```
 
 <Tip>
   Changing the master password re-wraps the data encryption key without re-encrypting credentials. Use `agent-vault master-password change` while the server is stopped.

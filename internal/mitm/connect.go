@@ -15,7 +15,7 @@ import (
 // mitmIPKey is the rate-limit key for the per-IP flood gate shared by
 // the CONNECT and absolute-form forward-proxy paths. X-Forwarded-For
 // doesn't exist at this layer (the HTTP request is tunnelled or sent
-// over a TLS-wrapped proxy connection); only the direct peer IP is
+// over the proxy connection); only the direct peer IP is
 // meaningful. CONNECT and forward share one budget — a peer is one peer
 // regardless of which ingress shape they use.
 func mitmIPKey(r *http.Request) string {
@@ -47,11 +47,12 @@ func isLoopbackPeer(r *http.Request) bool {
 // CONNECT request line (r.Host) and captured in a closure so subsequent
 // Host-header rewrites by the client cannot redirect the tunnel.
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
-	// Gate before ParseProxyAuth + session lookup so a bad-auth flood
-	// can't burn CPU. Per-IP on the raw TCP peer, shared with the
-	// TierAuth budget. Loopback is exempt — see isLoopbackPeer.
+	// Read-only pre-gate: if this IP has exhausted its auth-failure
+	// budget, reject immediately. Only auth failures are recorded
+	// (below) so legitimate agents don't burn the budget. Loopback
+	// is exempt — see isLoopbackPeer.
 	if p.rateLimit != nil && !isLoopbackPeer(r) {
-		if d := p.rateLimit.Allow(ratelimit.TierAuth, mitmIPKey(r)); !d.Allow {
+		if d := p.rateLimit.Check(ratelimit.TierAuth, mitmIPKey(r)); !d.Allow {
 			ratelimit.WriteDenial(w, d, "Too many CONNECT attempts")
 			return
 		}
@@ -73,11 +74,13 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// connection is hijacked — once hijacked, no HTTP status can be sent.
 	token, hint, err := brokercore.ParseProxyAuth(r)
 	if err != nil {
+		p.recordAuthFailure(r)
 		writeProxyAuthChallenge(w, "Proxy-Authorization required")
 		return
 	}
 	scope, err := p.sessions.ResolveForProxy(r.Context(), token, hint)
 	if err != nil {
+		p.recordAuthFailure(r)
 		writeAuthError(w, err)
 		return
 	}
@@ -129,11 +132,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	listener := newOneShotListener(tlsConn)
 	srv := &http.Server{
 		Handler: p.forwardHandler(target, host, scope),
-		// Slow-loris defense: without these the tunnel can drip bytes
-		// forever and pin a proxy concurrency slot.
+		// ReadHeaderTimeout and ReadTimeout bound the request side
+		// (slow-loris defense). IdleTimeout caps keep-alives between
+		// requests. The upstream transport's ResponseHeaderTimeout
+		// (5 min) prevents stalled upstreams. WriteTimeout is 30 min
+		// to allow long-running streaming transfers (git clone, SSE).
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
-		WriteTimeout:      5 * time.Minute, // upstream streaming can be legit
+		WriteTimeout:      30 * time.Minute,
 		IdleTimeout:       2 * time.Minute,
 		ConnState: func(c net.Conn, state http.ConnState) {
 			// Either terminal state means Serve should return. The
@@ -145,6 +151,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	_ = srv.Serve(listener)
+}
+
+// recordAuthFailure records one auth-failure event against the per-IP
+// TierAuth budget so the read-only pre-gate in handleConnect /
+// handleForward will reject subsequent requests once the budget is
+// exhausted. Only called on auth failure — successful requests skip
+// TierAuth entirely (TierProxy covers them). Loopback peers are exempt.
+func (p *Proxy) recordAuthFailure(r *http.Request) {
+	if p.rateLimit != nil && !isLoopbackPeer(r) {
+		p.rateLimit.Allow(ratelimit.TierAuth, mitmIPKey(r))
+	}
 }
 
 // writeProxyAuthChallenge writes a 407 with a Proxy-Authenticate header so
@@ -162,7 +179,7 @@ func writeAuthError(w http.ResponseWriter, err error) {
 		writeProxyAuthChallenge(w, "invalid or expired session")
 	case errors.Is(err, brokercore.ErrAgentVaultAmbiguous),
 		errors.Is(err, brokercore.ErrNoVaultContext):
-		http.Error(w, "set vault via HTTPS_PROXY=https://<token>:<vault>@host:port", http.StatusBadRequest)
+		http.Error(w, "set vault via HTTPS_PROXY=http://<token>:<vault>@host:port", http.StatusBadRequest)
 	case errors.Is(err, brokercore.ErrVaultHintMismatch),
 		errors.Is(err, brokercore.ErrVaultAccessDenied):
 		http.Error(w, "forbidden", http.StatusForbidden)

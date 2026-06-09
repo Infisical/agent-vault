@@ -298,7 +298,7 @@ func TestForbiddenHintBody(t *testing.T) {
 	if !strings.Contains(help, "http://127.0.0.1:14321/discover") {
 		t.Fatalf("help missing discover URL: %s", help)
 	}
-	if !strings.Contains(help, "http://127.0.0.1:14321/v1/skills/http") {
+	if !strings.Contains(help, "http://127.0.0.1:14321/v1/skills/cli") {
 		t.Fatalf("help missing skills URL: %s", help)
 	}
 

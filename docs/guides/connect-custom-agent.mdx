@@ -60,7 +60,7 @@ When the agent is launched via `vault run`, these additional variables are also 
 | Variable | Purpose |
 |---|---|
 | `HTTPS_PROXY` | Routes HTTPS traffic through the transparent proxy (CONNECT) |
-| `HTTP_PROXY` | Same TLS-wrapped URL as `HTTPS_PROXY` — plain `http://` upstreams route through the same listener via absolute-form forward-proxy requests |
+| `HTTP_PROXY` | Same URL as `HTTPS_PROXY` — plain `http://` upstreams route through the same listener via absolute-form forward-proxy requests |
 | `NO_PROXY` | `localhost,127.0.0.1` — so agent-to-vault traffic skips the proxy |
 | `NODE_USE_ENV_PROXY` | Enables Node.js 22.21+ built-in proxy support |
 | `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT` | Trust the Agent Vault root CA from standard HTTP libraries |
@@ -118,14 +118,14 @@ Leave the upstream `Authorization` header blank or set it to a placeholder — A
 
 ### Set the proxy env vars manually
 
-If your agent wasn't launched via `vault run` (e.g. an agent created via `agent create`, a Docker container, a sandboxed runtime), configure the proxy yourself. The MITM listener is TLS-encrypted, so the proxy URL uses the `https://` scheme and needs the root CA trusted. Set `HTTPS_PROXY` and `HTTP_PROXY` to the same URL — the listener handles `CONNECT` (for `https://` upstreams) and absolute-form forward-proxy requests (for `http://` upstreams) on the same port.
+If your agent wasn't launched via `vault run` (e.g. an agent created via `agent create`, a Docker container, a sandboxed runtime), configure the proxy yourself. The MITM listener is plain HTTP — deploy on a trusted/private network. Set `HTTPS_PROXY` and `HTTP_PROXY` to the same URL — the listener handles `CONNECT` (for `https://` upstreams) and absolute-form forward-proxy requests (for `http://` upstreams) on the same port.
 
 ```bash
 # 1. Fetch the CA certificate
 agent-vault ca fetch -o /etc/ssl/certs/agent-vault-ca.pem
 
 # 2. Build the proxy URL (basic auth: token:vault)
-export HTTPS_PROXY="https://${AGENT_VAULT_TOKEN}:my-vault@127.0.0.1:14322"
+export HTTPS_PROXY="http://${AGENT_VAULT_TOKEN}:my-vault@127.0.0.1:14322"
 export HTTP_PROXY="$HTTPS_PROXY"
 export NO_PROXY="localhost,127.0.0.1"
 export NODE_USE_ENV_PROXY=1

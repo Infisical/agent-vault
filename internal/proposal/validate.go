@@ -143,6 +143,40 @@ func Validate(services []Service, credentials []CredentialSlot) error {
 			return fmt.Errorf("credential slot %q: obtain_instructions too long (max %d characters)", c.Key, MaxObtainInstructionsLen)
 		}
 
+		if c.Type != "" && c.Type != "static" && c.Type != "oauth" {
+			return fmt.Errorf("credential slot %q: unsupported type %q (supported: static, oauth)", c.Key, c.Type)
+		}
+		if c.Type == "oauth" {
+			if c.OAuth == nil {
+				return fmt.Errorf("credential slot %q: \"oauth\" config is required when type is \"oauth\"", c.Key)
+			}
+			if c.OAuth.TokenURL == "" {
+				return fmt.Errorf("credential slot %q: oauth.token_url is required", c.Key)
+			}
+			if c.OAuth.AuthorizationURL != "" {
+				u, err := url.Parse(c.OAuth.AuthorizationURL)
+				if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+					return fmt.Errorf("credential slot %q: oauth.authorization_url must be an https:// or http:// URL", c.Key)
+				}
+			}
+			{
+				u, err := url.Parse(c.OAuth.TokenURL)
+				if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+					return fmt.Errorf("credential slot %q: oauth.token_url must be an https:// or http:// URL", c.Key)
+				}
+			}
+			if c.Value != nil {
+				return fmt.Errorf("credential slot %q: \"value\" must not be set for oauth credentials (tokens are obtained via the connect flow)", c.Key)
+			}
+			if c.OAuth.TokenAuthMethod != "" {
+				switch c.OAuth.TokenAuthMethod {
+				case "client_secret_post", "client_secret_basic":
+				default:
+					return fmt.Errorf("credential slot %q: oauth.token_auth_method must be \"client_secret_post\" or \"client_secret_basic\"", c.Key)
+				}
+			}
+		}
+
 		// If services exist, set-action slots must be referenced by a service auth config.
 		// Credential-only proposals (no services) are allowed for storing credentials back.
 		if len(services) > 0 && c.Action == ActionSet && !refs[c.Key] {

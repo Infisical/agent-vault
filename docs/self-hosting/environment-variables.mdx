@@ -21,6 +21,8 @@ description: "Configuration for deploying an instance of Agent Vault."
 | `AGENT_VAULT_LOGS_MAX_AGE_HOURS` | Optional (defaults to `168`) | Maximum age, in hours, of rows retained in the per-vault request log. |
 | `AGENT_VAULT_LOGS_MAX_ROWS_PER_VAULT` | Optional (defaults to `10000`) | Maximum number of rows retained per vault in the request log. Set to `0` to disable the row cap. |
 | `AGENT_VAULT_LOGS_RETENTION_LOCK` | Optional (defaults to `false`) | Whether to ignore owner-UI overrides for log retention and pin to env values. |
+| `AGENT_VAULT_MAX_RESPONSE_BYTES` | Optional (defaults to `0` = unlimited) | Maximum response body bytes the MITM proxy streams back to agents. Responses are streamed with a small buffer so unlimited is safe. When set and exceeded, the proxy returns 502 or aborts the connection. Overridden by `--max-response-bytes`. |
+| `AGENT_VAULT_MAX_REQUEST_BYTES` | Optional (defaults to `1073741824` = 1 GiB) | Maximum request body bytes the MITM proxy forwards to upstreams. Requests exceeding this receive HTTP 413. Overridden by `--max-request-bytes`. |
 | `AGENT_VAULT_ISOLATION` | Optional (defaults to `host`) | Default isolation mode for `agent-vault vault run`. One of: `host`, `container` (see [Container isolation](/guides/container-isolation)). Overridden by `--isolation`. |
 
 ## Email SMTP configuration

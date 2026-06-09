@@ -64,7 +64,7 @@ export type ServiceAuth =
 // ---------------------------------------------------------------------------
 
 /** Surfaces where a substitution may be applied. */
-export type SubstitutionSurface = "path" | "query" | "header";
+export type SubstitutionSurface = "path" | "query" | "header" | "body" | "websocket";
 
 /** Replaces a placeholder in the request with a credential value before forwarding. */
 export interface Substitution {

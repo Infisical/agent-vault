@@ -16,9 +16,11 @@ import (
 	"github.com/Infisical/agent-vault/internal/broker"
 )
 
-// MaxResponseBytes caps response bodies streamed back to agents on the
-// MITM proxy ingress.
-const MaxResponseBytes = 100 << 20
+// DefaultMaxResponseBytes is the default cap for response bodies on the
+// MITM proxy ingress. 0 means unlimited — response bodies are streamed
+// with a small buffer so there is no OOM risk. Operators can set a cap
+// via --max-response-bytes / AGENT_VAULT_MAX_RESPONSE_BYTES.
+const DefaultMaxResponseBytes int64 = 0
 
 // ProxyErrorHeader is the response header Agent Vault sets on broker-layer
 // error responses so SDK clients can distinguish them from upstream
@@ -121,7 +123,7 @@ func ApplyInjection(src, dst http.Header, inject *InjectResult, extraStrip ...st
 // suffix appended to broker-layer error messages when baseURL is known.
 func helpLinks(baseURL string) string {
 	return fmt.Sprintf(
-		"To see available services, GET %s/discover. For usage instructions including how to create a proposal, GET %s/v1/skills/http",
+		"To see available services, GET %s/discover. For usage instructions including how to create a proposal, GET %s/v1/skills/cli",
 		baseURL, baseURL,
 	)
 }
@@ -199,6 +201,12 @@ func WriteInjectError(w http.ResponseWriter, err error, targetHost, vaultName, b
 	case errors.Is(err, ErrServiceDisabled):
 		writeProxyErrorWithHelp(w, http.StatusForbidden, "service_disabled",
 			fmt.Sprintf("Broker service matching host %q in vault %q is currently disabled", targetHost, vaultName), baseURL)
+	case errors.Is(err, ErrOAuthNotConnected):
+		writeProxyErrorWithHelp(w, http.StatusBadGateway, "oauth_not_connected",
+			"OAuth credential is approved but not yet connected — complete the connection in the Agent Vault dashboard", baseURL)
+	case errors.Is(err, ErrOAuthRefreshFailed):
+		writeProxyErrorWithHelp(w, http.StatusBadGateway, "oauth_refresh_failed",
+			"OAuth token expired and refresh failed — reconnect in the Agent Vault dashboard", baseURL)
 	case errors.Is(err, ErrCredentialMissing):
 		writeProxyErrorWithHelp(w, http.StatusBadGateway, "credential_not_found",
 			"A required credential could not be resolved; check vault configuration", baseURL)

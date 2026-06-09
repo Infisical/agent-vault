@@ -41,6 +41,8 @@ type ProxyEvent struct {
 	TotalMs        int64    // handler entry → emit, in milliseconds
 	Err            string   // short error code, or "" on success
 	Passthrough    bool     // see InjectResult.Passthrough
+	AuthScheme     string   // best-effort detected auth scheme: "bearer", "basic", "api-key", or ""
+	AuthHeader     string   // header name carrying auth (e.g. "Authorization", "X-API-KEY"), or ""
 }
 
 // Emit fills in the terminal fields (Status, Err, TotalMs measured from

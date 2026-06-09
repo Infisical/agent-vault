@@ -127,7 +127,7 @@ func setupProxy(t *testing.T, sr brokercore.SessionResolver, cp brokercore.Crede
 		_ = p.Shutdown(ctx)
 	})
 
-	proxyURL = &url.URL{Scheme: "https", Host: l.Addr().String()}
+	proxyURL = &url.URL{Scheme: "http", Host: l.Addr().String()}
 	return proxyURL, clientRoots, p
 }
 
@@ -1053,10 +1053,7 @@ func TestMITMBearerForwardsArbitraryClientHeaders(t *testing.T) {
 
 func openMITMTunnel(t *testing.T, proxyURL *url.URL, roots *x509.CertPool, target, token string) net.Conn {
 	t.Helper()
-	conn, err := tls.Dial("tcp", proxyURL.Host, &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		RootCAs:    roots,
-	})
+	conn, err := net.Dial("tcp", proxyURL.Host)
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
@@ -1152,12 +1149,12 @@ func readWebSocketTextFrame(r io.Reader) (string, error) {
 	return string(payload), nil
 }
 
-// rawConnect dials the proxy over TLS, sends a CONNECT request with the
+// rawConnect dials the proxy over plain TCP, sends a CONNECT request with the
 // given extra headers (e.g. Proxy-Authorization), and returns the response.
 // Callers assert on the returned status code and body.
 func rawConnect(t *testing.T, proxyURL *url.URL, roots *x509.CertPool, extraHeaders string) *http.Response {
 	t.Helper()
-	conn, err := tls.Dial("tcp", proxyURL.Host, &tls.Config{RootCAs: roots})
+	conn, err := net.Dial("tcp", proxyURL.Host)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -1212,7 +1209,7 @@ func TestMITMAmbiguousAgentVault(t *testing.T) {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "HTTPS_PROXY=https://<token>:<vault>@") {
+	if !strings.Contains(string(body), "HTTPS_PROXY=http://<token>:<vault>@") {
 		t.Fatalf("body = %q, missing vault-hint message", body)
 	}
 }
@@ -1520,6 +1517,104 @@ func TestMITMSubstitutionRewritesQueryAndHeader(t *testing.T) {
 	}
 }
 
+// overrideRemoteAddr wraps the proxy's HTTP handler to set RemoteAddr to
+// a non-loopback IP so rate-limit tests exercise the non-exempt path.
+// Must be called after setupProxy but before any requests are made.
+func overrideRemoteAddr(p *Proxy, addr string) {
+	orig := p.httpServer.Handler
+	p.httpServer.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.RemoteAddr = addr
+		orig.ServeHTTP(w, r)
+	})
+}
+
+func TestMITMConnectAuthRateLimitSkipsSuccessfulAuth(t *testing.T) {
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{}
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+
+	cfg := ratelimit.DefaultsFor(ratelimit.ProfileDefault)
+	cfg.Tiers[ratelimit.TierAuth].Max = 3
+	p.rateLimit = ratelimit.New(cfg)
+	overrideRemoteAddr(p, "10.0.0.5:12345")
+
+	// Send more CONNECT requests than the TierAuth budget (3). All should
+	// succeed because successful auth doesn't consume the budget.
+	auth := base64.StdEncoding.EncodeToString([]byte("av_sess_ok:"))
+	for i := 0; i < 10; i++ {
+		resp := rawConnect(t, proxyURL, clientRoots,
+			fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth))
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			t.Fatalf("CONNECT %d got 429; successful auth should not consume TierAuth budget", i+1)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("CONNECT %d got %d, want 200", i+1, resp.StatusCode)
+		}
+	}
+}
+
+func TestMITMConnectAuthRateLimitCountsFailures(t *testing.T) {
+	sr := validTokenResolver("good-token", nil)
+	cp := &fakeCredProvider{}
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+
+	cfg := ratelimit.DefaultsFor(ratelimit.ProfileDefault)
+	cfg.Tiers[ratelimit.TierAuth].Max = 3
+	p.rateLimit = ratelimit.New(cfg)
+	overrideRemoteAddr(p, "10.0.0.5:12345")
+
+	// 3 requests with bad auth should exhaust the budget.
+	auth := base64.StdEncoding.EncodeToString([]byte("bad-token:"))
+	for i := 0; i < 3; i++ {
+		resp := rawConnect(t, proxyURL, clientRoots,
+			fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth))
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			t.Fatalf("CONNECT %d got 429 before budget should be exhausted", i+1)
+		}
+	}
+
+	// 4th bad-auth request should be 429'd by the pre-gate.
+	resp := rawConnect(t, proxyURL, clientRoots,
+		fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("CONNECT 4 got %d, want 429 after budget exhausted", resp.StatusCode)
+	}
+}
+
+func TestMITMConnectAuthRateLimitCountsMissingAuth(t *testing.T) {
+	sr := errResolver(brokercore.ErrInvalidSession)
+	cp := &fakeCredProvider{}
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+
+	cfg := ratelimit.DefaultsFor(ratelimit.ProfileDefault)
+	cfg.Tiers[ratelimit.TierAuth].Max = 3
+	p.rateLimit = ratelimit.New(cfg)
+	overrideRemoteAddr(p, "10.0.0.5:12345")
+
+	// Requests with no Proxy-Authorization header should consume budget.
+	for i := 0; i < 3; i++ {
+		resp := rawConnect(t, proxyURL, clientRoots, "")
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			t.Fatalf("CONNECT %d got 429 before budget should be exhausted", i+1)
+		}
+		if resp.StatusCode != http.StatusProxyAuthRequired {
+			t.Fatalf("CONNECT %d got %d, want 407", i+1, resp.StatusCode)
+		}
+	}
+
+	// 4th should be 429.
+	resp := rawConnect(t, proxyURL, clientRoots, "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("CONNECT 4 got %d, want 429", resp.StatusCode)
+	}
+}
+
 func TestIsValidHost(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -1542,5 +1637,262 @@ func TestIsValidHost(t *testing.T) {
 		if got := isValidHost(c.in); got != c.want {
 			t.Errorf("isValidHost(%q) = %v, want %v", c.in, got, c.want)
 		}
+	}
+}
+
+// --- Response / request body size limit tests ---
+
+func TestResponseLimitRejectsKnownOversizeWith502(t *testing.T) {
+	body := strings.Repeat("X", 2048)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	sr := validTokenResolver("tok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp, func(o *Options) {
+		o.MaxResponseBytes = 1024
+	})
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+
+	resp, err := newTrustingClient(proxyURL, url.User("tok"), clientRoots).Get(upstream.URL + "/big")
+	if err != nil {
+		t.Fatalf("client.Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	if resp.Header.Get(brokercore.ProxyErrorHeader) != "true" {
+		t.Fatal("missing X-Agent-Vault-Proxy-Error header")
+	}
+	var errBody map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if errBody["error"] != "response_too_large" {
+		t.Fatalf("error code = %q, want response_too_large", errBody["error"])
+	}
+}
+
+func TestResponseLimitAbortsChunkedMidStream(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f, _ := w.(http.Flusher)
+		for i := 0; i < 20; i++ {
+			_, _ = w.Write(make([]byte, 128))
+			if f != nil {
+				f.Flush()
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	sr := validTokenResolver("tok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp, func(o *Options) {
+		o.MaxResponseBytes = 1024
+	})
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+
+	resp, err := newTrustingClient(proxyURL, url.User("tok"), clientRoots).Get(upstream.URL + "/chunked")
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if len(data) >= 2560 {
+		t.Fatalf("got %d bytes, expected incomplete response (limit 1024)", len(data))
+	}
+}
+
+func TestResponseExactFitNoAbort(t *testing.T) {
+	body := strings.Repeat("X", 1024)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, body)
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	sr := validTokenResolver("tok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp, func(o *Options) {
+		o.MaxResponseBytes = 1024
+	})
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+
+	resp, err := newTrustingClient(proxyURL, url.User("tok"), clientRoots).Get(upstream.URL + "/exact")
+	if err != nil {
+		t.Fatalf("client.Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	if string(data) != body {
+		t.Fatalf("got %d bytes, want %d", len(data), len(body))
+	}
+}
+
+func TestResponseUnlimitedByDefault(t *testing.T) {
+	body := strings.Repeat("X", 8192)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, body)
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	sr := validTokenResolver("tok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+
+	resp, err := newTrustingClient(proxyURL, url.User("tok"), clientRoots).Get(upstream.URL + "/large")
+	if err != nil {
+		t.Fatalf("client.Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	if len(data) != len(body) {
+		t.Fatalf("got %d bytes, want %d", len(data), len(body))
+	}
+}
+
+func TestRequestBodyCapConfigurable(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	sr := validTokenResolver("tok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp, func(o *Options) {
+		o.MaxRequestBytes = 512
+	})
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+
+	resp, err := newTrustingClient(proxyURL, url.User("tok"), clientRoots).Post(
+		upstream.URL+"/upload", "application/octet-stream",
+		strings.NewReader(strings.Repeat("X", 1024)))
+	if err != nil {
+		t.Fatalf("client.Post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", resp.StatusCode)
+	}
+}
+
+func TestDefaultMaxRequestBytesZeroMeansDefault(t *testing.T) {
+	p := New("127.0.0.1:0", Options{
+		Logger: slog.New(slog.DiscardHandler),
+	})
+	if p.maxRequestBytes != brokercore.DefaultMaxRequestBytes {
+		t.Fatalf("maxRequestBytes = %d, want %d", p.maxRequestBytes, brokercore.DefaultMaxRequestBytes)
+	}
+	if p.maxResponseBytes != 0 {
+		t.Fatalf("maxResponseBytes = %d, want 0 (unlimited)", p.maxResponseBytes)
+	}
+}
+
+func TestMITMForwardStreamsChunksPromptly(t *testing.T) {
+	const chunkCount = 5
+	const chunkDelay = 80 * time.Millisecond
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "no flusher", 500)
+			return
+		}
+		for i := 0; i < chunkCount; i++ {
+			_, _ = fmt.Fprintf(w, "chunk-%d\n", i)
+			f.Flush()
+			if i < chunkCount-1 {
+				time.Sleep(chunkDelay)
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	sr := validTokenResolver("tok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upstreamHost: {result: &brokercore.InjectResult{}},
+	}}
+
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+
+	resp, err := newTrustingClient(proxyURL, url.User("tok"), clientRoots).Get(upstream.URL + "/stream")
+	if err != nil {
+		t.Fatalf("client.Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var arrivals []time.Time
+	buf := make([]byte, 256)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			arrivals = append(arrivals, time.Now())
+		}
+		if readErr != nil {
+			break
+		}
+	}
+
+	if len(arrivals) < 3 {
+		t.Fatalf("got %d reads, want ≥3 (chunks should arrive incrementally)", len(arrivals))
+	}
+	var hasGap bool
+	for i := 1; i < len(arrivals); i++ {
+		if arrivals[i].Sub(arrivals[i-1]) >= chunkDelay/2 {
+			hasGap = true
+			break
+		}
+	}
+	if !hasGap {
+		t.Fatal("no inter-chunk gap ≥40ms detected; proxy is buffering instead of flushing per-chunk")
 	}
 }

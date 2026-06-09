@@ -41,7 +41,7 @@ First run takes ~60s while the isolation image builds. Subsequent runs reuse the
 |------|---------|-------------|
 | `--isolation` | `host` | `host` (default) or `container`. Also read from `AGENT_VAULT_ISOLATION`. |
 | `--image` | | Override the bundled image. Use for your own base (different agent, pinned versions). |
-| `--mount` | | Extra bind mount `src:dst[:ro]`; repeatable. Host paths are symlink-resolved before validation; binds into `~/.agent-vault/` or `/var/run/docker.sock` are rejected. |
+| `--mount` | | Extra bind mount `src:dst[:ro]`; repeatable. Host paths are symlink-resolved before validation; binds into, containing, or pointing at `~/.agent-vault/` or `/var/run/docker.sock` are rejected. |
 | `--keep` | `false` | Omit `--rm` so the container is available for `docker inspect` / `docker logs` after exit. |
 | `--no-firewall` | `false` | **Debug only.** Skip `init-firewall.sh`; container has unrestricted egress. Prints a loud warning. |
 | `--home-volume-shared` | `false` | Share `/home/claude/.claude` across invocations via a persistent docker volume. Default is per-invocation (auth doesn't persist, but concurrent runs can't corrupt each other). |

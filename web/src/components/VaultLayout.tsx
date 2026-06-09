@@ -20,6 +20,7 @@ export default function VaultLayout() {
   const [isExiting, setIsExiting] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
   const [pendingCount, setPendingCount] = useState(0);
+  const [discoveredCount, setDiscoveredCount] = useState(0);
 
   // The Members section (Users / Agents / Tokens) is only meaningful at
   // vault `member` or higher: a `proxy`-role caller can only proxy
@@ -47,6 +48,26 @@ export default function VaultLayout() {
     return () => clearInterval(interval);
   }, [vaultContext.vault_name]);
 
+  useEffect(() => {
+    if (vaultContext.vault_role === "proxy") return;
+    async function fetchDiscoveredCount() {
+      try {
+        const resp = await fetch(
+          `/v1/vaults/${encodeURIComponent(vaultContext.vault_name)}/discovered-hosts?limit=0`
+        );
+        if (resp.ok) {
+          const data = await resp.json();
+          setDiscoveredCount(data.total ?? 0);
+        }
+      } catch {
+        // ignore
+      }
+    }
+    fetchDiscoveredCount();
+    const interval = setInterval(fetchDiscoveredCount, 30_000);
+    return () => clearInterval(interval);
+  }, [vaultContext.vault_name, vaultContext.vault_role]);
+
   // Derive active tab from current URL path
   const pathSegments = location.pathname.split("/");
   const lastSegment = pathSegments[pathSegments.length - 1] as VaultTab;
@@ -58,6 +79,7 @@ export default function VaultLayout() {
     {
       id: "services",
       label: "Services",
+      badge: discoveredCount > 0 ? discoveredCount : undefined,
       icon: (
         <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
