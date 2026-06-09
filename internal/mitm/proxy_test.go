@@ -58,6 +58,9 @@ func errResolver(err error) *fakeSessionResolver {
 type fakeCredProvider struct {
 	// byHost maps target host (without port) to the injection outcome.
 	byHost map[string]fakeInjectResult
+	// byHostPort maps "host:port" to the injection outcome. Checked
+	// before byHost so port-specific entries take precedence.
+	byHostPort map[string]fakeInjectResult
 }
 
 type fakeInjectResult struct {
@@ -65,11 +68,16 @@ type fakeInjectResult struct {
 	err    error
 }
 
-func (f *fakeCredProvider) Inject(_ context.Context, _, targetHost, _ string) (*brokercore.InjectResult, error) {
-	// Mirror StoreCredentialProvider: accept host:port and strip internally.
+func (f *fakeCredProvider) Inject(_ context.Context, _, targetHost string, targetPort int, _ string) (*brokercore.InjectResult, error) {
 	host := targetHost
 	if h, _, err := net.SplitHostPort(targetHost); err == nil {
 		host = h
+	}
+	if f.byHostPort != nil && targetPort > 0 {
+		key := net.JoinHostPort(host, fmt.Sprintf("%d", targetPort))
+		if res, ok := f.byHostPort[key]; ok {
+			return res.result, res.err
+		}
 	}
 	res, ok := f.byHost[host]
 	if !ok {

@@ -490,7 +490,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--vault` | `default` | Target vault |
     | `-f` | | Path to a YAML services file (upsert mode) |
     | `--name` | | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required for new services. May be omitted when `--host` uniquely matches an existing service — the server adopts that service's name (same pattern as `service remove` by host). |
-    | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). The server splits the path off the host on ingest. |
+    | `--host` | | Target host with optional port and path glob (e.g. `api.stripe.com`, `internal.corp.com:3000`, `slack.com/api/*`). When a port is included, the service matches only traffic to that port. The server splits the host, port, and path on ingest. |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, `custom`, `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
     | `--username-key` | | Credential key for basic auth username |
@@ -653,7 +653,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--vault` | `default` | Target vault |
     | `-f`, `--file` | | Path to JSON proposal file (use `-` for stdin) |
     | `--name` | | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required for new services. May be omitted when `--host` uniquely matches an existing service — the server adopts that service's name (same pattern as host-based delete). |
-    | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). |
+    | `--host` | | Target host with optional port and path glob (e.g. `api.stripe.com`, `internal.corp.com:3000`, `slack.com/api/*`). When a port is included, the service matches only traffic to that port. |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, or `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
     | `--username-key` | | Credential key for basic auth username |

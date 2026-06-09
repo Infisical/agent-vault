@@ -152,7 +152,9 @@ func fetchServices(client *session.ClientSession, nsName string) ([]broker.Servi
 	// broker.Validate (e.g. when the user appends in the interactive
 	// builder).
 	for i := range services {
-		services[i].Host, services[i].Path = broker.SplitInlineHost(services[i].Host, services[i].Path)
+		if err := broker.NormalizePort(&services[i]); err != nil {
+			return nil, fmt.Errorf("service %d: %w", i, err)
+		}
 	}
 	return services, nil
 }
@@ -277,11 +279,12 @@ func buildService(client *session.ClientSession, nsName string, cmd *cobra.Comma
 		return nil, err
 	}
 
-	bareHost, path := broker.SplitInlineHost(host, "")
+	bareHost, path, port := broker.SplitInlineHost(host, "")
 	return &broker.Service{
 		Name: name,
 		Host: bareHost,
 		Path: path,
+		Port: port,
 		Auth: auth,
 	}, nil
 }

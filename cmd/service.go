@@ -192,9 +192,9 @@ File mode (upsert, not replace-all):
 
 			name, _ := cmd.Flags().GetString("name")
 
-			host, path := broker.SplitInlineHost(host, "")
+			host, path, port := broker.SplitInlineHost(host, "")
 
-			svc := broker.Service{Name: name, Host: host, Path: path, Auth: *auth}
+			svc := broker.Service{Name: name, Host: host, Path: path, Port: port, Auth: *auth}
 			if disabled, _ := cmd.Flags().GetBool("disabled"); disabled {
 				f := false
 				svc.Enabled = &f
@@ -377,7 +377,9 @@ func loadServicesFromFile(filePath, vault string) ([]broker.Service, error) {
 	}
 	cfg.Vault = vault
 	for i := range cfg.Services {
-		cfg.Services[i].Host, cfg.Services[i].Path = broker.SplitInlineHost(cfg.Services[i].Host, cfg.Services[i].Path)
+		if err := broker.NormalizePort(&cfg.Services[i]); err != nil {
+			return nil, fmt.Errorf("service %d: %w", i, err)
+		}
 	}
 	return cfg.Services, nil
 }
@@ -402,7 +404,7 @@ func init() {
 	// service add flags
 	serviceAddCmd.Flags().StringP("file", "f", "", "Path to services YAML file (upsert mode)")
 	serviceAddCmd.Flags().String("name", "", "Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required for new services; may be omitted when --host uniquely matches an existing service (the server adopts that name).")
-	serviceAddCmd.Flags().String("host", "", "Target service host. Accepts api.stripe.com, *.github.com, or inline path form like slack.com/api/*.")
+	serviceAddCmd.Flags().String("host", "", "Target host with optional port and path glob (e.g. api.stripe.com, internal.corp.com:3000, slack.com/api/*)")
 	serviceAddCmd.Flags().String("auth-type", "", "Auth type: bearer, basic, api-key, custom, passthrough")
 	serviceAddCmd.Flags().String("token-key", "", "Credential key for bearer auth")
 	serviceAddCmd.Flags().String("username-key", "", "Credential key for basic auth username")

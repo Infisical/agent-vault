@@ -86,6 +86,7 @@ func toBrokerService(p Service) broker.Service {
 		Name:    p.Name,
 		Host:    p.Host,
 		Path:    p.Path,
+		Port:    p.Port,
 		Enabled: p.Enabled,
 	}
 	if p.Auth != nil {

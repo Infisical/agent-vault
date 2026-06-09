@@ -2,6 +2,8 @@ package proposal
 
 import (
 	"encoding/json"
+	"net"
+	"strconv"
 
 	"github.com/Infisical/agent-vault/internal/broker"
 )
@@ -44,6 +46,7 @@ type Service struct {
 	Name          string                `json:"name,omitempty"`
 	Host          string                `json:"host"`
 	Path          string                `json:"path,omitempty"`
+	Port          *int                  `json:"-"`
 	Enabled       *bool                 `json:"enabled,omitempty"`
 	Auth          *broker.Auth          `json:"auth,omitempty"`
 	Substitutions []broker.Substitution `json:"substitutions,omitempty"`
@@ -52,10 +55,14 @@ type Service struct {
 // MatcherPattern returns the joined inline form (`slack.com/api/*`),
 // or just Host when Path is empty. Mirrors broker.Service.MatcherPattern.
 func (s Service) MatcherPattern() string {
-	if s.Path == "" {
-		return s.Host
+	host := s.Host
+	if s.Port != nil {
+		host = net.JoinHostPort(s.Host, strconv.Itoa(*s.Port))
 	}
-	return s.Host + s.Path
+	if s.Path == "" {
+		return host
+	}
+	return host + s.Path
 }
 
 func (s Service) MarshalJSON() ([]byte, error) {
@@ -63,6 +70,7 @@ func (s Service) MarshalJSON() ([]byte, error) {
 	a := alias(s)
 	a.Host = s.MatcherPattern()
 	a.Path = ""
+	a.Port = nil
 	return json.Marshal(a)
 }
 

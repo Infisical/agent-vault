@@ -37,7 +37,7 @@ const deprecatedDescriptionMsg = "description is no longer supported; rename via
 func splitInlineHosts(in []broker.Service) []broker.Service {
 	out := make([]broker.Service, len(in))
 	for i, svc := range in {
-		svc.Host, svc.Path = broker.SplitInlineHost(svc.Host, svc.Path)
+		svc.Host, svc.Path, svc.Port = broker.SplitInlineHost(svc.Host, svc.Path)
 		out[i] = svc
 	}
 	return out
@@ -97,7 +97,11 @@ func writeNormalizeError(w http.ResponseWriter, err error, notFoundStatus, defau
 // silently rewritten. Empty Names without a unique host match are
 // left empty so downstream validation surfaces "name is required".
 func adoptByHost(services []broker.Service, existing []broker.Service, rebindStale bool) {
-	type hp struct{ host, path string }
+	type hp struct {
+		host string
+		path string
+		port int
+	}
 	hpCount := make(map[hp]int, len(existing))
 	hpName := make(map[hp]string, len(existing))
 	var nameSet map[string]bool
@@ -108,7 +112,7 @@ func adoptByHost(services []broker.Service, existing []broker.Service, rebindSta
 		if nameSet != nil {
 			nameSet[e.Name] = true
 		}
-		k := hp{e.Host, e.Path}
+		k := hp{e.Host, e.Path, broker.PortVal(e.Port)}
 		hpCount[k]++
 		if hpCount[k] == 1 {
 			hpName[k] = e.Name
@@ -121,7 +125,7 @@ func adoptByHost(services []broker.Service, existing []broker.Service, rebindSta
 				continue
 			}
 		}
-		k := hp{svc.Host, svc.Path}
+		k := hp{svc.Host, svc.Path, broker.PortVal(svc.Port)}
 		if hpCount[k] == 1 {
 			svc.Name = hpName[k]
 		}
@@ -141,7 +145,7 @@ func normalizeProposalServices(in []proposal.Service, existing []broker.Service)
 	out := make([]proposal.Service, len(in))
 
 	for i, svc := range in {
-		svc.Host, svc.Path = broker.SplitInlineHost(svc.Host, svc.Path)
+		svc.Host, svc.Path, svc.Port = broker.SplitInlineHost(svc.Host, svc.Path)
 		if svc.Action == proposal.ActionDelete && svc.Name == "" {
 			var matches []broker.Service
 			for _, e := range existing {
@@ -152,6 +156,9 @@ func normalizeProposalServices(in []proposal.Service, existing []broker.Service)
 				// empty Path stays a host-level delete that intentionally
 				// surfaces multi-service ambiguity.
 				if svc.Path != "" && e.Path != svc.Path {
+					continue
+				}
+				if svc.Port != nil && (e.Port == nil || *e.Port != *svc.Port) {
 					continue
 				}
 				matches = append(matches, e)
@@ -177,7 +184,7 @@ func normalizeProposalServices(in []proposal.Service, existing []broker.Service)
 	if len(setIdx) > 0 {
 		view := make([]broker.Service, len(setIdx))
 		for j, i := range setIdx {
-			view[j] = broker.Service{Name: out[i].Name, Host: out[i].Host, Path: out[i].Path}
+			view[j] = broker.Service{Name: out[i].Name, Host: out[i].Host, Path: out[i].Path, Port: out[i].Port}
 		}
 		adoptByHost(view, existing, true)
 		for j, i := range setIdx {
@@ -204,7 +211,7 @@ func (s *Server) loadServices(ctx context.Context, vaultID string) ([]broker.Ser
 		return nil, err
 	}
 	for i := range services {
-		services[i].Host, services[i].Path = broker.SplitInlineHost(services[i].Host, services[i].Path)
+		services[i].Host, services[i].Path, services[i].Port = broker.SplitInlineHost(services[i].Host, services[i].Path)
 	}
 	broker.AssignSlugNames(services)
 	return services, nil

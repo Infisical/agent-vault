@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
@@ -59,11 +60,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	target := r.Host
-	host, _, err := net.SplitHostPort(target)
+	host, portStr, err := net.SplitHostPort(target)
 	if err != nil {
 		http.Error(w, "CONNECT target must be host:port", http.StatusBadRequest)
 		return
 	}
+	port, _ := strconv.Atoi(portStr)
 	if !isValidHost(host) {
 		http.Error(w, "invalid host", http.StatusBadRequest)
 		return
@@ -131,7 +133,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// closes the listener so Serve returns.
 	listener := newOneShotListener(tlsConn)
 	srv := &http.Server{
-		Handler: p.forwardHandler(target, host, scope),
+		Handler: p.forwardHandler(target, host, port, scope),
 		// ReadHeaderTimeout and ReadTimeout bound the request side
 		// (slow-loris defense). IdleTimeout caps keep-alives between
 		// requests. The upstream transport's ResponseHeaderTimeout

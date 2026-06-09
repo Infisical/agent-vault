@@ -689,11 +689,11 @@ function ServiceModal({
           </FormField>
           <FormField
             label="Host Pattern"
-            tooltip="Host with optional path glob. * is a subdomain label in the host (*.github.com) and a greedy glob in the path (/api/*). Examples: api.stripe.com, *.atlassian.net, slack.com/api/*."
+            tooltip="Host with optional port and path glob. Omit port to match any port. * is a subdomain label in the host (*.github.com) and a greedy glob in the path (/api/*). Examples: api.stripe.com, internal.corp.com:3000, slack.com/api/*, internal.corp.com:8080/api/*."
             required
           >
             <Input
-              placeholder="e.g. api.stripe.com or slack.com/api/*"
+              placeholder="e.g. api.stripe.com, internal.corp.com:3000, or slack.com/api/*"
               value={pattern}
               onChange={(e) => setPattern(e.target.value)}
             />
