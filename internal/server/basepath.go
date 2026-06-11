@@ -24,8 +24,16 @@ func NormalizeBasePath(p string) (string, error) {
 		p = "/" + p
 	}
 	p = strings.TrimRight(p, "/")
-	if strings.ContainsAny(p, " ?#") {
-		return "", fmt.Errorf("invalid UI base path %q: must not contain spaces, '?' or '#'", p)
+	// Allowlist: the value is spliced into an HTML attribute by
+	// injectBasePath and into cookie paths / redirect targets, so reject
+	// anything beyond unreserved URL characters and the segment separator.
+	for _, r := range p {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '/' || r == '-' || r == '_' || r == '.' || r == '~':
+		default:
+			return "", fmt.Errorf("invalid UI base path %q: only letters, digits, '/', '-', '_', '.', '~' are allowed", p)
+		}
 	}
 	for _, seg := range strings.Split(p[1:], "/") {
 		if seg == "" || seg == "." || seg == ".." {

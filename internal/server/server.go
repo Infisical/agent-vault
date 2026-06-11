@@ -690,6 +690,10 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	rlCfg, _ := ratelimit.LoadFromEnv()
 	rl := ratelimit.New(rlCfg)
 
+	// Append the prefix to the externally-reachable base URL unless the
+	// operator already included it in AGENT_VAULT_ADDR. uiBasePath starts
+	// with "/" (NormalizeBasePath), so the suffix check can only match at
+	// a path-segment boundary of the trimmed URL.
 	baseURL = strings.TrimRight(baseURL, "/")
 	if uiBasePath != "" && !strings.HasSuffix(baseURL, uiBasePath) {
 		baseURL += uiBasePath

@@ -43,7 +43,10 @@ func TestNormalizeBasePath(t *testing.T) {
 		}
 	}
 
-	invalid := []string{"//vault", "/vault//x", "/va ult", "/vault?x", "/vault#x", "/./vault", "/../vault"}
+	invalid := []string{
+		"//vault", "/vault//x", "/./vault", "/../vault",
+		"/va ult", "/vault?x", "/vault#x", `/va"ult`, "/va<ult", "/vault%20x", "/vault'x",
+	}
 	for _, in := range invalid {
 		if got, err := NormalizeBasePath(in); err == nil {
 			t.Errorf("NormalizeBasePath(%q) = %q, want error", in, got)
