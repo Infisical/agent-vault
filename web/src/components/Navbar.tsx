@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
+import { apiFetch } from "../lib/api";
 
 interface NavbarProps {
   email?: string;
@@ -77,7 +78,7 @@ function UserMenu({ email, isOwner }: { email: string; isOwner?: boolean }) {
   }, []);
 
   async function handleLogout() {
-    await fetch("/v1/auth/logout", { method: "POST" });
+    await apiFetch("/v1/auth/logout", { method: "POST" });
     navigate({ to: "/login" });
   }
 

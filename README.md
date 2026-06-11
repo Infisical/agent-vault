@@ -176,6 +176,7 @@ Step-by-step companion guide: [Run Hermes on a VPS](https://docs.agent-vault.dev
 
 - You should deploy Agent Vault as a separate service on a different host machine from your AI agents to prevent agents from exploiting a shared host to gain access to Agent Vault.
 - You should keep the proxy port (14322 by default), where credentials get injected into outbound requests, private to your agents' network. The management interface on 14321 is safer to expose if you need remote admin, but still harden it like any production web service (TLS, IP allowlist). Refer to [examples/nginx-public-ui-proxy/](examples/nginx-public-ui-proxy/) for a working example.
+- To share a domain with other services, start the server with `--ui-base-path /vault` (env `AGENT_VAULT_UI_BASE_PATH`) and the UI and API are served under that prefix — the reverse proxy just passes the path through, no rewriting. See [Serving under a path prefix](https://docs.agent-vault.dev/self-hosting/path-prefix).
 
 2. Latency: You should co-locate Agent Vault alongside your AI agents within the same network to reduce request latency.
 

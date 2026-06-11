@@ -9,7 +9,10 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
-  base: "/",
+  // Relative asset URLs so one build works at any mount path. index.html
+  // carries <base href="/" /> which the Go server rewrites at serve time
+  // when --ui-base-path is set; hashed assets are never rewritten.
+  base: "./",
   build: {
     outDir: "../internal/server/webdist",
     emptyOutDir: true,
