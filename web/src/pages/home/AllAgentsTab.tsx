@@ -31,18 +31,20 @@ interface VaultOption {
 function RowActions({
   agent,
   isOwner,
+  onRotate,
   onRevoke,
+  onDelete,
   onDone,
   onError,
 }: {
   agent: AgentRow;
   isOwner: boolean;
+  onRotate: (agent: AgentRow) => void;
   onRevoke: (agent: AgentRow) => void;
+  onDelete: (agent: AgentRow) => void;
   onDone: () => void;
   onError: (msg: string) => void;
 }) {
-  if (agent.status === "revoked") return null;
-
   async function setRoleTo(newRole: InstanceRole) {
     const resp = await apiFetch(
       `/v1/agents/${encodeURIComponent(agent.name)}/role`,
@@ -58,7 +60,9 @@ function RowActions({
 
   const items: { label: string; onClick: () => void; variant?: "danger" }[] = [];
 
-  if (isOwner) {
+  items.push({ label: "Rotate token", onClick: () => onRotate(agent) });
+
+  if (isOwner && agent.status === "active") {
     for (const opt of INSTANCE_ROLE_OPTIONS) {
       if (opt.role === agent.role) continue;
       items.push({
@@ -68,7 +72,10 @@ function RowActions({
     }
   }
 
-  items.push({ label: "Revoke agent", onClick: () => onRevoke(agent), variant: "danger" });
+  if (agent.status === "active") {
+    items.push({ label: "Revoke agent", onClick: () => onRevoke(agent), variant: "danger" });
+  }
+  items.push({ label: "Delete agent", onClick: () => onDelete(agent), variant: "danger" });
 
   return (
     <DropdownMenu
@@ -83,7 +90,12 @@ export default function AllAgentsTab() {
   const [rows, setRows] = useState<AgentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [rotateTarget, setRotateTarget] = useState<AgentRow | null>(null);
+  const [rotatedToken, setRotatedToken] = useState<string | null>(null);
+  const [rotateError, setRotateError] = useState("");
+  const [rotating, setRotating] = useState(false);
   const [revokeTarget, setRevokeTarget] = useState<AgentRow | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<AgentRow | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -172,7 +184,7 @@ export default function AllAgentsTab() {
         header: "",
         align: "right" as const,
         render: (agent: AgentRow) => (
-          <RowActions agent={agent} isOwner={auth.is_owner} onRevoke={setRevokeTarget} onDone={fetchData} onError={setError} />
+          <RowActions agent={agent} isOwner={auth.is_owner} onRotate={setRotateTarget} onRevoke={setRevokeTarget} onDelete={setDeleteTarget} onDone={fetchData} onError={setError} />
         ),
       },
     ];
@@ -207,6 +219,72 @@ export default function AllAgentsTab() {
         />
       )}
 
+      <Modal
+        open={rotateTarget !== null}
+        onClose={() => { setRotateTarget(null); setRotatedToken(null); setRotateError(""); }}
+        title={rotatedToken ? "Token Rotated" : "Rotate Token"}
+        description={rotatedToken
+          ? `The agent "${rotateTarget?.name}" has a new token. The previous token is now invalid.`
+          : `This will invalidate the current token for "${rotateTarget?.name}" and generate a new one.${rotateTarget?.status === "revoked" ? " The agent will also be reactivated." : ""}`}
+        footer={
+          rotatedToken ? (
+            <Button onClick={() => { setRotateTarget(null); setRotatedToken(null); setRotateError(""); }}>Done</Button>
+          ) : (
+            <>
+              <Button variant="secondary" onClick={() => { setRotateTarget(null); setRotateError(""); }}>Cancel</Button>
+              <Button
+                loading={rotating}
+                onClick={async () => {
+                  if (!rotateTarget) return;
+                  setRotating(true);
+                  setRotateError("");
+                  try {
+                    const resp = await apiFetch(
+                      `/v1/agents/${encodeURIComponent(rotateTarget.name)}/rotate`,
+                      { method: "POST" }
+                    );
+                    const data = await resp.json().catch(() => ({}));
+                    if (!resp.ok) {
+                      setRotateError(data.error || "Failed to rotate token");
+                      return;
+                    }
+                    setRotatedToken(data.av_agent_token);
+                    fetchData();
+                  } catch {
+                    setRotateError("Network error.");
+                  } finally {
+                    setRotating(false);
+                  }
+                }}
+              >
+                Rotate
+              </Button>
+            </>
+          )
+        }
+      >
+        {rotatedToken ? (
+          <div className="space-y-3">
+            <FormField label="New agent token">
+              <div className="relative">
+                <pre className="pl-4 pr-20 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono overflow-x-auto whitespace-pre">{rotatedToken}</pre>
+                <CopyButton
+                  value={rotatedToken}
+                  className="absolute top-2 right-2 px-3 py-1.5 bg-primary text-primary-text rounded-md text-xs font-semibold hover:bg-primary-hover transition-colors"
+                />
+              </div>
+            </FormField>
+            <p className="text-xs text-text-muted">
+              Update <code className="text-text-muted">AGENT_VAULT_TOKEN</code> wherever the agent runs. This token will not be shown again.
+            </p>
+          </div>
+        ) : (
+          <>
+            {rotateError && <ErrorBanner message={rotateError} />}
+          </>
+        )}
+      </Modal>
+
       <ConfirmDeleteModal
         open={revokeTarget !== null}
         onClose={() => setRevokeTarget(null)}
@@ -224,9 +302,32 @@ export default function AllAgentsTab() {
           fetchData();
         }}
         title="Revoke agent"
-        description={`This will permanently revoke the agent "${revokeTarget?.name}" and invalidate all its sessions. This action cannot be undone.`}
+        description={`This will revoke the agent "${revokeTarget?.name}" and invalidate all its sessions. The agent will remain visible but inactive.`}
         confirmLabel="Revoke agent"
         confirmValue={revokeTarget?.name ?? ""}
+        inputLabel="Type the agent name to confirm"
+      />
+
+      <ConfirmDeleteModal
+        open={deleteTarget !== null}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={async () => {
+          if (!deleteTarget) return;
+          const resp = await apiFetch(
+            `/v1/agents/${encodeURIComponent(deleteTarget.name)}/delete`,
+            { method: "POST" }
+          );
+          if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            throw new Error(data.error || "Failed to delete agent");
+          }
+          setDeleteTarget(null);
+          fetchData();
+        }}
+        title="Delete agent"
+        description={`This will permanently delete the agent "${deleteTarget?.name}", invalidate all its sessions, and remove it from all vaults. This action cannot be undone.`}
+        confirmLabel="Delete agent"
+        confirmValue={deleteTarget?.name ?? ""}
         inputLabel="Type the agent name to confirm"
       />
     </div>

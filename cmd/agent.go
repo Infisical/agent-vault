@@ -119,8 +119,8 @@ var agentInfoCmd = &cobra.Command{
 }
 
 var agentRevokeCmd = &cobra.Command{
-	Use:   "delete <name>",
-	Short: "Delete an agent and all its tokens",
+	Use:   "revoke <name>",
+	Short: "Revoke an agent (invalidates tokens, keeps the record)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
@@ -131,6 +131,27 @@ var agentRevokeCmd = &cobra.Command{
 
 		reqURL := sess.Address + "/v1/agents/" + url.PathEscape(name)
 		if err := doAdminRequest("DELETE", reqURL, sess.Token, nil); err != nil {
+			return err
+		}
+
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s Agent %q revoked.\n", successText("✓"), name)
+		return nil
+	},
+}
+
+var agentDeleteCmd = &cobra.Command{
+	Use:   "delete <name>",
+	Short: "Permanently delete an agent",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		sess, err := ensureSession()
+		if err != nil {
+			return err
+		}
+
+		reqURL := sess.Address + "/v1/agents/" + url.PathEscape(name) + "/delete"
+		if err := doAdminRequest("POST", reqURL, sess.Token, []byte("{}")); err != nil {
 			return err
 		}
 
@@ -386,10 +407,11 @@ func init() {
 	agentSetRoleCmd.Flags().String("role", "", "instance-level role (owner, member, or no-access)")
 	agentRotateCmd.Flags().Bool("token-only", false, "output only the raw agent token (for programmatic use)")
 
-	// Instance-level agent commands: agent-vault agent [list|info|revoke|rotate|rename|set-role]
+	// Instance-level agent commands: agent-vault agent [list|info|revoke|delete|rotate|rename|set-role]
 	topAgentCmd.AddCommand(agentListCmd)
 	topAgentCmd.AddCommand(agentInfoCmd)
 	topAgentCmd.AddCommand(agentRevokeCmd)
+	topAgentCmd.AddCommand(agentDeleteCmd)
 	topAgentCmd.AddCommand(agentRotateCmd)
 	topAgentCmd.AddCommand(agentRenameCmd)
 	topAgentCmd.AddCommand(agentSetRoleCmd)

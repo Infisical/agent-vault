@@ -464,7 +464,7 @@ func TestAgentSubcommandsRegistered(t *testing.T) {
 }
 
 func TestTopAgentSubcommandsRegistered(t *testing.T) {
-	// Instance-level agent commands: list, info, delete, rotate, rename, create, set-role
+	// Instance-level agent commands: list, info, revoke, delete, rotate, rename, create, set-role
 	agCmd := findSubcommand(rootCmd, "agent")
 	if agCmd == nil {
 		t.Fatal("agent command not found")
@@ -475,7 +475,7 @@ func TestTopAgentSubcommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"list", "info", "delete", "rotate", "rename", "create", "set-role"}
+	expected := []string{"list", "info", "revoke", "delete", "rotate", "rename", "create", "set-role"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected agent subcommand %q to be registered, but it was not", name)
