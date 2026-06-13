@@ -45,6 +45,7 @@ type mockStore struct {
 	settings           map[string]string                     // instance settings
 	vaultSettings      map[string]map[string]string          // per-vault: vaultID -> key -> value
 	credStores         map[string]*store.VaultCredentialStore // per-vault external credential store config
+	unmatchedHosts     map[string][]store.UnmatchedHost      // keyed by vaultID
 	sessionCounter     int
 }
 
@@ -398,6 +399,10 @@ func (m *mockStore) InsertRequestLogs(_ context.Context, _ []store.RequestLog) e
 
 func (m *mockStore) ListRequestLogs(_ context.Context, _ store.ListRequestLogsOpts) ([]store.RequestLog, error) {
 	return nil, nil
+}
+
+func (m *mockStore) ListUnmatchedHosts(_ context.Context, vaultID string) ([]store.UnmatchedHost, error) {
+	return m.unmatchedHosts[vaultID], nil
 }
 
 func (m *mockStore) DeleteOldRequestLogs(_ context.Context, _ time.Time) (int64, error) {
@@ -981,6 +986,21 @@ func (m *mockStore) RevokeAgent(_ context.Context, id string) error {
 	return fmt.Errorf("agent not found")
 }
 
+func (m *mockStore) DeleteAgent(_ context.Context, id string) error {
+	for name, ag := range m.agents {
+		if ag.ID == id {
+			delete(m.agents, name)
+			for sid, sess := range m.sessions {
+				if sess.AgentID == id {
+					delete(m.sessions, sid)
+				}
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("agent not found")
+}
+
 func (m *mockStore) RenameAgent(_ context.Context, id string, newName string) error {
 	for name, ag := range m.agents {
 		if ag.ID == id {
@@ -1029,6 +1049,13 @@ func (m *mockStore) DeleteAgentTokens(_ context.Context, agentID string) error {
 func (m *mockStore) RotateAgentToken(ctx context.Context, agentID string, expiresAt *time.Time) (*store.Session, error) {
 	if err := m.DeleteAgentTokens(ctx, agentID); err != nil {
 		return nil, err
+	}
+	for _, ag := range m.agents {
+		if ag.ID == agentID {
+			ag.Status = "active"
+			ag.RevokedAt = nil
+			break
+		}
 	}
 	return m.CreateAgentToken(ctx, agentID, expiresAt)
 }
@@ -1121,7 +1148,22 @@ func (m *mockStore) UpdateVaultCredentialStoreHealth(_ context.Context, vaultID,
 	cs.LastSyncedAt = &t
 	return nil
 }
-func (m *mockStore) ReplaceVaultCredentials(_ context.Context, _ string, _ []store.EncryptedKV) error {
+func (m *mockStore) ReplaceVaultCredentialsForSync(_ context.Context, _, _ string, _ []store.EncryptedKV) (bool, error) {
+	return true, nil
+}
+func (m *mockStore) SetVaultExternalStore(_ context.Context, p store.SetVaultExternalStoreParams) (*store.VaultCredentialStore, error) {
+	cs := &store.VaultCredentialStore{
+		VaultID:             p.VaultID,
+		Kind:                p.Kind,
+		ConfigJSON:          p.ConfigJSON,
+		PollIntervalSeconds: p.PollIntervalSeconds,
+		LastSyncStatus:      store.SyncStatusOK,
+	}
+	m.credStores[p.VaultID] = cs
+	return cs, nil
+}
+func (m *mockStore) DeleteVaultCredentialStore(_ context.Context, vaultID string) error {
+	delete(m.credStores, vaultID)
 	return nil
 }
 
@@ -3197,6 +3239,151 @@ func TestVaultCreateExternalRequiresOwner(t *testing.T) {
 	}
 }
 
+func patchCredentialStore(t *testing.T, srv *Server, token, vault, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/vaults/"+vault+"/credential-store", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	return rec
+}
+
+// Switching an external vault to built-in drops the credential-store row so
+// polling stops; the synced credentials are left behind (kept by the store).
+func TestVaultCredentialStoreSwitchToBuiltin(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
+		VaultID: "root-ns-id", Kind: "infisical",
+		ConfigJSON: `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+	}
+	srv := newTestServer(withStore(ms))
+
+	rec := patchCredentialStore(t, srv, ownerToken, "default", `{"kind":"builtin"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, ok := ms.credStores["root-ns-id"]; ok {
+		t.Fatalf("expected credential-store row removed after switch to builtin")
+	}
+	var resp struct {
+		CredentialStore map[string]interface{} `json:"credential_store"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.CredentialStore["kind"] != store.CredentialStoreBuiltin {
+		t.Fatalf("want kind builtin, got %v", resp.CredentialStore)
+	}
+}
+
+// Only vault admins / instance owners may switch the store.
+func TestVaultCredentialStoreSwitchRequiresAdminOrOwner(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	rec := patchCredentialStore(t, srv, memberToken, "default", `{"kind":"builtin"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-admin member, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVaultCredentialStoreSwitchInvalidKind(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	rec := patchCredentialStore(t, srv, ownerToken, "default", `{"kind":"bogus"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown kind, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Switching to Infisical when the server has no Infisical client must 503,
+// mirroring the create gate.
+func TestVaultCredentialStoreSwitchToInfisicalNoClient(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms)) // no AttachInfisical → infisicalClient nil
+
+	body := `{"kind":"infisical","config":{"project_id":"p","environment":"dev","secret_path":"/"},"poll_interval_seconds":60}`
+	rec := patchCredentialStore(t, srv, ownerToken, "default", body)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 without infisical client, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Connecting to Infisical is owner-only, mirroring vault create. A non-owner
+// vault admin must be rejected. The client is attached so this proves the owner
+// gate fires (403), not the no-client 503.
+func TestVaultCredentialStoreSwitchToInfisicalRequiresOwner(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	adminToken := setupMemberSession(t, ms, "root-ns-id")
+	// Promote to vault admin while leaving the instance role at "member".
+	ms.GrantVaultRole(context.Background(), "member-user-id", "user", "root-ns-id", "admin")
+	srv := newTestServer(withStore(ms))
+	srv.AttachInfisical(&infisical.Client{})
+
+	body := `{"kind":"infisical","config":{"project_id":"p","environment":"dev","secret_path":"/"},"poll_interval_seconds":60}`
+	rec := patchCredentialStore(t, srv, adminToken, "default", body)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-owner vault admin, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Disconnecting (switch to builtin) stays allowed for a non-owner vault admin —
+// only the connect path is owner-gated.
+func TestVaultCredentialStoreSwitchToBuiltinAllowsAdmin(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	adminToken := setupMemberSession(t, ms, "root-ns-id")
+	ms.GrantVaultRole(context.Background(), "member-user-id", "user", "root-ns-id", "admin")
+	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
+		VaultID: "root-ns-id", Kind: "infisical",
+		ConfigJSON: `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+	}
+	srv := newTestServer(withStore(ms))
+
+	rec := patchCredentialStore(t, srv, adminToken, "default", `{"kind":"builtin"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for non-owner admin disconnect, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// infisical_available drives the Infisical option in the credential-store
+// switcher. Since connecting is owner-only, it must be reported owner-gated:
+// true for an owner, false for a non-owner vault admin, even with a client.
+func TestVaultSettingsInfisicalAvailableOwnerGated(t *testing.T) {
+	settingsAvailable := func(t *testing.T, srv *Server, token string) bool {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/settings", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("settings GET: expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			InfisicalAvailable bool `json:"infisical_available"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return resp.InfisicalAvailable
+	}
+
+	ms, ownerToken := setupMockStoreWithSession(t)
+	adminToken := setupMemberSession(t, ms, "root-ns-id")
+	ms.GrantVaultRole(context.Background(), "member-user-id", "user", "root-ns-id", "admin")
+	srv := newTestServer(withStore(ms))
+	srv.AttachInfisical(&infisical.Client{})
+
+	if !settingsAvailable(t, srv, ownerToken) {
+		t.Fatalf("expected infisical_available=true for owner")
+	}
+	if settingsAvailable(t, srv, adminToken) {
+		t.Fatalf("expected infisical_available=false for non-owner admin")
+	}
+}
+
 // TestVaultContextRedactsConfigForNonAdmin locks in that the upstream
 // topology (project_id, environment, secret_path) is only returned to vault
 // admins and instance owners. Proxy/member roles must see only the kind +
@@ -3991,6 +4178,31 @@ func TestAgentGet_NonOwnerCannotViewOthersAgent(t *testing.T) {
 	}
 }
 
+func TestAgentDelete(t *testing.T) {
+	srv, ms, sessID := setupAgentTest(t)
+
+	ms.agents["deletebot"] = &store.Agent{ID: "a1", Name: "deletebot", Status: "active"}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/deletebot/delete", nil)
+	req.Header.Set("Authorization", "Bearer "+sessID)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if _, exists := ms.agents["deletebot"]; exists {
+		t.Fatal("expected agent to be hard-deleted from store")
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if msg, ok := resp["message"].(string); !ok || !strings.Contains(msg, "deleted") {
+		t.Fatalf("expected 'deleted' in message, got: %v", resp["message"])
+	}
+}
+
 func TestAgentRevoke(t *testing.T) {
 	srv, ms, sessID := setupAgentTest(t)
 
@@ -4032,6 +4244,36 @@ func TestAgentRotate(t *testing.T) {
 	}
 	if resp["rotated_at"] == nil || resp["rotated_at"].(string) == "" {
 		t.Fatal("expected non-empty rotated_at")
+	}
+}
+
+func TestAgentRotate_ReactivatesRevokedAgent(t *testing.T) {
+	srv, ms, sessID := setupAgentTest(t)
+
+	now := time.Now()
+	ms.agents["deadbot"] = &store.Agent{ID: "a1", Name: "deadbot", Status: "revoked", RevokedAt: &now}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/deadbot/rotate", nil)
+	req.Header.Set("Authorization", "Bearer "+sessID)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	ag := ms.agents["deadbot"]
+	if ag.Status != "active" {
+		t.Fatalf("expected active after rotate, got %s", ag.Status)
+	}
+	if ag.RevokedAt != nil {
+		t.Fatal("expected revoked_at to be cleared")
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["av_agent_token"] == nil || resp["av_agent_token"].(string) == "" {
+		t.Fatal("expected non-empty av_agent_token")
 	}
 }
 
@@ -6843,4 +7085,277 @@ func TestSPACatchAllRoutes(t *testing.T) {
 			t.Fatalf("expected 404 for unregistered path, got %d: %s", rec.Code, rec.Body.String())
 		}
 	})
+}
+
+// --- Discovered Hosts Tests ---
+
+func setupDiscoveredHostsTest(t *testing.T, servicesJSON string, hosts []store.UnmatchedHost) (*mockStore, string) {
+	t.Helper()
+	ms := newMockStore()
+
+	sess, err := ms.CreateScopedSession(context.Background(), store.CreateScopedSessionParams{
+		VaultID:   "root-ns-id",
+		VaultRole: "member",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+	})
+	if err != nil {
+		t.Fatalf("CreateScopedSession: %v", err)
+	}
+
+	if servicesJSON != "" {
+		ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
+			ID: "bc-1", VaultID: "root-ns-id", ServicesJSON: servicesJSON,
+		}
+	}
+
+	if ms.unmatchedHosts == nil {
+		ms.unmatchedHosts = make(map[string][]store.UnmatchedHost)
+	}
+	ms.unmatchedHosts["root-ns-id"] = hosts
+
+	return ms, sess.ID
+}
+
+func TestDiscoveredHostsBasic(t *testing.T) {
+	now := time.Now().UTC()
+	hosts := []store.UnmatchedHost{
+		{Host: "api.stripe.com:443", RequestCount: 10, LastSeen: now},
+		{Host: "api.openai.com:443", RequestCount: 5, LastSeen: now.Add(-1 * time.Minute)},
+		{Host: "hooks.slack.com:443", RequestCount: 2, LastSeen: now.Add(-5 * time.Minute)},
+	}
+
+	ms, token := setupDiscoveredHostsTest(t, "", hosts)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/discovered-hosts", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Hosts []struct {
+			Host         string `json:"host"`
+			RequestCount int    `json:"request_count"`
+			LastSeen     string `json:"last_seen"`
+		} `json:"hosts"`
+		Total int `json:"total"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if resp.Total != 3 {
+		t.Fatalf("expected total=3, got %d", resp.Total)
+	}
+	if len(resp.Hosts) != 3 {
+		t.Fatalf("expected 3 hosts, got %d", len(resp.Hosts))
+	}
+	// Port-stripped hostnames
+	if resp.Hosts[0].Host != "api.stripe.com" {
+		t.Errorf("expected first host api.stripe.com, got %q", resp.Hosts[0].Host)
+	}
+	if resp.Hosts[0].RequestCount != 10 {
+		t.Errorf("expected 10 requests, got %d", resp.Hosts[0].RequestCount)
+	}
+}
+
+func TestDiscoveredHostsFilterConfiguredService(t *testing.T) {
+	now := time.Now().UTC()
+	hosts := []store.UnmatchedHost{
+		{Host: "api.stripe.com:443", RequestCount: 10, LastSeen: now},
+		{Host: "api.github.com:443", RequestCount: 5, LastSeen: now.Add(-1 * time.Minute)},
+		{Host: "raw.github.com:443", RequestCount: 3, LastSeen: now.Add(-2 * time.Minute)},
+		{Host: "hooks.slack.com:443", RequestCount: 2, LastSeen: now.Add(-3 * time.Minute)},
+	}
+
+	servicesJSON := `[{"name":"github","host":"*.github.com","auth":{"type":"bearer","token":"GH_TOKEN"}},{"name":"stripe","host":"api.stripe.com/v1/*","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`
+	ms, token := setupDiscoveredHostsTest(t, servicesJSON, hosts)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/discovered-hosts?limit=100", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Hosts []struct{ Host string `json:"host"` } `json:"hosts"`
+		Total int                                    `json:"total"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// api.stripe.com filtered (host-only match against api.stripe.com/v1/*),
+	// api.github.com and raw.github.com filtered (wildcard *.github.com),
+	// only hooks.slack.com remains
+	if resp.Total != 1 {
+		t.Fatalf("expected total=1, got %d (hosts: %+v)", resp.Total, resp.Hosts)
+	}
+	if resp.Hosts[0].Host != "hooks.slack.com" {
+		t.Errorf("expected hooks.slack.com, got %q", resp.Hosts[0].Host)
+	}
+}
+
+func TestDiscoveredHostsPortDedup(t *testing.T) {
+	now := time.Now().UTC()
+	hosts := []store.UnmatchedHost{
+		{Host: "api.stripe.com:443", RequestCount: 10, LastSeen: now},
+		{Host: "api.stripe.com:80", RequestCount: 3, LastSeen: now.Add(-1 * time.Minute)},
+	}
+
+	ms, token := setupDiscoveredHostsTest(t, "", hosts)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/discovered-hosts", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	var resp struct {
+		Hosts []struct {
+			Host         string `json:"host"`
+			RequestCount int    `json:"request_count"`
+		} `json:"hosts"`
+		Total int `json:"total"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if resp.Total != 1 {
+		t.Fatalf("expected total=1 (deduped), got %d", resp.Total)
+	}
+	if resp.Hosts[0].Host != "api.stripe.com" {
+		t.Errorf("expected api.stripe.com, got %q", resp.Hosts[0].Host)
+	}
+	if resp.Hosts[0].RequestCount != 13 {
+		t.Errorf("expected 13 (10+3 merged), got %d", resp.Hosts[0].RequestCount)
+	}
+}
+
+func TestDiscoveredHostsLimitZeroCountOnly(t *testing.T) {
+	now := time.Now().UTC()
+	hosts := []store.UnmatchedHost{
+		{Host: "a.com:443", RequestCount: 1, LastSeen: now},
+		{Host: "b.com:443", RequestCount: 1, LastSeen: now},
+	}
+
+	ms, token := setupDiscoveredHostsTest(t, "", hosts)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/discovered-hosts?limit=0", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	var resp struct {
+		Hosts []struct{ Host string } `json:"hosts"`
+		Total int                     `json:"total"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2, got %d", resp.Total)
+	}
+	if len(resp.Hosts) != 0 {
+		t.Fatalf("expected empty hosts array for limit=0, got %d", len(resp.Hosts))
+	}
+}
+
+func TestDiscoveredHostsLimitPagination(t *testing.T) {
+	now := time.Now().UTC()
+	var hosts []store.UnmatchedHost
+	for i := 0; i < 8; i++ {
+		hosts = append(hosts, store.UnmatchedHost{
+			Host: fmt.Sprintf("host-%d.com:443", i), RequestCount: 1,
+			LastSeen: now.Add(-time.Duration(i) * time.Minute),
+		})
+	}
+
+	ms, token := setupDiscoveredHostsTest(t, "", hosts)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/discovered-hosts?limit=5", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	var resp struct {
+		Hosts []struct{ Host string } `json:"hosts"`
+		Total int                     `json:"total"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if resp.Total != 8 {
+		t.Fatalf("expected total=8, got %d", resp.Total)
+	}
+	if len(resp.Hosts) != 5 {
+		t.Fatalf("expected 5 hosts with limit=5, got %d", len(resp.Hosts))
+	}
+}
+
+func TestDiscoveredHostsProxyRoleRejected(t *testing.T) {
+	ms := newMockStore()
+	sess, err := ms.CreateScopedSession(context.Background(), store.CreateScopedSessionParams{
+		VaultID:   "root-ns-id",
+		VaultRole: "proxy",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+	})
+	if err != nil {
+		t.Fatalf("CreateScopedSession: %v", err)
+	}
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/discovered-hosts", nil)
+	req.Header.Set("Authorization", "Bearer "+sess.ID)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for proxy role, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDiscoveredHostsNoBrokerConfig(t *testing.T) {
+	now := time.Now().UTC()
+	hosts := []store.UnmatchedHost{
+		{Host: "api.stripe.com:443", RequestCount: 5, LastSeen: now},
+	}
+
+	ms, token := setupDiscoveredHostsTest(t, "", hosts)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/discovered-hosts", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Hosts []struct{ Host string } `json:"hosts"`
+		Total int                     `json:"total"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// No broker config = no services to filter against, all hosts pass through
+	if resp.Total != 1 {
+		t.Fatalf("expected total=1, got %d", resp.Total)
+	}
 }

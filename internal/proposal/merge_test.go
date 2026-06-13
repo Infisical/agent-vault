@@ -315,3 +315,36 @@ func TestMergeServicesDeleteByName(t *testing.T) {
 		t.Fatalf("expected only slack-bot to remain, got %+v", merged)
 	}
 }
+
+func TestMergeServicesPortPreserved(t *testing.T) {
+	port3000 := 3000
+	proposed := []Service{{
+		Action: ActionSet,
+		Name:   "local-api",
+		Host:   "localhost",
+		Port:   &port3000,
+		Auth:   mergeBearer("API_KEY"),
+	}}
+	merged, warnings := MergeServices(nil, proposed)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+	if len(merged) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(merged))
+	}
+	if merged[0].Port == nil || *merged[0].Port != 3000 {
+		t.Fatalf("expected Port=3000, got %v", merged[0].Port)
+	}
+	if merged[0].Host != "localhost" {
+		t.Fatalf("expected host localhost, got %s", merged[0].Host)
+	}
+	if merged[0].Auth.Token != "API_KEY" {
+		t.Fatalf("expected token API_KEY, got %s", merged[0].Auth.Token)
+	}
+	// Mutating proposed port must not affect merged (defensive copy check).
+	newPort := 9999
+	proposed[0].Port = &newPort
+	if *merged[0].Port != 3000 {
+		t.Fatal("merged service port aliased the proposal pointer")
+	}
+}

@@ -55,7 +55,7 @@ Auth type flags:
 - **api-key**: `--auth-type api-key --api-key-key KEY [--api-key-header x-api-key]`
 - **passthrough**: `--auth-type passthrough`
 
-For complex cases (multiple services, URL substitutions), use JSON mode:
+For complex cases (multiple services, URL substitutions, port-specific matching), use JSON mode:
 
 ```bash
 agent-vault vault proposal create -f - --json <<'EOF'
@@ -66,6 +66,8 @@ agent-vault vault proposal create -f - --json <<'EOF'
 }
 EOF
 ```
+
+The `host` field accepts an optional port: `"host": "internal.corp.com:3000"` or `"host": "internal.corp.com:3000/api/*"`. When a port is specified, the service matches only traffic to that port. Without a port, the service matches any port.
 
 ## After creating a proposal
 

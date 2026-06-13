@@ -38,11 +38,12 @@ type InjectResult struct {
 	// Nil for passthrough services.
 	Headers map[string]string
 
-	// MatchedName/Host/Path describe the matched service. Safe to log.
+	// MatchedName/Host/Path/Port describe the matched service. Safe to log.
 	// Empty under unmatched-host passthrough.
 	MatchedName string
 	MatchedHost string
 	MatchedPath string
+	MatchedPort *int
 
 	// CredentialKeys are the key names referenced by the matched
 	// service. Populated before resolution so credential-missing
@@ -62,7 +63,7 @@ type InjectResult struct {
 // vaultID and returns the headers to attach. targetPath must be the URL
 // path only — no query, no fragment.
 type CredentialProvider interface {
-	Inject(ctx context.Context, vaultID, targetHost, targetPath string) (*InjectResult, error)
+	Inject(ctx context.Context, vaultID, targetHost string, targetPort int, targetPath string) (*InjectResult, error)
 }
 
 // CredentialStore is the minimal store surface used by StoreCredentialProvider.
@@ -98,7 +99,7 @@ func NewStoreCredentialProvider(s CredentialStore, encKey []byte) *StoreCredenti
 // service's auth into HTTP headers. targetHost may include a port —
 // stripped before matching. Pass "/" for targetPath when no path is
 // meaningful.
-func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHost, targetPath string) (*InjectResult, error) {
+func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHost string, targetPort int, targetPath string) (*InjectResult, error) {
 	// A missing row is equivalent to an empty services list — fall
 	// through to the unmatched-host policy. Any other error fails closed
 	// so a transient store failure can't silently strip enforcement.
@@ -116,7 +117,7 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	// MarshalJSON persists Host in joined-inline form; the matcher
 	// requires Host without "/", so split before matching.
 	for i := range services {
-		services[i].Host, services[i].Path = broker.SplitInlineHost(services[i].Host, services[i].Path)
+		services[i].Host, services[i].Path, services[i].Port = broker.SplitInlineHost(services[i].Host, services[i].Path)
 	}
 	// Heal legacy unnamed entries so MatchedName (which lands in the
 	// request log and the X-Vault-Service header) is never blank for a
@@ -131,7 +132,7 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	if targetPath == "" {
 		targetPath = "/"
 	}
-	matched, score := broker.MatchService(matchHost, targetPath, services)
+	matched, score := broker.MatchService(matchHost, targetPort, targetPath, services)
 	if matched == nil {
 		// Fail closed on policy lookup errors so a transient store
 		// failure can't silently strip enforcement.
@@ -193,6 +194,7 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 		MatchedName:    matched.Name,
 		MatchedHost:    matched.Host,
 		MatchedPath:    matched.Path,
+		MatchedPort:    matched.Port,
 		CredentialKeys: matched.CredentialKeys(),
 	}
 

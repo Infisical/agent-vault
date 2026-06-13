@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -100,11 +101,16 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 	// would feed a still-bracketed string back through JoinHostPort,
 	// double-bracketing it.
 	host := r.URL.Hostname()
-	port := r.URL.Port()
-	if port == "" {
-		port = "80"
+	portStr := r.URL.Port()
+	if portStr == "" {
+		portStr = "80"
 	}
-	target := net.JoinHostPort(host, port)
+	portNum, err := strconv.Atoi(portStr)
+	if err != nil {
+		http.Error(w, "invalid port", http.StatusBadRequest)
+		return
+	}
+	target := net.JoinHostPort(host, portStr)
 
 	if !isValidHost(host) {
 		http.Error(w, "invalid host", http.StatusBadRequest)
@@ -135,7 +141,7 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p.forwardRequest(w, r, target, host, false, scope)
+	p.forwardRequest(w, r, target, host, portNum, false, scope)
 }
 
 // hostHeaderForScheme strips target's port when it matches the default for
@@ -169,9 +175,9 @@ func hostHeaderForScheme(scheme, target string) string {
 // a closed-over target rather than r.Host defeats post-tunnel host
 // rewriting. host is the port-stripped form, already validated in
 // handleConnect; scope is the vault context resolved at CONNECT time.
-func (p *Proxy) forwardHandler(target, host string, scope *brokercore.ProxyScope) http.Handler {
+func (p *Proxy) forwardHandler(target, host string, port int, scope *brokercore.ProxyScope) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p.forwardRequest(w, r, target, host, true, scope)
+		p.forwardRequest(w, r, target, host, port, true, scope)
 	})
 }
 
@@ -184,15 +190,19 @@ func (p *Proxy) forwardRequest(
 	w http.ResponseWriter,
 	r *http.Request,
 	target, host string,
+	port int,
 	useTLSUpstream bool,
 	scope *brokercore.ProxyScope,
 ) {
 	start := time.Now()
+	authScheme, authHeader := detectAuthFromHeaders(r.Header)
 	event := brokercore.ProxyEvent{
-		Ingress: brokercore.IngressMITM,
-		Method:  r.Method,
-		Host:    target,
-		Path:    r.URL.Path,
+		Ingress:    brokercore.IngressMITM,
+		Method:     r.Method,
+		Host:       target,
+		Path:       r.URL.Path,
+		AuthScheme: authScheme,
+		AuthHeader: authHeader,
 	}
 	actorType, actorID := actorFromScope(scope)
 	emit := func(status int, errCode string) {
@@ -228,11 +238,12 @@ func (p *Proxy) forwardRequest(
 		return
 	}
 
-	inject, err := p.creds.Inject(r.Context(), scope.VaultID, host, r.URL.Path)
+	inject, err := p.creds.Inject(r.Context(), scope.VaultID, host, port, r.URL.Path)
 	if inject != nil {
 		event.MatchedService = inject.MatchedName
 		event.MatchedHost = inject.MatchedHost
 		event.MatchedPath = inject.MatchedPath
+		event.MatchedPort = inject.MatchedPort
 		event.CredentialKeys = inject.CredentialKeys
 		event.Passthrough = inject.Passthrough
 	}
@@ -244,7 +255,7 @@ func (p *Proxy) forwardRequest(
 			status = http.StatusBadGateway
 			brokercore.LogCredentialMissing(p.logger, scope.VaultID, event.MatchedService, event.CredentialKeys)
 		}
-		brokercore.WriteInjectError(w, err, host, scope.VaultName, p.baseURL)
+		brokercore.WriteInjectError(w, err, target, scope.VaultName, p.baseURL)
 		emit(status, errCode)
 		return
 	}
@@ -342,7 +353,7 @@ func (p *Proxy) forwardRequest(
 	if resp.StatusCode == http.StatusUnauthorized && inject != nil && !inject.Passthrough &&
 		(r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		_ = resp.Body.Close()
-		retryInject, retryErr := p.creds.Inject(r.Context(), scope.VaultID, host, r.URL.Path)
+		retryInject, retryErr := p.creds.Inject(r.Context(), scope.VaultID, host, port, r.URL.Path)
 		if retryErr == nil && retryInject != nil && retryInject.Headers != nil {
 			retryReq := outReq.Clone(outReq.Context())
 			for k, v := range retryInject.Headers {
@@ -413,4 +424,30 @@ func (p *Proxy) forwardRequest(
 	}
 
 	emit(resp.StatusCode, "")
+}
+
+// knownAPIKeyHeaders are non-Authorization headers that commonly carry
+// API keys. Checked by exact canonical match -- no heuristic scanning.
+var knownAPIKeyHeaders = []string{"X-Api-Key", "Api-Key"}
+
+// detectAuthFromHeaders inspects request headers to determine the auth
+// scheme and header name. Returns ("", "") when no recognizable auth
+// pattern is found.
+func detectAuthFromHeaders(h http.Header) (scheme, header string) {
+	if auth := h.Get("Authorization"); auth != "" {
+		switch {
+		case strings.HasPrefix(auth, "Bearer ") || strings.HasPrefix(auth, "bearer "):
+			return "bearer", "Authorization"
+		case strings.HasPrefix(auth, "Basic ") || strings.HasPrefix(auth, "basic "):
+			return "basic", "Authorization"
+		default:
+			return "api-key", "Authorization"
+		}
+	}
+	for _, name := range knownAPIKeyHeaders {
+		if h.Get(name) != "" {
+			return "api-key", http.CanonicalHeaderKey(name)
+		}
+	}
+	return "", ""
 }

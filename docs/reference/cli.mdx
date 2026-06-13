@@ -205,7 +205,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--credential-store` | `builtin` | Credential store kind: `builtin` or `infisical`. Immutable after create. |
+    | `--credential-store` | `builtin` | Credential store kind: `builtin` or `infisical`. Switchable later with `vault credential-store set`. |
     | `--infisical-project-id` | | Infisical project ID. Required when `--credential-store=infisical`. |
     | `--infisical-environment` | | Infisical environment slug (e.g., `dev`, `prod`). Required when `--credential-store=infisical`. |
     | `--infisical-path` | `/` | Infisical secret path (must start with `/`). |
@@ -261,7 +261,26 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential-store show <name>
     ```
 
-    Print the vault's credential-store kind, full config, poll interval, and last sync health. Prints `Credential store: builtin` for vaults with no external source; otherwise the kind name plus the Infisical project, environment, path, poll cadence, and `last_sync_status` / `last_synced_at` / `last_sync_error`. The kind is fixed at create time; this command is read-only.
+    Print the vault's credential-store kind, full config, poll interval, and last sync health. Prints `Credential store: builtin` for vaults with no external source; otherwise the kind name plus the Infisical project, environment, path, poll cadence, and `last_sync_status` / `last_synced_at` / `last_sync_error`. This command is read-only; use `credential-store set` to change the kind.
+  </Accordion>
+
+  <Accordion title="agent-vault vault credential-store set">
+    ```bash
+    agent-vault vault credential-store set <name> --kind=<builtin|infisical> [flags]
+    ```
+
+    Switch the credential store backing an existing vault. Switching to `builtin` requires vault admin or instance owner role; switching to `infisical` requires instance-owner role (the broker's machine identity authorizes the upstream fetch). Prompts for the vault name to confirm unless `--yes` is passed.
+
+    Switching to `infisical` probes the source (same validation as create), then **overwrites** the vault's built-in credentials with the fetched snapshot and starts polling. Switching to `builtin` disconnects the external source (polling stops) but **keeps** the last synced secrets in place as editable built-in credentials. See [Credential stores](/learn/credential-stores#switching-a-vaults-credential-store).
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--kind` | | Target credential store kind: `builtin` or `infisical`. Required. |
+    | `--infisical-project-id` | | Infisical project ID. Required when `--kind=infisical`. |
+    | `--infisical-environment` | | Infisical environment slug (e.g., `dev`, `prod`). Required when `--kind=infisical`. |
+    | `--infisical-path` | `/` | Infisical secret path (must start with `/`). |
+    | `--poll-interval-seconds` | `60` | Refresh cadence floor for the cached secrets. Minimum 10s. |
+    | `--yes` | `false` | Skip confirmation prompt |
   </Accordion>
 
   <Accordion title="agent-vault vault credential-store sync">
@@ -490,7 +509,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--vault` | `default` | Target vault |
     | `-f` | | Path to a YAML services file (upsert mode) |
     | `--name` | | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required for new services. May be omitted when `--host` uniquely matches an existing service — the server adopts that service's name (same pattern as `service remove` by host). |
-    | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). The server splits the path off the host on ingest. |
+    | `--host` | | Target host with optional port and path glob (e.g. `api.stripe.com`, `internal.corp.com:3000`, `slack.com/api/*`). When a port is included, the service matches only traffic to that port. The server splits the host, port, and path on ingest. |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, `custom`, `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
     | `--username-key` | | Credential key for basic auth username |
@@ -653,7 +672,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--vault` | `default` | Target vault |
     | `-f`, `--file` | | Path to JSON proposal file (use `-` for stdin) |
     | `--name` | | Service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required for new services. May be omitted when `--host` uniquely matches an existing service — the server adopts that service's name (same pattern as host-based delete). |
-    | `--host` | | Target service host. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). |
+    | `--host` | | Target host with optional port and path glob (e.g. `api.stripe.com`, `internal.corp.com:3000`, `slack.com/api/*`). When a port is included, the service matches only traffic to that port. |
     | `--auth-type` | | Auth type: `bearer`, `basic`, `api-key`, or `passthrough` |
     | `--token-key` | | Credential key for bearer auth |
     | `--username-key` | | Credential key for basic auth username |
@@ -784,12 +803,20 @@ description: "Complete reference for all Agent Vault CLI commands."
     Show agent details including vaults, status, and active session count.
   </Accordion>
 
+  <Accordion title="agent-vault agent revoke">
+    ```bash
+    agent-vault agent revoke <name>
+    ```
+
+    Revoke an agent and invalidate all its tokens. The agent remains visible with a "revoked" status but can no longer authenticate. Rotate its token to reactivate it.
+  </Accordion>
+
   <Accordion title="agent-vault agent delete">
     ```bash
     agent-vault agent delete <name>
     ```
 
-    Delete an agent and all its sessions across all vaults.
+    Permanently delete an agent, its tokens, and all vault grants. Works on both active and revoked agents.
   </Accordion>
 
   <Accordion title="agent-vault agent rotate">
@@ -797,7 +824,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault agent rotate <name> [flags]
     ```
 
-    Invalidate the agent's existing token and print a new one. Update `AGENT_VAULT_TOKEN` wherever the agent runs.
+    Invalidate the agent's existing token and print a new one. If the agent is revoked, rotation also reactivates it. Update `AGENT_VAULT_TOKEN` wherever the agent runs.
 
     | Flag | Default | Description |
     |------|---------|-------------|

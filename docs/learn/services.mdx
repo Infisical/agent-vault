@@ -8,7 +8,7 @@ A `Service` is a per-[vault](/learn/vaults) configuration that defines which ups
 Each service contains:
 
 - **Name**: A canonical per-vault identifier (slug, 3–64 lowercase alphanumeric/hyphen chars, no leading/trailing hyphen, no consecutive hyphens). **Required on write** for new services — pick a deliberate name like `stripe`, `slack-bot`, or `internal-billing`. `name` may be omitted only when `host` + `path` uniquely matches an existing service (the server adopts that service's name, the same pattern as host-based delete). Legacy services persisted without a name before this contract are auto-slugified from `host` + `path` on read so they remain addressable; the slug becomes durable on the next write.
-- **Host**: The single matcher field. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), or an inline path-scoped form (`slack.com/api/*`). Reads and writes use the same shape: writes accept any of those forms; reads return the joined inline form so you see exactly what you wrote.
+- **Host**: The single matcher field. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), an inline path-scoped form (`slack.com/api/*`), or a port-scoped form (`internal.corp.com:3000` or `internal.corp.com:3000/api/*`). When a port is included, the service matches only traffic to that port; without a port, the service matches any port. Reads and writes use the same shape: writes accept any of those forms; reads return the joined inline form so you see exactly what you wrote.
 - **Auth config**: How Agent Vault authenticates. Five types are supported: `bearer`, `basic`, `api-key`, `custom`, and `passthrough` (opt out of injection).
 
 <Tip>
@@ -258,22 +258,25 @@ Substitutions and auth are independent. A service can use either, both, or neith
 
 ## Matching rules
 
-The `host` pattern is the single matcher knob. It can carry just a hostname (`api.stripe.com`), a wildcard host (`*.github.com`), or an inline path glob (`slack.com/api/*`).
+The `host` pattern is the single matcher knob. It can carry just a hostname (`api.stripe.com`), a wildcard host (`*.github.com`), an inline path glob (`slack.com/api/*`), or a port-scoped form (`internal.corp.com:3000` or `internal.corp.com:3000/api/*`).
 
 **Host portion** supports two modes:
 
 - **Exact match**: `api.stripe.com` matches only `api.stripe.com`.
 - **Wildcard**: `*.github.com` matches `api.github.com`, `uploads.github.com`, etc. The `*` replaces exactly one subdomain segment.
 
-**Path portion** (optional, follows the host with a `/`) is a URL glob. A bare host with no path matches any path; a non-empty path must start with `/` and may use `*` as a greedy glob (cross-`/`). `**`, `?`, regex, and a bare `*` are rejected.
+**Port** (optional, between host and path as `host:port`): when present, the service matches only traffic to that port. When omitted, the service matches any port. Use this when multiple services run on the same host at different ports (e.g. `internal.corp.com:3000` and `internal.corp.com:4000`).
+
+**Path portion** (optional, follows the host or host:port with a `/`) is a URL glob. A bare host with no path matches any path; a non-empty path must start with `/` and may use `*` as a greedy glob (cross-`/`). `**`, `?`, regex, and a bare `*` are rejected.
 
 ### Matching priority
 
 When two `host` patterns could match a request, the winner is chosen deterministically:
 
-1. **Host tier first.** A pattern whose host portion is an **exact match** of the request host always beats one with a **wildcard** host (`*.example.com`) — even when the wildcard rule has a more specific path portion.
-2. **Path specificity within a host tier.** Among patterns in the same host tier, the rule with the **longest literal path prefix** wins (characters in the path portion before the first `*`). A bare-host pattern (no path) scores 0 (catch-all).
-3. **Declaration order on tie.** If two rules tie on host tier and literal path-prefix length, the rule appearing first in the configured service list wins.
+1. **Host tier first.** A pattern whose host portion is an **exact match** of the request host always beats one with a **wildcard** host (`*.example.com`) -- even when the wildcard rule has a more specific path or port.
+2. **Port specificity.** Within the same host tier, a service with a specific port beats one without a port (any-port wildcard).
+3. **Path specificity.** Among rules with the same host tier and port specificity, the rule with the **longest literal path prefix** wins (characters in the path portion before the first `*`). A bare-host pattern (no path) scores 0 (catch-all).
+4. **Declaration order on tie.** If two rules tie on all the above, the rule appearing first in the configured service list wins.
 
 Worked example — Slack with two credentials at the same host:
 

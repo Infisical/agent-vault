@@ -78,7 +78,7 @@ func TestLogProxyEvent_NoSecretLeak(t *testing.T) {
 			}
 
 			provider := NewStoreCredentialProvider(f, encKey)
-			result, err := provider.Inject(context.Background(), "v1", "api.example.com", "/")
+			result, err := provider.Inject(context.Background(), "v1", "api.example.com", 0, "/")
 			if err != nil {
 				t.Fatalf("Inject: %v", err)
 			}
@@ -129,7 +129,7 @@ func TestLogProxyEvent_CredentialMissingCarriesMetadata(t *testing.T) {
 	// Deliberately don't seed MISSING_TOKEN — Resolve will fail.
 
 	provider := NewStoreCredentialProvider(f, encKey)
-	result, err := provider.Inject(context.Background(), "v1", "api.example.com", "/")
+	result, err := provider.Inject(context.Background(), "v1", "api.example.com", 0, "/")
 	if err == nil {
 		t.Fatal("expected ErrCredentialMissing, got nil")
 	}

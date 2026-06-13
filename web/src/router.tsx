@@ -318,6 +318,11 @@ const servicesTabRoute = createRoute({
   getParentRoute: () => vaultLayoutRoute,
   path: "/services",
   component: ServicesTab,
+  validateSearch: (search: Record<string, unknown>) => {
+    const result: { preset?: string } = {};
+    if (search.preset) result.preset = search.preset as string;
+    return result;
+  },
 });
 
 const credentialsTabRoute = createRoute({

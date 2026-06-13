@@ -535,29 +535,37 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// createExternalVault validates + probes + commits the vault,
-// credential-store row, initial snapshot, and admin grant in one
-// transaction. Any failure leaves the DB untouched.
-func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context, actor *Actor, req vaultCreateRequest) {
+// infisicalSnapshot is the validated, probed, and encrypted state needed to
+// back a vault with Infisical — shared by the create and switch paths.
+type infisicalSnapshot struct {
+	ConfigJSON          string
+	PollIntervalSeconds int
+	Credentials         []store.EncryptedKV
+}
+
+// prepareInfisicalSnapshot validates the requested config, probes Infisical to
+// catch auth/topology errors early, and encrypts the fetched secrets. On any
+// failure it writes the appropriate HTTP error response and returns ok=false;
+// callers should return immediately. logName is used only for log context.
+func (s *Server) prepareInfisicalSnapshot(w http.ResponseWriter, ctx context.Context, logName string, cs *vaultCreateCredentialStoreRequest) (infisicalSnapshot, bool) {
 	if s.infisicalClient == nil {
 		jsonCodedError(w, http.StatusServiceUnavailable, "infisical_not_configured",
 			"Infisical is not configured on this Agent Vault instance. Set INFISICAL_URL and a supported auth method's env vars.")
-		return
+		return infisicalSnapshot{}, false
 	}
-	cs := req.CredentialStore
 	if cs.Kind != store.CredentialStoreInfisical {
 		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Unknown credential store kind %q", cs.Kind))
-		return
+		return infisicalSnapshot{}, false
 	}
 
 	cfg, err := infisical.ParseConfigJSON(string(cs.Config))
 	if err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid credential_store.config JSON")
-		return
+		return infisicalSnapshot{}, false
 	}
 	if err := cfg.Validate(); err != nil {
 		jsonError(w, http.StatusBadRequest, err.Error())
-		return
+		return infisicalSnapshot{}, false
 	}
 
 	pollInterval := cs.PollIntervalSeconds
@@ -565,41 +573,53 @@ func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context,
 		pollInterval = infisical.DefaultPollIntervalSeconds
 	} else if pollInterval < infisical.MinPollIntervalSeconds {
 		jsonError(w, http.StatusBadRequest, fmt.Sprintf("poll_interval_seconds must be at least %d", infisical.MinPollIntervalSeconds))
-		return
+		return infisicalSnapshot{}, false
 	}
 
 	secs, err := s.infisicalClient.FetchSecrets(ctx, cfg)
 	if err != nil {
 		// SDK error embeds INFISICAL_URL + upstream rejection body; scrub it.
-		s.logger.Warn("infisical fetch failed during vault create",
-			slog.String("vault_name", req.Name),
+		s.logger.Warn("infisical fetch failed",
+			slog.String("vault", logName),
 			slog.String("err", err.Error()))
 		jsonCodedError(w, http.StatusBadGateway, "infisical_fetch_failed",
 			"Failed to fetch secrets from Infisical. See server logs for details.")
-		return
+		return infisicalSnapshot{}, false
 	}
 
 	items, err := infisical.EncryptSecrets(secs, s.encKey)
 	if err != nil {
 		if errors.Is(err, infisical.ErrInvalidKey) {
 			jsonCodedError(w, http.StatusBadRequest, "external_store_invalid_key", err.Error())
-			return
+			return infisicalSnapshot{}, false
 		}
 		jsonError(w, http.StatusInternalServerError, "Failed to encrypt fetched secrets")
-		return
+		return infisicalSnapshot{}, false
 	}
 
 	configJSON, err := infisical.MarshalConfigJSON(cfg)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to marshal credential store config")
+		return infisicalSnapshot{}, false
+	}
+	return infisicalSnapshot{ConfigJSON: configJSON, PollIntervalSeconds: pollInterval, Credentials: items}, true
+}
+
+// createExternalVault validates + probes + commits the vault,
+// credential-store row, initial snapshot, and admin grant in one
+// transaction. Any failure leaves the DB untouched.
+func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context, actor *Actor, req vaultCreateRequest) {
+	snap, ok := s.prepareInfisicalSnapshot(w, ctx, req.Name, req.CredentialStore)
+	if !ok {
 		return
 	}
+
 	vault, err := s.store.CreateExternalVault(ctx, store.CreateExternalVaultParams{
 		Name:                req.Name,
 		Kind:                store.CredentialStoreInfisical,
-		ConfigJSON:          configJSON,
-		PollIntervalSeconds: pollInterval,
-		Credentials:         items,
+		ConfigJSON:          snap.ConfigJSON,
+		PollIntervalSeconds: snap.PollIntervalSeconds,
+		Credentials:         snap.Credentials,
 		CreatorActorID:      actor.ID,
 		CreatorActorType:    actor.Type,
 	})
@@ -619,12 +639,76 @@ func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context,
 		"created_at": now.Format(time.RFC3339),
 		"credential_store": &credentialStoreSummary{
 			Kind:                store.CredentialStoreInfisical,
-			Config:              json.RawMessage(configJSON),
-			PollIntervalSeconds: pollInterval,
+			Config:              json.RawMessage(snap.ConfigJSON),
+			PollIntervalSeconds: snap.PollIntervalSeconds,
 			LastSyncStatus:      store.SyncStatusOK,
 			LastSyncedAt:        now.Format(time.RFC3339),
 		},
 	})
+}
+
+// handleVaultCredentialStorePatch switches the credential store backing an
+// existing vault. Switching to "infisical" (owner-only) probes + fetches the
+// upstream snapshot and OVERWRITES the vault's built-in credentials. Switching
+// to "builtin" (vault admin or owner) disconnects the external store; polling
+// stops but the last synced credentials are KEPT as built-in credentials.
+func (s *Server) handleVaultCredentialStorePatch(w http.ResponseWriter, r *http.Request) {
+	ns := s.resolveVaultForAdminOrOwner(w, r, r.PathValue("name"))
+	if ns == nil {
+		return
+	}
+	ctx := r.Context()
+
+	// The patch body has the same shape as the create credential_store block.
+	var req vaultCreateCredentialStoreRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	switch req.Kind {
+	case store.CredentialStoreBuiltin:
+		// Disconnect: drop the external-store row so polling stops; the last
+		// synced credentials remain as ordinary built-in credentials.
+		if err := s.store.DeleteVaultCredentialStore(ctx, ns.ID); err != nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to switch credential store")
+			return
+		}
+		jsonOK(w, map[string]interface{}{
+			"credential_store": &credentialStoreSummary{Kind: store.CredentialStoreBuiltin},
+		})
+	case store.CredentialStoreInfisical:
+		// Owner-only, mirroring handleVaultCreate: otherwise a vault admin could
+		// use the broker's machine identity to fetch upstream secrets into a
+		// vault they control.
+		actor, err := s.requireActor(w, r)
+		if err != nil {
+			return
+		}
+		if !actor.IsOwner() {
+			jsonError(w, http.StatusForbidden, "Owner role required to connect a vault to an external store")
+			return
+		}
+		snap, ok := s.prepareInfisicalSnapshot(w, ctx, ns.Name, &req)
+		if !ok {
+			return
+		}
+		cs, err := s.store.SetVaultExternalStore(ctx, store.SetVaultExternalStoreParams{
+			VaultID:             ns.ID,
+			Kind:                store.CredentialStoreInfisical,
+			ConfigJSON:          snap.ConfigJSON,
+			PollIntervalSeconds: snap.PollIntervalSeconds,
+			Credentials:         snap.Credentials,
+		})
+		if err != nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to switch credential store")
+			return
+		}
+		// Caller is admin/owner (gated above), so full detail is permitted.
+		jsonOK(w, map[string]interface{}{"credential_store": credentialStoreDetailSummary(cs)})
+	default:
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Unknown credential store kind %q (expected %q or %q)", req.Kind, store.CredentialStoreBuiltin, store.CredentialStoreInfisical))
+	}
 }
 
 func (s *Server) handleVaultList(w http.ResponseWriter, r *http.Request) {
@@ -827,7 +911,8 @@ func (s *Server) handleVaultSettingsGet(w http.ResponseWriter, r *http.Request) 
 		jsonError(w, http.StatusNotFound, "Vault not found")
 		return
 	}
-	if _, err := s.requireVaultAccess(w, r, ns.ID); err != nil {
+	actor, err := s.requireVaultAccess(w, r, ns.ID)
+	if err != nil {
 		return
 	}
 	policy, err := readUnmatchedHostPolicy(ctx, s.store, ns.ID)
@@ -835,7 +920,14 @@ func (s *Server) handleVaultSettingsGet(w http.ResponseWriter, r *http.Request) 
 		jsonError(w, http.StatusInternalServerError, "Failed to read vault settings")
 		return
 	}
-	jsonOK(w, map[string]interface{}{"unmatched_host_policy": string(policy)})
+	// infisical_available enables the Infisical option in the credential-store
+	// switcher. Only owners can connect a vault to Infisical (see
+	// handleVaultCredentialStorePatch), so report it owner-gated — otherwise a
+	// non-owner admin would see an option that 403s on submit.
+	jsonOK(w, map[string]interface{}{
+		"unmatched_host_policy": string(policy),
+		"infisical_available":   s.infisicalClient != nil && actor != nil && actor.IsOwner(),
+	})
 }
 
 func (s *Server) handleVaultSettingsPatch(w http.ResponseWriter, r *http.Request) {

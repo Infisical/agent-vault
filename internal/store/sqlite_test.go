@@ -29,8 +29,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 48 {
-		t.Fatalf("expected migration version 48, got %d", version)
+	if version != 49 {
+		t.Fatalf("expected migration version 49, got %d", version)
 	}
 }
 
@@ -2299,7 +2299,7 @@ func TestCascadeDeleteVaultRemovesCredentialStore(t *testing.T) {
 	}
 }
 
-func TestReplaceVaultCredentials(t *testing.T) {
+func TestReplaceVaultCredentialsForSyncRotates(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 
@@ -2321,12 +2321,12 @@ func TestReplaceVaultCredentials(t *testing.T) {
 	}
 
 	// Replace: keep A (rotated), drop B, add C.
-	err = s.ReplaceVaultCredentials(ctx, v.ID, []EncryptedKV{
+	applied, err := s.ReplaceVaultCredentialsForSync(ctx, v.ID, `{}`, []EncryptedKV{
 		{Key: "A", Ciphertext: []byte("c1-new"), Nonce: []byte("n1-new")},
 		{Key: "C", Ciphertext: []byte("c3"), Nonce: []byte("n3")},
 	})
-	if err != nil {
-		t.Fatalf("ReplaceVaultCredentials: %v", err)
+	if err != nil || !applied {
+		t.Fatalf("ReplaceVaultCredentialsForSync: applied=%v err=%v", applied, err)
 	}
 
 	creds, _ := s.ListCredentials(ctx, v.ID)
@@ -2348,7 +2348,7 @@ func TestReplaceVaultCredentials(t *testing.T) {
 	}
 }
 
-func TestReplaceVaultCredentialsEmptyWipes(t *testing.T) {
+func TestReplaceVaultCredentialsForSyncEmptyWipes(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 
@@ -2363,8 +2363,8 @@ func TestReplaceVaultCredentialsEmptyWipes(t *testing.T) {
 		CreatorActorType:    "user",
 	})
 
-	if err := s.ReplaceVaultCredentials(ctx, v.ID, nil); err != nil {
-		t.Fatalf("ReplaceVaultCredentials nil: %v", err)
+	if applied, err := s.ReplaceVaultCredentialsForSync(ctx, v.ID, `{}`, nil); err != nil || !applied {
+		t.Fatalf("ReplaceVaultCredentialsForSync nil: applied=%v err=%v", applied, err)
 	}
 	creds, _ := s.ListCredentials(ctx, v.ID)
 	if len(creds) != 0 {
@@ -2433,5 +2433,282 @@ func TestListVaultCredentialStoresFiltersBuiltin(t *testing.T) {
 	}
 	if len(list) != 2 {
 		t.Fatalf("expected 2 external stores, got %d (%+v)", len(list), list)
+	}
+}
+
+func TestSetVaultExternalStoreOverwritesBuiltin(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	v, err := s.CreateVault(ctx, "switch-up")
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+	// Seed built-in credentials that the connect should overwrite.
+	if _, err := s.SetCredential(ctx, v.ID, "OLD_KEY", []byte("c-old"), []byte("n-old")); err != nil {
+		t.Fatalf("SetCredential: %v", err)
+	}
+
+	cs, err := s.SetVaultExternalStore(ctx, SetVaultExternalStoreParams{
+		VaultID:             v.ID,
+		Kind:                CredentialStoreInfisical,
+		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+		PollIntervalSeconds: 30,
+		Credentials: []EncryptedKV{
+			{Key: "NEW_KEY", Ciphertext: []byte("c-new"), Nonce: []byte("n-new")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SetVaultExternalStore: %v", err)
+	}
+	// The returned row reflects the write without a follow-up read.
+	if cs == nil || cs.Kind != CredentialStoreInfisical || cs.PollIntervalSeconds != 30 || cs.LastSyncStatus != SyncStatusOK {
+		t.Fatalf("unexpected returned row: %+v", cs)
+	}
+
+	cs, err = s.GetVaultCredentialStore(ctx, v.ID)
+	if err != nil || cs == nil {
+		t.Fatalf("GetVaultCredentialStore: %v cs=%+v", err, cs)
+	}
+	if cs.Kind != CredentialStoreInfisical || cs.PollIntervalSeconds != 30 || cs.LastSyncStatus != SyncStatusOK {
+		t.Fatalf("unexpected store row: %+v", cs)
+	}
+
+	creds, _ := s.ListCredentials(ctx, v.ID)
+	if len(creds) != 1 || creds[0].Key != "NEW_KEY" {
+		t.Fatalf("expected only NEW_KEY after overwrite, got %+v", creds)
+	}
+
+	// Calling again upserts the row (reconfigure) without duplicating.
+	if _, err = s.SetVaultExternalStore(ctx, SetVaultExternalStoreParams{
+		VaultID:             v.ID,
+		Kind:                CredentialStoreInfisical,
+		ConfigJSON:          `{"project_id":"p2","environment":"prod","secret_path":"/x"}`,
+		PollIntervalSeconds: 60,
+		Credentials:         []EncryptedKV{{Key: "K2", Ciphertext: []byte("c"), Nonce: []byte("n")}},
+	}); err != nil {
+		t.Fatalf("SetVaultExternalStore re-run: %v", err)
+	}
+	cs, _ = s.GetVaultCredentialStore(ctx, v.ID)
+	if cs.PollIntervalSeconds != 60 || cs.ConfigJSON != `{"project_id":"p2","environment":"prod","secret_path":"/x"}` {
+		t.Fatalf("upsert did not update row: %+v", cs)
+	}
+	list, _ := s.ListVaultCredentialStores(ctx)
+	if len(list) != 1 {
+		t.Fatalf("expected single store row after upsert, got %d", len(list))
+	}
+}
+
+func TestDeleteVaultCredentialStoreKeepsCredentials(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "disconnect@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	v, err := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+		Name:                "switch-down",
+		Kind:                CredentialStoreInfisical,
+		ConfigJSON:          `{}`,
+		PollIntervalSeconds: 60,
+		Credentials: []EncryptedKV{
+			{Key: "SYNCED_KEY", Ciphertext: []byte("c"), Nonce: []byte("n")},
+		},
+		CreatorActorID:   u.ID,
+		CreatorActorType: "user",
+	})
+	if err != nil {
+		t.Fatalf("CreateExternalVault: %v", err)
+	}
+
+	if err := s.DeleteVaultCredentialStore(ctx, v.ID); err != nil {
+		t.Fatalf("DeleteVaultCredentialStore: %v", err)
+	}
+
+	// Row is gone (vault is now built-in).
+	if _, err := s.GetVaultCredentialStore(ctx, v.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows after delete, got %v", err)
+	}
+	list, _ := s.ListVaultCredentialStores(ctx)
+	if len(list) != 0 {
+		t.Fatalf("expected no external stores, got %d", len(list))
+	}
+
+	// Credentials are kept as built-in credentials.
+	creds, _ := s.ListCredentials(ctx, v.ID)
+	if len(creds) != 1 || creds[0].Key != "SYNCED_KEY" {
+		t.Fatalf("expected SYNCED_KEY kept, got %+v", creds)
+	}
+
+	// Deleting again is a no-op (no row to remove).
+	if err := s.DeleteVaultCredentialStore(ctx, v.ID); err != nil {
+		t.Fatalf("DeleteVaultCredentialStore second call: %v", err)
+	}
+}
+
+// ReplaceVaultCredentialsForSync writes only while the row still matches the
+// config the snapshot was fetched against. This closes two races where an
+// in-flight sync would clobber credentials: a concurrent disconnect, and a
+// concurrent switch to a different Infisical config.
+func TestReplaceVaultCredentialsForSyncGatedOnStoreRow(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	const cfgA = `{"project_id":"a","environment":"dev","secret_path":"/"}`
+	u, _ := s.CreateUser(ctx, "sync@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	v, err := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+		Name:                "sync-race",
+		Kind:                CredentialStoreInfisical,
+		ConfigJSON:          cfgA,
+		PollIntervalSeconds: 60,
+		Credentials:         []EncryptedKV{{Key: "KEPT", Ciphertext: []byte("c"), Nonce: []byte("n")}},
+		CreatorActorID:      u.ID,
+		CreatorActorType:    "user",
+	})
+	if err != nil {
+		t.Fatalf("CreateExternalVault: %v", err)
+	}
+
+	// Same config → the sync write lands.
+	applied, err := s.ReplaceVaultCredentialsForSync(ctx, v.ID, cfgA, []EncryptedKV{
+		{Key: "FRESH", Ciphertext: []byte("c2"), Nonce: []byte("n2")},
+	})
+	if err != nil || !applied {
+		t.Fatalf("expected applied write, got applied=%v err=%v", applied, err)
+	}
+	creds, _ := s.ListCredentials(ctx, v.ID)
+	if len(creds) != 1 || creds[0].Key != "FRESH" {
+		t.Fatalf("expected FRESH after applied sync, got %+v", creds)
+	}
+
+	// Reconfigure to a different config, then a still-in-flight sync against the
+	// OLD config: it must be a no-op so the switched-in credentials survive.
+	if _, err := s.SetVaultExternalStore(ctx, SetVaultExternalStoreParams{
+		VaultID:             v.ID,
+		Kind:                CredentialStoreInfisical,
+		ConfigJSON:          `{"project_id":"b","environment":"prod","secret_path":"/x"}`,
+		PollIntervalSeconds: 60,
+		Credentials:         []EncryptedKV{{Key: "SWITCHED", Ciphertext: []byte("c4"), Nonce: []byte("n4")}},
+	}); err != nil {
+		t.Fatalf("SetVaultExternalStore: %v", err)
+	}
+	applied, err = s.ReplaceVaultCredentialsForSync(ctx, v.ID, cfgA, []EncryptedKV{
+		{Key: "STALE", Ciphertext: []byte("c3"), Nonce: []byte("n3")},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceVaultCredentialsForSync after reconfigure: %v", err)
+	}
+	if applied {
+		t.Fatalf("expected applied=false after reconfigure")
+	}
+	creds, _ = s.ListCredentials(ctx, v.ID)
+	if len(creds) != 1 || creds[0].Key != "SWITCHED" {
+		t.Fatalf("expected SWITCHED credentials preserved after reconfigure, got %+v", creds)
+	}
+
+	// Disconnect entirely, then a still-in-flight sync: also a no-op.
+	if err := s.DeleteVaultCredentialStore(ctx, v.ID); err != nil {
+		t.Fatalf("DeleteVaultCredentialStore: %v", err)
+	}
+	applied, err = s.ReplaceVaultCredentialsForSync(ctx, v.ID, cfgA, []EncryptedKV{
+		{Key: "STALE2", Ciphertext: []byte("c5"), Nonce: []byte("n5")},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceVaultCredentialsForSync after disconnect: %v", err)
+	}
+	if applied {
+		t.Fatalf("expected applied=false after disconnect")
+	}
+	creds, _ = s.ListCredentials(ctx, v.ID)
+	if len(creds) != 1 || creds[0].Key != "SWITCHED" {
+		t.Fatalf("expected SWITCHED credentials preserved after disconnect, got %+v", creds)
+	}
+}
+
+func TestListUnmatchedHosts(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	vA, err := s.CreateVault(ctx, "vault-a")
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+	vB, err := s.CreateVault(ctx, "vault-b")
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+
+	now := time.Now().UTC()
+	rows := []RequestLog{
+		// Unmatched, denied by proxy (error_code=no_match) -- should appear
+		{VaultID: vA.ID, Ingress: "mitm", Method: "GET", Host: "api.stripe.com:443", Path: "/", MatchedService: "", Status: 403, ErrorCode: "no_match", CreatedAt: now.Add(-1 * time.Minute)},
+		{VaultID: vA.ID, Ingress: "mitm", Method: "POST", Host: "api.stripe.com:443", Path: "/v1/charges", MatchedService: "", Status: 403, ErrorCode: "no_match", CreatedAt: now},
+
+		// Unmatched, passthrough with upstream 401 -- should appear
+		{VaultID: vA.ID, Ingress: "mitm", Method: "GET", Host: "api.openai.com:443", Path: "/v1/models", MatchedService: "", Status: 401, ErrorCode: "", CreatedAt: now.Add(-30 * time.Second)},
+
+		// Unmatched, passthrough with upstream 403 -- should appear
+		{VaultID: vA.ID, Ingress: "mitm", Method: "GET", Host: "hooks.slack.com:443", Path: "/", MatchedService: "", Status: 403, ErrorCode: "", CreatedAt: now.Add(-2 * time.Minute)},
+
+		// Matched service -- should NOT appear (matched_service != '')
+		{VaultID: vA.ID, Ingress: "mitm", Method: "GET", Host: "api.github.com:443", Path: "/", MatchedService: "github", Status: 200, ErrorCode: "", CreatedAt: now},
+
+		// Unmatched, passthrough success (200) -- should NOT appear
+		{VaultID: vA.ID, Ingress: "mitm", Method: "GET", Host: "public-api.example.com:443", Path: "/", MatchedService: "", Status: 200, ErrorCode: "", CreatedAt: now},
+
+		// Unmatched, passthrough 500 (server error, not auth) -- should NOT appear
+		{VaultID: vA.ID, Ingress: "mitm", Method: "GET", Host: "buggy.example.com:443", Path: "/", MatchedService: "", Status: 500, ErrorCode: "", CreatedAt: now},
+
+		// Vault B: unmatched denied -- should NOT appear in vault A query
+		{VaultID: vB.ID, Ingress: "mitm", Method: "GET", Host: "vault-b-only.com:443", Path: "/", MatchedService: "", Status: 403, ErrorCode: "no_match", CreatedAt: now},
+
+		// Disabled service produces matched_service='' and error_code=no_match -- should appear at store level
+		{VaultID: vA.ID, Ingress: "mitm", Method: "GET", Host: "disabled.example.com:443", Path: "/", MatchedService: "", Status: 403, ErrorCode: "no_match", CreatedAt: now.Add(-5 * time.Minute)},
+	}
+	if err := s.InsertRequestLogs(ctx, rows); err != nil {
+		t.Fatalf("InsertRequestLogs: %v", err)
+	}
+
+	hosts, err := s.ListUnmatchedHosts(ctx, vA.ID)
+	if err != nil {
+		t.Fatalf("ListUnmatchedHosts: %v", err)
+	}
+
+	// Expected: api.stripe.com:443 (2 requests), api.openai.com:443 (1), hooks.slack.com:443 (1), disabled.example.com:443 (1)
+	if len(hosts) != 4 {
+		t.Fatalf("expected 4 unmatched hosts, got %d: %+v", len(hosts), hosts)
+	}
+
+	// Sorted by last_seen DESC: stripe (now), openai (now-30s), slack (now-2m), disabled (now-5m)
+	if hosts[0].Host != "api.stripe.com:443" {
+		t.Errorf("expected first host to be api.stripe.com:443, got %q", hosts[0].Host)
+	}
+	if hosts[0].RequestCount != 2 {
+		t.Errorf("expected api.stripe.com to have 2 requests, got %d", hosts[0].RequestCount)
+	}
+	if hosts[1].Host != "api.openai.com:443" {
+		t.Errorf("expected second host to be api.openai.com:443, got %q", hosts[1].Host)
+	}
+	if hosts[2].Host != "hooks.slack.com:443" {
+		t.Errorf("expected third host to be hooks.slack.com:443, got %q", hosts[2].Host)
+	}
+	if hosts[3].Host != "disabled.example.com:443" {
+		t.Errorf("expected fourth host to be disabled.example.com:443, got %q", hosts[3].Host)
+	}
+
+	// Vault B query should only return its own host
+	hostsB, err := s.ListUnmatchedHosts(ctx, vB.ID)
+	if err != nil {
+		t.Fatalf("ListUnmatchedHosts vault B: %v", err)
+	}
+	if len(hostsB) != 1 || hostsB[0].Host != "vault-b-only.com:443" {
+		t.Fatalf("vault B expected 1 host (vault-b-only.com:443), got %+v", hostsB)
+	}
+
+	// Empty vault should return nothing
+	empty, err := s.ListUnmatchedHosts(ctx, "nonexistent-vault-id")
+	if err != nil {
+		t.Fatalf("ListUnmatchedHosts empty: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected 0 hosts for nonexistent vault, got %d", len(empty))
 	}
 }

@@ -555,7 +555,7 @@ cat > /root/.config/systemd/user/openclaw-gateway.service.d/override.conf <<'EOF
 [Service]
 EnvironmentFile=/etc/openclaw/agent-vault.env
 ExecStart=
-ExecStart=/usr/local/bin/agent-vault run -- /usr/bin/openclaw gateway --port 18789
+ExecStart=/usr/local/bin/agent-vault run -- /usr/bin/openclaw gateway run --port 18789
 EOF
 ```
 

@@ -195,13 +195,14 @@ func buildFromFlags(cmd *cobra.Command, host string, credentialFlags []string) (
 
 		name, _ := cmd.Flags().GetString("name")
 
-		host, path := broker.SplitInlineHost(host, "")
+		host, path, port := broker.SplitInlineHost(host, "")
 
 		req.Services = append(req.Services, proposal.Service{
 			Action: proposal.ActionSet,
 			Name:   name,
 			Host:   host,
 			Path:   path,
+			Port:   port,
 			Auth:   auth,
 		})
 	} else {
@@ -291,7 +292,7 @@ func init() {
 
 	// Flag-driven mode.
 	proposalCreateCmd.Flags().String("name", "", "service name (slug, 3–64 lowercase alphanumeric/hyphen chars). Required for new services; may be omitted when --host uniquely matches an existing service (the server adopts that name).")
-	proposalCreateCmd.Flags().String("host", "", "target service host. Accepts api.stripe.com, *.github.com, or inline path form like slack.com/api/*.")
+	proposalCreateCmd.Flags().String("host", "", "target host with optional port and path glob (e.g. api.stripe.com, internal.corp.com:3000, slack.com/api/*)")
 	proposalCreateCmd.Flags().String("auth-type", "", "auth type: bearer, basic, api-key, passthrough")
 	proposalCreateCmd.Flags().String("token-key", "", "credential key for bearer auth")
 	proposalCreateCmd.Flags().String("username-key", "", "credential key for basic auth username")

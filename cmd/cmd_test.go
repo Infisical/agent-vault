@@ -151,6 +151,45 @@ func TestVaultSubcommandsRegistered(t *testing.T) {
 	}
 }
 
+func TestVaultCredentialStoreSubcommandsRegistered(t *testing.T) {
+	vCmd := findSubcommand(rootCmd, "vault")
+	if vCmd == nil {
+		t.Fatal("vault command not found")
+	}
+	csCmd := findSubcommand(vCmd, "credential-store")
+	if csCmd == nil {
+		t.Fatal("credential-store command not found under vault")
+	}
+
+	registered := make(map[string]bool)
+	for _, c := range csCmd.Commands() {
+		registered[c.Name()] = true
+	}
+	for _, name := range []string{"show", "sync", "set"} {
+		if !registered[name] {
+			t.Errorf("expected credential-store subcommand %q to be registered", name)
+		}
+	}
+
+	setCmd := findSubcommand(csCmd, "set")
+	if setCmd == nil {
+		t.Fatal("set command not found under credential-store")
+	}
+	for _, flag := range []string{"kind", "infisical-project-id", "infisical-environment", "infisical-path", "poll-interval-seconds", "yes"} {
+		if setCmd.Flags().Lookup(flag) == nil {
+			t.Errorf("expected credential-store set to define --%s flag", flag)
+		}
+	}
+}
+
+func TestVaultCredentialStoreSetRequiresKind(t *testing.T) {
+	// Missing --kind should fail before any network call.
+	_, err := executeCommand("vault", "credential-store", "set", "my-app", "--yes")
+	if err == nil {
+		t.Fatal("expected error when --kind is omitted")
+	}
+}
+
 func TestOwnerVaultSubcommandsRegistered(t *testing.T) {
 	oCmd := findSubcommand(rootCmd, "owner")
 	if oCmd == nil {
@@ -464,7 +503,7 @@ func TestAgentSubcommandsRegistered(t *testing.T) {
 }
 
 func TestTopAgentSubcommandsRegistered(t *testing.T) {
-	// Instance-level agent commands: list, info, delete, rotate, rename, create, set-role
+	// Instance-level agent commands: list, info, revoke, delete, rotate, rename, create, set-role
 	agCmd := findSubcommand(rootCmd, "agent")
 	if agCmd == nil {
 		t.Fatal("agent command not found")
@@ -475,7 +514,7 @@ func TestTopAgentSubcommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"list", "info", "delete", "rotate", "rename", "create", "set-role"}
+	expected := []string{"list", "info", "revoke", "delete", "rotate", "rename", "create", "set-role"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected agent subcommand %q to be registered, but it was not", name)

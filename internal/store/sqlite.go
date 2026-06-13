@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -301,38 +302,128 @@ func (s *SQLiteStore) UpdateVaultCredentialStoreHealth(ctx context.Context, vaul
 	return nil
 }
 
-// ReplaceVaultCredentials atomically wipes and rewrites the vault's credentials
-// in one transaction; empty items clears the vault.
-func (s *SQLiteStore) ReplaceVaultCredentials(ctx context.Context, vaultID string, items []EncryptedKV) error {
-	nowStr := nowUTC()
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
+// replaceCredentialsTx wipes and rewrites the vault's static credentials inside
+// an existing transaction; empty items just clears them. Shared by the
+// standalone replace and the external-store connect path. Non-static (e.g.
+// oauth) credentials are deliberately left untouched.
+func replaceCredentialsTx(ctx context.Context, tx *sql.Tx, vaultID, nowStr string, items []EncryptedKV) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM credentials WHERE vault_id = ? AND type = 'static'", vaultID); err != nil {
 		return fmt.Errorf("clearing credentials: %w", err)
 	}
-	if len(items) > 0 {
-		stmt, err := tx.PrepareContext(ctx,
-			`INSERT OR IGNORE INTO credentials (id, vault_id, key, type, ciphertext, nonce, created_at, updated_at)
-			   VALUES (?, ?, ?, 'static', ?, ?, ?, ?)`)
-		if err != nil {
-			return fmt.Errorf("preparing credential insert: %w", err)
-		}
-		defer func() { _ = stmt.Close() }()
-		for _, item := range items {
-			if _, err := stmt.ExecContext(ctx,
-				newUUID(), vaultID, item.Key, item.Ciphertext, item.Nonce, nowStr, nowStr,
-			); err != nil {
-				return fmt.Errorf("inserting credential %q: %w", item.Key, err)
-			}
+	if len(items) == 0 {
+		return nil
+	}
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT OR IGNORE INTO credentials (id, vault_id, key, type, ciphertext, nonce, created_at, updated_at)
+		   VALUES (?, ?, ?, 'static', ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("preparing credential insert: %w", err)
+	}
+	defer func() { _ = stmt.Close() }()
+	for _, item := range items {
+		if _, err := stmt.ExecContext(ctx,
+			newUUID(), vaultID, item.Key, item.Ciphertext, item.Nonce, nowStr, nowStr,
+		); err != nil {
+			return fmt.Errorf("inserting credential %q: %w", item.Key, err)
 		}
 	}
+	return nil
+}
 
-	return tx.Commit()
+// ReplaceVaultCredentialsForSync is the syncer's write path: it rewrites the
+// vault's credentials in one transaction, but only while the external-store row
+// still matches the config the snapshot was fetched against. A sync that races
+// a disconnect (row gone) or a reconfigure (config_json changed) reports
+// applied=false and writes nothing, so a stale snapshot can never clobber the
+// credentials a switch just installed. configJSON is the fetched config.
+func (s *SQLiteStore) ReplaceVaultCredentialsForSync(ctx context.Context, vaultID, configJSON string, items []EncryptedKV) (applied bool, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var dummy int
+	switch err := tx.QueryRowContext(ctx,
+		"SELECT 1 FROM vault_credential_stores WHERE vault_id = ? AND config_json = ?", vaultID, configJSON).Scan(&dummy); {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil // disconnected or reconfigured mid-sync; keep current credentials
+	case err != nil:
+		return false, fmt.Errorf("checking credential store: %w", err)
+	}
+
+	if err := replaceCredentialsTx(ctx, tx, vaultID, nowUTC(), items); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit: %w", err)
+	}
+	return true, nil
+}
+
+// SetVaultExternalStore upserts the credential-store row and replaces the
+// vault's static credentials in one transaction — the connect path for an
+// existing built-in vault. The credential-store health is reset to a fresh
+// successful sync (the caller has just probed + fetched the snapshot). Returns
+// the resulting row so the caller can render it without a follow-up read.
+func (s *SQLiteStore) SetVaultExternalStore(ctx context.Context, p SetVaultExternalStoreParams) (*VaultCredentialStore, error) {
+	if p.VaultID == "" || p.Kind == "" || p.ConfigJSON == "" {
+		return nil, fmt.Errorf("SetVaultExternalStore: vault_id, kind, and config required")
+	}
+	now := time.Now().UTC()
+	nowStr := now.Format(time.DateTime)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO vault_credential_stores
+		   (vault_id, kind, config_json, poll_interval_seconds, last_synced_at, last_sync_status, last_sync_error, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+		 ON CONFLICT(vault_id) DO UPDATE SET
+		   kind = excluded.kind,
+		   config_json = excluded.config_json,
+		   poll_interval_seconds = excluded.poll_interval_seconds,
+		   last_synced_at = excluded.last_synced_at,
+		   last_sync_status = excluded.last_sync_status,
+		   last_sync_error = NULL,
+		   updated_at = excluded.updated_at`,
+		p.VaultID, p.Kind, p.ConfigJSON, p.PollIntervalSeconds, nowStr, SyncStatusOK, nowStr, nowStr,
+	); err != nil {
+		return nil, fmt.Errorf("upserting credential store: %w", err)
+	}
+
+	if err := replaceCredentialsTx(ctx, tx, p.VaultID, nowStr, p.Credentials); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+
+	return &VaultCredentialStore{
+		VaultID:             p.VaultID,
+		Kind:                p.Kind,
+		ConfigJSON:          p.ConfigJSON,
+		PollIntervalSeconds: p.PollIntervalSeconds,
+		LastSyncedAt:        &now,
+		LastSyncStatus:      SyncStatusOK,
+		UpdatedAt:           now,
+	}, nil
+}
+
+// DeleteVaultCredentialStore removes the external-store row so the syncer stops
+// polling the vault. The vault's credentials are intentionally left untouched —
+// the last synced snapshot becomes ordinary built-in credentials. Returns nil
+// when no row exists (the vault was already built-in).
+func (s *SQLiteStore) DeleteVaultCredentialStore(ctx context.Context, vaultID string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM vault_credential_stores WHERE vault_id = ?`, vaultID); err != nil {
+		return fmt.Errorf("deleting credential store: %w", err)
+	}
+	return nil
 }
 
 // rowScanner unifies *sql.Row and *sql.Rows so one scan func serves both.
@@ -2739,6 +2830,37 @@ func (s *SQLiteStore) RevokeAgent(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
+func (s *SQLiteStore) DeleteAgent(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM sessions
+		 WHERE agent_id = ?
+		    OR (created_by_actor_id = ? AND created_by_actor_type = 'agent')`,
+		id, id); err != nil {
+		return fmt.Errorf("deleting agent sessions: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM vault_grants WHERE actor_id = ? AND actor_type = 'agent'`, id); err != nil {
+		return fmt.Errorf("deleting agent vault grants: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("deleting agent: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+
+	return tx.Commit()
+}
 
 func (s *SQLiteStore) RenameAgent(ctx context.Context, id string, newName string) error {
 	nowStr := nowUTC()
@@ -2813,6 +2935,14 @@ func (s *SQLiteStore) RotateAgentToken(ctx context.Context, agentID string, expi
 
 	if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE agent_id = ?", agentID); err != nil {
 		return nil, fmt.Errorf("deleting agent tokens: %w", err)
+	}
+
+	nowStr := nowUTC()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE agents SET status = 'active', revoked_at = NULL, updated_at = ? WHERE id = ?`,
+		nowStr, agentID,
+	); err != nil {
+		return nil, fmt.Errorf("reactivating agent: %w", err)
 	}
 
 	rawToken := newAgentToken()
@@ -3001,8 +3131,9 @@ func (s *SQLiteStore) InsertRequestLogs(ctx context.Context, rows []RequestLog) 
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO request_logs
 		  (vault_id, actor_type, actor_id, ingress, method, host, path,
-		   matched_service, credential_keys, status, latency_ms, error_code, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		   matched_service, credential_keys, status, latency_ms, error_code,
+		   auth_scheme, auth_header, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("preparing request_logs insert: %w", err)
 	}
@@ -3024,6 +3155,7 @@ func (s *SQLiteStore) InsertRequestLogs(ctx context.Context, rows []RequestLog) 
 		if _, err := stmt.ExecContext(ctx,
 			r.VaultID, r.ActorType, r.ActorID, r.Ingress, r.Method, r.Host, r.Path,
 			r.MatchedService, string(keysJSON), r.Status, r.LatencyMs, r.ErrorCode,
+			r.AuthScheme, r.AuthHeader,
 			createdAt.UTC().Format(time.DateTime),
 		); err != nil {
 			return fmt.Errorf("inserting request_log: %w", err)
@@ -3120,6 +3252,44 @@ func (s *SQLiteStore) ListRequestLogs(ctx context.Context, opts ListRequestLogsO
 		}
 		rl.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
 		out = append(out, rl)
+	}
+	return out, rows.Err()
+}
+
+// ListUnmatchedHosts returns distinct hostnames from request_logs that did
+// not match any configured service and resulted in an auth failure (401/403)
+// or proxy denial (error_code 'no_match'). Results are ordered by most
+// recent failure first. Capped at 500 rows as a defense-in-depth limit.
+func (s *SQLiteStore) ListUnmatchedHosts(ctx context.Context, vaultID string) ([]UnmatchedHost, error) {
+	// auth_scheme and auth_header are bare columns in a GROUP BY with
+	// MAX(created_at). SQLite guarantees these come from the row that
+	// produced the MAX, giving us the auth detection from the most
+	// recent request per host.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT host, COUNT(*) AS request_count, MAX(created_at) AS last_seen,
+		       auth_scheme, auth_header
+		FROM request_logs
+		WHERE vault_id = ?
+		  AND matched_service = ''
+		  AND host != ''
+		  AND (error_code = 'no_match' OR status IN (401, 403))
+		GROUP BY host
+		ORDER BY MAX(created_at) DESC, host ASC
+		LIMIT 500`, vaultID)
+	if err != nil {
+		return nil, fmt.Errorf("listing unmatched hosts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []UnmatchedHost
+	for rows.Next() {
+		var uh UnmatchedHost
+		var lastSeen string
+		if err := rows.Scan(&uh.Host, &uh.RequestCount, &lastSeen, &uh.AuthScheme, &uh.AuthHeader); err != nil {
+			return nil, fmt.Errorf("scanning unmatched host: %w", err)
+		}
+		uh.LastSeen, _ = time.Parse(time.DateTime, lastSeen)
+		out = append(out, uh)
 	}
 	return out, rows.Err()
 }
