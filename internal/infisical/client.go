@@ -42,7 +42,8 @@ func NewClient(ctx context.Context, logger *slog.Logger) (*Client, error) {
 
 	c := sdk.NewInfisicalClient(ctx, sdk.Config{
 		SiteUrl:              siteURL,
-		AutoTokenRefresh:     true,
+		AutoTokenRefresh:     sdk.BoolPtr(true), // v0.8.0 made this a *bool
+
 		CacheExpiryInSeconds: 0, // disable SDK-side secret caching; we own the cache
 	})
 
