@@ -2,9 +2,12 @@ import { useState, useEffect, useMemo } from "react";
 import { Link, useNavigate, useRouteContext } from "@tanstack/react-router";
 import type { AuthContext } from "../../router";
 import Sheet from "../../components/Sheet";
-import FormField from "../../components/FormField";
-import Input from "../../components/Input";
-import Select from "../../components/Select";
+import VaultForm, {
+  emptyVaultForm,
+  infisicalFieldsValid,
+  buildInfisicalConfig,
+  type VaultFormValues,
+} from "../../components/VaultForm";
 import Button from "../../components/Button";
 import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
 import { ErrorBanner, LoadingSpinner, timeAgo } from "../../components/shared";
@@ -291,17 +294,10 @@ function VaultCard({
 
 function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void }) {
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-
+  const [values, setValues] = useState<VaultFormValues>(emptyVaultForm);
   const [availableStores, setAvailableStores] = useState<string[]>(["builtin"]);
-  const [kind, setKind] = useState<string>("builtin");
-
-  // Infisical-only fields.
-  const [projectID, setProjectID] = useState("");
-  const [environment, setEnvironment] = useState("");
-  const [secretPath, setSecretPath] = useState("/");
 
   useEffect(() => {
     apiFetch("/v1/instance/credential-stores")
@@ -314,42 +310,33 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
 
   function close() {
     setOpen(false);
-    setName("");
+    setValues(emptyVaultForm);
     setError("");
-    setKind("builtin");
-    setProjectID("");
-    setEnvironment("");
-    setSecretPath("/");
   }
 
   async function handleCreate() {
-    if (!name.trim()) return;
+    const trimmed = values.name.trim();
+    if (!trimmed) return;
     setSubmitting(true);
     setError("");
-    const trimmed = name.trim();
-    try {
-      const body: Record<string, unknown> = { name: trimmed };
-      if (kind === "infisical") {
-        if (!projectID.trim() || !environment.trim()) {
-          setError("Project ID and environment are required for Infisical.");
-          setSubmitting(false);
-          return;
-        }
-        const trimmedPath = secretPath.trim() || "/";
-        if (!trimmedPath.startsWith("/")) {
-          setError('Secret path must start with "/".');
-          setSubmitting(false);
-          return;
-        }
-        body.credential_store = {
-          kind: "infisical",
-          config: {
-            project_id: projectID.trim(),
-            environment: environment.trim(),
-            secret_path: trimmedPath,
-          },
-        };
+
+    const body: Record<string, unknown> = { name: trimmed };
+    if (values.kind === "infisical") {
+      if (!infisicalFieldsValid(values)) {
+        setError("Project ID and environment are required for Infisical.");
+        setSubmitting(false);
+        return;
       }
+      try {
+        body.credential_store = { kind: "infisical", config: buildInfisicalConfig(values) };
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Invalid Infisical config.");
+        setSubmitting(false);
+        return;
+      }
+    }
+
+    try {
       const resp = await apiFetch("/v1/vaults", {
         method: "POST",
         body: JSON.stringify(body),
@@ -401,39 +388,25 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
             <Button
               onClick={handleCreate}
               loading={submitting}
-              disabled={
-                !name.trim() ||
-                (kind === "infisical" && (!projectID.trim() || !environment.trim()))
-              }
+              disabled={!values.name.trim() || !infisicalFieldsValid(values)}
             >
               Create
             </Button>
           </>
         }
       >
-        <div className="space-y-4">
-        <p className="text-sm text-text-muted">
-          Create an isolated environment with its own credentials and proxy rules.
-        </p>
-        <FormField
-          label="Vault Name"
-          error={error && kind === "builtin" ? error : undefined}
-        >
-          <Input
-            placeholder="e.g. my-project"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleCreate();
-            }}
-            error={!!error && kind === "builtin"}
-            autoFocus
-          />
-        </FormField>
-
-        <FormField
-          label="Credential store"
-          tooltip={
+        <VaultForm
+          values={values}
+          onChange={(patch) => {
+            setValues((v) => ({ ...v, ...patch }));
+            setError("");
+          }}
+          infisicalOptionDisabled={!infisicalAvailable}
+          namePlaceholder="e.g. my-project"
+          autoFocusName
+          onEnter={handleCreate}
+          error={error}
+          storeTooltip={
             <>
               Built-in keeps credentials in Agent Vault. Infisical syncs read-only from your Infisical instance.
               {!infisicalAvailable && (
@@ -441,45 +414,12 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
               )}
             </>
           }
-        >
-          <Select
-            value={kind}
-            onChange={(e) => setKind(e.target.value)}
-          >
-            <option value="builtin">Built In</option>
-            <option value="infisical" disabled={!infisicalAvailable}>
-              Infisical
-            </option>
-          </Select>
-        </FormField>
-
-        {kind === "infisical" && (
-          <div className="space-y-3">
-            <FormField label="Project ID" required>
-              <Input
-                placeholder="abcdef..."
-                value={projectID}
-                onChange={(e) => setProjectID(e.target.value)}
-              />
-            </FormField>
-            <FormField label="Environment Slug" required>
-              <Input
-                placeholder="dev"
-                value={environment}
-                onChange={(e) => setEnvironment(e.target.value)}
-              />
-            </FormField>
-            <FormField label="Secret path">
-              <Input
-                placeholder="/"
-                value={secretPath}
-                onChange={(e) => setSecretPath(e.target.value)}
-              />
-            </FormField>
-            {error && <ErrorBanner message={error} />}
-          </div>
-        )}
-        </div>
+          header={
+            <p className="text-sm text-text-muted">
+              Create an isolated environment with its own credentials and proxy rules.
+            </p>
+          }
+        />
       </Sheet>
     </>
   );
