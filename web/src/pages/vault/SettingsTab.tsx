@@ -3,13 +3,14 @@ import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useVaultParams, ErrorBanner, timeAgo } from "./shared";
 import type { CredentialStoreInfo } from "../../router";
 import Button from "../../components/Button";
-import Input from "../../components/Input";
-import Select from "../../components/Select";
-import FormField from "../../components/FormField";
 import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
 import InfoTooltip from "../../components/InfoTooltip";
 import Sheet from "../../components/Sheet";
-import Toggle from "../../components/Toggle";
+import VaultForm, {
+  infisicalFieldsValid,
+  buildInfisicalConfig,
+  type VaultFormValues,
+} from "../../components/VaultForm";
 import { apiFetch } from "../../lib/api";
 
 type UnmatchedHostPolicy = "passthrough" | "deny";
@@ -243,50 +244,45 @@ function EditSettingsSheet({
   const currentKind: "builtin" | "infisical" =
     store?.kind === "infisical" ? "infisical" : "builtin";
 
-  // Draft state, seeded from the live values each time the drawer opens.
-  const [name, setName] = useState(vaultName);
-  const [draftPolicy, setDraftPolicy] = useState<UnmatchedHostPolicy>(
-    policy ?? "passthrough"
-  );
-  const [target, setTarget] = useState<"builtin" | "infisical">(currentKind);
-  const [projectID, setProjectID] = useState(config.project_id ?? "");
-  const [environment, setEnvironment] = useState(config.environment ?? "");
-  const [secretPath, setSecretPath] = useState(config.secret_path || "/");
+  const initialValues: VaultFormValues = {
+    name: vaultName,
+    policy: policy ?? "passthrough",
+    kind: currentKind,
+    projectID: config.project_id ?? "",
+    environment: config.environment ?? "",
+    secretPath: config.secret_path || "/",
+  };
 
+  // Draft state, re-seeded from the live values each time the drawer opens.
+  const [values, setValues] = useState<VaultFormValues>(initialValues);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [showConfirm, setShowConfirm] = useState(false);
 
   useEffect(() => {
     if (!open) return;
-    setName(vaultName);
-    setDraftPolicy(policy ?? "passthrough");
-    setTarget(currentKind);
-    setProjectID(config.project_id ?? "");
-    setEnvironment(config.environment ?? "");
-    setSecretPath(config.secret_path || "/");
+    setValues(initialValues);
     setError("");
     setShowConfirm(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const switchToInfisical = target === "infisical";
-  const trimmedName = name.trim();
+  const switchToInfisical = values.kind === "infisical";
+  const trimmedName = values.name.trim();
 
   const nameChanged = !isDefault && !!trimmedName && trimmedName !== vaultName;
-  const policyChanged = policy !== null && draftPolicy !== policy;
+  const policyChanged = policy !== null && values.policy !== policy;
   const configChanged =
     switchToInfisical &&
-    (projectID.trim() !== (config.project_id ?? "") ||
-      environment.trim() !== (config.environment ?? "") ||
-      (secretPath.trim() || "/") !== (config.secret_path || "/"));
-  const storeChanged = target !== currentKind || configChanged;
+    (values.projectID.trim() !== (config.project_id ?? "") ||
+      values.environment.trim() !== (config.environment ?? "") ||
+      (values.secretPath.trim() || "/") !== (config.secret_path || "/"));
+  const storeChanged = values.kind !== currentKind || configChanged;
 
-  const infisicalFieldsValid =
-    !switchToInfisical || (!!projectID.trim() && !!environment.trim());
   // nameChanged already implies a non-empty trimmed name, so no extra guard.
   const canSave =
-    (nameChanged || policyChanged || storeChanged) && infisicalFieldsValid;
+    (nameChanged || policyChanged || storeChanged) &&
+    infisicalFieldsValid(values);
 
   // Runs every pending change in a safe order: non-destructive first, then the
   // credential-store overwrite, then rename last (it changes the vault URL).
@@ -299,28 +295,20 @@ function EditSettingsSheet({
           `/v1/vaults/${encodeURIComponent(vaultName)}/settings`,
           {
             method: "PATCH",
-            body: JSON.stringify({ unmatched_host_policy: draftPolicy }),
+            body: JSON.stringify({ unmatched_host_policy: values.policy }),
           }
         );
         if (!resp.ok) {
           const data = await resp.json().catch(() => ({}));
           throw new Error(data.error || "Failed to update policy");
         }
-        onPolicySaved(draftPolicy);
+        onPolicySaved(values.policy);
       }
 
       if (storeChanged) {
-        const body: Record<string, unknown> = { kind: target };
+        const body: Record<string, unknown> = { kind: values.kind };
         if (switchToInfisical) {
-          const trimmedPath = secretPath.trim() || "/";
-          if (!trimmedPath.startsWith("/")) {
-            throw new Error('Secret path must start with "/".');
-          }
-          body.config = {
-            project_id: projectID.trim(),
-            environment: environment.trim(),
-            secret_path: trimmedPath,
-          };
+          body.config = buildInfisicalConfig(values);
         }
         const resp = await apiFetch(
           `/v1/vaults/${encodeURIComponent(vaultName)}/credential-store`,
@@ -384,82 +372,19 @@ function EditSettingsSheet({
           </>
         }
       >
-        <div className="space-y-5">
-          <FormField label="Vault Name">
-            <Input
-              value={name}
-              onChange={(e) => {
-                setName(e.target.value);
-                setError("");
-              }}
-              disabled={isDefault}
-              placeholder="vault-name"
-            />
-          </FormField>
-
-          <FormField
-            label="Strict deny mode"
-            tooltip="Reject unmatched hosts with HTTP 403 instead of forwarding them upstream unauthenticated."
-          >
-            <Toggle
-              checked={draftPolicy === "deny"}
-              onChange={(v) => setDraftPolicy(v ? "deny" : "passthrough")}
-              disabled={policy === null}
-              ariaLabel="Strict deny mode"
-            />
-          </FormField>
-
-          <FormField
-            label="Credential store"
-            tooltip="Built-in keeps credentials in Agent Vault. Infisical syncs read-only from your Infisical instance, overwriting the built-in credentials."
-          >
-            <Select
-              value={target}
-              onChange={(e) =>
-                setTarget(e.target.value as "builtin" | "infisical")
-              }
-            >
-              <option value="builtin">Built In</option>
-              {/* Keep the current store selectable even when the server can no
-                  longer make new Infisical connections, so toggling to Built In
-                  and back restores the pre-filled config. */}
-              <option
-                value="infisical"
-                disabled={!infisicalAvailable && currentKind !== "infisical"}
-              >
-                Infisical
-              </option>
-            </Select>
-          </FormField>
-
-          {switchToInfisical && (
-            <div className="space-y-3">
-              <FormField label="Project ID" required>
-                <Input
-                  placeholder="abcdef..."
-                  value={projectID}
-                  onChange={(e) => setProjectID(e.target.value)}
-                />
-              </FormField>
-              <FormField label="Environment Slug" required>
-                <Input
-                  placeholder="dev"
-                  value={environment}
-                  onChange={(e) => setEnvironment(e.target.value)}
-                />
-              </FormField>
-              <FormField label="Secret path">
-                <Input
-                  placeholder="/"
-                  value={secretPath}
-                  onChange={(e) => setSecretPath(e.target.value)}
-                />
-              </FormField>
-            </div>
-          )}
-
-          {error && <ErrorBanner message={error} />}
-        </div>
+        <VaultForm
+          values={values}
+          onChange={(patch) => {
+            setValues((v) => ({ ...v, ...patch }));
+            setError("");
+          }}
+          showPolicy
+          policyDisabled={policy === null}
+          nameDisabled={isDefault}
+          infisicalOptionDisabled={!infisicalAvailable && currentKind !== "infisical"}
+          error={error}
+          storeTooltip="Built-in keeps credentials in Agent Vault. Infisical syncs read-only from your Infisical instance, overwriting the built-in credentials."
+        />
       </Sheet>
 
       <ConfirmDeleteModal
