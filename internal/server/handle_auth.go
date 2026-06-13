@@ -162,7 +162,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, http.StatusInternalServerError, "Failed to create session")
 			return
 		}
-		http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(userSessionAbsoluteTTL.Seconds())))
+		http.SetCookie(w, s.sessionCookie(r, session.ID, int(userSessionAbsoluteTTL.Seconds())))
 
 		jsonCreated(w, registerResponse{
 			Email:                user.Email,
@@ -282,7 +282,7 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusInternalServerError, "Failed to create session")
 		return
 	}
-	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(userSessionAbsoluteTTL.Seconds())))
+	http.SetCookie(w, s.sessionCookie(r, session.ID, int(userSessionAbsoluteTTL.Seconds())))
 
 	jsonOK(w, verifyResponse{
 		Email:         user.Email,
@@ -496,7 +496,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(userSessionAbsoluteTTL.Seconds())))
+	http.SetCookie(w, s.sessionCookie(r, session.ID, int(userSessionAbsoluteTTL.Seconds())))
 
 	jsonOK(w, map[string]interface{}{
 		"message":       "Password reset successfully.",
@@ -658,7 +658,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(userSessionAbsoluteTTL.Seconds())))
+	http.SetCookie(w, s.sessionCookie(r, session.ID, int(userSessionAbsoluteTTL.Seconds())))
 
 	jsonOK(w, loginResponse{
 		Token:     session.ID,
@@ -737,7 +737,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.SetCookie(w, sessionCookie(r, s.baseURL, newSess.ID, int(userSessionAbsoluteTTL.Seconds())))
+	http.SetCookie(w, s.sessionCookie(r, newSess.ID, int(userSessionAbsoluteTTL.Seconds())))
 
 	jsonOK(w, loginResponse{
 		Token:     newSess.ID,
@@ -771,7 +771,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Clear session cookie.
-	http.SetCookie(w, sessionCookie(r, s.baseURL, "", -1))
+	http.SetCookie(w, s.sessionCookie(r, "", -1))
 
 	jsonOK(w, map[string]string{"status": "deleted", "email": user.Email})
 }
@@ -792,6 +792,6 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.DeleteSession(r.Context(), token)
 		s.touchCache.Delete(token)
 	}
-	http.SetCookie(w, sessionCookie(r, s.baseURL, "", -1))
+	http.SetCookie(w, s.sessionCookie(r, "", -1))
 	jsonOK(w, map[string]string{"status": "ok"})
 }
