@@ -421,7 +421,13 @@ function EditSettingsSheet({
               }
             >
               <option value="builtin">Built In</option>
-              <option value="infisical" disabled={!infisicalAvailable}>
+              {/* Keep the current store selectable even when the server can no
+                  longer make new Infisical connections, so toggling to Built In
+                  and back restores the pre-filled config. */}
+              <option
+                value="infisical"
+                disabled={!infisicalAvailable && currentKind !== "infisical"}
+              >
                 Infisical
               </option>
             </Select>
