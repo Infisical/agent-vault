@@ -1,11 +1,14 @@
-import { useEffect, useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { useEffect, useState, type ReactNode } from "react";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useVaultParams, ErrorBanner, timeAgo } from "./shared";
 import type { CredentialStoreInfo } from "../../router";
 import Button from "../../components/Button";
 import Input from "../../components/Input";
+import Select from "../../components/Select";
 import FormField from "../../components/FormField";
 import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
+import InfoTooltip from "../../components/InfoTooltip";
+import Sheet from "../../components/Sheet";
 import Toggle from "../../components/Toggle";
 import { apiFetch } from "../../lib/api";
 
@@ -17,19 +20,18 @@ export default function SettingsTab() {
   const canManage = vaultRole === "admin" || isOwner;
   const isDefault = vaultName === "default";
 
-  // Rename state
-  const [newName, setNewName] = useState(vaultName);
-  const [renaming, setRenaming] = useState(false);
-  const [renameError, setRenameError] = useState("");
-  const [renameSuccess, setRenameSuccess] = useState("");
-
   // Delete state
   const [showDeleteModal, setShowDeleteModal] = useState(false);
 
-  // null until the initial fetch lands; disables the toggle on first paint.
+  // Edit-settings drawer.
+  const [editing, setEditing] = useState(false);
+
+  // null until the initial fetch lands; keeps the displayed policy blank on
+  // first paint and gates the drawer toggle.
   const [policy, setPolicy] = useState<UnmatchedHostPolicy | null>(null);
-  const [policySaving, setPolicySaving] = useState(false);
-  const [policyError, setPolicyError] = useState("");
+
+  // Whether the server can back vaults with Infisical (controls the switcher).
+  const [infisicalAvailable, setInfisicalAvailable] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -45,11 +47,13 @@ export default function SettingsTab() {
         }
         const data = (await resp.json()) as {
           unmatched_host_policy?: UnmatchedHostPolicy;
+          infisical_available?: boolean;
         };
         if (cancelled) return;
         setPolicy(
           data.unmatched_host_policy === "deny" ? "deny" : "passthrough"
         );
+        setInfisicalAvailable(!!data.infisical_available);
       } catch {
         if (!cancelled) setPolicy("passthrough");
       }
@@ -58,69 +62,6 @@ export default function SettingsTab() {
       cancelled = true;
     };
   }, [vaultName]);
-
-  async function handlePolicyToggle(strictDeny: boolean) {
-    const next: UnmatchedHostPolicy = strictDeny ? "deny" : "passthrough";
-    const previous = policy;
-    setPolicy(next);
-    setPolicySaving(true);
-    setPolicyError("");
-    try {
-      const resp = await apiFetch(
-        `/v1/vaults/${encodeURIComponent(vaultName)}/settings`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({ unmatched_host_policy: next }),
-        }
-      );
-      if (!resp.ok) {
-        const data = await resp.json().catch(() => ({}));
-        setPolicy(previous);
-        setPolicyError(data.error || "Failed to update policy");
-      }
-    } catch {
-      setPolicy(previous);
-      setPolicyError("Network error");
-    } finally {
-      setPolicySaving(false);
-    }
-  }
-
-  async function handleRename(e: React.FormEvent) {
-    e.preventDefault();
-    if (!newName || newName === vaultName) return;
-
-    setRenaming(true);
-    setRenameError("");
-    setRenameSuccess("");
-
-    try {
-      const resp = await apiFetch(
-        `/v1/vaults/${encodeURIComponent(vaultName)}/rename`,
-        {
-          method: "POST",
-          body: JSON.stringify({ name: newName }),
-        }
-      );
-      if (!resp.ok) {
-        const data = await resp.json().catch(() => ({}));
-        setRenameError(data.error || "Failed to rename vault");
-        return;
-      }
-      setRenameSuccess(`Vault renamed to "${newName}"`);
-      // Navigate to the new vault URL after a brief pause
-      setTimeout(() => {
-        navigate({
-          to: "/vaults/$name/settings",
-          params: { name: newName },
-        });
-      }, 500);
-    } catch {
-      setRenameError("Network error");
-    } finally {
-      setRenaming(false);
-    }
-  }
 
   async function handleDelete() {
     const resp = await apiFetch(
@@ -145,69 +86,39 @@ export default function SettingsTab() {
         </p>
       </div>
 
-      {/* Vault config (rename + unmatched-host policy + credential store) */}
+      {/* Read-only vault config; editing happens in the side drawer. */}
       <section className="mb-8">
-        <div className="border border-border rounded-xl bg-surface">
+        <div className="relative border border-border rounded-xl bg-surface">
+          {canManage && (
+            <Button
+              variant="secondary"
+              onClick={() => setEditing(true)}
+              className="absolute top-4 right-4 !px-3 !py-1.5"
+            >
+              Edit settings
+            </Button>
+          )}
           <div className="p-5">
-            <div className="max-w-md">
-              <form onSubmit={handleRename} className="flex items-end gap-3">
-                <div className="flex-1 min-w-0">
-                  <FormField label="Vault Name">
-                    <Input
-                      value={newName}
-                      onChange={(e) => {
-                        setNewName(e.target.value);
-                        setRenameError("");
-                        setRenameSuccess("");
-                      }}
-                      disabled={!canManage || isDefault}
-                      placeholder="vault-name"
-                    />
-                  </FormField>
-                </div>
-                <Button
-                  type="submit"
-                  disabled={!canManage || isDefault || !newName || newName === vaultName}
-                  loading={renaming}
-                >
-                  Rename
-                </Button>
-              </form>
-
-              {renameError && <ErrorBanner message={renameError} className="mt-3" />}
-              {renameSuccess && (
-                <div className="mt-3 bg-success-bg border border-success/20 rounded-lg p-4 text-sm text-success">
-                  {renameSuccess}
-                </div>
-              )}
-            </div>
+            <StoreField label="Vault Name" value={vaultName} />
           </div>
 
           <div className="border-t border-border mx-5" />
 
           <div className="p-5">
-            <div className="max-w-md">
-              <label className="block text-xs font-semibold uppercase tracking-wider text-text-muted mb-2">
-                Strict deny mode
-              </label>
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-sm text-text-muted flex-1 min-w-0">
-                  Reject unmatched hosts with HTTP 403 instead of forwarding them upstream unauthenticated.
-                </p>
-                <Toggle
-                  checked={policy === "deny"}
-                  onChange={handlePolicyToggle}
-                  disabled={!canManage || policy === null || policySaving}
-                  ariaLabel="Strict deny mode"
-                />
-              </div>
-              {policyError && (
-                <ErrorBanner message={policyError} className="mt-3" />
-              )}
-            </div>
+            <StoreField
+              label="Strict deny mode"
+              tooltip="Reject unmatched hosts with HTTP 403 instead of forwarding them upstream unauthenticated."
+              value={
+                policy === null
+                  ? "—"
+                  : policy === "deny"
+                    ? "Enabled"
+                    : "Disabled"
+              }
+            />
           </div>
 
-          <CredentialStoreSection store={credentialStore} />
+          <CredentialStoreDisplay store={credentialStore} />
         </div>
       </section>
 
@@ -242,11 +153,22 @@ export default function SettingsTab() {
         confirmValue={vaultName}
         inputLabel="Vault name"
       />
+
+      <EditSettingsSheet
+        open={editing}
+        onClose={() => setEditing(false)}
+        vaultName={vaultName}
+        isDefault={isDefault}
+        policy={policy}
+        onPolicySaved={setPolicy}
+        store={credentialStore}
+        infisicalAvailable={infisicalAvailable}
+      />
     </div>
   );
 }
 
-function CredentialStoreSection({ store }: { store?: CredentialStoreInfo }) {
+function CredentialStoreDisplay({ store }: { store?: CredentialStoreInfo }) {
   const config = (store?.config ?? {}) as {
     project_id?: string;
     environment?: string;
@@ -260,7 +182,11 @@ function CredentialStoreSection({ store }: { store?: CredentialStoreInfo }) {
       <div className="border-t border-border mx-5" />
       <div className="p-5 grid grid-cols-2 gap-x-6 gap-y-4">
         <div className="col-span-2">
-          <StoreField label="Credential store" value={kindLabel} />
+          <StoreField
+            label="Credential store"
+            tooltip="Built-in keeps credentials in Agent Vault. Infisical syncs read-only from your Infisical instance, overwriting the built-in credentials."
+            value={kindLabel}
+          />
         </div>
         {/* Config is redacted server-side for non-admin viewers; sync status
             stays populated for everyone. */}
@@ -288,14 +214,286 @@ function CredentialStoreSection({ store }: { store?: CredentialStoreInfo }) {
   );
 }
 
-function StoreField({ label, value }: { label: string; value: string }) {
+function EditSettingsSheet({
+  open,
+  onClose,
+  vaultName,
+  isDefault,
+  policy,
+  onPolicySaved,
+  store,
+  infisicalAvailable,
+}: {
+  open: boolean;
+  onClose: () => void;
+  vaultName: string;
+  isDefault: boolean;
+  policy: UnmatchedHostPolicy | null;
+  onPolicySaved: (p: UnmatchedHostPolicy) => void;
+  store?: CredentialStoreInfo;
+  infisicalAvailable: boolean;
+}) {
+  const navigate = useNavigate();
+  const router = useRouter();
+
+  const config = (store?.config ?? {}) as {
+    project_id?: string;
+    environment?: string;
+    secret_path?: string;
+  };
+  const currentKind: "builtin" | "infisical" =
+    store?.kind === "infisical" ? "infisical" : "builtin";
+
+  // Draft state, seeded from the live values each time the drawer opens.
+  const [name, setName] = useState(vaultName);
+  const [draftPolicy, setDraftPolicy] = useState<UnmatchedHostPolicy>(
+    policy ?? "passthrough"
+  );
+  const [target, setTarget] = useState<"builtin" | "infisical">(currentKind);
+  const [projectID, setProjectID] = useState(config.project_id ?? "");
+  const [environment, setEnvironment] = useState(config.environment ?? "");
+  const [secretPath, setSecretPath] = useState(config.secret_path || "/");
+
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [showConfirm, setShowConfirm] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setName(vaultName);
+    setDraftPolicy(policy ?? "passthrough");
+    setTarget(currentKind);
+    setProjectID(config.project_id ?? "");
+    setEnvironment(config.environment ?? "");
+    setSecretPath(config.secret_path || "/");
+    setError("");
+    setShowConfirm(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const switchToInfisical = target === "infisical";
+  const trimmedName = name.trim();
+
+  const nameChanged = !isDefault && !!trimmedName && trimmedName !== vaultName;
+  const policyChanged = policy !== null && draftPolicy !== policy;
+  const configChanged =
+    switchToInfisical &&
+    (projectID.trim() !== (config.project_id ?? "") ||
+      environment.trim() !== (config.environment ?? "") ||
+      (secretPath.trim() || "/") !== (config.secret_path || "/"));
+  const storeChanged = target !== currentKind || configChanged;
+
+  const infisicalFieldsValid =
+    !switchToInfisical || (!!projectID.trim() && !!environment.trim());
+  // nameChanged already implies a non-empty trimmed name, so no extra guard.
+  const canSave =
+    (nameChanged || policyChanged || storeChanged) && infisicalFieldsValid;
+
+  // Runs every pending change in a safe order: non-destructive first, then the
+  // credential-store overwrite, then rename last (it changes the vault URL).
+  async function applyChanges() {
+    setSaving(true);
+    setError("");
+    try {
+      if (policyChanged) {
+        const resp = await apiFetch(
+          `/v1/vaults/${encodeURIComponent(vaultName)}/settings`,
+          {
+            method: "PATCH",
+            body: JSON.stringify({ unmatched_host_policy: draftPolicy }),
+          }
+        );
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          throw new Error(data.error || "Failed to update policy");
+        }
+        onPolicySaved(draftPolicy);
+      }
+
+      if (storeChanged) {
+        const body: Record<string, unknown> = { kind: target };
+        if (switchToInfisical) {
+          const trimmedPath = secretPath.trim() || "/";
+          if (!trimmedPath.startsWith("/")) {
+            throw new Error('Secret path must start with "/".');
+          }
+          body.config = {
+            project_id: projectID.trim(),
+            environment: environment.trim(),
+            secret_path: trimmedPath,
+          };
+        }
+        const resp = await apiFetch(
+          `/v1/vaults/${encodeURIComponent(vaultName)}/credential-store`,
+          { method: "PATCH", body: JSON.stringify(body) }
+        );
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          throw new Error(data.error || "Failed to switch credential store");
+        }
+      }
+
+      if (nameChanged) {
+        const resp = await apiFetch(
+          `/v1/vaults/${encodeURIComponent(vaultName)}/rename`,
+          { method: "POST", body: JSON.stringify({ name: trimmedName }) }
+        );
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          throw new Error(data.error || "Failed to rename vault");
+        }
+        // The URL carries the old name; jump to the new one (reloads context).
+        navigate({ to: "/vaults/$name/settings", params: { name: trimmedName } });
+        return;
+      }
+
+      // Refresh the vault context so the read-only display reflects the change.
+      await router.invalidate();
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // The credential-store change is destructive (it overwrites credentials), so
+  // gate it behind the type-the-vault-name confirmation. Other edits save directly.
+  function handleSave() {
+    if (storeChanged) {
+      setShowConfirm(true);
+      return;
+    }
+    applyChanges().catch((err) =>
+      setError(err instanceof Error ? err.message : "Something went wrong")
+    );
+  }
+
+  return (
+    <>
+      <Sheet
+        open={open}
+        onClose={onClose}
+        eyebrow="Vault"
+        title="Edit settings"
+        footer={
+          <>
+            <Button variant="secondary" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button onClick={handleSave} loading={saving} disabled={!canSave}>
+              Save
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-5">
+          <FormField label="Vault Name">
+            <Input
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                setError("");
+              }}
+              disabled={isDefault}
+              placeholder="vault-name"
+            />
+          </FormField>
+
+          <FormField
+            label="Strict deny mode"
+            tooltip="Reject unmatched hosts with HTTP 403 instead of forwarding them upstream unauthenticated."
+          >
+            <Toggle
+              checked={draftPolicy === "deny"}
+              onChange={(v) => setDraftPolicy(v ? "deny" : "passthrough")}
+              disabled={policy === null}
+              ariaLabel="Strict deny mode"
+            />
+          </FormField>
+
+          <FormField
+            label="Credential store"
+            tooltip="Built-in keeps credentials in Agent Vault. Infisical syncs read-only from your Infisical instance, overwriting the built-in credentials."
+          >
+            <Select
+              value={target}
+              onChange={(e) =>
+                setTarget(e.target.value as "builtin" | "infisical")
+              }
+            >
+              <option value="builtin">Built In</option>
+              <option value="infisical" disabled={!infisicalAvailable}>
+                Infisical
+              </option>
+            </Select>
+          </FormField>
+
+          {switchToInfisical && (
+            <div className="space-y-3">
+              <FormField label="Project ID" required>
+                <Input
+                  placeholder="abcdef..."
+                  value={projectID}
+                  onChange={(e) => setProjectID(e.target.value)}
+                />
+              </FormField>
+              <FormField label="Environment Slug" required>
+                <Input
+                  placeholder="dev"
+                  value={environment}
+                  onChange={(e) => setEnvironment(e.target.value)}
+                />
+              </FormField>
+              <FormField label="Secret path">
+                <Input
+                  placeholder="/"
+                  value={secretPath}
+                  onChange={(e) => setSecretPath(e.target.value)}
+                />
+              </FormField>
+            </div>
+          )}
+
+          {error && <ErrorBanner message={error} />}
+        </div>
+      </Sheet>
+
+      <ConfirmDeleteModal
+        open={showConfirm}
+        onClose={() => setShowConfirm(false)}
+        onConfirm={async () => {
+          await applyChanges();
+          setShowConfirm(false);
+        }}
+        title="Switch credential store"
+        description={
+          switchToInfisical
+            ? `Switching to Infisical will OVERWRITE all current built-in credentials in "${vaultName}" with the secrets from the connected Infisical source. Type the vault name to confirm.`
+            : `Switching to the built-in store disconnects Infisical from "${vaultName}". The secrets currently synced are kept as built-in credentials and stop updating from Infisical. Type the vault name to confirm.`
+        }
+        confirmLabel="Save changes"
+        confirmValue={vaultName}
+        inputLabel="Vault name"
+      />
+    </>
+  );
+}
+
+function StoreField({
+  label,
+  value,
+  tooltip,
+}: {
+  label: string;
+  value: string;
+  tooltip?: ReactNode;
+}) {
   return (
     <div className="min-w-0">
-      <div className="text-xs font-semibold uppercase tracking-wider text-text-muted mb-2">
-        {label}
+      <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-text-muted mb-2">
+        <span>{label}</span>
+        {tooltip && <InfoTooltip>{tooltip}</InfoTooltip>}
       </div>
       <div className="text-sm font-mono text-text break-all">{value}</div>
     </div>
   );
 }
-
