@@ -2544,6 +2544,59 @@ func TestDeleteVaultCredentialStoreKeepsCredentials(t *testing.T) {
 	}
 }
 
+// ReplaceVaultCredentialsForSync only writes while the external-store row
+// exists. This closes the race where an in-flight sync would clobber the
+// credentials a concurrent disconnect is meant to preserve.
+func TestReplaceVaultCredentialsForSyncGatedOnStoreRow(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "sync@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	v, err := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+		Name:                "sync-race",
+		Kind:                CredentialStoreInfisical,
+		ConfigJSON:          `{}`,
+		PollIntervalSeconds: 60,
+		Credentials:         []EncryptedKV{{Key: "KEPT", Ciphertext: []byte("c"), Nonce: []byte("n")}},
+		CreatorActorID:      u.ID,
+		CreatorActorType:    "user",
+	})
+	if err != nil {
+		t.Fatalf("CreateExternalVault: %v", err)
+	}
+
+	// While the store row exists the sync write lands.
+	applied, err := s.ReplaceVaultCredentialsForSync(ctx, v.ID, []EncryptedKV{
+		{Key: "FRESH", Ciphertext: []byte("c2"), Nonce: []byte("n2")},
+	})
+	if err != nil || !applied {
+		t.Fatalf("expected applied write, got applied=%v err=%v", applied, err)
+	}
+	creds, _ := s.ListCredentials(ctx, v.ID)
+	if len(creds) != 1 || creds[0].Key != "FRESH" {
+		t.Fatalf("expected FRESH after applied sync, got %+v", creds)
+	}
+
+	// Simulate a disconnect, then a still-in-flight sync write: it must be a
+	// no-op so the kept credentials survive.
+	if err := s.DeleteVaultCredentialStore(ctx, v.ID); err != nil {
+		t.Fatalf("DeleteVaultCredentialStore: %v", err)
+	}
+	applied, err = s.ReplaceVaultCredentialsForSync(ctx, v.ID, []EncryptedKV{
+		{Key: "STALE", Ciphertext: []byte("c3"), Nonce: []byte("n3")},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceVaultCredentialsForSync after disconnect: %v", err)
+	}
+	if applied {
+		t.Fatalf("expected applied=false after disconnect")
+	}
+	creds, _ = s.ListCredentials(ctx, v.ID)
+	if len(creds) != 1 || creds[0].Key != "FRESH" {
+		t.Fatalf("expected FRESH credentials preserved after disconnect, got %+v", creds)
+	}
+}
+
 func TestListUnmatchedHosts(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()

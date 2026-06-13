@@ -679,7 +679,18 @@ func (s *Server) handleVaultCredentialStorePatch(w http.ResponseWriter, r *http.
 		})
 	case store.CredentialStoreInfisical:
 		// Connect: probe upstream, then overwrite the vault's credentials with
-		// the fetched snapshot and start polling.
+		// the fetched snapshot and start polling. Owner-only, mirroring
+		// handleVaultCreate — otherwise a vault admin could use the broker's
+		// machine identity to exfiltrate upstream secrets into a vault they
+		// control.
+		actor, err := s.requireActor(w, r)
+		if err != nil {
+			return
+		}
+		if !actor.IsOwner() {
+			jsonError(w, http.StatusForbidden, "Owner role required to connect a vault to an external store")
+			return
+		}
 		snap, ok := s.prepareInfisicalSnapshot(w, ctx, ns.Name, &req)
 		if !ok {
 			return
@@ -902,7 +913,8 @@ func (s *Server) handleVaultSettingsGet(w http.ResponseWriter, r *http.Request) 
 		jsonError(w, http.StatusNotFound, "Vault not found")
 		return
 	}
-	if _, err := s.requireVaultAccess(w, r, ns.ID); err != nil {
+	actor, err := s.requireVaultAccess(w, r, ns.ID)
+	if err != nil {
 		return
 	}
 	policy, err := readUnmatchedHostPolicy(ctx, s.store, ns.ID)
@@ -910,12 +922,13 @@ func (s *Server) handleVaultSettingsGet(w http.ResponseWriter, r *http.Request) 
 		jsonError(w, http.StatusInternalServerError, "Failed to read vault settings")
 		return
 	}
-	// infisical_available lets the settings UI enable the Infisical option in
-	// the credential-store switcher for vault admins (the instance-scoped
-	// /v1/instance/credential-stores endpoint only reports it to owners).
+	// infisical_available enables the Infisical option in the credential-store
+	// switcher. Only owners can connect a vault to Infisical (see
+	// handleVaultCredentialStorePatch), so report it owner-gated — otherwise a
+	// non-owner admin would see an option that 403s on submit.
 	jsonOK(w, map[string]interface{}{
 		"unmatched_host_policy": string(policy),
-		"infisical_available":   s.infisicalClient != nil,
+		"infisical_available":   s.infisicalClient != nil && actor != nil && actor.IsOwner(),
 	})
 }
 

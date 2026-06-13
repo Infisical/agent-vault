@@ -1151,6 +1151,9 @@ func (m *mockStore) UpdateVaultCredentialStoreHealth(_ context.Context, vaultID,
 func (m *mockStore) ReplaceVaultCredentials(_ context.Context, _ string, _ []store.EncryptedKV) error {
 	return nil
 }
+func (m *mockStore) ReplaceVaultCredentialsForSync(_ context.Context, _ string, _ []store.EncryptedKV) (bool, error) {
+	return true, nil
+}
 func (m *mockStore) SetVaultExternalStore(_ context.Context, p store.SetVaultExternalStoreParams) (*store.VaultCredentialStore, error) {
 	cs := &store.VaultCredentialStore{
 		VaultID:             p.VaultID,
@@ -3309,6 +3312,81 @@ func TestVaultCredentialStoreSwitchToInfisicalNoClient(t *testing.T) {
 	rec := patchCredentialStore(t, srv, ownerToken, "default", body)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 without infisical client, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Connecting a vault to Infisical is owner-only, mirroring vault create: a
+// vault admin who is not the instance owner must be rejected, otherwise they
+// could use the broker's machine identity to import arbitrary upstream secrets
+// into a vault they control (the gate handleVaultCreate enforces). The
+// Infisical client is attached so this proves the owner gate fires, not the
+// no-client 503.
+func TestVaultCredentialStoreSwitchToInfisicalRequiresOwner(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	adminToken := setupMemberSession(t, ms, "root-ns-id")
+	// Promote to vault admin while leaving the instance role at "member".
+	ms.GrantVaultRole(context.Background(), "member-user-id", "user", "root-ns-id", "admin")
+	srv := newTestServer(withStore(ms))
+	srv.AttachInfisical(&infisical.Client{})
+
+	body := `{"kind":"infisical","config":{"project_id":"p","environment":"dev","secret_path":"/"},"poll_interval_seconds":60}`
+	rec := patchCredentialStore(t, srv, adminToken, "default", body)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-owner vault admin, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Disconnecting (switch to builtin) stays allowed for a non-owner vault admin —
+// only the connect path is owner-gated.
+func TestVaultCredentialStoreSwitchToBuiltinAllowsAdmin(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	adminToken := setupMemberSession(t, ms, "root-ns-id")
+	ms.GrantVaultRole(context.Background(), "member-user-id", "user", "root-ns-id", "admin")
+	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
+		VaultID: "root-ns-id", Kind: "infisical",
+		ConfigJSON: `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+	}
+	srv := newTestServer(withStore(ms))
+
+	rec := patchCredentialStore(t, srv, adminToken, "default", `{"kind":"builtin"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for non-owner admin disconnect, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// infisical_available drives the Infisical option in the credential-store
+// switcher. Since connecting is owner-only, it must be reported owner-gated:
+// true for an owner, false for a non-owner vault admin, even with a client.
+func TestVaultSettingsInfisicalAvailableOwnerGated(t *testing.T) {
+	settingsAvailable := func(t *testing.T, srv *Server, token string) bool {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/v1/vaults/default/settings", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("settings GET: expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			InfisicalAvailable bool `json:"infisical_available"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return resp.InfisicalAvailable
+	}
+
+	ms, ownerToken := setupMockStoreWithSession(t)
+	adminToken := setupMemberSession(t, ms, "root-ns-id")
+	ms.GrantVaultRole(context.Background(), "member-user-id", "user", "root-ns-id", "admin")
+	srv := newTestServer(withStore(ms))
+	srv.AttachInfisical(&infisical.Client{})
+
+	if !settingsAvailable(t, srv, ownerToken) {
+		t.Fatalf("expected infisical_available=true for owner")
+	}
+	if settingsAvailable(t, srv, adminToken) {
+		t.Fatalf("expected infisical_available=false for non-owner admin")
 	}
 }
 

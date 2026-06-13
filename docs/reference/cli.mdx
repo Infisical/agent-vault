@@ -269,7 +269,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential-store set <name> --kind=<builtin|infisical> [flags]
     ```
 
-    Switch the credential store backing an existing vault. Requires vault admin or instance owner role. Prompts for the vault name to confirm unless `--yes` is passed.
+    Switch the credential store backing an existing vault. Switching to `builtin` requires vault admin or instance owner role; switching to `infisical` requires instance-owner role (the broker's machine identity authorizes the upstream fetch). Prompts for the vault name to confirm unless `--yes` is passed.
 
     Switching to `infisical` probes the source (same validation as create), then **overwrites** the vault's built-in credentials with the fetched snapshot and starts polling. Switching to `builtin` disconnects the external source (polling stops) but **keeps** the last synced secrets in place as editable built-in credentials. See [Credential stores](/learn/credential-stores#switching-a-vaults-credential-store).
 

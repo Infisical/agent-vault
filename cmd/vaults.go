@@ -170,12 +170,14 @@ var vaultCredentialStoreSyncCmd = &cobra.Command{
 
 var vaultCredentialStoreSetCmd = &cobra.Command{
 	Use:   "set <name>",
-	Short: "Switch the credential store backing a vault (vault admin or instance owner)",
+	Short: "Switch the credential store backing a vault",
 	Long: "Switch a vault's credential store after creation.\n\n" +
 		"Switching to infisical OVERWRITES the vault's built-in credentials with the\n" +
-		"secrets fetched from the connected source and starts polling. Switching to\n" +
-		"builtin disconnects the external source (polling stops) but KEEPS the last\n" +
-		"synced secrets in place as editable built-in credentials.",
+		"secrets fetched from the connected source and starts polling. It requires\n" +
+		"instance-owner role, since the broker's machine identity authorizes the\n" +
+		"upstream fetch. Switching to builtin disconnects the external source\n" +
+		"(polling stops) but KEEPS the last synced secrets in place as editable\n" +
+		"built-in credentials, and is allowed for vault admins too.",
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]

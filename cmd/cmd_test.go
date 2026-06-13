@@ -172,6 +172,9 @@ func TestVaultCredentialStoreSubcommandsRegistered(t *testing.T) {
 	}
 
 	setCmd := findSubcommand(csCmd, "set")
+	if setCmd == nil {
+		t.Fatal("set command not found under credential-store")
+	}
 	for _, flag := range []string{"kind", "infisical-project-id", "infisical-environment", "infisical-path", "poll-interval-seconds", "yes"} {
 		if setCmd.Flags().Lookup(flag) == nil {
 			t.Errorf("expected credential-store set to define --%s flag", flag)

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -342,6 +343,37 @@ func (s *SQLiteStore) ReplaceVaultCredentials(ctx context.Context, vaultID strin
 		return err
 	}
 	return tx.Commit()
+}
+
+// ReplaceVaultCredentialsForSync is the syncer's write path. It rewrites the
+// vault's credentials only while the external-store row still exists, checking
+// and writing in one transaction. With a single DB connection that check+write
+// is atomic against DeleteVaultCredentialStore, so a disconnect racing an
+// in-flight sync can no longer have its "kept" snapshot clobbered after the row
+// is gone: a sync that loses the race reports applied=false and writes nothing.
+func (s *SQLiteStore) ReplaceVaultCredentialsForSync(ctx context.Context, vaultID string, items []EncryptedKV) (applied bool, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var dummy int
+	switch err := tx.QueryRowContext(ctx,
+		"SELECT 1 FROM vault_credential_stores WHERE vault_id = ?", vaultID).Scan(&dummy); {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil // disconnected mid-sync; keep the existing credentials
+	case err != nil:
+		return false, fmt.Errorf("checking credential store: %w", err)
+	}
+
+	if err := replaceCredentialsTx(ctx, tx, vaultID, nowUTC(), items); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit: %w", err)
+	}
+	return true, nil
 }
 
 // SetVaultExternalStore upserts the credential-store row and replaces the
