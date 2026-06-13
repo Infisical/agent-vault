@@ -20,6 +20,7 @@ import (
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/crypto"
+	"github.com/Infisical/agent-vault/internal/hashicorp"
 	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/mitm"
@@ -87,6 +88,11 @@ type Server struct {
 	infisicalClient *infisical.Client
 	// infisicalSyncer is built in Run; exposed for manual-refresh RefreshOnce.
 	infisicalSyncer *infisical.Syncer
+	// hashicorpClient is nil when VAULT_ADDR is unset; create handlers reject
+	// kind="hashicorp" then.
+	hashicorpClient *hashicorp.Client
+	// hashicorpSyncer is built in Run; exposed for manual-refresh RefreshOnce.
+	hashicorpSyncer *hashicorp.Syncer
 	oauthRefresher  *oauth.Refresher
 }
 
@@ -115,6 +121,14 @@ func (s *Server) AttachInfisical(c *infisical.Client) { s.infisicalClient = c }
 // from the attached client. Used by tests to inject a fake fetcher; in prod
 // Start auto-builds one when the field is nil.
 func (s *Server) AttachInfisicalSyncer(syncer *infisical.Syncer) { s.infisicalSyncer = syncer }
+
+// AttachHashicorp registers the HashiCorp Vault client. Must be called before Start.
+func (s *Server) AttachHashicorp(c *hashicorp.Client) { s.hashicorpClient = c }
+
+// AttachHashicorpSyncer pre-wires a syncer instead of letting Start build one
+// from the attached client. Used by tests to inject a fake fetcher; in prod
+// Start auto-builds one when the field is nil.
+func (s *Server) AttachHashicorpSyncer(syncer *hashicorp.Syncer) { s.hashicorpSyncer = syncer }
 
 // AttachLogSink swaps the per-request log sink. Safe to call once at
 // startup, before the HTTP server begins accepting connections. nil
@@ -910,21 +924,31 @@ func (s *Server) Start() error {
 	defer stopWorkers()
 	go s.runTouchCachePruner(pruneCtx)
 
-	// syncerDone closes once Syncer.Run has returned AND drained its in-flight
-	// refresh goroutines. We block on it before WipeBytes so a refresh mid-
-	// AES-GCM never reads a zeroed s.encKey (silently produces garbage
-	// ciphertext that lands in the credentials table).
-	syncerDone := make(chan struct{})
+	// Each external-store syncer's done channel closes once its Run has
+	// returned AND drained its in-flight refresh goroutines. We block on all
+	// of them before WipeBytes so a refresh mid-AES-GCM never reads a zeroed
+	// s.encKey (silently produces garbage ciphertext that lands in the
+	// credentials table).
+	var syncerDones []chan struct{}
+	runSyncer := func(run func(context.Context)) {
+		done := make(chan struct{})
+		syncerDones = append(syncerDones, done)
+		go func() {
+			defer close(done)
+			run(pruneCtx)
+		}()
+	}
 	if s.infisicalSyncer == nil && s.infisicalClient != nil {
 		s.infisicalSyncer = infisical.NewSyncer(s.store, s.infisicalClient, s.encKey, s.logger)
 	}
 	if s.infisicalSyncer != nil {
-		go func() {
-			defer close(syncerDone)
-			s.infisicalSyncer.Run(pruneCtx)
-		}()
-	} else {
-		close(syncerDone)
+		runSyncer(s.infisicalSyncer.Run)
+	}
+	if s.hashicorpSyncer == nil && s.hashicorpClient != nil {
+		s.hashicorpSyncer = hashicorp.NewSyncer(s.store, s.hashicorpClient, s.encKey, s.logger)
+	}
+	if s.hashicorpSyncer != nil {
+		runSyncer(s.hashicorpSyncer.Run)
 	}
 
 	errCh := make(chan error, 1)
@@ -983,14 +1007,18 @@ func (s *Server) Start() error {
 		return fmt.Errorf("server shutdown: %w", err)
 	}
 
-	// Stop background workers (syncer + touch-cache pruner) and wait for the
-	// syncer's in-flight refreshes to drain before zeroing s.encKey.
+	// Stop background workers (syncers + touch-cache pruner) and wait for every
+	// external-store syncer's in-flight refreshes to drain before zeroing
+	// s.encKey.
 	stopWorkers()
-	select {
-	case <-syncerDone:
-	case <-time.After(5 * time.Second):
-		fmt.Fprintln(os.Stderr, "warning: infisical syncer did not stop within 5s; skipping key wipe to avoid racing in-flight encrypts")
-		return nil
+	deadline := time.After(5 * time.Second)
+	for _, done := range syncerDones {
+		select {
+		case <-done:
+		case <-deadline:
+			fmt.Fprintln(os.Stderr, "warning: external-store syncer did not stop within 5s; skipping key wipe to avoid racing in-flight encrypts")
+			return nil
+		}
 	}
 
 	fmt.Println("server shut down gracefully")

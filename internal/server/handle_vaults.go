@@ -14,6 +14,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/auth"
 	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/brokercore"
+	"github.com/Infisical/agent-vault/internal/hashicorp"
 	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/store"
 )
@@ -143,42 +144,65 @@ func (s *Server) handleVaultSyncNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.infisicalSyncer == nil {
-		jsonCodedError(w, http.StatusServiceUnavailable, "infisical_not_configured",
-			"Infisical is not configured on this server. Set INFISICAL_URL to enable external-store vaults.")
-		return
-	}
-
-	if err := s.infisicalSyncer.RefreshOnce(ctx, *cs); err != nil {
-		switch {
-		case errors.Is(err, infisical.ErrSyncerDisabled):
+	switch cs.Kind {
+	case store.CredentialStoreInfisical:
+		if s.infisicalSyncer == nil {
 			jsonCodedError(w, http.StatusServiceUnavailable, "infisical_not_configured",
-				"Infisical is not configured on this server.")
-		case errors.Is(err, infisical.ErrNotExternal):
-			jsonError(w, http.StatusBadRequest, "Vault has no external credential store")
-		case errors.Is(err, infisical.ErrSyncInFlight):
-			jsonError(w, http.StatusConflict, "Sync already in flight for this vault")
-		case errors.Is(err, infisical.ErrInvalidKey):
-			// Upstream key name is topology; redact for non-admin/non-owner
-			// viewers, mirroring handleVaultContext's last_sync_error gate.
-			if s.callerCanSeeVaultUpstream(ctx, actor, vault.ID) {
-				jsonCodedError(w, http.StatusBadRequest, "external_store_invalid_key", err.Error())
-			} else {
-				s.logger.Warn("manual infisical sync rejected invalid upstream key",
+				"Infisical is not configured on this server. Set INFISICAL_URL to enable external-store vaults.")
+			return
+		}
+		if err := s.infisicalSyncer.RefreshOnce(ctx, *cs); err != nil {
+			switch {
+			case errors.Is(err, infisical.ErrSyncerDisabled):
+				jsonCodedError(w, http.StatusServiceUnavailable, "infisical_not_configured",
+					"Infisical is not configured on this server.")
+			case errors.Is(err, infisical.ErrNotExternal):
+				jsonError(w, http.StatusBadRequest, "Vault has no external credential store")
+			case errors.Is(err, infisical.ErrSyncInFlight):
+				jsonError(w, http.StatusConflict, "Sync already in flight for this vault")
+			case errors.Is(err, infisical.ErrInvalidKey):
+				s.writeInvalidUpstreamKey(w, ctx, actor, vault.ID, err)
+			case errors.Is(err, context.Canceled):
+				return // caller went away
+			default:
+				s.logger.Warn("manual infisical sync failed",
 					slog.String("vault_id", vault.ID),
 					slog.String("err", err.Error()))
-				jsonCodedError(w, http.StatusBadRequest, "external_store_invalid_key",
-					"Upstream secret key does not match the required UPPER_SNAKE_CASE pattern. See server logs for the offending key.")
+				jsonCodedError(w, http.StatusBadGateway, "infisical_fetch_failed",
+					"Infisical sync failed. See server logs for details.")
 			}
-		case errors.Is(err, context.Canceled):
-			return // caller went away
-		default:
-			s.logger.Warn("manual infisical sync failed",
-				slog.String("vault_id", vault.ID),
-				slog.String("err", err.Error()))
-			jsonCodedError(w, http.StatusBadGateway, "infisical_fetch_failed",
-				"Infisical sync failed. See server logs for details.")
+			return
 		}
+	case store.CredentialStoreHashicorp:
+		if s.hashicorpSyncer == nil {
+			jsonCodedError(w, http.StatusServiceUnavailable, "hashicorp_not_configured",
+				"HashiCorp Vault is not configured on this server. Set VAULT_ADDR to enable external-store vaults.")
+			return
+		}
+		if err := s.hashicorpSyncer.RefreshOnce(ctx, *cs); err != nil {
+			switch {
+			case errors.Is(err, hashicorp.ErrSyncerDisabled):
+				jsonCodedError(w, http.StatusServiceUnavailable, "hashicorp_not_configured",
+					"HashiCorp Vault is not configured on this server.")
+			case errors.Is(err, hashicorp.ErrNotExternal):
+				jsonError(w, http.StatusBadRequest, "Vault has no external credential store")
+			case errors.Is(err, hashicorp.ErrSyncInFlight):
+				jsonError(w, http.StatusConflict, "Sync already in flight for this vault")
+			case errors.Is(err, hashicorp.ErrInvalidKey):
+				s.writeInvalidUpstreamKey(w, ctx, actor, vault.ID, err)
+			case errors.Is(err, context.Canceled):
+				return // caller went away
+			default:
+				s.logger.Warn("manual hashicorp sync failed",
+					slog.String("vault_id", vault.ID),
+					slog.String("err", err.Error()))
+				jsonCodedError(w, http.StatusBadGateway, "hashicorp_fetch_failed",
+					"HashiCorp Vault sync failed. See server logs for details.")
+			}
+			return
+		}
+	default:
+		jsonError(w, http.StatusBadRequest, "Vault has no external credential store")
 		return
 	}
 
@@ -194,6 +218,22 @@ func (s *Server) handleVaultSyncNow(w http.ResponseWriter, r *http.Request) {
 		summary.LastSyncError = ""
 	}
 	jsonOK(w, map[string]interface{}{"credential_store": summary})
+}
+
+// writeInvalidUpstreamKey responds to a sync that failed because an upstream
+// secret key violates the UPPER_SNAKE_CASE pattern. The offending key name is
+// upstream topology, so it's redacted for non-admin/non-owner viewers,
+// mirroring handleVaultContext's last_sync_error gate.
+func (s *Server) writeInvalidUpstreamKey(w http.ResponseWriter, ctx context.Context, actor *Actor, vaultID string, err error) {
+	if s.callerCanSeeVaultUpstream(ctx, actor, vaultID) {
+		jsonCodedError(w, http.StatusBadRequest, "external_store_invalid_key", err.Error())
+		return
+	}
+	s.logger.Warn("manual external-store sync rejected invalid upstream key",
+		slog.String("vault_id", vaultID),
+		slog.String("err", err.Error()))
+	jsonCodedError(w, http.StatusBadRequest, "external_store_invalid_key",
+		"Upstream secret key does not match the required UPPER_SNAKE_CASE pattern. See server logs for the offending key.")
 }
 
 // callerCanSeeVaultUpstream gates upstream topology (config, last_sync_error,
@@ -254,6 +294,9 @@ func (s *Server) handleInstanceCredentialStores(w http.ResponseWriter, r *http.R
 	available := []string{store.CredentialStoreBuiltin}
 	if actor.IsOwner() && s.infisicalClient != nil {
 		available = append(available, store.CredentialStoreInfisical)
+	}
+	if actor.IsOwner() && s.hashicorpClient != nil {
+		available = append(available, store.CredentialStoreHashicorp)
 	}
 	jsonOK(w, map[string]interface{}{
 		"available": available,
@@ -535,20 +578,28 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// createExternalVault validates + probes + commits the vault,
-// credential-store row, initial snapshot, and admin grant in one
-// transaction. Any failure leaves the DB untouched.
+// createExternalVault dispatches to the per-kind create flow. Each flow
+// validates + probes + commits the vault, credential-store row, initial
+// snapshot, and admin grant in one transaction. Any failure leaves the DB
+// untouched.
 func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context, actor *Actor, req vaultCreateRequest) {
+	switch req.CredentialStore.Kind {
+	case store.CredentialStoreInfisical:
+		s.createInfisicalVault(w, ctx, actor, req)
+	case store.CredentialStoreHashicorp:
+		s.createHashicorpVault(w, ctx, actor, req)
+	default:
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Unknown credential store kind %q", req.CredentialStore.Kind))
+	}
+}
+
+func (s *Server) createInfisicalVault(w http.ResponseWriter, ctx context.Context, actor *Actor, req vaultCreateRequest) {
 	if s.infisicalClient == nil {
 		jsonCodedError(w, http.StatusServiceUnavailable, "infisical_not_configured",
 			"Infisical is not configured on this Agent Vault instance. Set INFISICAL_URL and a supported auth method's env vars.")
 		return
 	}
 	cs := req.CredentialStore
-	if cs.Kind != store.CredentialStoreInfisical {
-		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Unknown credential store kind %q", cs.Kind))
-		return
-	}
 
 	cfg, err := infisical.ParseConfigJSON(string(cs.Config))
 	if err != nil {
@@ -619,6 +670,91 @@ func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context,
 		"created_at": now.Format(time.RFC3339),
 		"credential_store": &credentialStoreSummary{
 			Kind:                store.CredentialStoreInfisical,
+			Config:              json.RawMessage(configJSON),
+			PollIntervalSeconds: pollInterval,
+			LastSyncStatus:      store.SyncStatusOK,
+			LastSyncedAt:        now.Format(time.RFC3339),
+		},
+	})
+}
+
+func (s *Server) createHashicorpVault(w http.ResponseWriter, ctx context.Context, actor *Actor, req vaultCreateRequest) {
+	if s.hashicorpClient == nil {
+		jsonCodedError(w, http.StatusServiceUnavailable, "hashicorp_not_configured",
+			"HashiCorp Vault is not configured on this Agent Vault instance. Set VAULT_ADDR and a supported auth method's env vars.")
+		return
+	}
+	cs := req.CredentialStore
+
+	cfg, err := hashicorp.ParseConfigJSON(string(cs.Config))
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, "Invalid credential_store.config JSON")
+		return
+	}
+	if err := cfg.Validate(); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	pollInterval := cs.PollIntervalSeconds
+	if pollInterval == 0 {
+		pollInterval = hashicorp.DefaultPollIntervalSeconds
+	} else if pollInterval < hashicorp.MinPollIntervalSeconds {
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("poll_interval_seconds must be at least %d", hashicorp.MinPollIntervalSeconds))
+		return
+	}
+
+	secs, err := s.hashicorpClient.FetchSecrets(ctx, cfg)
+	if err != nil {
+		// The vault/api error embeds VAULT_ADDR + upstream rejection body; scrub it.
+		s.logger.Warn("hashicorp fetch failed during vault create",
+			slog.String("vault_name", req.Name),
+			slog.String("err", err.Error()))
+		jsonCodedError(w, http.StatusBadGateway, "hashicorp_fetch_failed",
+			"Failed to fetch secrets from HashiCorp Vault. See server logs for details.")
+		return
+	}
+
+	items, err := hashicorp.EncryptSecrets(secs, s.encKey)
+	if err != nil {
+		if errors.Is(err, hashicorp.ErrInvalidKey) {
+			jsonCodedError(w, http.StatusBadRequest, "external_store_invalid_key", err.Error())
+			return
+		}
+		jsonError(w, http.StatusInternalServerError, "Failed to encrypt fetched secrets")
+		return
+	}
+
+	configJSON, err := hashicorp.MarshalConfigJSON(cfg)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to marshal credential store config")
+		return
+	}
+	vault, err := s.store.CreateExternalVault(ctx, store.CreateExternalVaultParams{
+		Name:                req.Name,
+		Kind:                store.CredentialStoreHashicorp,
+		ConfigJSON:          configJSON,
+		PollIntervalSeconds: pollInterval,
+		Credentials:         items,
+		CreatorActorID:      actor.ID,
+		CreatorActorType:    actor.Type,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			jsonError(w, http.StatusConflict, fmt.Sprintf("Vault %q already exists", req.Name))
+			return
+		}
+		jsonError(w, http.StatusInternalServerError, "Failed to create vault")
+		return
+	}
+
+	now := vault.CreatedAt
+	jsonCreated(w, map[string]interface{}{
+		"id":         vault.ID,
+		"name":       vault.Name,
+		"created_at": now.Format(time.RFC3339),
+		"credential_store": &credentialStoreSummary{
+			Kind:                store.CredentialStoreHashicorp,
 			Config:              json.RawMessage(configJSON),
 			PollIntervalSeconds: pollInterval,
 			LastSyncStatus:      store.SyncStatusOK,
