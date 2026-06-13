@@ -523,6 +523,7 @@ type Store interface {
 	ListAgents(ctx context.Context, vaultID string) ([]Agent, error)
 	ListAllAgents(ctx context.Context) ([]Agent, error)
 	RevokeAgent(ctx context.Context, id string) error
+	DeleteAgent(ctx context.Context, id string) error
 	RenameAgent(ctx context.Context, id string, newName string) error
 	UpdateAgentRole(ctx context.Context, agentID, role string) error
 	CountAgentTokens(ctx context.Context, agentID string) (int, error)
