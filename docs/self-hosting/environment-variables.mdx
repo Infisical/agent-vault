@@ -70,3 +70,30 @@ GCP IAM and GCP ID Token share `INFISICAL_GCP_AUTH_IDENTITY_ID`; setting `INFISI
   The Infisical machine identity should have **read-only** access. Agent Vault never writes back, and a read-only identity caps blast radius if the broker is compromised.
 </Tip>
 
+## HashiCorp Vault credential store
+
+Setting `VAULT_ADDR` enables HashiCorp-Vault-backed vaults: Agent Vault reads a single KV item from a HashiCorp Vault instance and caches the encrypted snapshot locally. Local mutations are rejected. See [Credential stores](/learn/credential-stores).
+
+Supply env vars for one auth method. Detection picks the first complete group in priority order: AppRole → Token. Agent Vault honors the standard Vault client environment, so `VAULT_CACERT`, `VAULT_SKIP_VERIFY`, and `VAULT_NAMESPACE` work as they do for the `vault` CLI.
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `VAULT_ADDR` | Required to enable | Base URL of the HashiCorp Vault instance (e.g., `http://127.0.0.1:8200`). |
+| `VAULT_TOKEN` | Conditional (Token Auth) | A pre-issued Vault token. |
+| `VAULT_ROLE_ID` | Conditional (AppRole Auth) | AppRole RoleID. Selected over Token when set alongside `VAULT_SECRET_ID`. |
+| `VAULT_SECRET_ID` | Conditional (AppRole Auth) | AppRole SecretID. |
+| `VAULT_APPROLE_MOUNT` | Optional (AppRole Auth) | AppRole auth mount path. Defaults to `approle`; override for non-default Enterprise/HCP mounts (e.g. `prod-approle`). |
+| `VAULT_NAMESPACE` | Optional | Vault Enterprise / HCP namespace. |
+| `VAULT_CACERT` | Optional | Path to a CA cert bundle for TLS verification (standard Vault variable). |
+| `VAULT_SKIP_VERIFY` | Optional | Disable TLS verification (standard Vault variable; not recommended). On startup, Agent Vault logs a warning when this is enabled. |
+
+A `VAULT_TOKEN` is validated at startup (a `lookup-self` probe), so an expired or malformed token fails fast rather than surfacing as a per-vault sync error on the first poll.
+
+<Note>
+  Agent Vault does **not** auto-renew the AppRole-issued token. When it expires, syncs fail (`last_sync_status=error`) and the vault keeps serving its last good snapshot until the server restarts and re-authenticates. Use a token TTL comfortably longer than your restart cadence, or restart to refresh.
+</Note>
+
+<Tip>
+  The Vault token or AppRole should map to a **read-only** policy on the target KV path. Agent Vault never writes back, and a read-only identity caps blast radius if the broker is compromised.
+</Tip>
+

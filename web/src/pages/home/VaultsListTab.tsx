@@ -303,6 +303,11 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
   const [environment, setEnvironment] = useState("");
   const [secretPath, setSecretPath] = useState("/");
 
+  // HashiCorp-Vault-only fields.
+  const [hcMount, setHcMount] = useState("secret");
+  const [hcPath, setHcPath] = useState("");
+  const [hcKvVersion, setHcKvVersion] = useState("2");
+
   useEffect(() => {
     apiFetch("/v1/instance/credential-stores")
       .then((r) => (r.ok ? r.json() : null))
@@ -320,6 +325,9 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
     setProjectID("");
     setEnvironment("");
     setSecretPath("/");
+    setHcMount("secret");
+    setHcPath("");
+    setHcKvVersion("2");
   }
 
   async function handleCreate() {
@@ -349,6 +357,20 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
             secret_path: trimmedPath,
           },
         };
+      } else if (kind === "hashicorp") {
+        if (!hcMount.trim() || !hcPath.trim()) {
+          setError("Mount and secret path are required for HashiCorp Vault.");
+          setSubmitting(false);
+          return;
+        }
+        body.credential_store = {
+          kind: "hashicorp",
+          config: {
+            mount: hcMount.trim(),
+            secret_path: hcPath.trim(),
+            kv_version: Number(hcKvVersion),
+          },
+        };
       }
       const resp = await apiFetch("/v1/vaults", {
         method: "POST",
@@ -369,6 +391,7 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
   }
 
   const infisicalAvailable = availableStores.includes("infisical");
+  const hashicorpAvailable = availableStores.includes("hashicorp");
 
   return (
     <>
@@ -403,7 +426,8 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
               loading={submitting}
               disabled={
                 !name.trim() ||
-                (kind === "infisical" && (!projectID.trim() || !environment.trim()))
+                (kind === "infisical" && (!projectID.trim() || !environment.trim())) ||
+                (kind === "hashicorp" && (!hcMount.trim() || !hcPath.trim()))
               }
             >
               Create
@@ -435,9 +459,12 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
           label="Credential store"
           tooltip={
             <>
-              Built-in keeps credentials in Agent Vault. Infisical syncs read-only from your Infisical instance.
+              Built-in keeps credentials in Agent Vault. Infisical and HashiCorp Vault sync read-only from your external instance.
               {!infisicalAvailable && (
                 <> Set <code>INFISICAL_URL</code> on the server to enable Infisical-backed vaults.</>
+              )}
+              {!hashicorpAvailable && (
+                <> Set <code>VAULT_ADDR</code> on the server to enable HashiCorp-backed vaults.</>
               )}
             </>
           }
@@ -449,6 +476,9 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
             <option value="builtin">Built In</option>
             <option value="infisical" disabled={!infisicalAvailable}>
               Infisical
+            </option>
+            <option value="hashicorp" disabled={!hashicorpAvailable}>
+              HashiCorp Vault
             </option>
           </Select>
         </FormField>
@@ -475,6 +505,35 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
                 value={secretPath}
                 onChange={(e) => setSecretPath(e.target.value)}
               />
+            </FormField>
+            {error && <ErrorBanner message={error} />}
+          </div>
+        )}
+
+        {kind === "hashicorp" && (
+          <div className="space-y-3">
+            <FormField label="Mount" required>
+              <Input
+                placeholder="secret"
+                value={hcMount}
+                onChange={(e) => setHcMount(e.target.value)}
+              />
+            </FormField>
+            <FormField label="Secret path" required>
+              <Input
+                placeholder="agent-vault/demo"
+                value={hcPath}
+                onChange={(e) => setHcPath(e.target.value)}
+              />
+            </FormField>
+            <FormField label="KV version">
+              <Select
+                value={hcKvVersion}
+                onChange={(e) => setHcKvVersion(e.target.value)}
+              >
+                <option value="2">2</option>
+                <option value="1">1</option>
+              </Select>
             </FormField>
             {error && <ErrorBanner message={error} />}
           </div>

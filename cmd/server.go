@@ -20,6 +20,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/auth"
 	"github.com/Infisical/agent-vault/internal/ca"
 	"github.com/Infisical/agent-vault/internal/crypto"
+	"github.com/Infisical/agent-vault/internal/hashicorp"
 	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/mitm"
 	"github.com/Infisical/agent-vault/internal/notify"
@@ -213,6 +214,7 @@ func attachServerExtensions(srv *server.Server, host string, mitmPort int, maste
 		return err
 	}
 	attachInfisicalIfConfigured(srv, logger)
+	attachHashicorpIfConfigured(srv, logger)
 	return nil
 }
 
@@ -243,6 +245,36 @@ func attachInfisicalIfConfigured(srv *server.Server, logger *slog.Logger) {
 		srv.AttachInfisical(r.c)
 	case <-time.After(10 * time.Second):
 		logger.Warn("infisical client login exceeded 10s deadline; continuing without external store")
+	}
+}
+
+// attachHashicorpIfConfigured wires the HashiCorp Vault client when VAULT_ADDR
+// is set. The 10s deadline bounds an AppRole login (token auth is instant); on
+// timeout we proceed without a client so external vaults serve-stale until next
+// restart.
+func attachHashicorpIfConfigured(srv *server.Server, logger *slog.Logger) {
+	if os.Getenv("VAULT_ADDR") == "" {
+		return
+	}
+	type result struct {
+		c   *hashicorp.Client
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		c, err := hashicorp.NewClient(context.Background(), logger)
+		done <- result{c, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			logger.Warn("hashicorp client unavailable; external-store vaults will not refresh",
+				slog.String("err", r.err.Error()))
+			return
+		}
+		srv.AttachHashicorp(r.c)
+	case <-time.After(10 * time.Second):
+		logger.Warn("hashicorp client login exceeded 10s deadline; continuing without external store")
 	}
 }
 

@@ -64,8 +64,32 @@ var vaultCreateCmd = &cobra.Command{
 				},
 				"poll_interval_seconds": pollSecs,
 			}
+		case store.CredentialStoreHashicorp:
+			mount, _ := cmd.Flags().GetString("hashicorp-mount")
+			secretPath, _ := cmd.Flags().GetString("hashicorp-path")
+			kvVersion, _ := cmd.Flags().GetInt("hashicorp-kv-version")
+			pollSecs, _ := cmd.Flags().GetInt("poll-interval-seconds")
+
+			if mount == "" || secretPath == "" {
+				return fmt.Errorf("--hashicorp-mount and --hashicorp-path are required when --credential-store=%s", store.CredentialStoreHashicorp)
+			}
+			if kvVersion != 1 && kvVersion != 2 {
+				return fmt.Errorf("--hashicorp-kv-version must be 1 or 2")
+			}
+			if pollSecs < 10 {
+				return fmt.Errorf("--poll-interval-seconds must be at least 10")
+			}
+			payload["credential_store"] = map[string]interface{}{
+				"kind": store.CredentialStoreHashicorp,
+				"config": map[string]interface{}{
+					"mount":       mount,
+					"secret_path": secretPath,
+					"kv_version":  kvVersion,
+				},
+				"poll_interval_seconds": pollSecs,
+			}
 		default:
-			return fmt.Errorf("unsupported --credential-store %q (use %s or %s)", credStore, store.CredentialStoreBuiltin, store.CredentialStoreInfisical)
+			return fmt.Errorf("unsupported --credential-store %q (use %s, %s, or %s)", credStore, store.CredentialStoreBuiltin, store.CredentialStoreInfisical, store.CredentialStoreHashicorp)
 		}
 
 		body, err := json.Marshal(payload)
@@ -162,11 +186,25 @@ func printCredentialStore(out io.Writer, cs map[string]interface{}) {
 		fmt.Fprintf(out, "Credential store: %s\n", store.CredentialStoreBuiltin)
 		return
 	}
+	kind, _ := cs["kind"].(string)
 	fmt.Fprintf(out, "Credential store: %v\n", cs["kind"])
 	if cfg, ok := cs["config"].(map[string]interface{}); ok {
-		fmt.Fprintf(out, "  Project:     %v\n", cfg["project_id"])
-		fmt.Fprintf(out, "  Environment: %v\n", cfg["environment"])
-		fmt.Fprintf(out, "  Path:        %v\n", cfg["secret_path"])
+		switch kind {
+		case store.CredentialStoreInfisical:
+			fmt.Fprintf(out, "  Project:     %v\n", cfg["project_id"])
+			fmt.Fprintf(out, "  Environment: %v\n", cfg["environment"])
+			fmt.Fprintf(out, "  Path:        %v\n", cfg["secret_path"])
+		case store.CredentialStoreHashicorp:
+			fmt.Fprintf(out, "  Mount:       %v\n", cfg["mount"])
+			fmt.Fprintf(out, "  Path:        %v\n", cfg["secret_path"])
+			fmt.Fprintf(out, "  KV version:  %v\n", cfg["kv_version"])
+		default:
+			// Unknown kind (e.g. a newer store this CLI predates): print the
+			// raw config rather than mislabeling it with another store's fields.
+			for k, v := range cfg {
+				fmt.Fprintf(out, "  %s: %v\n", k, v)
+			}
+		}
 	}
 	if v, ok := cs["poll_interval_seconds"]; ok {
 		fmt.Fprintf(out, "  Poll:        %vs\n", v)
@@ -480,10 +518,13 @@ func init() {
 
 	vaultDeleteCmd.Flags().Bool("yes", false, "Skip confirmation prompt")
 
-	vaultCreateCmd.Flags().String("credential-store", "", "credential store kind: builtin (default) or infisical (owner only)")
+	vaultCreateCmd.Flags().String("credential-store", "", "credential store kind: builtin (default), infisical, or hashicorp (infisical/hashicorp owner only)")
 	vaultCreateCmd.Flags().String("infisical-project-id", "", "Infisical project ID (required when --credential-store=infisical)")
 	vaultCreateCmd.Flags().String("infisical-environment", "", "Infisical environment slug, e.g. dev/prod")
 	vaultCreateCmd.Flags().String("infisical-path", "/", "Infisical secret path (default /)")
+	vaultCreateCmd.Flags().String("hashicorp-mount", "secret", "HashiCorp Vault KV mount path (required when --credential-store=hashicorp)")
+	vaultCreateCmd.Flags().String("hashicorp-path", "", "HashiCorp Vault secret path within the mount (required when --credential-store=hashicorp)")
+	vaultCreateCmd.Flags().Int("hashicorp-kv-version", 2, "HashiCorp Vault KV engine version: 1 or 2 (default 2)")
 	vaultCreateCmd.Flags().Int("poll-interval-seconds", 60, "Sync cadence floor for the external store (min 10; server wakes every 10s and refreshes vaults past their interval)")
 
 	vaultCmd.AddCommand(vaultCreateCmd)
