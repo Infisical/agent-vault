@@ -329,6 +329,9 @@ function EditSettingsSheet({
           const data = await resp.json().catch(() => ({}));
           throw new Error(data.error || "Failed to rename vault");
         }
+        // Close the drawer before navigating; the route change re-renders this
+        // component in place rather than unmounting it, so it won't close itself.
+        onClose();
         // The URL carries the old name; jump to the new one (reloads context).
         navigate({ to: "/vaults/$name/settings", params: { name: trimmedName } });
         return;
