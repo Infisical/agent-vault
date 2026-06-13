@@ -22,6 +22,13 @@ type InfisicalConfig = {
   secret_path?: string;
 };
 
+// Shape of a HashiCorp Vault credential store's config (server stores it untyped).
+type HashicorpConfig = {
+  mount?: string;
+  secret_path?: string;
+  kv_version?: number;
+};
+
 export default function SettingsTab() {
   const { vaultName, vaultRole, isOwner, credentialStore } = useVaultParams();
   const navigate = useNavigate();
@@ -177,9 +184,18 @@ export default function SettingsTab() {
 }
 
 function CredentialStoreDisplay({ store }: { store?: CredentialStoreInfo }) {
-  const config = (store?.config ?? {}) as InfisicalConfig;
   const isInfisical = store?.kind === "infisical";
-  const kindLabel = !store ? "Built-in" : isInfisical ? "Infisical" : store.kind;
+  const isHashicorp = store?.kind === "hashicorp";
+  const isExternal = isInfisical || isHashicorp;
+  const infisicalConfig = (store?.config ?? {}) as InfisicalConfig;
+  const hashicorpConfig = (store?.config ?? {}) as HashicorpConfig;
+  const kindLabel = !store
+    ? "Built-in"
+    : isInfisical
+      ? "Infisical"
+      : isHashicorp
+        ? "HashiCorp Vault"
+        : store.kind;
 
   return (
     <>
@@ -188,7 +204,7 @@ function CredentialStoreDisplay({ store }: { store?: CredentialStoreInfo }) {
         <div className="col-span-2">
           <StoreField
             label="Credential store"
-            tooltip="Built-in keeps credentials in Agent Vault. Infisical syncs read-only from your Infisical instance, overwriting the built-in credentials."
+            tooltip="Built-in keeps credentials in Agent Vault. Infisical and HashiCorp Vault sync read-only from your external instance, overwriting the built-in credentials."
             value={kindLabel}
           />
         </div>
@@ -196,12 +212,22 @@ function CredentialStoreDisplay({ store }: { store?: CredentialStoreInfo }) {
             stays populated for everyone. */}
         {isInfisical && store?.config && (
           <>
-            <StoreField label="Project" value={config.project_id ?? "—"} />
-            <StoreField label="Environment" value={config.environment ?? "—"} />
-            <StoreField label="Secret path" value={config.secret_path || "/"} />
+            <StoreField label="Project" value={infisicalConfig.project_id ?? "—"} />
+            <StoreField label="Environment" value={infisicalConfig.environment ?? "—"} />
+            <StoreField label="Secret path" value={infisicalConfig.secret_path || "/"} />
           </>
         )}
-        {isInfisical && store?.last_synced_at && (
+        {isHashicorp && store?.config && (
+          <>
+            <StoreField label="Mount" value={hashicorpConfig.mount ?? "—"} />
+            <StoreField label="Secret path" value={hashicorpConfig.secret_path ?? "—"} />
+            <StoreField
+              label="KV version"
+              value={hashicorpConfig.kv_version ? String(hashicorpConfig.kv_version) : "—"}
+            />
+          </>
+        )}
+        {isExternal && store?.last_synced_at && (
           <StoreField
             label={store.last_sync_status === "error" ? "Last attempt" : "Last sync"}
             value={timeAgo(store.last_synced_at)}
@@ -241,8 +267,12 @@ function EditSettingsSheet({
   const router = useRouter();
 
   const config = (store?.config ?? {}) as InfisicalConfig;
-  const currentKind: "builtin" | "infisical" =
-    store?.kind === "infisical" ? "infisical" : "builtin";
+  const currentKind: "builtin" | "infisical" | "hashicorp" =
+    store?.kind === "infisical"
+      ? "infisical"
+      : store?.kind === "hashicorp"
+        ? "hashicorp"
+        : "builtin";
 
   const initialValues: VaultFormValues = {
     name: vaultName,
@@ -251,6 +281,9 @@ function EditSettingsSheet({
     projectID: config.project_id ?? "",
     environment: config.environment ?? "",
     secretPath: config.secret_path || "/",
+    hcMount: "secret",
+    hcPath: "",
+    hcKvVersion: "2",
   };
 
   // Draft state, re-seeded from the live values each time the drawer opens.
@@ -385,8 +418,10 @@ function EditSettingsSheet({
           policyDisabled={policy === null}
           nameDisabled={isDefault}
           infisicalOptionDisabled={!infisicalAvailable && currentKind !== "infisical"}
+          hashicorpOptionDisabled={currentKind !== "hashicorp"}
+          hideHashicorpFields
           error={error}
-          storeTooltip="Built-in keeps credentials in Agent Vault. Infisical syncs read-only from your Infisical instance, overwriting the built-in credentials."
+          storeTooltip="Built-in keeps credentials in Agent Vault. Infisical and HashiCorp Vault sync read-only from your external instance, overwriting the built-in credentials."
         />
       </Sheet>
 
@@ -401,7 +436,7 @@ function EditSettingsSheet({
         description={
           switchToInfisical
             ? `Switching to Infisical will OVERWRITE all current built-in credentials in "${vaultName}" with the secrets from the connected Infisical source. Type the vault name to confirm.`
-            : `Switching to the built-in store disconnects Infisical from "${vaultName}". The secrets currently synced are kept as built-in credentials and stop updating from Infisical. Type the vault name to confirm.`
+            : `Switching to the built-in store disconnects ${currentKind === "hashicorp" ? "HashiCorp Vault" : "Infisical"} from "${vaultName}". The secrets currently synced are kept as built-in credentials and stop updating. Type the vault name to confirm.`
         }
         confirmLabel="Save changes"
         confirmValue={vaultName}
