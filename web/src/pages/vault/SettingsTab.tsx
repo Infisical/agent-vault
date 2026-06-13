@@ -14,6 +14,13 @@ import { apiFetch } from "../../lib/api";
 
 type UnmatchedHostPolicy = "passthrough" | "deny";
 
+// Shape of an Infisical credential store's config (server stores it untyped).
+type InfisicalConfig = {
+  project_id?: string;
+  environment?: string;
+  secret_path?: string;
+};
+
 export default function SettingsTab() {
   const { vaultName, vaultRole, isOwner, credentialStore } = useVaultParams();
   const navigate = useNavigate();
@@ -169,11 +176,7 @@ export default function SettingsTab() {
 }
 
 function CredentialStoreDisplay({ store }: { store?: CredentialStoreInfo }) {
-  const config = (store?.config ?? {}) as {
-    project_id?: string;
-    environment?: string;
-    secret_path?: string;
-  };
+  const config = (store?.config ?? {}) as InfisicalConfig;
   const isInfisical = store?.kind === "infisical";
   const kindLabel = !store ? "Built-in" : isInfisical ? "Infisical" : store.kind;
 
@@ -236,11 +239,7 @@ function EditSettingsSheet({
   const navigate = useNavigate();
   const router = useRouter();
 
-  const config = (store?.config ?? {}) as {
-    project_id?: string;
-    environment?: string;
-    secret_path?: string;
-  };
+  const config = (store?.config ?? {}) as InfisicalConfig;
   const currentKind: "builtin" | "infisical" =
     store?.kind === "infisical" ? "infisical" : "builtin";
 
