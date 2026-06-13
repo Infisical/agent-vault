@@ -792,12 +792,20 @@ description: "Complete reference for all Agent Vault CLI commands."
     Show agent details including vaults, status, and active session count.
   </Accordion>
 
+  <Accordion title="agent-vault agent revoke">
+    ```bash
+    agent-vault agent revoke <name>
+    ```
+
+    Revoke an agent and invalidate all its tokens. The agent remains visible with a "revoked" status but can no longer authenticate. Rotate its token to reactivate it.
+  </Accordion>
+
   <Accordion title="agent-vault agent delete">
     ```bash
     agent-vault agent delete <name>
     ```
 
-    Delete an agent and all its sessions across all vaults.
+    Permanently delete an agent, its tokens, and all vault grants. Works on both active and revoked agents.
   </Accordion>
 
   <Accordion title="agent-vault agent rotate">
@@ -805,7 +813,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault agent rotate <name> [flags]
     ```
 
-    Invalidate the agent's existing token and print a new one. Update `AGENT_VAULT_TOKEN` wherever the agent runs.
+    Invalidate the agent's existing token and print a new one. If the agent is revoked, rotation also reactivates it. Update `AGENT_VAULT_TOKEN` wherever the agent runs.
 
     | Flag | Default | Description |
     |------|---------|-------------|

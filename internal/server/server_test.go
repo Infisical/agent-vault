@@ -986,6 +986,21 @@ func (m *mockStore) RevokeAgent(_ context.Context, id string) error {
 	return fmt.Errorf("agent not found")
 }
 
+func (m *mockStore) DeleteAgent(_ context.Context, id string) error {
+	for name, ag := range m.agents {
+		if ag.ID == id {
+			delete(m.agents, name)
+			for sid, sess := range m.sessions {
+				if sess.AgentID == id {
+					delete(m.sessions, sid)
+				}
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("agent not found")
+}
+
 func (m *mockStore) RenameAgent(_ context.Context, id string, newName string) error {
 	for name, ag := range m.agents {
 		if ag.ID == id {
@@ -1034,6 +1049,13 @@ func (m *mockStore) DeleteAgentTokens(_ context.Context, agentID string) error {
 func (m *mockStore) RotateAgentToken(ctx context.Context, agentID string, expiresAt *time.Time) (*store.Session, error) {
 	if err := m.DeleteAgentTokens(ctx, agentID); err != nil {
 		return nil, err
+	}
+	for _, ag := range m.agents {
+		if ag.ID == agentID {
+			ag.Status = "active"
+			ag.RevokedAt = nil
+			break
+		}
 	}
 	return m.CreateAgentToken(ctx, agentID, expiresAt)
 }
@@ -3996,6 +4018,31 @@ func TestAgentGet_NonOwnerCannotViewOthersAgent(t *testing.T) {
 	}
 }
 
+func TestAgentDelete(t *testing.T) {
+	srv, ms, sessID := setupAgentTest(t)
+
+	ms.agents["deletebot"] = &store.Agent{ID: "a1", Name: "deletebot", Status: "active"}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/deletebot/delete", nil)
+	req.Header.Set("Authorization", "Bearer "+sessID)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if _, exists := ms.agents["deletebot"]; exists {
+		t.Fatal("expected agent to be hard-deleted from store")
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if msg, ok := resp["message"].(string); !ok || !strings.Contains(msg, "deleted") {
+		t.Fatalf("expected 'deleted' in message, got: %v", resp["message"])
+	}
+}
+
 func TestAgentRevoke(t *testing.T) {
 	srv, ms, sessID := setupAgentTest(t)
 
@@ -4037,6 +4084,36 @@ func TestAgentRotate(t *testing.T) {
 	}
 	if resp["rotated_at"] == nil || resp["rotated_at"].(string) == "" {
 		t.Fatal("expected non-empty rotated_at")
+	}
+}
+
+func TestAgentRotate_ReactivatesRevokedAgent(t *testing.T) {
+	srv, ms, sessID := setupAgentTest(t)
+
+	now := time.Now()
+	ms.agents["deadbot"] = &store.Agent{ID: "a1", Name: "deadbot", Status: "revoked", RevokedAt: &now}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/deadbot/rotate", nil)
+	req.Header.Set("Authorization", "Bearer "+sessID)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	ag := ms.agents["deadbot"]
+	if ag.Status != "active" {
+		t.Fatalf("expected active after rotate, got %s", ag.Status)
+	}
+	if ag.RevokedAt != nil {
+		t.Fatal("expected revoked_at to be cleared")
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["av_agent_token"] == nil || resp["av_agent_token"].(string) == "" {
+		t.Fatal("expected non-empty av_agent_token")
 	}
 }
 

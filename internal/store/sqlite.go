@@ -2739,6 +2739,37 @@ func (s *SQLiteStore) RevokeAgent(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
+func (s *SQLiteStore) DeleteAgent(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM sessions
+		 WHERE agent_id = ?
+		    OR (created_by_actor_id = ? AND created_by_actor_type = 'agent')`,
+		id, id); err != nil {
+		return fmt.Errorf("deleting agent sessions: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM vault_grants WHERE actor_id = ? AND actor_type = 'agent'`, id); err != nil {
+		return fmt.Errorf("deleting agent vault grants: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("deleting agent: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+
+	return tx.Commit()
+}
 
 func (s *SQLiteStore) RenameAgent(ctx context.Context, id string, newName string) error {
 	nowStr := nowUTC()
@@ -2813,6 +2844,14 @@ func (s *SQLiteStore) RotateAgentToken(ctx context.Context, agentID string, expi
 
 	if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE agent_id = ?", agentID); err != nil {
 		return nil, fmt.Errorf("deleting agent tokens: %w", err)
+	}
+
+	nowStr := nowUTC()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE agents SET status = 'active', revoked_at = NULL, updated_at = ? WHERE id = ?`,
+		nowStr, agentID,
+	); err != nil {
+		return nil, fmt.Errorf("reactivating agent: %w", err)
 	}
 
 	rawToken := newAgentToken()

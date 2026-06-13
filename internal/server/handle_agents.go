@@ -285,6 +285,42 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]string{"message": fmt.Sprintf("agent %q revoked", name)})
 }
 
+func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := r.PathValue("name")
+
+	actor, err := s.requireInstanceMember(w, r)
+	if err != nil {
+		return
+	}
+
+	agent, err := s.store.GetAgentByName(ctx, name)
+	if err != nil {
+		jsonError(w, http.StatusNotFound, "Agent not found")
+		return
+	}
+
+	if !actor.IsOwner() && agent.Role == "owner" {
+		jsonError(w, http.StatusForbidden, "Only instance owners can manage owner-role agents")
+		return
+	}
+	if !actor.IsOwner() && agent.CreatedBy != actor.ID {
+		jsonError(w, http.StatusForbidden, "Only the owner or agent creator can delete agents")
+		return
+	}
+
+	if agent.Role == "owner" && s.guardLastOwner(ctx, w, "delete") {
+		return
+	}
+
+	if err := s.store.DeleteAgent(ctx, agent.ID); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to delete agent")
+		return
+	}
+
+	jsonOK(w, map[string]string{"message": fmt.Sprintf("agent %q deleted", name)})
+}
+
 // handleAgentRotate invalidates the agent's existing tokens and mints a new one.
 func (s *Server) handleAgentRotate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -307,10 +343,6 @@ func (s *Server) handleAgentRotate(w http.ResponseWriter, r *http.Request) {
 	}
 	if !actor.IsOwner() && agent.CreatedBy != actor.ID {
 		jsonError(w, http.StatusForbidden, "Only the owner or agent creator can rotate agents")
-		return
-	}
-	if agent.Status != "active" {
-		jsonError(w, http.StatusConflict, "Agent is revoked — cannot rotate")
 		return
 	}
 
