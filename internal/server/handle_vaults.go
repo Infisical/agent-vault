@@ -648,10 +648,10 @@ func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context,
 }
 
 // handleVaultCredentialStorePatch switches the credential store backing an
-// existing vault (vault admin or instance owner). Switching to "infisical"
-// probes + fetches the upstream snapshot and OVERWRITES the vault's built-in
-// credentials. Switching to "builtin" disconnects the external store (polling
-// stops) but KEEPS the last synced credentials in place as built-in credentials.
+// existing vault. Switching to "infisical" (owner-only) probes + fetches the
+// upstream snapshot and OVERWRITES the vault's built-in credentials. Switching
+// to "builtin" (vault admin or owner) disconnects the external store; polling
+// stops but the last synced credentials are KEPT as built-in credentials.
 func (s *Server) handleVaultCredentialStorePatch(w http.ResponseWriter, r *http.Request) {
 	ns := s.resolveVaultForAdminOrOwner(w, r, r.PathValue("name"))
 	if ns == nil {
@@ -678,11 +678,9 @@ func (s *Server) handleVaultCredentialStorePatch(w http.ResponseWriter, r *http.
 			"credential_store": &credentialStoreSummary{Kind: store.CredentialStoreBuiltin},
 		})
 	case store.CredentialStoreInfisical:
-		// Connect: probe upstream, then overwrite the vault's credentials with
-		// the fetched snapshot and start polling. Owner-only, mirroring
-		// handleVaultCreate — otherwise a vault admin could use the broker's
-		// machine identity to exfiltrate upstream secrets into a vault they
-		// control.
+		// Owner-only, mirroring handleVaultCreate: otherwise a vault admin could
+		// use the broker's machine identity to fetch upstream secrets into a
+		// vault they control.
 		actor, err := s.requireActor(w, r)
 		if err != nil {
 			return

@@ -560,8 +560,6 @@ type Store interface {
 	GetVaultCredentialStore(ctx context.Context, vaultID string) (*VaultCredentialStore, error)
 	ListVaultCredentialStores(ctx context.Context) ([]VaultCredentialStore, error)
 	UpdateVaultCredentialStoreHealth(ctx context.Context, vaultID, status, errMsg string, syncedAt time.Time) error
-	// ReplaceVaultCredentials atomically wipes and rewrites the vault's credentials.
-	ReplaceVaultCredentials(ctx context.Context, vaultID string, items []EncryptedKV) error
 	// ReplaceVaultCredentialsForSync rewrites credentials only while the
 	// external-store row still exists; applied=false means the vault was
 	// disconnected mid-sync and nothing was written.

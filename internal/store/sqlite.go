@@ -330,27 +330,10 @@ func replaceCredentialsTx(ctx context.Context, tx *sql.Tx, vaultID, nowStr strin
 	return nil
 }
 
-// ReplaceVaultCredentials atomically wipes and rewrites the vault's credentials
-// in one transaction; empty items clears the vault.
-func (s *SQLiteStore) ReplaceVaultCredentials(ctx context.Context, vaultID string, items []EncryptedKV) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if err := replaceCredentialsTx(ctx, tx, vaultID, nowUTC(), items); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-// ReplaceVaultCredentialsForSync is the syncer's write path. It rewrites the
-// vault's credentials only while the external-store row still exists, checking
-// and writing in one transaction. With a single DB connection that check+write
-// is atomic against DeleteVaultCredentialStore, so a disconnect racing an
-// in-flight sync can no longer have its "kept" snapshot clobbered after the row
-// is gone: a sync that loses the race reports applied=false and writes nothing.
+// ReplaceVaultCredentialsForSync is the syncer's write path: it rewrites the
+// vault's credentials in one transaction, but only while the external-store row
+// still exists. A sync that races a disconnect (the row is gone) reports
+// applied=false and writes nothing, leaving the kept credentials intact.
 func (s *SQLiteStore) ReplaceVaultCredentialsForSync(ctx context.Context, vaultID string, items []EncryptedKV) (applied bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

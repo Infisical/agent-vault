@@ -2299,7 +2299,7 @@ func TestCascadeDeleteVaultRemovesCredentialStore(t *testing.T) {
 	}
 }
 
-func TestReplaceVaultCredentials(t *testing.T) {
+func TestReplaceVaultCredentialsForSyncRotates(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 
@@ -2321,12 +2321,12 @@ func TestReplaceVaultCredentials(t *testing.T) {
 	}
 
 	// Replace: keep A (rotated), drop B, add C.
-	err = s.ReplaceVaultCredentials(ctx, v.ID, []EncryptedKV{
+	applied, err := s.ReplaceVaultCredentialsForSync(ctx, v.ID, []EncryptedKV{
 		{Key: "A", Ciphertext: []byte("c1-new"), Nonce: []byte("n1-new")},
 		{Key: "C", Ciphertext: []byte("c3"), Nonce: []byte("n3")},
 	})
-	if err != nil {
-		t.Fatalf("ReplaceVaultCredentials: %v", err)
+	if err != nil || !applied {
+		t.Fatalf("ReplaceVaultCredentialsForSync: applied=%v err=%v", applied, err)
 	}
 
 	creds, _ := s.ListCredentials(ctx, v.ID)
@@ -2348,7 +2348,7 @@ func TestReplaceVaultCredentials(t *testing.T) {
 	}
 }
 
-func TestReplaceVaultCredentialsEmptyWipes(t *testing.T) {
+func TestReplaceVaultCredentialsForSyncEmptyWipes(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 
@@ -2363,8 +2363,8 @@ func TestReplaceVaultCredentialsEmptyWipes(t *testing.T) {
 		CreatorActorType:    "user",
 	})
 
-	if err := s.ReplaceVaultCredentials(ctx, v.ID, nil); err != nil {
-		t.Fatalf("ReplaceVaultCredentials nil: %v", err)
+	if applied, err := s.ReplaceVaultCredentialsForSync(ctx, v.ID, nil); err != nil || !applied {
+		t.Fatalf("ReplaceVaultCredentialsForSync nil: applied=%v err=%v", applied, err)
 	}
 	creds, _ := s.ListCredentials(ctx, v.ID)
 	if len(creds) != 0 {

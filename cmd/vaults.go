@@ -201,9 +201,11 @@ var vaultCredentialStoreSetCmd = &cobra.Command{
 
 		yes, _ := cmd.Flags().GetBool("yes")
 		if !yes {
-			warning := fmt.Sprintf("%s Switching vault %q to built-in disconnects Infisical; the synced secrets are kept as built-in credentials and stop updating.", warningText("WARNING"), name)
+			var warning string
 			if kind == store.CredentialStoreInfisical {
 				warning = fmt.Sprintf("%s Switching vault %q to Infisical will OVERWRITE its built-in credentials with the secrets from the connected source.", warningText("WARNING"), name)
+			} else {
+				warning = fmt.Sprintf("%s Switching vault %q to built-in disconnects Infisical; the synced secrets are kept as built-in credentials and stop updating.", warningText("WARNING"), name)
 			}
 			ok, err := confirmByName(cmd, warning, name)
 			if err != nil {

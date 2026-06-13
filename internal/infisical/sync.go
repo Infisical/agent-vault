@@ -187,9 +187,8 @@ func (s *Syncer) refresh(ctx context.Context, cs store.VaultCredentialStore) err
 		return err
 	}
 	if !applied {
-		// The vault was disconnected (DeleteVaultCredentialStore) between the
-		// list scan and this write; the snapshot is dropped on purpose so the
-		// kept built-in credentials survive. Not a failure.
+		// Disconnected mid-sync: drop the snapshot so the kept credentials
+		// survive. Not a failure.
 		s.logger.Info("infisical sync skipped: vault disconnected mid-sync",
 			slog.String("vault_id", cs.VaultID))
 		return nil

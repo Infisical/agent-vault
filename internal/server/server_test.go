@@ -1148,9 +1148,6 @@ func (m *mockStore) UpdateVaultCredentialStoreHealth(_ context.Context, vaultID,
 	cs.LastSyncedAt = &t
 	return nil
 }
-func (m *mockStore) ReplaceVaultCredentials(_ context.Context, _ string, _ []store.EncryptedKV) error {
-	return nil
-}
 func (m *mockStore) ReplaceVaultCredentialsForSync(_ context.Context, _ string, _ []store.EncryptedKV) (bool, error) {
 	return true, nil
 }
@@ -3315,12 +3312,9 @@ func TestVaultCredentialStoreSwitchToInfisicalNoClient(t *testing.T) {
 	}
 }
 
-// Connecting a vault to Infisical is owner-only, mirroring vault create: a
-// vault admin who is not the instance owner must be rejected, otherwise they
-// could use the broker's machine identity to import arbitrary upstream secrets
-// into a vault they control (the gate handleVaultCreate enforces). The
-// Infisical client is attached so this proves the owner gate fires, not the
-// no-client 503.
+// Connecting to Infisical is owner-only, mirroring vault create. A non-owner
+// vault admin must be rejected. The client is attached so this proves the owner
+// gate fires (403), not the no-client 503.
 func TestVaultCredentialStoreSwitchToInfisicalRequiresOwner(t *testing.T) {
 	ms, _ := setupMockStoreWithSession(t)
 	adminToken := setupMemberSession(t, ms, "root-ns-id")
