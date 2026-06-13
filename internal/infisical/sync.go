@@ -16,7 +16,7 @@ import (
 
 type SyncerStore interface {
 	ListVaultCredentialStores(ctx context.Context) ([]store.VaultCredentialStore, error)
-	ReplaceVaultCredentialsForSync(ctx context.Context, vaultID string, items []store.EncryptedKV) (applied bool, err error)
+	ReplaceVaultCredentialsForSync(ctx context.Context, vaultID, configJSON string, items []store.EncryptedKV) (applied bool, err error)
 	UpdateVaultCredentialStoreHealth(ctx context.Context, vaultID, status, errMsg string, syncedAt time.Time) error
 }
 
@@ -181,15 +181,15 @@ func (s *Syncer) refresh(ctx context.Context, cs store.VaultCredentialStore) err
 		return err
 	}
 
-	applied, err := s.store.ReplaceVaultCredentialsForSync(ctx, cs.VaultID, items)
+	applied, err := s.store.ReplaceVaultCredentialsForSync(ctx, cs.VaultID, cs.ConfigJSON, items)
 	if err != nil {
 		s.recordFailure(ctx, cs.VaultID, err)
 		return err
 	}
 	if !applied {
-		// Disconnected mid-sync: drop the snapshot so the kept credentials
-		// survive. Not a failure.
-		s.logger.Info("infisical sync skipped: vault disconnected mid-sync",
+		// Disconnected or reconfigured mid-sync: drop this snapshot so it can't
+		// clobber the current credentials. Not a failure.
+		s.logger.Info("infisical sync skipped: vault changed mid-sync",
 			slog.String("vault_id", cs.VaultID))
 		return nil
 	}

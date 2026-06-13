@@ -295,7 +295,7 @@ type Store interface {
 	GetVaultCredentialStore(ctx context.Context, vaultID string) (*store.VaultCredentialStore, error)
 	ListVaultCredentialStores(ctx context.Context) ([]store.VaultCredentialStore, error)
 	UpdateVaultCredentialStoreHealth(ctx context.Context, vaultID, status, errMsg string, syncedAt time.Time) error
-	ReplaceVaultCredentialsForSync(ctx context.Context, vaultID string, items []store.EncryptedKV) (applied bool, err error)
+	ReplaceVaultCredentialsForSync(ctx context.Context, vaultID, configJSON string, items []store.EncryptedKV) (applied bool, err error)
 	SetVaultExternalStore(ctx context.Context, p store.SetVaultExternalStoreParams) (*store.VaultCredentialStore, error)
 	DeleteVaultCredentialStore(ctx context.Context, vaultID string) error
 

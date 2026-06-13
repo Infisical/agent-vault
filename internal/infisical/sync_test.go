@@ -66,16 +66,16 @@ func (f *fakeStore) ListVaultCredentialStores(_ context.Context) ([]store.VaultC
 	return out, nil
 }
 
-func (f *fakeStore) ReplaceVaultCredentialsForSync(_ context.Context, vaultID string, items []store.EncryptedKV) (bool, error) {
+func (f *fakeStore) ReplaceVaultCredentialsForSync(_ context.Context, vaultID, configJSON string, items []store.EncryptedKV) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.repErr != nil {
 		return false, f.repErr
 	}
-	// Mirror the store: a write only lands while the credential-store row exists.
+	// Mirror the store: a write only lands while a row with the same config exists.
 	found := false
 	for i := range f.rows {
-		if f.rows[i].VaultID == vaultID {
+		if f.rows[i].VaultID == vaultID && f.rows[i].ConfigJSON == configJSON {
 			found = true
 			break
 		}

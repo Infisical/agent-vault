@@ -1148,7 +1148,7 @@ func (m *mockStore) UpdateVaultCredentialStoreHealth(_ context.Context, vaultID,
 	cs.LastSyncedAt = &t
 	return nil
 }
-func (m *mockStore) ReplaceVaultCredentialsForSync(_ context.Context, _ string, _ []store.EncryptedKV) (bool, error) {
+func (m *mockStore) ReplaceVaultCredentialsForSync(_ context.Context, _, _ string, _ []store.EncryptedKV) (bool, error) {
 	return true, nil
 }
 func (m *mockStore) SetVaultExternalStore(_ context.Context, p store.SetVaultExternalStoreParams) (*store.VaultCredentialStore, error) {

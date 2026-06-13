@@ -332,9 +332,11 @@ func replaceCredentialsTx(ctx context.Context, tx *sql.Tx, vaultID, nowStr strin
 
 // ReplaceVaultCredentialsForSync is the syncer's write path: it rewrites the
 // vault's credentials in one transaction, but only while the external-store row
-// still exists. A sync that races a disconnect (the row is gone) reports
-// applied=false and writes nothing, leaving the kept credentials intact.
-func (s *SQLiteStore) ReplaceVaultCredentialsForSync(ctx context.Context, vaultID string, items []EncryptedKV) (applied bool, err error) {
+// still matches the config the snapshot was fetched against. A sync that races
+// a disconnect (row gone) or a reconfigure (config_json changed) reports
+// applied=false and writes nothing, so a stale snapshot can never clobber the
+// credentials a switch just installed. configJSON is the fetched config.
+func (s *SQLiteStore) ReplaceVaultCredentialsForSync(ctx context.Context, vaultID, configJSON string, items []EncryptedKV) (applied bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin tx: %w", err)
@@ -343,9 +345,9 @@ func (s *SQLiteStore) ReplaceVaultCredentialsForSync(ctx context.Context, vaultI
 
 	var dummy int
 	switch err := tx.QueryRowContext(ctx,
-		"SELECT 1 FROM vault_credential_stores WHERE vault_id = ?", vaultID).Scan(&dummy); {
+		"SELECT 1 FROM vault_credential_stores WHERE vault_id = ? AND config_json = ?", vaultID, configJSON).Scan(&dummy); {
 	case errors.Is(err, sql.ErrNoRows):
-		return false, nil // disconnected mid-sync; keep the existing credentials
+		return false, nil // disconnected or reconfigured mid-sync; keep current credentials
 	case err != nil:
 		return false, fmt.Errorf("checking credential store: %w", err)
 	}

@@ -2321,7 +2321,7 @@ func TestReplaceVaultCredentialsForSyncRotates(t *testing.T) {
 	}
 
 	// Replace: keep A (rotated), drop B, add C.
-	applied, err := s.ReplaceVaultCredentialsForSync(ctx, v.ID, []EncryptedKV{
+	applied, err := s.ReplaceVaultCredentialsForSync(ctx, v.ID, `{}`, []EncryptedKV{
 		{Key: "A", Ciphertext: []byte("c1-new"), Nonce: []byte("n1-new")},
 		{Key: "C", Ciphertext: []byte("c3"), Nonce: []byte("n3")},
 	})
@@ -2363,7 +2363,7 @@ func TestReplaceVaultCredentialsForSyncEmptyWipes(t *testing.T) {
 		CreatorActorType:    "user",
 	})
 
-	if applied, err := s.ReplaceVaultCredentialsForSync(ctx, v.ID, nil); err != nil || !applied {
+	if applied, err := s.ReplaceVaultCredentialsForSync(ctx, v.ID, `{}`, nil); err != nil || !applied {
 		t.Fatalf("ReplaceVaultCredentialsForSync nil: applied=%v err=%v", applied, err)
 	}
 	creds, _ := s.ListCredentials(ctx, v.ID)
@@ -2544,18 +2544,20 @@ func TestDeleteVaultCredentialStoreKeepsCredentials(t *testing.T) {
 	}
 }
 
-// ReplaceVaultCredentialsForSync only writes while the external-store row
-// exists. This closes the race where an in-flight sync would clobber the
-// credentials a concurrent disconnect is meant to preserve.
+// ReplaceVaultCredentialsForSync writes only while the row still matches the
+// config the snapshot was fetched against. This closes two races where an
+// in-flight sync would clobber credentials: a concurrent disconnect, and a
+// concurrent switch to a different Infisical config.
 func TestReplaceVaultCredentialsForSyncGatedOnStoreRow(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 
+	const cfgA = `{"project_id":"a","environment":"dev","secret_path":"/"}`
 	u, _ := s.CreateUser(ctx, "sync@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
 	v, err := s.CreateExternalVault(ctx, CreateExternalVaultParams{
 		Name:                "sync-race",
 		Kind:                CredentialStoreInfisical,
-		ConfigJSON:          `{}`,
+		ConfigJSON:          cfgA,
 		PollIntervalSeconds: 60,
 		Credentials:         []EncryptedKV{{Key: "KEPT", Ciphertext: []byte("c"), Nonce: []byte("n")}},
 		CreatorActorID:      u.ID,
@@ -2565,8 +2567,8 @@ func TestReplaceVaultCredentialsForSyncGatedOnStoreRow(t *testing.T) {
 		t.Fatalf("CreateExternalVault: %v", err)
 	}
 
-	// While the store row exists the sync write lands.
-	applied, err := s.ReplaceVaultCredentialsForSync(ctx, v.ID, []EncryptedKV{
+	// Same config → the sync write lands.
+	applied, err := s.ReplaceVaultCredentialsForSync(ctx, v.ID, cfgA, []EncryptedKV{
 		{Key: "FRESH", Ciphertext: []byte("c2"), Nonce: []byte("n2")},
 	})
 	if err != nil || !applied {
@@ -2577,13 +2579,37 @@ func TestReplaceVaultCredentialsForSyncGatedOnStoreRow(t *testing.T) {
 		t.Fatalf("expected FRESH after applied sync, got %+v", creds)
 	}
 
-	// Simulate a disconnect, then a still-in-flight sync write: it must be a
-	// no-op so the kept credentials survive.
+	// Reconfigure to a different config, then a still-in-flight sync against the
+	// OLD config: it must be a no-op so the switched-in credentials survive.
+	if _, err := s.SetVaultExternalStore(ctx, SetVaultExternalStoreParams{
+		VaultID:             v.ID,
+		Kind:                CredentialStoreInfisical,
+		ConfigJSON:          `{"project_id":"b","environment":"prod","secret_path":"/x"}`,
+		PollIntervalSeconds: 60,
+		Credentials:         []EncryptedKV{{Key: "SWITCHED", Ciphertext: []byte("c4"), Nonce: []byte("n4")}},
+	}); err != nil {
+		t.Fatalf("SetVaultExternalStore: %v", err)
+	}
+	applied, err = s.ReplaceVaultCredentialsForSync(ctx, v.ID, cfgA, []EncryptedKV{
+		{Key: "STALE", Ciphertext: []byte("c3"), Nonce: []byte("n3")},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceVaultCredentialsForSync after reconfigure: %v", err)
+	}
+	if applied {
+		t.Fatalf("expected applied=false after reconfigure")
+	}
+	creds, _ = s.ListCredentials(ctx, v.ID)
+	if len(creds) != 1 || creds[0].Key != "SWITCHED" {
+		t.Fatalf("expected SWITCHED credentials preserved after reconfigure, got %+v", creds)
+	}
+
+	// Disconnect entirely, then a still-in-flight sync: also a no-op.
 	if err := s.DeleteVaultCredentialStore(ctx, v.ID); err != nil {
 		t.Fatalf("DeleteVaultCredentialStore: %v", err)
 	}
-	applied, err = s.ReplaceVaultCredentialsForSync(ctx, v.ID, []EncryptedKV{
-		{Key: "STALE", Ciphertext: []byte("c3"), Nonce: []byte("n3")},
+	applied, err = s.ReplaceVaultCredentialsForSync(ctx, v.ID, cfgA, []EncryptedKV{
+		{Key: "STALE2", Ciphertext: []byte("c5"), Nonce: []byte("n5")},
 	})
 	if err != nil {
 		t.Fatalf("ReplaceVaultCredentialsForSync after disconnect: %v", err)
@@ -2592,8 +2618,8 @@ func TestReplaceVaultCredentialsForSyncGatedOnStoreRow(t *testing.T) {
 		t.Fatalf("expected applied=false after disconnect")
 	}
 	creds, _ = s.ListCredentials(ctx, v.ID)
-	if len(creds) != 1 || creds[0].Key != "FRESH" {
-		t.Fatalf("expected FRESH credentials preserved after disconnect, got %+v", creds)
+	if len(creds) != 1 || creds[0].Key != "SWITCHED" {
+		t.Fatalf("expected SWITCHED credentials preserved after disconnect, got %+v", creds)
 	}
 }
 
