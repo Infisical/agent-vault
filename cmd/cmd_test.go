@@ -151,6 +151,42 @@ func TestVaultSubcommandsRegistered(t *testing.T) {
 	}
 }
 
+func TestVaultCredentialStoreSubcommandsRegistered(t *testing.T) {
+	vCmd := findSubcommand(rootCmd, "vault")
+	if vCmd == nil {
+		t.Fatal("vault command not found")
+	}
+	csCmd := findSubcommand(vCmd, "credential-store")
+	if csCmd == nil {
+		t.Fatal("credential-store command not found under vault")
+	}
+
+	registered := make(map[string]bool)
+	for _, c := range csCmd.Commands() {
+		registered[c.Name()] = true
+	}
+	for _, name := range []string{"show", "sync", "set"} {
+		if !registered[name] {
+			t.Errorf("expected credential-store subcommand %q to be registered", name)
+		}
+	}
+
+	setCmd := findSubcommand(csCmd, "set")
+	for _, flag := range []string{"kind", "infisical-project-id", "infisical-environment", "infisical-path", "poll-interval-seconds", "yes"} {
+		if setCmd.Flags().Lookup(flag) == nil {
+			t.Errorf("expected credential-store set to define --%s flag", flag)
+		}
+	}
+}
+
+func TestVaultCredentialStoreSetRequiresKind(t *testing.T) {
+	// Missing --kind should fail before any network call.
+	_, err := executeCommand("vault", "credential-store", "set", "my-app", "--yes")
+	if err == nil {
+		t.Fatal("expected error when --kind is omitted")
+	}
+}
+
 func TestOwnerVaultSubcommandsRegistered(t *testing.T) {
 	oCmd := findSubcommand(rootCmd, "owner")
 	if oCmd == nil {

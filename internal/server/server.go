@@ -296,6 +296,8 @@ type Store interface {
 	ListVaultCredentialStores(ctx context.Context) ([]store.VaultCredentialStore, error)
 	UpdateVaultCredentialStoreHealth(ctx context.Context, vaultID, status, errMsg string, syncedAt time.Time) error
 	ReplaceVaultCredentials(ctx context.Context, vaultID string, items []store.EncryptedKV) error
+	SetVaultExternalStore(ctx context.Context, p store.SetVaultExternalStoreParams) (*store.VaultCredentialStore, error)
+	DeleteVaultCredentialStore(ctx context.Context, vaultID string) error
 
 	// Agents
 	CreateAgent(ctx context.Context, name, createdBy, role string) (*store.Agent, error)
@@ -799,6 +801,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("POST /v1/vaults/{name}/join", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultJoin)))))
 	mux.HandleFunc("GET /v1/vaults/{name}/settings", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultSettingsGet))))
 	mux.HandleFunc("PATCH /v1/vaults/{name}/settings", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultSettingsPatch)))))
+	mux.HandleFunc("PATCH /v1/vaults/{name}/credential-store", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultCredentialStorePatch)))))
 
 	// Vault admin (owner-only)
 	mux.HandleFunc("GET /v1/admin/vaults", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAdminVaultList))))

@@ -301,38 +301,111 @@ func (s *SQLiteStore) UpdateVaultCredentialStoreHealth(ctx context.Context, vaul
 	return nil
 }
 
+// replaceCredentialsTx wipes and rewrites the vault's static credentials inside
+// an existing transaction; empty items just clears them. Shared by the
+// standalone replace and the external-store connect path.
+func replaceCredentialsTx(ctx context.Context, tx *sql.Tx, vaultID, nowStr string, items []EncryptedKV) error {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM credentials WHERE vault_id = ? AND type = 'static'", vaultID); err != nil {
+		return fmt.Errorf("clearing credentials: %w", err)
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT OR IGNORE INTO credentials (id, vault_id, key, type, ciphertext, nonce, created_at, updated_at)
+		   VALUES (?, ?, ?, 'static', ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("preparing credential insert: %w", err)
+	}
+	defer func() { _ = stmt.Close() }()
+	for _, item := range items {
+		if _, err := stmt.ExecContext(ctx,
+			newUUID(), vaultID, item.Key, item.Ciphertext, item.Nonce, nowStr, nowStr,
+		); err != nil {
+			return fmt.Errorf("inserting credential %q: %w", item.Key, err)
+		}
+	}
+	return nil
+}
+
 // ReplaceVaultCredentials atomically wipes and rewrites the vault's credentials
 // in one transaction; empty items clears the vault.
 func (s *SQLiteStore) ReplaceVaultCredentials(ctx context.Context, vaultID string, items []EncryptedKV) error {
-	nowStr := nowUTC()
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx, "DELETE FROM credentials WHERE vault_id = ? AND type = 'static'", vaultID); err != nil {
-		return fmt.Errorf("clearing credentials: %w", err)
+	if err := replaceCredentialsTx(ctx, tx, vaultID, nowUTC(), items); err != nil {
+		return err
 	}
-	if len(items) > 0 {
-		stmt, err := tx.PrepareContext(ctx,
-			`INSERT OR IGNORE INTO credentials (id, vault_id, key, type, ciphertext, nonce, created_at, updated_at)
-			   VALUES (?, ?, ?, 'static', ?, ?, ?, ?)`)
-		if err != nil {
-			return fmt.Errorf("preparing credential insert: %w", err)
-		}
-		defer func() { _ = stmt.Close() }()
-		for _, item := range items {
-			if _, err := stmt.ExecContext(ctx,
-				newUUID(), vaultID, item.Key, item.Ciphertext, item.Nonce, nowStr, nowStr,
-			); err != nil {
-				return fmt.Errorf("inserting credential %q: %w", item.Key, err)
-			}
-		}
+	return tx.Commit()
+}
+
+// SetVaultExternalStore upserts the credential-store row and replaces the
+// vault's static credentials in one transaction — the connect path for an
+// existing built-in vault. The credential-store health is reset to a fresh
+// successful sync (the caller has just probed + fetched the snapshot). Returns
+// the resulting row so the caller can render it without a follow-up read.
+func (s *SQLiteStore) SetVaultExternalStore(ctx context.Context, p SetVaultExternalStoreParams) (*VaultCredentialStore, error) {
+	if p.VaultID == "" || p.Kind == "" || p.ConfigJSON == "" {
+		return nil, fmt.Errorf("SetVaultExternalStore: vault_id, kind, and config required")
+	}
+	now := time.Now().UTC()
+	nowStr := now.Format(time.DateTime)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO vault_credential_stores
+		   (vault_id, kind, config_json, poll_interval_seconds, last_synced_at, last_sync_status, last_sync_error, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+		 ON CONFLICT(vault_id) DO UPDATE SET
+		   kind = excluded.kind,
+		   config_json = excluded.config_json,
+		   poll_interval_seconds = excluded.poll_interval_seconds,
+		   last_synced_at = excluded.last_synced_at,
+		   last_sync_status = excluded.last_sync_status,
+		   last_sync_error = NULL,
+		   updated_at = excluded.updated_at`,
+		p.VaultID, p.Kind, p.ConfigJSON, p.PollIntervalSeconds, nowStr, SyncStatusOK, nowStr, nowStr,
+	); err != nil {
+		return nil, fmt.Errorf("upserting credential store: %w", err)
 	}
 
-	return tx.Commit()
+	if err := replaceCredentialsTx(ctx, tx, p.VaultID, nowStr, p.Credentials); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+
+	return &VaultCredentialStore{
+		VaultID:             p.VaultID,
+		Kind:                p.Kind,
+		ConfigJSON:          p.ConfigJSON,
+		PollIntervalSeconds: p.PollIntervalSeconds,
+		LastSyncedAt:        &now,
+		LastSyncStatus:      SyncStatusOK,
+		UpdatedAt:           now,
+	}, nil
+}
+
+// DeleteVaultCredentialStore removes the external-store row so the syncer stops
+// polling the vault. The vault's credentials are intentionally left untouched —
+// the last synced snapshot becomes ordinary built-in credentials. Returns nil
+// when no row exists (the vault was already built-in).
+func (s *SQLiteStore) DeleteVaultCredentialStore(ctx context.Context, vaultID string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM vault_credential_stores WHERE vault_id = ?`, vaultID); err != nil {
+		return fmt.Errorf("deleting credential store: %w", err)
+	}
+	return nil
 }
 
 // rowScanner unifies *sql.Row and *sql.Rows so one scan func serves both.

@@ -1151,6 +1151,21 @@ func (m *mockStore) UpdateVaultCredentialStoreHealth(_ context.Context, vaultID,
 func (m *mockStore) ReplaceVaultCredentials(_ context.Context, _ string, _ []store.EncryptedKV) error {
 	return nil
 }
+func (m *mockStore) SetVaultExternalStore(_ context.Context, p store.SetVaultExternalStoreParams) (*store.VaultCredentialStore, error) {
+	cs := &store.VaultCredentialStore{
+		VaultID:             p.VaultID,
+		Kind:                p.Kind,
+		ConfigJSON:          p.ConfigJSON,
+		PollIntervalSeconds: p.PollIntervalSeconds,
+		LastSyncStatus:      store.SyncStatusOK,
+	}
+	m.credStores[p.VaultID] = cs
+	return cs, nil
+}
+func (m *mockStore) DeleteVaultCredentialStore(_ context.Context, vaultID string) error {
+	delete(m.credStores, vaultID)
+	return nil
+}
 
 func (m *mockStore) GetCredentialOAuth(_ context.Context, _, _ string) (*store.CredentialOAuth, error) {
 	return nil, nil
@@ -3221,6 +3236,79 @@ func TestVaultCreateExternalRequiresOwner(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for member, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func patchCredentialStore(t *testing.T, srv *Server, token, vault, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/vaults/"+vault+"/credential-store", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	return rec
+}
+
+// Switching an external vault to built-in drops the credential-store row so
+// polling stops; the synced credentials are left behind (kept by the store).
+func TestVaultCredentialStoreSwitchToBuiltin(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
+		VaultID: "root-ns-id", Kind: "infisical",
+		ConfigJSON: `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+	}
+	srv := newTestServer(withStore(ms))
+
+	rec := patchCredentialStore(t, srv, ownerToken, "default", `{"kind":"builtin"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, ok := ms.credStores["root-ns-id"]; ok {
+		t.Fatalf("expected credential-store row removed after switch to builtin")
+	}
+	var resp struct {
+		CredentialStore map[string]interface{} `json:"credential_store"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.CredentialStore["kind"] != store.CredentialStoreBuiltin {
+		t.Fatalf("want kind builtin, got %v", resp.CredentialStore)
+	}
+}
+
+// Only vault admins / instance owners may switch the store.
+func TestVaultCredentialStoreSwitchRequiresAdminOrOwner(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	rec := patchCredentialStore(t, srv, memberToken, "default", `{"kind":"builtin"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-admin member, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVaultCredentialStoreSwitchInvalidKind(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	rec := patchCredentialStore(t, srv, ownerToken, "default", `{"kind":"bogus"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown kind, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Switching to Infisical when the server has no Infisical client must 503,
+// mirroring the create gate.
+func TestVaultCredentialStoreSwitchToInfisicalNoClient(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms)) // no AttachInfisical → infisicalClient nil
+
+	body := `{"kind":"infisical","config":{"project_id":"p","environment":"dev","secret_path":"/"},"poll_interval_seconds":60}`
+	rec := patchCredentialStore(t, srv, ownerToken, "default", body)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 without infisical client, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

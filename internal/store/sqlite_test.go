@@ -2436,6 +2436,114 @@ func TestListVaultCredentialStoresFiltersBuiltin(t *testing.T) {
 	}
 }
 
+func TestSetVaultExternalStoreOverwritesBuiltin(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	v, err := s.CreateVault(ctx, "switch-up")
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+	// Seed built-in credentials that the connect should overwrite.
+	if _, err := s.SetCredential(ctx, v.ID, "OLD_KEY", []byte("c-old"), []byte("n-old")); err != nil {
+		t.Fatalf("SetCredential: %v", err)
+	}
+
+	cs, err := s.SetVaultExternalStore(ctx, SetVaultExternalStoreParams{
+		VaultID:             v.ID,
+		Kind:                CredentialStoreInfisical,
+		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+		PollIntervalSeconds: 30,
+		Credentials: []EncryptedKV{
+			{Key: "NEW_KEY", Ciphertext: []byte("c-new"), Nonce: []byte("n-new")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SetVaultExternalStore: %v", err)
+	}
+	// The returned row reflects the write without a follow-up read.
+	if cs == nil || cs.Kind != CredentialStoreInfisical || cs.PollIntervalSeconds != 30 || cs.LastSyncStatus != SyncStatusOK {
+		t.Fatalf("unexpected returned row: %+v", cs)
+	}
+
+	cs, err = s.GetVaultCredentialStore(ctx, v.ID)
+	if err != nil || cs == nil {
+		t.Fatalf("GetVaultCredentialStore: %v cs=%+v", err, cs)
+	}
+	if cs.Kind != CredentialStoreInfisical || cs.PollIntervalSeconds != 30 || cs.LastSyncStatus != SyncStatusOK {
+		t.Fatalf("unexpected store row: %+v", cs)
+	}
+
+	creds, _ := s.ListCredentials(ctx, v.ID)
+	if len(creds) != 1 || creds[0].Key != "NEW_KEY" {
+		t.Fatalf("expected only NEW_KEY after overwrite, got %+v", creds)
+	}
+
+	// Calling again upserts the row (reconfigure) without duplicating.
+	if _, err = s.SetVaultExternalStore(ctx, SetVaultExternalStoreParams{
+		VaultID:             v.ID,
+		Kind:                CredentialStoreInfisical,
+		ConfigJSON:          `{"project_id":"p2","environment":"prod","secret_path":"/x"}`,
+		PollIntervalSeconds: 60,
+		Credentials:         []EncryptedKV{{Key: "K2", Ciphertext: []byte("c"), Nonce: []byte("n")}},
+	}); err != nil {
+		t.Fatalf("SetVaultExternalStore re-run: %v", err)
+	}
+	cs, _ = s.GetVaultCredentialStore(ctx, v.ID)
+	if cs.PollIntervalSeconds != 60 || cs.ConfigJSON != `{"project_id":"p2","environment":"prod","secret_path":"/x"}` {
+		t.Fatalf("upsert did not update row: %+v", cs)
+	}
+	list, _ := s.ListVaultCredentialStores(ctx)
+	if len(list) != 1 {
+		t.Fatalf("expected single store row after upsert, got %d", len(list))
+	}
+}
+
+func TestDeleteVaultCredentialStoreKeepsCredentials(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "disconnect@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	v, err := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+		Name:                "switch-down",
+		Kind:                CredentialStoreInfisical,
+		ConfigJSON:          `{}`,
+		PollIntervalSeconds: 60,
+		Credentials: []EncryptedKV{
+			{Key: "SYNCED_KEY", Ciphertext: []byte("c"), Nonce: []byte("n")},
+		},
+		CreatorActorID:   u.ID,
+		CreatorActorType: "user",
+	})
+	if err != nil {
+		t.Fatalf("CreateExternalVault: %v", err)
+	}
+
+	if err := s.DeleteVaultCredentialStore(ctx, v.ID); err != nil {
+		t.Fatalf("DeleteVaultCredentialStore: %v", err)
+	}
+
+	// Row is gone (vault is now built-in).
+	if _, err := s.GetVaultCredentialStore(ctx, v.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows after delete, got %v", err)
+	}
+	list, _ := s.ListVaultCredentialStores(ctx)
+	if len(list) != 0 {
+		t.Fatalf("expected no external stores, got %d", len(list))
+	}
+
+	// Credentials are kept as built-in credentials.
+	creds, _ := s.ListCredentials(ctx, v.ID)
+	if len(creds) != 1 || creds[0].Key != "SYNCED_KEY" {
+		t.Fatalf("expected SYNCED_KEY kept, got %+v", creds)
+	}
+
+	// Deleting again is a no-op (no row to remove).
+	if err := s.DeleteVaultCredentialStore(ctx, v.ID); err != nil {
+		t.Fatalf("DeleteVaultCredentialStore second call: %v", err)
+	}
+}
+
 func TestListUnmatchedHosts(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()

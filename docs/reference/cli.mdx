@@ -205,7 +205,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--credential-store` | `builtin` | Credential store kind: `builtin` or `infisical`. Immutable after create. |
+    | `--credential-store` | `builtin` | Credential store kind: `builtin` or `infisical`. Switchable later with `vault credential-store set`. |
     | `--infisical-project-id` | | Infisical project ID. Required when `--credential-store=infisical`. |
     | `--infisical-environment` | | Infisical environment slug (e.g., `dev`, `prod`). Required when `--credential-store=infisical`. |
     | `--infisical-path` | `/` | Infisical secret path (must start with `/`). |
@@ -261,7 +261,26 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential-store show <name>
     ```
 
-    Print the vault's credential-store kind, full config, poll interval, and last sync health. Prints `Credential store: builtin` for vaults with no external source; otherwise the kind name plus the Infisical project, environment, path, poll cadence, and `last_sync_status` / `last_synced_at` / `last_sync_error`. The kind is fixed at create time; this command is read-only.
+    Print the vault's credential-store kind, full config, poll interval, and last sync health. Prints `Credential store: builtin` for vaults with no external source; otherwise the kind name plus the Infisical project, environment, path, poll cadence, and `last_sync_status` / `last_synced_at` / `last_sync_error`. This command is read-only; use `credential-store set` to change the kind.
+  </Accordion>
+
+  <Accordion title="agent-vault vault credential-store set">
+    ```bash
+    agent-vault vault credential-store set <name> --kind=<builtin|infisical> [flags]
+    ```
+
+    Switch the credential store backing an existing vault. Requires vault admin or instance owner role. Prompts for the vault name to confirm unless `--yes` is passed.
+
+    Switching to `infisical` probes the source (same validation as create), then **overwrites** the vault's built-in credentials with the fetched snapshot and starts polling. Switching to `builtin` disconnects the external source (polling stops) but **keeps** the last synced secrets in place as editable built-in credentials. See [Credential stores](/learn/credential-stores#switching-a-vaults-credential-store).
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--kind` | | Target credential store kind: `builtin` or `infisical`. Required. |
+    | `--infisical-project-id` | | Infisical project ID. Required when `--kind=infisical`. |
+    | `--infisical-environment` | | Infisical environment slug (e.g., `dev`, `prod`). Required when `--kind=infisical`. |
+    | `--infisical-path` | `/` | Infisical secret path (must start with `/`). |
+    | `--poll-interval-seconds` | `60` | Refresh cadence floor for the cached secrets. Minimum 10s. |
+    | `--yes` | `false` | Skip confirmation prompt |
   </Accordion>
 
   <Accordion title="agent-vault vault credential-store sync">

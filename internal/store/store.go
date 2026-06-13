@@ -279,6 +279,16 @@ type CreateExternalVaultParams struct {
 	CreatorActorType    string // "user" or "agent"
 }
 
+// SetVaultExternalStoreParams carries inputs to SetVaultExternalStore, used to
+// connect an existing vault to an external store (built-in → external switch).
+type SetVaultExternalStoreParams struct {
+	VaultID             string
+	Kind                string
+	ConfigJSON          string
+	PollIntervalSeconds int
+	Credentials         []EncryptedKV
+}
+
 // RequestLog is a persisted record of a single proxied request. Secret-free
 // by construction: no header values, no bodies, no query strings — only
 // metadata already safe to log (see internal/brokercore/logging.go).
@@ -552,6 +562,14 @@ type Store interface {
 	UpdateVaultCredentialStoreHealth(ctx context.Context, vaultID, status, errMsg string, syncedAt time.Time) error
 	// ReplaceVaultCredentials atomically wipes and rewrites the vault's credentials.
 	ReplaceVaultCredentials(ctx context.Context, vaultID string, items []EncryptedKV) error
+	// SetVaultExternalStore connects an existing vault to an external store:
+	// it upserts the credential-store row and replaces the vault's credentials
+	// in one transaction (built-in → external switch), returning the new row.
+	SetVaultExternalStore(ctx context.Context, p SetVaultExternalStoreParams) (*VaultCredentialStore, error)
+	// DeleteVaultCredentialStore removes the external-store row so polling stops;
+	// the vault's already-synced credentials are left in place as built-in
+	// credentials (external → built-in switch).
+	DeleteVaultCredentialStore(ctx context.Context, vaultID string) error
 
 	// Request logs
 	InsertRequestLogs(ctx context.Context, rows []RequestLog) error

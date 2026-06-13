@@ -41,29 +41,11 @@ var vaultCreateCmd = &cobra.Command{
 		case "", store.CredentialStoreBuiltin:
 			// no extra payload
 		case store.CredentialStoreInfisical:
-			projectID, _ := cmd.Flags().GetString("infisical-project-id")
-			environment, _ := cmd.Flags().GetString("infisical-environment")
-			secretPath, _ := cmd.Flags().GetString("infisical-path")
-			pollSecs, _ := cmd.Flags().GetInt("poll-interval-seconds")
-
-			if projectID == "" || environment == "" {
-				return fmt.Errorf("--infisical-project-id and --infisical-environment are required when --credential-store=%s", store.CredentialStoreInfisical)
+			cs, err := infisicalStorePayloadFromFlags(cmd)
+			if err != nil {
+				return err
 			}
-			if pollSecs < 10 {
-				return fmt.Errorf("--poll-interval-seconds must be at least 10")
-			}
-			if secretPath == "" {
-				secretPath = "/"
-			}
-			payload["credential_store"] = map[string]interface{}{
-				"kind": store.CredentialStoreInfisical,
-				"config": map[string]interface{}{
-					"project_id":  projectID,
-					"environment": environment,
-					"secret_path": secretPath,
-				},
-				"poll_interval_seconds": pollSecs,
-			}
+			payload["credential_store"] = cs
 		default:
 			return fmt.Errorf("unsupported --credential-store %q (use %s or %s)", credStore, store.CredentialStoreBuiltin, store.CredentialStoreInfisical)
 		}
@@ -97,6 +79,35 @@ var vaultCreateCmd = &cobra.Command{
 var vaultCredentialStoreCmd = &cobra.Command{
 	Use:   "credential-store",
 	Short: "Inspect the credential store backing a vault",
+}
+
+// infisicalStorePayloadFromFlags validates the shared Infisical flags and
+// returns the {kind, config, poll_interval_seconds} block used by both
+// `vault create` and `vault credential-store set`.
+func infisicalStorePayloadFromFlags(cmd *cobra.Command) (map[string]interface{}, error) {
+	projectID, _ := cmd.Flags().GetString("infisical-project-id")
+	environment, _ := cmd.Flags().GetString("infisical-environment")
+	secretPath, _ := cmd.Flags().GetString("infisical-path")
+	pollSecs, _ := cmd.Flags().GetInt("poll-interval-seconds")
+
+	if projectID == "" || environment == "" {
+		return nil, fmt.Errorf("--infisical-project-id and --infisical-environment are required for the %s credential store", store.CredentialStoreInfisical)
+	}
+	if pollSecs < 10 {
+		return nil, fmt.Errorf("--poll-interval-seconds must be at least 10")
+	}
+	if secretPath == "" {
+		secretPath = "/"
+	}
+	return map[string]interface{}{
+		"kind": store.CredentialStoreInfisical,
+		"config": map[string]interface{}{
+			"project_id":  projectID,
+			"environment": environment,
+			"secret_path": secretPath,
+		},
+		"poll_interval_seconds": pollSecs,
+	}, nil
 }
 
 var vaultCredentialStoreShowCmd = &cobra.Command{
@@ -152,6 +163,82 @@ var vaultCredentialStoreSyncCmd = &cobra.Command{
 		}
 		out := cmd.OutOrStdout()
 		fmt.Fprintf(out, "%s Synced vault %q\n", successText("✓"), name)
+		printCredentialStore(out, resp.CredentialStore)
+		return nil
+	},
+}
+
+var vaultCredentialStoreSetCmd = &cobra.Command{
+	Use:   "set <name>",
+	Short: "Switch the credential store backing a vault (vault admin or instance owner)",
+	Long: "Switch a vault's credential store after creation.\n\n" +
+		"Switching to infisical OVERWRITES the vault's built-in credentials with the\n" +
+		"secrets fetched from the connected source and starts polling. Switching to\n" +
+		"builtin disconnects the external source (polling stops) but KEEPS the last\n" +
+		"synced secrets in place as editable built-in credentials.",
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		kind, _ := cmd.Flags().GetString("kind")
+
+		var payload map[string]interface{}
+		switch kind {
+		case store.CredentialStoreBuiltin:
+			payload = map[string]interface{}{"kind": store.CredentialStoreBuiltin}
+		case store.CredentialStoreInfisical:
+			cs, err := infisicalStorePayloadFromFlags(cmd)
+			if err != nil {
+				return err
+			}
+			payload = cs
+		case "":
+			return fmt.Errorf("--kind is required (%s or %s)", store.CredentialStoreBuiltin, store.CredentialStoreInfisical)
+		default:
+			return fmt.Errorf("unsupported --kind %q (use %s or %s)", kind, store.CredentialStoreBuiltin, store.CredentialStoreInfisical)
+		}
+
+		yes, _ := cmd.Flags().GetBool("yes")
+		if !yes {
+			if kind == store.CredentialStoreInfisical {
+				fmt.Fprintf(cmd.OutOrStderr(), "%s Switching vault %q to Infisical will OVERWRITE its built-in credentials with the secrets from the connected source.\n", warningText("WARNING"), name)
+			} else {
+				fmt.Fprintf(cmd.OutOrStderr(), "%s Switching vault %q to built-in disconnects Infisical; the synced secrets are kept as built-in credentials and stop updating.\n", warningText("WARNING"), name)
+			}
+			fmt.Fprintf(cmd.OutOrStderr(), "Type %q to confirm: ", name)
+			reader := bufio.NewReader(os.Stdin)
+			answer, err := reader.ReadString('\n')
+			if err != nil {
+				return fmt.Errorf("reading input: %w", err)
+			}
+			if strings.TrimSpace(answer) != name {
+				fmt.Fprintln(cmd.OutOrStdout(), mutedText("Aborted."))
+				return nil
+			}
+		}
+
+		sess, err := ensureSession()
+		if err != nil {
+			return err
+		}
+
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+
+		reqURL := fmt.Sprintf("%s/v1/vaults/%s/credential-store", sess.Address, url.PathEscape(name))
+		respBody, err := doAdminRequestWithBody("PATCH", reqURL, sess.Token, body)
+		if err != nil {
+			return err
+		}
+
+		var resp struct {
+			CredentialStore map[string]interface{} `json:"credential_store,omitempty"`
+		}
+		_ = json.Unmarshal(respBody, &resp)
+
+		out := cmd.OutOrStdout()
+		fmt.Fprintf(out, "%s Switched credential store for vault %q\n", successText("✓"), name)
 		printCredentialStore(out, resp.CredentialStore)
 		return nil
 	},
@@ -493,8 +580,16 @@ func init() {
 	vaultCmd.AddCommand(vaultUseCmd)
 	vaultCmd.AddCommand(vaultCurrentCmd)
 
+	vaultCredentialStoreSetCmd.Flags().String("kind", "", "target credential store kind: builtin or infisical")
+	vaultCredentialStoreSetCmd.Flags().String("infisical-project-id", "", "Infisical project ID (required when --kind=infisical)")
+	vaultCredentialStoreSetCmd.Flags().String("infisical-environment", "", "Infisical environment slug, e.g. dev/prod")
+	vaultCredentialStoreSetCmd.Flags().String("infisical-path", "/", "Infisical secret path (default /)")
+	vaultCredentialStoreSetCmd.Flags().Int("poll-interval-seconds", 60, "Sync cadence floor for the external store (min 10)")
+	vaultCredentialStoreSetCmd.Flags().Bool("yes", false, "Skip confirmation prompt")
+
 	vaultCredentialStoreCmd.AddCommand(vaultCredentialStoreShowCmd)
 	vaultCredentialStoreCmd.AddCommand(vaultCredentialStoreSyncCmd)
+	vaultCredentialStoreCmd.AddCommand(vaultCredentialStoreSetCmd)
 	vaultCmd.AddCommand(vaultCredentialStoreCmd)
 
 	vaultUserAddCmd.Flags().String("role", "member", "role to grant (admin or member)")
