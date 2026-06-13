@@ -303,7 +303,8 @@ func (s *SQLiteStore) UpdateVaultCredentialStoreHealth(ctx context.Context, vaul
 
 // replaceCredentialsTx wipes and rewrites the vault's static credentials inside
 // an existing transaction; empty items just clears them. Shared by the
-// standalone replace and the external-store connect path.
+// standalone replace and the external-store connect path. Non-static (e.g.
+// oauth) credentials are deliberately left untouched.
 func replaceCredentialsTx(ctx context.Context, tx *sql.Tx, vaultID, nowStr string, items []EncryptedKV) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM credentials WHERE vault_id = ? AND type = 'static'", vaultID); err != nil {
 		return fmt.Errorf("clearing credentials: %w", err)

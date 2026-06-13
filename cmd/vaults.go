@@ -199,19 +199,15 @@ var vaultCredentialStoreSetCmd = &cobra.Command{
 
 		yes, _ := cmd.Flags().GetBool("yes")
 		if !yes {
+			warning := fmt.Sprintf("%s Switching vault %q to built-in disconnects Infisical; the synced secrets are kept as built-in credentials and stop updating.", warningText("WARNING"), name)
 			if kind == store.CredentialStoreInfisical {
-				fmt.Fprintf(cmd.OutOrStderr(), "%s Switching vault %q to Infisical will OVERWRITE its built-in credentials with the secrets from the connected source.\n", warningText("WARNING"), name)
-			} else {
-				fmt.Fprintf(cmd.OutOrStderr(), "%s Switching vault %q to built-in disconnects Infisical; the synced secrets are kept as built-in credentials and stop updating.\n", warningText("WARNING"), name)
+				warning = fmt.Sprintf("%s Switching vault %q to Infisical will OVERWRITE its built-in credentials with the secrets from the connected source.", warningText("WARNING"), name)
 			}
-			fmt.Fprintf(cmd.OutOrStderr(), "Type %q to confirm: ", name)
-			reader := bufio.NewReader(os.Stdin)
-			answer, err := reader.ReadString('\n')
+			ok, err := confirmByName(cmd, warning, name)
 			if err != nil {
-				return fmt.Errorf("reading input: %w", err)
+				return err
 			}
-			if strings.TrimSpace(answer) != name {
-				fmt.Fprintln(cmd.OutOrStdout(), mutedText("Aborted."))
+			if !ok {
 				return nil
 			}
 		}
@@ -525,6 +521,22 @@ var vaultRenameCmd = &cobra.Command{
 	},
 }
 
+// confirmByName prints warning then requires the user to type name to proceed.
+// Returns false (after printing "Aborted.") if the typed value doesn't match.
+func confirmByName(cmd *cobra.Command, warning, name string) (bool, error) {
+	fmt.Fprintln(cmd.OutOrStderr(), warning)
+	fmt.Fprintf(cmd.OutOrStderr(), "Type %q to confirm: ", name)
+	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil {
+		return false, fmt.Errorf("reading input: %w", err)
+	}
+	if strings.TrimSpace(answer) != name {
+		fmt.Fprintln(cmd.OutOrStdout(), mutedText("Aborted."))
+		return false, nil
+	}
+	return true, nil
+}
+
 var vaultDeleteCmd = &cobra.Command{
 	Use:   "delete <name>",
 	Short: "Delete a vault (vault admin or instance owner)",
@@ -534,15 +546,12 @@ var vaultDeleteCmd = &cobra.Command{
 
 		yes, _ := cmd.Flags().GetBool("yes")
 		if !yes {
-			fmt.Fprintf(cmd.OutOrStderr(), "%s This will permanently delete vault %q and all its credentials, services, and proposals.\n", warningText("WARNING"), name)
-			fmt.Fprintf(cmd.OutOrStderr(), "Type %q to confirm: ", name)
-			reader := bufio.NewReader(os.Stdin)
-			answer, err := reader.ReadString('\n')
+			warning := fmt.Sprintf("%s This will permanently delete vault %q and all its credentials, services, and proposals.", warningText("WARNING"), name)
+			ok, err := confirmByName(cmd, warning, name)
 			if err != nil {
-				return fmt.Errorf("reading input: %w", err)
+				return err
 			}
-			if strings.TrimSpace(answer) != name {
-				fmt.Fprintln(cmd.OutOrStdout(), mutedText("Aborted."))
+			if !ok {
 				return nil
 			}
 		}
