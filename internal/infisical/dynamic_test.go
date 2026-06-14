@@ -263,6 +263,22 @@ func TestRevokeVault(t *testing.T) {
 	}
 }
 
+func TestRevokeVaultAsync_EvictsSynchronously(t *testing.T) {
+	r, f, _, _ := newTestResolver(t)
+	if _, ok, _ := r.Resolve(context.Background(), "v1", "DB_POSTGRES_PASSWORD"); !ok {
+		t.Fatal("setup resolve failed")
+	}
+	// Eviction must happen before RevokeVaultAsync returns, so no stale lease is
+	// served: the next resolve re-mints rather than reusing the old cache entry.
+	r.RevokeVaultAsync("v1")
+	if _, ok, _ := r.Resolve(context.Background(), "v1", "DB_POSTGRES_PASSWORD"); !ok {
+		t.Fatal("resolve after async revoke failed")
+	}
+	if got := atomic.LoadInt32(&f.createCalls); got != 2 {
+		t.Fatalf("expected re-mint after eviction (2 mints), got %d", got)
+	}
+}
+
 func TestSweepOrphans(t *testing.T) {
 	r, f, st, _ := newTestResolver(t)
 	// Simulate a row left behind by a prior process (not in memory).

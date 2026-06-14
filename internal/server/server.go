@@ -164,13 +164,14 @@ func (s *Server) CredentialProvider() brokercore.CredentialProvider {
 }
 
 // revokeDynamicLeases revokes a vault's outstanding dynamic-secret leases on
-// disconnect/reconfigure. Backgrounded so a slow upstream can't stall the
-// response (RevokeVault clears the in-memory cache before any network call).
+// disconnect/reconfigure. The in-memory cache is evicted synchronously so no
+// stale lease is served after this returns; the upstream revoke is backgrounded
+// so a slow Infisical can't stall the response.
 func (s *Server) revokeDynamicLeases(vaultID string) {
 	if s.infisicalDynamic == nil {
 		return
 	}
-	go s.infisicalDynamic.RevokeVault(context.Background(), vaultID)
+	s.infisicalDynamic.RevokeVaultAsync(vaultID)
 }
 
 // credentialStoreAdapter satisfies brokercore.CredentialStore by adding

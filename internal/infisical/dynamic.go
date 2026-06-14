@@ -367,13 +367,36 @@ func (r *DynamicResolver) revoke(ctx context.Context, e *leaseEntry) {
 	}
 }
 
-// RevokeVault revokes and forgets every cached lease for a vault. Called when a
-// vault disconnects from or reconfigures its Infisical store.
+// RevokeVault evicts and revokes every cached lease for a vault, called when a
+// vault disconnects from or reconfigures its Infisical store. Eviction is
+// synchronous; the upstream revoke + row delete follow.
 func (r *DynamicResolver) RevokeVault(ctx context.Context, vaultID string) {
+	r.revokeEvicted(ctx, vaultID, r.evictVault(vaultID))
+}
+
+// RevokeVaultAsync evicts the vault's cached leases synchronously — so no stale
+// lease can be served once the caller returns — then revokes them upstream in
+// the background, where a slow Infisical can't stall the API response.
+func (r *DynamicResolver) RevokeVaultAsync(vaultID string) {
 	if r.fetcher == nil {
 		return
 	}
+	victims := r.evictVault(vaultID)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), dynamicCloseTimeout)
+		defer cancel()
+		r.revokeEvicted(ctx, vaultID, victims)
+	}()
+}
+
+// evictVault drops a vault's cached leases and discovered names under the lock,
+// returning the evicted leases for upstream revocation.
+func (r *DynamicResolver) evictVault(vaultID string) []*leaseEntry {
+	if r.fetcher == nil {
+		return nil
+	}
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	var victims []*leaseEntry
 	for k, e := range r.leases {
 		if strings.HasPrefix(k, vaultID+"|") {
@@ -382,8 +405,14 @@ func (r *DynamicResolver) RevokeVault(ctx context.Context, vaultID string) {
 		}
 	}
 	delete(r.names, vaultID)
-	r.mu.Unlock()
+	return victims
+}
 
+// revokeEvicted revokes already-evicted leases upstream and forgets their rows.
+func (r *DynamicResolver) revokeEvicted(ctx context.Context, vaultID string, victims []*leaseEntry) {
+	if r.fetcher == nil {
+		return
+	}
 	for _, e := range victims {
 		r.revokeUpstream(ctx, e.cfg, e.leaseID)
 	}
