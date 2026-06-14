@@ -123,14 +123,10 @@ type EnumeratedCredential struct {
 	Unavailable bool
 }
 
-// Enumerate leases every dynamic secret at the vault's path and expands each
-// into its concrete <PREFIX>_<FIELD> credentials, so they can be listed
-// alongside static credentials. A secret whose lease fails is surfaced as a
-// single Unavailable entry rather than hidden. Returns (nil, nil) when the
-// vault is not Infisical-backed.
-//
-// This MINTS leases (provisioning real ephemeral resources); leases are cached
-// and reused by the proxy's Resolve, so listing and use share one lease.
+// Enumerate expands every dynamic secret at the vault's path into its concrete
+// <PREFIX>_<FIELD> credentials, MINTING a lease for each (cached and shared with
+// Resolve). A secret whose lease fails becomes a single Unavailable entry rather
+// than vanishing. Returns (nil, nil) when the vault is not Infisical-backed.
 func (r *DynamicResolver) Enumerate(ctx context.Context, vaultID string) ([]EnumeratedCredential, error) {
 	cfg, ok, err := r.vaultConfig(ctx, vaultID)
 	if err != nil || !ok {

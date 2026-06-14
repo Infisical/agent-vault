@@ -131,9 +131,8 @@ func (c *Client) FetchSecrets(ctx context.Context, cfg VaultConfig) ([]Secret, e
 	})
 }
 
-// runSDK runs a context-unaware SDK call in a goroutine and honors ctx.Done():
-// on cancel the orphan finishes (up to the SDK's internal timeout) and sends to
-// the buffered channel.
+// runSDK runs a context-unaware SDK call in a goroutine so ctx.Done() is
+// honored; on cancel the orphaned call runs to completion and is discarded.
 func runSDK[T any](ctx context.Context, fn func() (T, error)) (T, error) {
 	type result struct {
 		v   T
@@ -153,10 +152,8 @@ func runSDK[T any](ctx context.Context, fn func() (T, error)) (T, error) {
 	}
 }
 
-// Dynamic-secret endpoints key on the project SLUG, but Agent Vault persists
-// the project ID (VaultConfig.ProjectID); the static ListSecrets endpoint
-// accepts the ID, the dynamic ones do not. projectSlug resolves and caches the
-// slug so every dynamic call can translate ID → slug first.
+// The dynamic-secret endpoints key on the project slug, not the ID, so each
+// translates cfg.ProjectID via projectSlug first.
 func (c *Client) ListDynamicSecrets(ctx context.Context, cfg VaultConfig) ([]DynamicSecretInfo, error) {
 	slug, err := c.projectSlug(ctx, cfg.ProjectID)
 	if err != nil {

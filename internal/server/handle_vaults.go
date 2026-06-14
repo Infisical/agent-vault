@@ -182,9 +182,8 @@ func (s *Server) handleVaultSyncNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Manual sync also forces fresh dynamic-secret leases: invalidate the cached
-	// ones so the next list/use mints new values. The periodic poll deliberately
-	// does NOT do this — it would churn leases on every tick.
+	// Manual sync forces fresh dynamic-secret leases (the periodic poll does not):
+	// drop the cached ones so the next list/use mints new values.
 	if s.infisicalDynamic != nil {
 		s.infisicalDynamic.RevokeVault(ctx, vault.ID)
 	}

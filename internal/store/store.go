@@ -267,10 +267,9 @@ type VaultCredentialStore struct {
 	UpdatedAt           time.Time
 }
 
-// DynamicSecretLease is a tracked Infisical dynamic-secret lease. Persisted so
-// outstanding leases can be revoked on disconnect/shutdown and orphans (rows
-// surviving a restart, whose in-memory credential values are gone) swept on the
-// next startup. Carries no secret material — only what revoke needs.
+// DynamicSecretLease tracks an Infisical dynamic-secret lease so it can be
+// revoked on disconnect/shutdown and swept on restart. Holds no secret
+// material, only what revoke needs.
 type DynamicSecretLease struct {
 	LeaseID           string
 	VaultID           string
