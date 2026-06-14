@@ -252,7 +252,7 @@ export default function CredentialsTab() {
       render: (cred) => {
         const label =
           cred.type === "oauth" ? "OAuth" : cred.type === "dynamic" ? "Dynamic" : "Static";
-        return <span className="text-xs text-text-muted">{label}</span>;
+        return <span className="text-sm text-text">{label}</span>;
       },
     },
     ...(canReveal
