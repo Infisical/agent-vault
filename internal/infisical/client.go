@@ -57,12 +57,23 @@ type Client struct {
 
 	httpc *http.Client
 
-	// slugCache memoizes project-ID → project-slug lookups. Dynamic-secret
-	// endpoints key on the project slug, but Agent Vault stores the project ID;
-	// slugs are stable, so one resolution per project is cached for the process.
+	// slugCache memoizes project-ID → project-slug lookups (dynamic-secret
+	// endpoints key on the slug, but Agent Vault stores the ID). Entries expire
+	// after slugCacheTTL so a renamed project slug re-resolves instead of
+	// 404ing every dynamic call until restart.
 	slugMu    sync.Mutex
-	slugCache map[string]string
+	slugCache map[string]slugCacheEntry
 }
+
+type slugCacheEntry struct {
+	slug      string
+	fetchedAt time.Time
+}
+
+// slugCacheTTL bounds how long a resolved project slug is reused. Slugs rarely
+// change, so this only matters after a rename; an hour keeps the workspace
+// lookups negligible while self-healing within a bounded window.
+const slugCacheTTL = time.Hour
 
 // NewClient returns ErrNotConfigured when INFISICAL_URL is unset (callers
 // keep the server alive) or ErrNoAuthMethod when set but no machine-identity
@@ -102,7 +113,7 @@ func NewClient(ctx context.Context, logger *slog.Logger) (*Client, error) {
 		siteURL:   strings.TrimRight(siteURL, "/"),
 		logger:    logger,
 		httpc:     &http.Client{Timeout: 10 * time.Second},
-		slugCache: make(map[string]string),
+		slugCache: make(map[string]slugCacheEntry),
 	}, nil
 }
 
@@ -237,9 +248,9 @@ func (c *Client) RevokeLease(ctx context.Context, cfg VaultConfig, leaseID strin
 // so GetAccessToken returns a current one.
 func (c *Client) projectSlug(ctx context.Context, projectID string) (string, error) {
 	c.slugMu.Lock()
-	if s, ok := c.slugCache[projectID]; ok {
+	if e, ok := c.slugCache[projectID]; ok && time.Since(e.fetchedAt) < slugCacheTTL {
 		c.slugMu.Unlock()
-		return s, nil
+		return e.slug, nil
 	}
 	c.slugMu.Unlock()
 
@@ -252,7 +263,7 @@ func (c *Client) projectSlug(ctx context.Context, projectID string) (string, err
 		return "", err
 	}
 	c.slugMu.Lock()
-	c.slugCache[projectID] = slug
+	c.slugCache[projectID] = slugCacheEntry{slug: slug, fetchedAt: time.Now()}
 	c.slugMu.Unlock()
 	return slug, nil
 }
