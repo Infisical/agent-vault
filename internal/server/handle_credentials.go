@@ -198,14 +198,18 @@ func (s *Server) handleCredentialsList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fold leased dynamic-secret fields into the same list, tagged type="dynamic".
-	// Values are only attached on reveal (member+), mirroring static credentials.
-	for _, d := range s.enumerateDynamicCredentials(ctx, ns.ID) {
-		keys = append(keys, d.Key)
-		entry := credentialEntry{Key: d.Key, Type: credentialTypeDynamic, Unavailable: d.Unavailable}
-		if reveal && !d.Unavailable {
-			entry.Value = d.Value
+	// Gated to member+: enumeration MINTS leases (provisions upstream resources),
+	// so a proxy-role agent must not be able to trigger it by listing. Proxy
+	// agents still lease on actual proxied use of a wired service.
+	if isMember {
+		for _, d := range s.enumerateDynamicCredentials(ctx, ns.ID) {
+			keys = append(keys, d.Key)
+			entry := credentialEntry{Key: d.Key, Type: credentialTypeDynamic, Unavailable: d.Unavailable}
+			if reveal && !d.Unavailable {
+				entry.Value = d.Value
+			}
+			entries = append(entries, entry)
 		}
-		entries = append(entries, entry)
 	}
 
 	resp := credentialsListResponse{Keys: keys}
