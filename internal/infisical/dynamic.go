@@ -275,7 +275,11 @@ func (r *DynamicResolver) ensureLease(ctx context.Context, vaultID, name string,
 		if hadExisting {
 			expireAt, rerr := r.fetcher.RenewLease(ctx, cfg, existing.leaseID)
 			if rerr == nil {
+				// Guard the in-place mutation: the fast path reads expireAt under
+				// r.mu, so this write must hold it too.
+				r.mu.Lock()
 				existing.expireAt = expireAt
+				r.mu.Unlock()
 				r.persistLease(ctx, vaultID, existing)
 				return existing, nil
 			}
