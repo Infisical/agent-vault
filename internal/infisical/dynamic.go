@@ -118,8 +118,6 @@ func (r *DynamicResolver) Resolve(ctx context.Context, vaultID, key string) (str
 type EnumeratedCredential struct {
 	Key         string
 	Value       string
-	SecretName  string // the dynamic secret it came from
-	SecretType  string // provider type, e.g. "gcp-iam"
 	Unavailable bool
 }
 
@@ -151,19 +149,12 @@ func (r *DynamicResolver) Enumerate(ctx context.Context, vaultID string) ([]Enum
 			// since the concrete field names are only known once a lease mints.
 			out = append(out, EnumeratedCredential{
 				Key:         prefix + "_" + unavailableFieldGlob,
-				SecretName:  ds.Name,
-				SecretType:  ds.Type,
 				Unavailable: true,
 			})
 			continue
 		}
 		for suffix, val := range entry.fields {
-			out = append(out, EnumeratedCredential{
-				Key:        prefix + "_" + suffix,
-				Value:      val,
-				SecretName: ds.Name,
-				SecretType: ds.Type,
-			})
+			out = append(out, EnumeratedCredential{Key: prefix + "_" + suffix, Value: val})
 		}
 	}
 	return out, nil

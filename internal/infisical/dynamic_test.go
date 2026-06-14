@@ -17,22 +17,17 @@ import (
 type fakeDynFetcher struct {
 	mu          sync.Mutex
 	names       []DynamicSecretInfo
-	listErr     error
 	createErr   error
 	renewErr    error
 	createCalls int32
 	renewCalls  int32
 	revokeCalls int32
-	revoked     []string
 	nextLeaseID int
 	leaseTTL    time.Duration
 	now         func() time.Time
 }
 
 func (f *fakeDynFetcher) ListDynamicSecrets(_ context.Context, _ VaultConfig) ([]DynamicSecretInfo, error) {
-	if f.listErr != nil {
-		return nil, f.listErr
-	}
 	return append([]DynamicSecretInfo(nil), f.names...), nil
 }
 
@@ -60,11 +55,8 @@ func (f *fakeDynFetcher) RenewLease(_ context.Context, _ VaultConfig, _ string) 
 	return f.now().Add(f.leaseTTL), nil
 }
 
-func (f *fakeDynFetcher) RevokeLease(_ context.Context, _ VaultConfig, leaseID string) error {
+func (f *fakeDynFetcher) RevokeLease(_ context.Context, _ VaultConfig, _ string) error {
 	atomic.AddInt32(&f.revokeCalls, 1)
-	f.mu.Lock()
-	f.revoked = append(f.revoked, leaseID)
-	f.mu.Unlock()
 	return nil
 }
 
@@ -131,7 +123,7 @@ func newTestResolver(t *testing.T) (*DynamicResolver, *fakeDynFetcher, *fakeDynS
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &now
 	f := &fakeDynFetcher{
-		names:    []DynamicSecretInfo{{Name: "db-postgres", Type: "postgres"}},
+		names:    []DynamicSecretInfo{{Name: "db-postgres"}},
 		leaseTTL: time.Hour,
 		now:      func() time.Time { return *clock },
 	}
@@ -305,9 +297,6 @@ func TestEnumerate(t *testing.T) {
 	got := map[string]string{}
 	for _, c := range creds {
 		got[c.Key] = c.Value
-		if c.SecretName != "db-postgres" {
-			t.Fatalf("unexpected secret name %q", c.SecretName)
-		}
 	}
 	if len(got) != 3 {
 		t.Fatalf("expected 3 enumerated credentials, got %d (%v)", len(got), got)

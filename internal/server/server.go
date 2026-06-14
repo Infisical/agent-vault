@@ -119,13 +119,6 @@ func (s *Server) AttachInfisical(c *infisical.Client) { s.infisicalClient = c }
 // Start auto-builds one when the field is nil.
 func (s *Server) AttachInfisicalSyncer(syncer *infisical.Syncer) { s.infisicalSyncer = syncer }
 
-// AttachInfisicalDynamic pre-wires a dynamic-secret resolver instead of letting
-// Start build one from the attached client. Used by tests to inject a fake
-// DynamicFetcher; in prod Start auto-builds one when the field is nil.
-func (s *Server) AttachInfisicalDynamic(resolver *infisical.DynamicResolver) {
-	s.infisicalDynamic = resolver
-}
-
 // AttachLogSink swaps the per-request log sink. Safe to call once at
 // startup, before the HTTP server begins accepting connections. nil
 // resets to a Nop sink.

@@ -23,11 +23,10 @@ type SecretsFetcher interface {
 	AuthMethod() AuthMethod
 }
 
-// DynamicSecretInfo is the broker-facing summary of a dynamic-secret config
-// discovered at a vault's path. Fields are unknown until a lease is minted.
+// DynamicSecretInfo names a dynamic-secret config discovered at a vault's path.
+// Its fields are unknown until a lease is minted.
 type DynamicSecretInfo struct {
 	Name string
-	Type string
 }
 
 // DynamicLease is a minted (or renewed) dynamic-secret lease. Fields carries
@@ -181,7 +180,7 @@ func (c *Client) ListDynamicSecrets(ctx context.Context, cfg VaultConfig) ([]Dyn
 		}
 		out := make([]DynamicSecretInfo, len(res))
 		for i, ds := range res {
-			out[i] = DynamicSecretInfo{Name: ds.Name, Type: ds.Type}
+			out[i] = DynamicSecretInfo{Name: ds.Name}
 		}
 		return out, nil
 	})
