@@ -859,12 +859,14 @@ func (s *Server) handleVaultDelete(w http.ResponseWriter, r *http.Request) {
 	if v == nil {
 		return
 	}
+	// Revoke leases before deleting: DeleteVault's FK cascade drops the lease
+	// rows, so the set to revoke (incl. DB-only orphans) must be captured first.
+	// revokeDynamicLeases collects synchronously, then revokes in the background.
+	s.revokeDynamicLeases(v.ID)
 	if err := s.store.DeleteVault(r.Context(), name); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to delete vault")
 		return
 	}
-	// FK cascade drops the lease rows; revoke them upstream and clear the cache.
-	s.revokeDynamicLeases(v.ID)
 	jsonOK(w, map[string]interface{}{"name": name, "deleted": true})
 }
 

@@ -1170,9 +1170,6 @@ func (m *mockStore) InsertDynamicSecretLease(_ context.Context, _ store.DynamicS
 	return nil
 }
 func (m *mockStore) DeleteDynamicSecretLease(_ context.Context, _ string) error { return nil }
-func (m *mockStore) DeleteDynamicSecretLeasesForVault(_ context.Context, _ string) error {
-	return nil
-}
 func (m *mockStore) ListDynamicSecretLeases(_ context.Context) ([]store.DynamicSecretLease, error) {
 	return nil, nil
 }

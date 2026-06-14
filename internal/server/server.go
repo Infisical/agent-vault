@@ -322,7 +322,6 @@ type Store interface {
 	// Dynamic-secret lease tracking (Infisical)
 	InsertDynamicSecretLease(ctx context.Context, lease store.DynamicSecretLease) error
 	DeleteDynamicSecretLease(ctx context.Context, leaseID string) error
-	DeleteDynamicSecretLeasesForVault(ctx context.Context, vaultID string) error
 	ListDynamicSecretLeases(ctx context.Context) ([]store.DynamicSecretLease, error)
 
 	// Agents

@@ -94,16 +94,6 @@ func (f *fakeDynStore) DeleteDynamicSecretLease(_ context.Context, id string) er
 	delete(f.leases, id)
 	return nil
 }
-func (f *fakeDynStore) DeleteDynamicSecretLeasesForVault(_ context.Context, vaultID string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for id, l := range f.leases {
-		if l.VaultID == vaultID {
-			delete(f.leases, id)
-		}
-	}
-	return nil
-}
 func (f *fakeDynStore) ListDynamicSecretLeases(_ context.Context) ([]store.DynamicSecretLease, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -252,6 +242,23 @@ func TestRevokeVault(t *testing.T) {
 	}
 	if atomic.LoadInt32(&f.createCalls) != 2 {
 		t.Fatalf("expected fresh mint after revoke, got %d", f.createCalls)
+	}
+}
+
+func TestRevokeVault_RevokesDBOnlyOrphans(t *testing.T) {
+	r, f, st, _ := newTestResolver(t)
+	// A lease recorded only in the DB (e.g. left by a prior process), never in
+	// this process's cache. It must still be revoked, not silently forgotten.
+	st.leases["orphan-1"] = store.DynamicSecretLease{
+		LeaseID: "orphan-1", VaultID: "v1", DynamicSecretName: "db-postgres",
+		ProjectID: "proj", Environment: "dev", SecretPath: "/",
+	}
+	r.RevokeVault(context.Background(), "v1")
+	if atomic.LoadInt32(&f.revokeCalls) != 1 {
+		t.Fatalf("expected DB-only orphan revoked once, got %d", f.revokeCalls)
+	}
+	if _, ok := st.leases["orphan-1"]; ok {
+		t.Fatalf("expected orphan row forgotten after revoke")
 	}
 }
 

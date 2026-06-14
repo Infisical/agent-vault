@@ -591,7 +591,6 @@ type Store interface {
 	// the leased credential values.
 	InsertDynamicSecretLease(ctx context.Context, lease DynamicSecretLease) error
 	DeleteDynamicSecretLease(ctx context.Context, leaseID string) error
-	DeleteDynamicSecretLeasesForVault(ctx context.Context, vaultID string) error
 	ListDynamicSecretLeases(ctx context.Context) ([]DynamicSecretLease, error)
 
 	// Request logs

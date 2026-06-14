@@ -457,16 +457,6 @@ func (s *SQLiteStore) DeleteDynamicSecretLease(ctx context.Context, leaseID stri
 	return nil
 }
 
-// DeleteDynamicSecretLeasesForVault forgets every lease row for a vault (after
-// revoking them on disconnect/reconfigure).
-func (s *SQLiteStore) DeleteDynamicSecretLeasesForVault(ctx context.Context, vaultID string) error {
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM dynamic_secret_leases WHERE vault_id = ?`, vaultID); err != nil {
-		return fmt.Errorf("deleting dynamic secret leases for vault: %w", err)
-	}
-	return nil
-}
-
 // ListDynamicSecretLeases returns every tracked lease, ordered by vault_id for
 // stable iteration. Used by the startup orphan sweep.
 func (s *SQLiteStore) ListDynamicSecretLeases(ctx context.Context) ([]DynamicSecretLease, error) {

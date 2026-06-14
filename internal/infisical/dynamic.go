@@ -33,7 +33,6 @@ type DynamicLeaseStore interface {
 	GetVaultCredentialStore(ctx context.Context, vaultID string) (*store.VaultCredentialStore, error)
 	InsertDynamicSecretLease(ctx context.Context, lease store.DynamicSecretLease) error
 	DeleteDynamicSecretLease(ctx context.Context, leaseID string) error
-	DeleteDynamicSecretLeasesForVault(ctx context.Context, vaultID string) error
 	ListDynamicSecretLeases(ctx context.Context) ([]store.DynamicSecretLease, error)
 }
 
@@ -358,34 +357,72 @@ func (r *DynamicResolver) revoke(ctx context.Context, e *leaseEntry) {
 	}
 }
 
-// RevokeVault evicts and revokes every cached lease for a vault, called when a
-// vault disconnects from or reconfigures its Infisical store. Eviction is
-// synchronous; the upstream revoke + row delete follow.
-func (r *DynamicResolver) RevokeVault(ctx context.Context, vaultID string) {
-	r.revokeEvicted(ctx, vaultID, r.evictVault(vaultID))
+// leaseRef is a lease to revoke upstream: the config it was minted against plus
+// its lease ID.
+type leaseRef struct {
+	cfg     VaultConfig
+	leaseID string
 }
 
-// RevokeVaultAsync evicts the vault's cached leases synchronously — so no stale
-// lease can be served once the caller returns — then revokes them upstream in
-// the background, where a slow Infisical can't stall the API response.
+// RevokeVault evicts and revokes every lease for a vault — cached and persisted
+// (incl. DB-only orphans) — used by manual sync. Fully synchronous.
+func (r *DynamicResolver) RevokeVault(ctx context.Context, vaultID string) {
+	r.revokeRefs(ctx, r.evictAndCollect(ctx, vaultID))
+}
+
+// RevokeVaultAsync evicts the cache and collects the leases to revoke
+// synchronously — so no stale lease is served and the set is captured before
+// any FK cascade removes the rows — then revokes them upstream in the
+// background, where a slow Infisical can't stall the API response.
 func (r *DynamicResolver) RevokeVaultAsync(vaultID string) {
 	if r.fetcher == nil {
 		return
 	}
-	victims := r.evictVault(vaultID)
+	refs := r.evictAndCollect(context.Background(), vaultID)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), dynamicCloseTimeout)
 		defer cancel()
-		r.revokeEvicted(ctx, vaultID, victims)
+		r.revokeRefs(ctx, refs)
 	}()
 }
 
-// evictVault drops a vault's cached leases and discovered names under the lock,
-// returning the evicted leases for upstream revocation.
-func (r *DynamicResolver) evictVault(vaultID string) []*leaseEntry {
+// evictAndCollect drops the vault's cached leases and names, then returns every
+// lease to revoke: the persisted rows (authoritative — includes orphans left by
+// a prior process) unioned with any cached lease whose row never persisted.
+func (r *DynamicResolver) evictAndCollect(ctx context.Context, vaultID string) []leaseRef {
 	if r.fetcher == nil {
 		return nil
 	}
+	victims := r.evictVault(vaultID)
+
+	var refs []leaseRef
+	seen := make(map[string]struct{})
+	if rows, err := r.store.ListDynamicSecretLeases(ctx); err != nil {
+		r.logger.Warn("listing dynamic secret leases for revoke failed",
+			slog.String("vault_id", vaultID), slog.String("err", err.Error()))
+	} else {
+		for _, row := range rows {
+			if row.VaultID != vaultID {
+				continue
+			}
+			seen[row.LeaseID] = struct{}{}
+			refs = append(refs, leaseRef{
+				cfg:     VaultConfig{ProjectID: row.ProjectID, Environment: row.Environment, SecretPath: row.SecretPath},
+				leaseID: row.LeaseID,
+			})
+		}
+	}
+	for _, e := range victims {
+		if _, ok := seen[e.leaseID]; !ok {
+			refs = append(refs, leaseRef{cfg: e.cfg, leaseID: e.leaseID})
+		}
+	}
+	return refs
+}
+
+// evictVault drops a vault's cached leases and discovered names under the lock,
+// returning the evicted leases.
+func (r *DynamicResolver) evictVault(vaultID string) []*leaseEntry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var victims []*leaseEntry
@@ -399,17 +436,15 @@ func (r *DynamicResolver) evictVault(vaultID string) []*leaseEntry {
 	return victims
 }
 
-// revokeEvicted revokes already-evicted leases upstream and forgets their rows.
-func (r *DynamicResolver) revokeEvicted(ctx context.Context, vaultID string, victims []*leaseEntry) {
-	if r.fetcher == nil {
-		return
-	}
-	for _, e := range victims {
-		r.revokeUpstream(ctx, e.cfg, e.leaseID)
-	}
-	if err := r.store.DeleteDynamicSecretLeasesForVault(ctx, vaultID); err != nil && !errors.Is(err, context.Canceled) {
-		r.logger.Warn("deleting dynamic secret lease rows failed",
-			slog.String("vault_id", vaultID), slog.String("err", err.Error()))
+// revokeRefs revokes each lease upstream and forgets its row, by ID so a
+// concurrently-minted lease (e.g. after a reconfigure) is not clobbered.
+func (r *DynamicResolver) revokeRefs(ctx context.Context, refs []leaseRef) {
+	for _, ref := range refs {
+		r.revokeUpstream(ctx, ref.cfg, ref.leaseID)
+		if err := r.store.DeleteDynamicSecretLease(ctx, ref.leaseID); err != nil && !errors.Is(err, context.Canceled) {
+			r.logger.Warn("deleting dynamic secret lease row failed",
+				slog.String("lease_id", ref.leaseID), slog.String("err", err.Error()))
+		}
 	}
 }
 
