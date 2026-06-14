@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Infisical/agent-vault/internal/auth"
+	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/notify"
@@ -7364,5 +7365,44 @@ func TestDiscoveredHostsNoBrokerConfig(t *testing.T) {
 	// No broker config = no services to filter against, all hosts pass through
 	if resp.Total != 1 {
 		t.Fatalf("expected total=1, got %d", resp.Total)
+	}
+}
+
+// TestCredentialProvider_LateBindsDynamicResolver reproduces the MITM-ordering
+// bug: attachMITMIfEnabled captures the provider before Start() builds
+// s.infisicalDynamic. The captured provider must observe the resolver once it
+// is assigned, so dynamic secrets resolve through the proxy like static ones.
+func TestCredentialProvider_LateBindsDynamicResolver(t *testing.T) {
+	srv := newTestServer()
+
+	// Capture at "attach time", while infisicalDynamic is still nil.
+	cp := srv.CredentialProvider()
+	p, ok := cp.(*brokercore.StoreCredentialProvider)
+	if !ok {
+		t.Fatalf("expected *brokercore.StoreCredentialProvider, got %T", cp)
+	}
+	adapter, ok := p.Dynamic.(lateDynamicResolver)
+	if !ok {
+		t.Fatalf("expected lateDynamicResolver, got %T", p.Dynamic)
+	}
+	// The adapter holds the live Server and reads s.infisicalDynamic per call,
+	// so it can never go stale against the field Start() assigns later.
+	if adapter.s != srv {
+		t.Fatal("adapter not bound to the server")
+	}
+
+	// Pre-bind: infisicalDynamic is nil, so the adapter reports "not dynamic"
+	// without panicking (the typed-nil trap the old snapshot guarded against).
+	if _, ok, err := p.Dynamic.Resolve(context.Background(), "v1", "SOME_KEY"); ok || err != nil {
+		t.Fatalf("pre-bind: expected ok=false err=nil, got ok=%v err=%v", ok, err)
+	}
+
+	// Start() later assigns the resolver; the already-captured provider must
+	// reach it. A configured resolver over a non-Infisical vault still returns
+	// ok=false, but it now flows through s.infisicalDynamic rather than the nil
+	// short-circuit, proving the live read.
+	srv.infisicalDynamic = infisical.NewDynamicResolver(srv.store, nil, slog.New(slog.DiscardHandler))
+	if _, ok, err := p.Dynamic.Resolve(context.Background(), "v1", "SOME_KEY"); ok || err != nil {
+		t.Fatalf("post-bind: expected ok=false err=nil, got ok=%v err=%v", ok, err)
 	}
 }

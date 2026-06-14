@@ -148,12 +148,24 @@ func (s *Server) CredentialProvider() brokercore.CredentialProvider {
 		EncKey:     s.encKey,
 		Refresher:  s.oauthRefresher,
 	}
-	// Assign only when non-nil so the interface stays nil (avoids a typed-nil
-	// interface that would pass `Dynamic != nil` and then panic).
-	if s.infisicalDynamic != nil {
-		p.Dynamic = s.infisicalDynamic
-	}
+	// Late-bind via an adapter: the MITM proxy captures this provider at attach
+	// time, before Start() builds s.infisicalDynamic. The adapter reads the
+	// field per request, so resolution works regardless of init order.
+	p.Dynamic = lateDynamicResolver{s}
 	return p
+}
+
+// lateDynamicResolver defers to s.infisicalDynamic, which Start() builds after
+// the MITM proxy has already captured the credential provider. Reading the
+// field per call (never snapshotting it) keeps the broker's static and dynamic
+// resolution behaving identically regardless of attach/Start ordering.
+type lateDynamicResolver struct{ s *Server }
+
+func (l lateDynamicResolver) Resolve(ctx context.Context, vaultID, key string) (string, bool, error) {
+	if l.s.infisicalDynamic == nil {
+		return "", false, nil
+	}
+	return l.s.infisicalDynamic.Resolve(ctx, vaultID, key)
 }
 
 // revokeDynamicLeases revokes a vault's outstanding dynamic-secret leases on
