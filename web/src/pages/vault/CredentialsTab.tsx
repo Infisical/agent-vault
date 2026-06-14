@@ -35,6 +35,7 @@ export default function CredentialsTab() {
     token_auth_method?: string;
     access_token?: string;
     refresh_token?: string;
+    unavailable?: boolean;
   }
   const [credentials, setCredentials] = useState<CredentialInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -249,7 +250,8 @@ export default function CredentialsTab() {
       header: "Type",
       className: "w-[140px]",
       render: (cred) => {
-        const label = cred.type === "oauth" ? "OAuth" : "Static";
+        const label =
+          cred.type === "oauth" ? "OAuth" : cred.type === "dynamic" ? "Dynamic" : "Static";
         return <span className="text-xs text-text-dim">{label}</span>;
       },
     },
@@ -260,7 +262,11 @@ export default function CredentialsTab() {
             header: "Value",
             render: (cred: CredentialInfo) => (
               <div className="flex items-center gap-2">
-                {cred.type === "oauth" && !cred.connected_at ? (
+                {cred.unavailable ? (
+                  <span className="text-sm text-warning italic" title="The Infisical machine identity could not lease this dynamic secret. Grant it dynamic-secret lease permission.">
+                    Unavailable (check lease permissions)
+                  </span>
+                ) : cred.type === "oauth" && !cred.connected_at ? (
                   <span className="text-sm text-text-dim italic">Not connected</span>
                 ) : revealedValues[cred.key] !== undefined ? (
                   <span className="text-sm font-mono text-text break-all select-all">
@@ -271,7 +277,7 @@ export default function CredentialsTab() {
                     ••••••••
                   </span>
                 )}
-                {(cred.type !== "oauth" || cred.connected_at) && (
+                {!cred.unavailable && (cred.type !== "oauth" || cred.connected_at) && (
                   <button
                     onClick={() => toggleReveal(cred.key)}
                     disabled={revealing[cred.key]}
@@ -307,14 +313,16 @@ export default function CredentialsTab() {
             key: "actions",
             header: "",
             align: "right" as const,
-            render: (cred: CredentialInfo) => (
-              <DropdownMenu
-                items={[
-                  { label: "Edit", onClick: () => { setEditingKey(cred.key); setModalOpen(true); } },
-                  { label: "Delete", onClick: () => openDeleteModal(cred.key), variant: "danger" as const },
-                ]}
-              />
-            ),
+            // Dynamic credentials are leased from Infisical, not editable/deletable here.
+            render: (cred: CredentialInfo) =>
+              cred.type === "dynamic" ? null : (
+                <DropdownMenu
+                  items={[
+                    { label: "Edit", onClick: () => { setEditingKey(cred.key); setModalOpen(true); } },
+                    { label: "Delete", onClick: () => openDeleteModal(cred.key), variant: "danger" as const },
+                  ]}
+                />
+              ),
           } as Column<CredentialInfo>,
         ]
       : []),

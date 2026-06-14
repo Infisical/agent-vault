@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/crypto"
+	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
@@ -92,6 +94,9 @@ type credentialEntry struct {
 	TokenAuthMethod  *string `json:"token_auth_method,omitempty"`
 	AccessToken      *string `json:"access_token,omitempty"`
 	RefreshToken     *string `json:"refresh_token,omitempty"`
+	// Unavailable marks a dynamic-secret row whose lease could not be minted
+	// (e.g. the machine identity lacks lease permission). No value is exposed.
+	Unavailable bool `json:"unavailable,omitempty"`
 }
 
 type credentialsListResponse struct {
@@ -131,6 +136,12 @@ func (s *Server) handleCredentialsList(w http.ResponseWriter, r *http.Request) {
 	if reveal && keyFilter != "" {
 		cred, err := s.store.GetCredential(ctx, ns.ID, keyFilter)
 		if err != nil {
+			// Not a static credential: it may be a dynamic-secret field, leased
+			// on demand and held in memory rather than the credentials table.
+			if entry, ok := s.revealDynamicCredential(ctx, ns.ID, keyFilter); ok {
+				jsonOK(w, credentialsListResponse{Keys: []string{keyFilter}, Credentials: []credentialEntry{entry}})
+				return
+			}
 			jsonError(w, http.StatusNotFound, fmt.Sprintf("Credential %q not found", keyFilter))
 			return
 		}
@@ -186,11 +197,60 @@ func (s *Server) handleCredentialsList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Fold leased dynamic-secret fields into the same list, tagged type="dynamic".
+	// Values are only attached on reveal (member+), mirroring static credentials.
+	for _, d := range s.enumerateDynamicCredentials(ctx, ns.ID) {
+		keys = append(keys, d.Key)
+		entry := credentialEntry{Key: d.Key, Type: credentialTypeDynamic, Unavailable: d.Unavailable}
+		if reveal && !d.Unavailable {
+			entry.Value = d.Value
+		}
+		entries = append(entries, entry)
+	}
+
 	resp := credentialsListResponse{Keys: keys}
 	if isMember || reveal {
 		resp.Credentials = entries
 	}
 	jsonOK(w, resp)
+}
+
+// credentialTypeDynamic tags entries sourced from an Infisical dynamic-secret
+// lease rather than the local credentials table.
+const credentialTypeDynamic = "dynamic"
+
+// enumerateDynamicCredentials returns the vault's leased dynamic-secret fields
+// as credential entries. Best-effort: a nil resolver or an upstream error
+// yields none rather than failing the credential listing.
+func (s *Server) enumerateDynamicCredentials(ctx context.Context, vaultID string) []infisical.EnumeratedCredential {
+	if s.infisicalDynamic == nil {
+		return nil
+	}
+	creds, err := s.infisicalDynamic.Enumerate(ctx, vaultID)
+	if err != nil {
+		s.logger.Warn("enumerating dynamic secrets failed",
+			slog.String("vault_id", vaultID), slog.String("err", err.Error()))
+		return nil
+	}
+	return creds
+}
+
+// revealDynamicCredential resolves a single dynamic-secret field key to a
+// credential entry with its leased value. ok=false when the key is not a
+// dynamic credential (callers then return the normal not-found error).
+func (s *Server) revealDynamicCredential(ctx context.Context, vaultID, key string) (credentialEntry, bool) {
+	if s.infisicalDynamic == nil {
+		return credentialEntry{}, false
+	}
+	val, ok, err := s.infisicalDynamic.Resolve(ctx, vaultID, key)
+	if err != nil || !ok {
+		if err != nil {
+			s.logger.Warn("resolving dynamic secret for reveal failed",
+				slog.String("vault_id", vaultID), slog.String("err", err.Error()))
+		}
+		return credentialEntry{}, false
+	}
+	return credentialEntry{Key: key, Type: credentialTypeDynamic, Value: val}, true
 }
 
 func (s *Server) enrichOAuthEntry(ctx context.Context, vaultID string, entry *credentialEntry) {

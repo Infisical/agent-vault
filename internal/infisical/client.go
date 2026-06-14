@@ -2,9 +2,16 @@ package infisical
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 
 	sdk "github.com/infisical/go-sdk"
 )
@@ -16,11 +23,45 @@ type SecretsFetcher interface {
 	AuthMethod() AuthMethod
 }
 
+// DynamicSecretInfo is the broker-facing summary of a dynamic-secret config
+// discovered at a vault's path. Fields are unknown until a lease is minted.
+type DynamicSecretInfo struct {
+	Name string
+	Type string
+}
+
+// DynamicLease is a minted (or renewed) dynamic-secret lease. Fields carries
+// the SECRET credential values keyed by their provider field name (username,
+// password, …); never log it.
+type DynamicLease struct {
+	LeaseID  string
+	Fields   map[string]string
+	ExpireAt time.Time
+}
+
+// DynamicFetcher is the slice of the SDK the dynamic-secret resolver uses;
+// tests substitute their own implementation. Mirrors SecretsFetcher.
+type DynamicFetcher interface {
+	ListDynamicSecrets(ctx context.Context, cfg VaultConfig) ([]DynamicSecretInfo, error)
+	CreateLease(ctx context.Context, cfg VaultConfig, name string) (DynamicLease, error)
+	RenewLease(ctx context.Context, cfg VaultConfig, leaseID string) (expireAt time.Time, err error)
+	RevokeLease(ctx context.Context, cfg VaultConfig, leaseID string) error
+}
+
 // Client wraps the Infisical SDK and provides a narrow fetch surface.
 type Client struct {
-	sdk    sdk.InfisicalClientInterface
-	method AuthMethod
-	logger *slog.Logger
+	sdk     sdk.InfisicalClientInterface
+	method  AuthMethod
+	siteURL string
+	logger  *slog.Logger
+
+	httpc *http.Client
+
+	// slugCache memoizes project-ID → project-slug lookups. Dynamic-secret
+	// endpoints key on the project slug, but Agent Vault stores the project ID;
+	// slugs are stable, so one resolution per project is cached for the process.
+	slugMu    sync.Mutex
+	slugCache map[string]string
 }
 
 // NewClient returns ErrNotConfigured when INFISICAL_URL is unset (callers
@@ -41,8 +82,8 @@ func NewClient(ctx context.Context, logger *slog.Logger) (*Client, error) {
 	}
 
 	c := sdk.NewInfisicalClient(ctx, sdk.Config{
-		SiteUrl:              siteURL,
-		AutoTokenRefresh:     sdk.BoolPtr(true), // v0.8.0 made this a *bool
+		SiteUrl:          siteURL,
+		AutoTokenRefresh: sdk.BoolPtr(true), // v0.8.0 made this a *bool
 
 		CacheExpiryInSeconds: 0, // disable SDK-side secret caching; we own the cache
 	})
@@ -55,22 +96,23 @@ func NewClient(ctx context.Context, logger *slog.Logger) (*Client, error) {
 		slog.String("site_url", siteURL),
 		slog.String("auth_method", string(method)))
 
-	return &Client{sdk: c, method: method, logger: logger}, nil
+	return &Client{
+		sdk:       c,
+		method:    method,
+		siteURL:   strings.TrimRight(siteURL, "/"),
+		logger:    logger,
+		httpc:     &http.Client{Timeout: 10 * time.Second},
+		slugCache: make(map[string]string),
+	}, nil
 }
 
 // AuthMethod returns the detected machine-identity flow this client uses.
 func (c *Client) AuthMethod() AuthMethod { return c.method }
 
-// FetchSecrets honors ctx.Done() by selecting against a goroutine wrapping
-// the context-unaware SDK call; on cancel the orphan runs to completion
-// (up to the SDK's internal timeout) and sends to the buffered channel.
+// FetchSecrets honors ctx.Done() via runSDK; on cancel the orphaned SDK call
+// runs to completion (up to the SDK's internal timeout) and is discarded.
 func (c *Client) FetchSecrets(ctx context.Context, cfg VaultConfig) ([]Secret, error) {
-	type result struct {
-		secs []Secret
-		err  error
-	}
-	done := make(chan result, 1)
-	go func() {
+	return runSDK(ctx, func() ([]Secret, error) {
 		res, err := c.sdk.Secrets().ListSecrets(sdk.ListSecretsOptions{
 			ProjectID:              cfg.ProjectID,
 			Environment:            cfg.Environment,
@@ -79,21 +121,196 @@ func (c *Client) FetchSecrets(ctx context.Context, cfg VaultConfig) ([]Secret, e
 			AttachToProcessEnv:     false,
 		})
 		if err != nil {
-			done <- result{nil, err}
-			return
+			return nil, err
 		}
 		out := make([]Secret, len(res.Secrets))
 		for i, s := range res.Secrets {
 			out[i] = Secret{Key: s.SecretKey, Value: s.SecretValue}
 		}
-		done <- result{out, nil}
+		return out, nil
+	})
+}
+
+// runSDK runs a context-unaware SDK call in a goroutine and honors ctx.Done():
+// on cancel the orphan finishes (up to the SDK's internal timeout) and sends to
+// the buffered channel.
+func runSDK[T any](ctx context.Context, fn func() (T, error)) (T, error) {
+	type result struct {
+		v   T
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		v, err := fn()
+		done <- result{v, err}
 	}()
 	select {
 	case r := <-done:
-		return r.secs, r.err
+		return r.v, r.err
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		var zero T
+		return zero, ctx.Err()
 	}
+}
+
+// Dynamic-secret endpoints key on the project SLUG, but Agent Vault persists
+// the project ID (VaultConfig.ProjectID); the static ListSecrets endpoint
+// accepts the ID, the dynamic ones do not. projectSlug resolves and caches the
+// slug so every dynamic call can translate ID → slug first.
+func (c *Client) ListDynamicSecrets(ctx context.Context, cfg VaultConfig) ([]DynamicSecretInfo, error) {
+	slug, err := c.projectSlug(ctx, cfg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	return runSDK(ctx, func() ([]DynamicSecretInfo, error) {
+		res, err := c.sdk.DynamicSecrets().List(sdk.ListDynamicSecretsRootCredentialsOptions{
+			ProjectSlug:     slug,
+			EnvironmentSlug: cfg.Environment,
+			SecretPath:      cfg.SecretPath,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out := make([]DynamicSecretInfo, len(res))
+		for i, ds := range res {
+			out[i] = DynamicSecretInfo{Name: ds.Name, Type: ds.Type}
+		}
+		return out, nil
+	})
+}
+
+func (c *Client) CreateLease(ctx context.Context, cfg VaultConfig, name string) (DynamicLease, error) {
+	slug, err := c.projectSlug(ctx, cfg.ProjectID)
+	if err != nil {
+		return DynamicLease{}, err
+	}
+	return runSDK(ctx, func() (DynamicLease, error) {
+		// Empty TTL → Infisical uses the dynamic secret's configured DefaultTTL.
+		data, _, lease, err := c.sdk.DynamicSecrets().Leases().Create(sdk.CreateDynamicSecretLeaseOptions{
+			DynamicSecretName: name,
+			ProjectSlug:       slug,
+			EnvironmentSlug:   cfg.Environment,
+			SecretPath:        cfg.SecretPath,
+		})
+		if err != nil {
+			return DynamicLease{}, err
+		}
+		return DynamicLease{LeaseID: lease.Id, Fields: stringifyFields(data), ExpireAt: lease.ExpireAt}, nil
+	})
+}
+
+func (c *Client) RenewLease(ctx context.Context, cfg VaultConfig, leaseID string) (time.Time, error) {
+	slug, err := c.projectSlug(ctx, cfg.ProjectID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return runSDK(ctx, func() (time.Time, error) {
+		lease, err := c.sdk.DynamicSecrets().Leases().RenewById(sdk.RenewDynamicSecretLeaseOptions{
+			LeaseId:         leaseID,
+			ProjectSlug:     slug,
+			EnvironmentSlug: cfg.Environment,
+			SecretPath:      cfg.SecretPath,
+		})
+		if err != nil {
+			return time.Time{}, err
+		}
+		return lease.ExpireAt, nil
+	})
+}
+
+func (c *Client) RevokeLease(ctx context.Context, cfg VaultConfig, leaseID string) error {
+	slug, err := c.projectSlug(ctx, cfg.ProjectID)
+	if err != nil {
+		return err
+	}
+	_, err = runSDK(ctx, func() (struct{}, error) {
+		_, err := c.sdk.DynamicSecrets().Leases().DeleteById(sdk.DeleteDynamicSecretLeaseOptions{
+			LeaseId:         leaseID,
+			ProjectSlug:     slug,
+			EnvironmentSlug: cfg.Environment,
+			SecretPath:      cfg.SecretPath,
+		})
+		return struct{}{}, err
+	})
+	return err
+}
+
+// projectSlug resolves a project ID to its slug via GET /api/v1/workspace/{id},
+// caching the result for the process. The SDK auto-refreshes the bearer token,
+// so GetAccessToken returns a current one.
+func (c *Client) projectSlug(ctx context.Context, projectID string) (string, error) {
+	c.slugMu.Lock()
+	if s, ok := c.slugCache[projectID]; ok {
+		c.slugMu.Unlock()
+		return s, nil
+	}
+	c.slugMu.Unlock()
+
+	token := c.sdk.Auth().GetAccessToken()
+	if token == "" {
+		return "", fmt.Errorf("infisical: no access token available to resolve project slug")
+	}
+	slug, err := getProjectSlug(ctx, c.httpc, c.siteURL, token, projectID)
+	if err != nil {
+		return "", err
+	}
+	c.slugMu.Lock()
+	c.slugCache[projectID] = slug
+	c.slugMu.Unlock()
+	return slug, nil
+}
+
+// getProjectSlug GETs /api/v1/workspace/{id} and extracts the project slug.
+// Free function so the HTTP/parse path is testable without the SDK.
+func getProjectSlug(ctx context.Context, httpc *http.Client, siteURL, token, projectID string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, siteURL+"/api/v1/workspace/"+projectID, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("infisical: resolving project slug for %q: status %d", projectID, resp.StatusCode)
+	}
+	var parsed struct {
+		Workspace struct {
+			Slug string `json:"slug"`
+		} `json:"workspace"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", fmt.Errorf("infisical: parsing project slug response: %w", err)
+	}
+	if parsed.Workspace.Slug == "" {
+		return "", fmt.Errorf("infisical: project %q has no slug in response", projectID)
+	}
+	return parsed.Workspace.Slug, nil
+}
+
+// stringifyFields renders a lease's map[string]any credential payload as
+// strings. JSON numbers arrive as float64; render them without a trailing
+// ".0" so ports and the like inject cleanly.
+func stringifyFields(data map[string]any) map[string]string {
+	out := make(map[string]string, len(data))
+	for k, v := range data {
+		switch t := v.(type) {
+		case string:
+			out[k] = t
+		case float64:
+			out[k] = strconv.FormatFloat(t, 'f', -1, 64)
+		case bool:
+			out[k] = strconv.FormatBool(t)
+		case nil:
+			out[k] = ""
+		default:
+			out[k] = fmt.Sprintf("%v", t)
+		}
+	}
+	return out
 }
 
 // loginWithMethod dispatches to the SDK. Kubernetes and LDAP read env vars

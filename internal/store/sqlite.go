@@ -426,6 +426,77 @@ func (s *SQLiteStore) DeleteVaultCredentialStore(ctx context.Context, vaultID st
 	return nil
 }
 
+// InsertDynamicSecretLease records an outstanding dynamic-secret lease. The
+// lease_id is unique per Infisical, so a re-insert (e.g. after a renew that
+// kept the same id) just refreshes expire_at.
+func (s *SQLiteStore) InsertDynamicSecretLease(ctx context.Context, lease DynamicSecretLease) error {
+	var expire interface{}
+	if lease.ExpireAt != nil {
+		expire = lease.ExpireAt.UTC().Format(time.DateTime)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO dynamic_secret_leases
+		    (lease_id, vault_id, dynamic_secret_name, project_id, environment, secret_path, expire_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(lease_id) DO UPDATE SET expire_at = excluded.expire_at`,
+		lease.LeaseID, lease.VaultID, lease.DynamicSecretName, lease.ProjectID,
+		lease.Environment, lease.SecretPath, expire, nowUTC(),
+	); err != nil {
+		return fmt.Errorf("inserting dynamic secret lease: %w", err)
+	}
+	return nil
+}
+
+// DeleteDynamicSecretLease forgets a single lease row (after a successful
+// revoke). Returns nil when the row is already gone.
+func (s *SQLiteStore) DeleteDynamicSecretLease(ctx context.Context, leaseID string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM dynamic_secret_leases WHERE lease_id = ?`, leaseID); err != nil {
+		return fmt.Errorf("deleting dynamic secret lease: %w", err)
+	}
+	return nil
+}
+
+// DeleteDynamicSecretLeasesForVault forgets every lease row for a vault (after
+// revoking them on disconnect/reconfigure).
+func (s *SQLiteStore) DeleteDynamicSecretLeasesForVault(ctx context.Context, vaultID string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM dynamic_secret_leases WHERE vault_id = ?`, vaultID); err != nil {
+		return fmt.Errorf("deleting dynamic secret leases for vault: %w", err)
+	}
+	return nil
+}
+
+// ListDynamicSecretLeases returns every tracked lease, ordered by vault_id for
+// stable iteration. Used by the startup orphan sweep.
+func (s *SQLiteStore) ListDynamicSecretLeases(ctx context.Context) ([]DynamicSecretLease, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT lease_id, vault_id, dynamic_secret_name, project_id, environment,
+		        secret_path, expire_at, created_at
+		   FROM dynamic_secret_leases ORDER BY vault_id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing dynamic secret leases: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []DynamicSecretLease
+	for rows.Next() {
+		var l DynamicSecretLease
+		var expire sql.NullString
+		var createdAt string
+		if err := rows.Scan(&l.LeaseID, &l.VaultID, &l.DynamicSecretName, &l.ProjectID,
+			&l.Environment, &l.SecretPath, &expire, &createdAt); err != nil {
+			return nil, err
+		}
+		if expire.Valid && expire.String != "" {
+			t, _ := time.Parse(time.DateTime, expire.String)
+			l.ExpireAt = &t
+		}
+		l.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
 // rowScanner unifies *sql.Row and *sql.Rows so one scan func serves both.
 type rowScanner interface {
 	Scan(dest ...interface{}) error
@@ -2113,7 +2184,6 @@ func scanBrokerConfig(row *sql.Row) (*BrokerConfig, error) {
 	return &bc, nil
 }
 
-
 // --- Vault Invites ---
 
 func newUserInviteToken() string { return newPrefixedToken("av_uinv_") }
@@ -2989,7 +3059,6 @@ func (s *SQLiteStore) CreateAgentToken(ctx context.Context, agentID string, expi
 	return &Session{ID: rawToken, AgentID: agentID, ExpiresAt: utcTimePtr(expiresAt), CreatedAt: now}, nil
 }
 
-
 // scanAgent scans a single agent row from a *sql.Row.
 // Expected column order: id, name, status, created_by, created_at, updated_at, revoked_at
 func scanAgent(row *sql.Row) (*Agent, error) {
@@ -3029,7 +3098,6 @@ func scanAgentRow(rows *sql.Rows) (*Agent, error) {
 	}
 	return &ag, nil
 }
-
 
 // batchLoadAgentVaultGrants loads vault grants for all agents in a single query.
 func (s *SQLiteStore) batchLoadAgentVaultGrants(ctx context.Context, agents []Agent) error {

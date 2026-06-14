@@ -32,20 +32,20 @@ type mockStore struct {
 	masterKeyRecord    *store.MasterKeyRecord
 	sessions           map[string]*store.Session
 	vaults             map[string]*store.Vault
-	credentials        map[string]*store.Credential             // keyed by "vaultID:key"
-	brokerConfigs      map[string]*store.BrokerConfig       // keyed by vaultID
-	proposals          map[string][]store.Proposal           // keyed by vaultID
-	users              map[string]*store.User                // keyed by email
-	grants             map[string]map[string]string          // keyed by userID -> vaultID -> role
-	userInvites        map[string]*store.UserInvite           // keyed by token
+	credentials        map[string]*store.Credential   // keyed by "vaultID:key"
+	brokerConfigs      map[string]*store.BrokerConfig // keyed by vaultID
+	proposals          map[string][]store.Proposal    // keyed by vaultID
+	users              map[string]*store.User         // keyed by email
+	grants             map[string]map[string]string   // keyed by userID -> vaultID -> role
+	userInvites        map[string]*store.UserInvite   // keyed by token
 	emailVerifications []*store.EmailVerification
 	passwordResets     []*store.PasswordReset
-	agents             map[string]*store.Agent               // keyed by name
-	agentVaultGrants   []store.VaultGrant                    // agent vault grants
-	settings           map[string]string                     // instance settings
-	vaultSettings      map[string]map[string]string          // per-vault: vaultID -> key -> value
+	agents             map[string]*store.Agent                // keyed by name
+	agentVaultGrants   []store.VaultGrant                     // agent vault grants
+	settings           map[string]string                      // instance settings
+	vaultSettings      map[string]map[string]string           // per-vault: vaultID -> key -> value
 	credStores         map[string]*store.VaultCredentialStore // per-vault external credential store config
-	unmatchedHosts     map[string][]store.UnmatchedHost      // keyed by vaultID
+	unmatchedHosts     map[string][]store.UnmatchedHost       // keyed by vaultID
 	sessionCounter     int
 }
 
@@ -245,11 +245,11 @@ func (m *mockStore) GetVault(_ context.Context, name string) (*store.Vault, erro
 
 func (m *mockStore) SetCredential(_ context.Context, vaultID, key string, ciphertext, nonce []byte) (*store.Credential, error) {
 	s := &store.Credential{
-		ID:          "credential-" + key,
-		VaultID: vaultID,
-		Key:         key,
-		Ciphertext:  ciphertext,
-		Nonce:       nonce,
+		ID:         "credential-" + key,
+		VaultID:    vaultID,
+		Key:        key,
+		Ciphertext: ciphertext,
+		Nonce:      nonce,
 	}
 	m.credentials[vaultID+":"+key] = s
 	return s, nil
@@ -306,15 +306,15 @@ func (m *mockStore) CreateProposal(_ context.Context, vaultID, sessionID, servic
 	existing := m.proposals[vaultID]
 	nextID := len(existing) + 1
 	cs := store.Proposal{
-		ID:          nextID,
-		VaultID: vaultID,
-		SessionID:   sessionID,
-		Status:      "pending",
-		ServicesJSON:   servicesJSON,
+		ID:              nextID,
+		VaultID:         vaultID,
+		SessionID:       sessionID,
+		Status:          "pending",
+		ServicesJSON:    servicesJSON,
 		CredentialsJSON: credentialsJSON,
-		Message:     message,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		Message:         message,
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
 	}
 	m.proposals[vaultID] = append(m.proposals[vaultID], cs)
 	return &cs, nil
@@ -378,8 +378,8 @@ func (m *mockStore) ApplyProposal(_ context.Context, vaultID string, proposalID 
 	}
 	// Update broker config.
 	m.brokerConfigs[vaultID] = &store.BrokerConfig{
-		VaultID: vaultID,
-		ServicesJSON:   mergedServicesJSON,
+		VaultID:      vaultID,
+		ServicesJSON: mergedServicesJSON,
 	}
 	return nil
 }
@@ -468,7 +468,6 @@ func (m *mockStore) DeleteUser(_ context.Context, userID string) error {
 	return fmt.Errorf("user not found")
 }
 
-
 func (m *mockStore) DeleteUserSessions(_ context.Context, userID string) error {
 	for id, sess := range m.sessions {
 		if sess.UserID == userID {
@@ -524,11 +523,11 @@ func (m *mockStore) RenameVault(_ context.Context, oldName string, newName strin
 
 func (m *mockStore) SetBrokerConfig(_ context.Context, vaultID, servicesJSON string) (*store.BrokerConfig, error) {
 	bc := &store.BrokerConfig{
-		ID:          "bc-" + vaultID,
-		VaultID: vaultID,
-		ServicesJSON:   servicesJSON,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ID:           "bc-" + vaultID,
+		VaultID:      vaultID,
+		ServicesJSON: servicesJSON,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}
 	m.brokerConfigs[vaultID] = bc
 	return bc, nil
@@ -1165,6 +1164,17 @@ func (m *mockStore) SetVaultExternalStore(_ context.Context, p store.SetVaultExt
 func (m *mockStore) DeleteVaultCredentialStore(_ context.Context, vaultID string) error {
 	delete(m.credStores, vaultID)
 	return nil
+}
+
+func (m *mockStore) InsertDynamicSecretLease(_ context.Context, _ store.DynamicSecretLease) error {
+	return nil
+}
+func (m *mockStore) DeleteDynamicSecretLease(_ context.Context, _ string) error { return nil }
+func (m *mockStore) DeleteDynamicSecretLeasesForVault(_ context.Context, _ string) error {
+	return nil
+}
+func (m *mockStore) ListDynamicSecretLeases(_ context.Context) ([]store.DynamicSecretLease, error) {
+	return nil, nil
 }
 
 func (m *mockStore) GetCredentialOAuth(_ context.Context, _, _ string) (*store.CredentialOAuth, error) {
@@ -2589,10 +2599,10 @@ func setupProposalTest(t *testing.T) (*Server, *mockStore, string) {
 
 	// Create a scoped session for the root vault.
 	sess := &store.Session{
-		ID:          "scoped-cs-token",
-		VaultID: "root-ns-id",
-		ExpiresAt:   tp(time.Now().Add(1 * time.Hour)),
-		CreatedAt:   time.Now(),
+		ID:        "scoped-cs-token",
+		VaultID:   "root-ns-id",
+		ExpiresAt: tp(time.Now().Add(1 * time.Hour)),
+		CreatedAt: time.Now(),
 	}
 	ms.sessions["scoped-cs-token"] = sess
 	return srv, ms, "scoped-cs-token"
@@ -2894,18 +2904,18 @@ func setupAdminProposalTest(t *testing.T) (*Server, *mockStore, string) {
 	// Seed a broker config and a pending proposal.
 	ms.proposals = make(map[string][]store.Proposal)
 	ms.brokerConfigs["root-ns-id"] = &store.BrokerConfig{
-		VaultID: "root-ns-id",
-		ServicesJSON:   `[]`,
+		VaultID:      "root-ns-id",
+		ServicesJSON: `[]`,
 	}
 	ms.proposals["root-ns-id"] = []store.Proposal{
 		{
-			ID:          1,
-			VaultID: "root-ns-id",
-			Status:      "pending",
-			ServicesJSON:   `[{"action":"set","name":"example","host":"api.example.com","auth":{"type":"bearer","token":"MY_KEY"}}]`,
+			ID:              1,
+			VaultID:         "root-ns-id",
+			Status:          "pending",
+			ServicesJSON:    `[{"action":"set","name":"example","host":"api.example.com","auth":{"type":"bearer","token":"MY_KEY"}}]`,
 			CredentialsJSON: `[{"action":"set","key":"MY_KEY","description":"Example key"}]`,
-			Message:     "Add example API",
-			CreatedAt:   time.Now(),
+			Message:         "Add example API",
+			CreatedAt:       time.Now(),
 		},
 	}
 
@@ -2999,10 +3009,10 @@ func TestAdminProposalApproveRequiresAdminSession(t *testing.T) {
 
 	// Create a scoped (non-admin) session.
 	scopedSess := &store.Session{
-		ID:          "scoped-session",
-		VaultID: "root-ns-id",
-		ExpiresAt:   tp(time.Now().Add(time.Hour)),
-		CreatedAt:   time.Now(),
+		ID:        "scoped-session",
+		VaultID:   "root-ns-id",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+		CreatedAt: time.Now(),
 	}
 	ms.sessions[scopedSess.ID] = scopedSess
 
@@ -3082,10 +3092,10 @@ func TestAdminProposalRejectRequiresAdminSession(t *testing.T) {
 	srv, ms, _ := setupAdminProposalTest(t)
 
 	scopedSess := &store.Session{
-		ID:          "scoped-session",
-		VaultID: "root-ns-id",
-		ExpiresAt:   tp(time.Now().Add(time.Hour)),
-		CreatedAt:   time.Now(),
+		ID:        "scoped-session",
+		VaultID:   "root-ns-id",
+		ExpiresAt: tp(time.Now().Add(time.Hour)),
+		CreatedAt: time.Now(),
 	}
 	ms.sessions[scopedSess.ID] = scopedSess
 
@@ -3867,7 +3877,6 @@ func TestLastOwnerCannotBeRemoved(t *testing.T) {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
-
 
 func TestEmailTestRequiresOwner(t *testing.T) {
 	ms, agentToken := setupMockStoreWithScopedSession(t, "default", "root-ns-id")
@@ -5612,7 +5621,6 @@ func TestScopedSessionListRequiresAuth(t *testing.T) {
 	}
 }
 
-
 // setupMockStoreWithInactiveUser creates a mock store with an inactive (unverified) user.
 func setupMockStoreWithInactiveUser(t *testing.T, email, password string) *mockStore {
 	t.Helper()
@@ -7186,8 +7194,10 @@ func TestDiscoveredHostsFilterConfiguredService(t *testing.T) {
 	}
 
 	var resp struct {
-		Hosts []struct{ Host string `json:"host"` } `json:"hosts"`
-		Total int                                    `json:"total"`
+		Hosts []struct {
+			Host string `json:"host"`
+		} `json:"hosts"`
+		Total int `json:"total"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)

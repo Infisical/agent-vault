@@ -182,6 +182,13 @@ func (s *Server) handleVaultSyncNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Manual sync also forces fresh dynamic-secret leases: invalidate the cached
+	// ones so the next list/use mints new values. The periodic poll deliberately
+	// does NOT do this — it would churn leases on every tick.
+	if s.infisicalDynamic != nil {
+		s.infisicalDynamic.RevokeVault(ctx, vault.ID)
+	}
+
 	// Re-read the row so the response reflects the freshly-written health.
 	cs, err = s.store.GetVaultCredentialStore(ctx, vault.ID)
 	if err != nil || cs == nil {
@@ -472,7 +479,7 @@ type vaultCreateCredentialStoreRequest struct {
 }
 
 type vaultCreateRequest struct {
-	Name            string                              `json:"name"`
+	Name            string                             `json:"name"`
 	CredentialStore *vaultCreateCredentialStoreRequest `json:"credential_store,omitempty"`
 }
 
@@ -674,6 +681,7 @@ func (s *Server) handleVaultCredentialStorePatch(w http.ResponseWriter, r *http.
 			jsonError(w, http.StatusInternalServerError, "Failed to switch credential store")
 			return
 		}
+		s.revokeDynamicLeases(ns.ID)
 		jsonOK(w, map[string]interface{}{
 			"credential_store": &credentialStoreSummary{Kind: store.CredentialStoreBuiltin},
 		})
@@ -704,6 +712,9 @@ func (s *Server) handleVaultCredentialStorePatch(w http.ResponseWriter, r *http.
 			jsonError(w, http.StatusInternalServerError, "Failed to switch credential store")
 			return
 		}
+		// Config may have changed (new project/env/path); drop leases minted
+		// against the old config so they don't linger.
+		s.revokeDynamicLeases(ns.ID)
 		// Caller is admin/owner (gated above), so full detail is permitted.
 		jsonOK(w, map[string]interface{}{"credential_store": credentialStoreDetailSummary(cs)})
 	default:
@@ -845,13 +856,16 @@ func (s *Server) handleVaultDelete(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "Cannot delete the default vault")
 		return
 	}
-	if s.resolveVaultForAdminOrOwner(w, r, name) == nil {
+	v := s.resolveVaultForAdminOrOwner(w, r, name)
+	if v == nil {
 		return
 	}
 	if err := s.store.DeleteVault(r.Context(), name); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to delete vault")
 		return
 	}
+	// FK cascade drops the lease rows; revoke them upstream and clear the cache.
+	s.revokeDynamicLeases(v.ID)
 	jsonOK(w, map[string]interface{}{"name": name, "deleted": true})
 }
 

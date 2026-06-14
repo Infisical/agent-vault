@@ -50,26 +50,26 @@ type Credential struct {
 // an OAuth-type credential. The access token lives in credentials.ciphertext;
 // this table stores everything needed to refresh it.
 type CredentialOAuth struct {
-	VaultID           string
-	CredentialKey     string
-	AuthorizationURL  string // empty = token upload mode
-	TokenURL          string
-	ClientID          string
-	ClientSecretCT    []byte // nil for public clients
-	ClientSecretNonce []byte
-	Scopes            string
-	ScopeSeparator    string
-	DisablePKCE       bool
-	TokenAuthMethod   string // "client_secret_post" or "client_secret_basic"
-	RefreshTokenCT    []byte
-	RefreshTokenNonce []byte
-	TokenExpiresAt    *time.Time
-	ConnectedAt       *time.Time
-	LastRefreshedAt   *time.Time
-	LastRefreshError  string
+	VaultID            string
+	CredentialKey      string
+	AuthorizationURL   string // empty = token upload mode
+	TokenURL           string
+	ClientID           string
+	ClientSecretCT     []byte // nil for public clients
+	ClientSecretNonce  []byte
+	Scopes             string
+	ScopeSeparator     string
+	DisablePKCE        bool
+	TokenAuthMethod    string // "client_secret_post" or "client_secret_basic"
+	RefreshTokenCT     []byte
+	RefreshTokenNonce  []byte
+	TokenExpiresAt     *time.Time
+	ConnectedAt        *time.Time
+	LastRefreshedAt    *time.Time
+	LastRefreshError   string
 	LastRefreshErrorAt *time.Time
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // CredentialOAuthState holds a CSRF state + PKCE verifier for an
@@ -202,11 +202,11 @@ type User struct {
 
 // BrokerConfig holds the brokering services for a vault.
 type BrokerConfig struct {
-	ID          string
-	VaultID     string
+	ID           string
+	VaultID      string
 	ServicesJSON string // JSON-encoded []broker.Service
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // Proposal represents a proposed set of changes (services + credential slots)
@@ -265,6 +265,21 @@ type VaultCredentialStore struct {
 	LastSyncError       string
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+}
+
+// DynamicSecretLease is a tracked Infisical dynamic-secret lease. Persisted so
+// outstanding leases can be revoked on disconnect/shutdown and orphans (rows
+// surviving a restart, whose in-memory credential values are gone) swept on the
+// next startup. Carries no secret material — only what revoke needs.
+type DynamicSecretLease struct {
+	LeaseID           string
+	VaultID           string
+	DynamicSecretName string
+	ProjectID         string
+	Environment       string
+	SecretPath        string
+	ExpireAt          *time.Time
+	CreatedAt         time.Time
 }
 
 // CreateExternalVaultParams carries inputs to CreateExternalVault. The
@@ -572,6 +587,13 @@ type Store interface {
 	// the vault's already-synced credentials are left in place as built-in
 	// credentials (external → built-in switch).
 	DeleteVaultCredentialStore(ctx context.Context, vaultID string) error
+
+	// Dynamic-secret lease tracking (Infisical). Lease metadata only — never
+	// the leased credential values.
+	InsertDynamicSecretLease(ctx context.Context, lease DynamicSecretLease) error
+	DeleteDynamicSecretLease(ctx context.Context, leaseID string) error
+	DeleteDynamicSecretLeasesForVault(ctx context.Context, vaultID string) error
+	ListDynamicSecretLeases(ctx context.Context) ([]DynamicSecretLease, error)
 
 	// Request logs
 	InsertRequestLogs(ctx context.Context, rows []RequestLog) error

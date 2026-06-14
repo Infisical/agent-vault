@@ -81,13 +81,23 @@ type OAuthStore interface {
 	UpdateCredentialOAuthError(ctx context.Context, vaultID, key string, errMsg string) error
 }
 
+// DynamicCredentialResolver resolves credential keys that are not stored
+// statically — e.g. Infisical dynamic-secret leases minted on demand. ok=false
+// means "not a dynamic credential" (the caller keeps its not-found error); a
+// non-nil error is a real failure. Implemented outside brokercore (infisical)
+// and injected, so brokercore takes no dependency on it.
+type DynamicCredentialResolver interface {
+	Resolve(ctx context.Context, vaultID, key string) (value string, ok bool, err error)
+}
+
 // StoreCredentialProvider injects credentials using a CredentialStore and a
 // 32-byte AES-256-GCM key held in memory for the lifetime of the process.
 type StoreCredentialProvider struct {
 	Store      CredentialStore
-	OAuthStore OAuthStore       // nil = no OAuth refresh
+	OAuthStore OAuthStore // nil = no OAuth refresh
 	EncKey     []byte
-	Refresher  *oauth.Refresher // nil = no OAuth refresh
+	Refresher  *oauth.Refresher          // nil = no OAuth refresh
+	Dynamic    DynamicCredentialResolver // nil = no dynamic-secret resolution
 }
 
 // NewStoreCredentialProvider constructs a provider. encKey must be 32 bytes.
@@ -164,6 +174,15 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 		}
 		cred, err := p.Store.GetCredential(ctx, vaultID, key)
 		if err != nil || cred == nil {
+			// No static credential: try resolving it as a dynamic-secret field.
+			if p.Dynamic != nil {
+				if val, ok, derr := p.Dynamic.Resolve(ctx, vaultID, key); derr != nil {
+					return "", derr
+				} else if ok {
+					cache[key] = val
+					return val, nil
+				}
+			}
 			return "", fmt.Errorf("credential %q not found", key)
 		}
 
