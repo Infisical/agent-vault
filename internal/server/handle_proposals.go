@@ -237,6 +237,8 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 		go s.notifyProposalCreated(vaultID, nsName, cs.ID, req.Message, approvalURL, proposalAgentName) //nolint:gosec // G118: intentional fire-and-forget goroutine
 	}
 
+	actor, _ := s.actorFromSession(ctx, sess)
+	s.captureEvent(r, "av.proposal-create", actor, map[string]string{"vault": nsName})
 	jsonCreated(w, map[string]interface{}{
 		"id":           cs.ID,
 		"status":       cs.Status,

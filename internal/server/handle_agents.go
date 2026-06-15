@@ -123,6 +123,7 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.captureEvent(r, "av.agent-create", actor, map[string]string{"agent_name": agent.Name})
 	jsonCreated(w, map[string]interface{}{
 		"av_agent_token": sess.ID,
 		"name":           agent.Name,
@@ -282,6 +283,7 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.captureEvent(r, "av.agent-revoke", actor, map[string]string{"agent_name": name})
 	jsonOK(w, map[string]string{"message": fmt.Sprintf("agent %q revoked", name)})
 }
 
@@ -318,6 +320,7 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.captureEvent(r, "av.agent-delete", actor, map[string]string{"agent_name": name})
 	jsonOK(w, map[string]string{"message": fmt.Sprintf("agent %q deleted", name)})
 }
 
@@ -352,6 +355,7 @@ func (s *Server) handleAgentRotate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.captureEvent(r, "av.agent-rotate", actor, map[string]string{"agent_name": agent.Name})
 	jsonOK(w, map[string]interface{}{
 		"av_agent_token": sess.ID,
 		"name":           agent.Name,
@@ -469,7 +473,8 @@ func (s *Server) handleVaultAgentAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
+	actor, err := s.requireVaultAdmin(w, r, ns.ID)
+	if err != nil {
 		return
 	}
 
@@ -509,6 +514,7 @@ func (s *Server) handleVaultAgentAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.captureEvent(r, "av.vault-agent-add", actor, map[string]string{"vault": nsName, "agent_name": body.Name})
 	jsonCreated(w, map[string]string{
 		"message": fmt.Sprintf("agent %q added to vault %q with role %q", body.Name, nsName, body.Role),
 	})
@@ -525,7 +531,8 @@ func (s *Server) handleVaultAgentRemove(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
+	actor, err := s.requireVaultAdmin(w, r, ns.ID)
+	if err != nil {
 		return
 	}
 
@@ -540,6 +547,7 @@ func (s *Server) handleVaultAgentRemove(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	s.captureEvent(r, "av.vault-agent-remove", actor, map[string]string{"vault": nsName, "agent_name": agentName})
 	jsonOK(w, map[string]string{
 		"message": fmt.Sprintf("agent %q removed from vault %q", agentName, nsName),
 	})

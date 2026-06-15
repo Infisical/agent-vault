@@ -534,6 +534,7 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 	// Creator becomes vault admin.
 	_ = s.store.GrantVaultRole(ctx, actor.ID, actor.Type, ns.ID, "admin")
 
+	s.captureEvent(r, "av.vault-create", actor, map[string]string{"vault": req.Name})
 	jsonCreated(w, map[string]interface{}{
 		"id":         ns.ID,
 		"name":       ns.Name,
@@ -867,6 +868,8 @@ func (s *Server) handleVaultDelete(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusInternalServerError, "Failed to delete vault")
 		return
 	}
+	actor, _ := s.actorFromSession(r.Context(), sessionFromContext(r.Context()))
+	s.captureEvent(r, "av.vault-delete", actor, map[string]string{"vault": name})
 	jsonOK(w, map[string]interface{}{"name": name, "deleted": true})
 }
 

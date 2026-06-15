@@ -5,10 +5,12 @@ go 1.25.0
 require (
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/denisbrodbeck/machineid v1.0.1
 	github.com/fatih/color v1.19.0
 	github.com/infisical/go-sdk v0.8.0
 	github.com/jedib0t/go-pretty/v6 v6.8.0
 	github.com/muesli/reflow v0.3.0
+	github.com/posthog/posthog-go v1.15.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/crypto v0.52.0
 	golang.org/x/sync v0.21.0
@@ -52,6 +54,7 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-resty/resty/v2 v2.13.1 // indirect
+	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/gofrs/flock v0.8.1 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/uuid v1.6.0 // indirect

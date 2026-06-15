@@ -5,7 +5,8 @@ DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w \
 	-X github.com/Infisical/agent-vault/cmd.version=$(VERSION) \
 	-X github.com/Infisical/agent-vault/cmd.commit=$(COMMIT) \
-	-X github.com/Infisical/agent-vault/cmd.date=$(DATE)
+	-X github.com/Infisical/agent-vault/cmd.date=$(DATE) \
+	-X github.com/Infisical/agent-vault/cmd.posthogAPIKey=$(POSTHOG_API_KEY)
 
 .PHONY: build dev test lint coverage test-all clean docker web web-dev sdk-ts sdk-ts-test
 

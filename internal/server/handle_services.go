@@ -346,7 +346,8 @@ func (s *Server) handleServicesUpsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
+	actor, err := s.requireVaultAdmin(w, r, ns.ID)
+	if err != nil {
 		return
 	}
 
@@ -427,6 +428,7 @@ func (s *Server) handleServicesUpsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.captureEvent(r, "av.service-add", actor, map[string]string{"vault": name})
 	jsonOK(w, map[string]interface{}{
 		"vault":          name,
 		"upserted":       upserted,
@@ -444,7 +446,8 @@ func (s *Server) handleServiceRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
+	actor, err := s.requireVaultAdmin(w, r, ns.ID)
+	if err != nil {
 		return
 	}
 
@@ -495,6 +498,7 @@ func (s *Server) handleServiceRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.captureEvent(r, "av.service-remove", actor, map[string]string{"vault": name})
 	jsonOK(w, map[string]interface{}{
 		"vault":          name,
 		"removed":        removed.Name,

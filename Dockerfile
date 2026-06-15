@@ -13,6 +13,7 @@ FROM golang:1.26.4-alpine@sha256:7a3e50096189ad57c9f9f865e7e4aa8585ed1585248513d
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
+ARG POSTHOG_API_KEY=
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -22,7 +23,8 @@ COPY --from=frontend /internal/server/webdist /src/internal/server/webdist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w \
     -X github.com/Infisical/agent-vault/cmd.version=${VERSION} \
     -X github.com/Infisical/agent-vault/cmd.commit=${COMMIT} \
-    -X github.com/Infisical/agent-vault/cmd.date=${BUILD_DATE}" \
+    -X github.com/Infisical/agent-vault/cmd.date=${BUILD_DATE} \
+    -X github.com/Infisical/agent-vault/cmd.posthogAPIKey=${POSTHOG_API_KEY}" \
     -o /agent-vault .
 
 # ---- Runtime stage ----

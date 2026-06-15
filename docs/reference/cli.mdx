@@ -25,6 +25,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--log-level` | `info` | Log level: `info` (default) or `debug`. At `debug`, emits one structured line per proxied request on stderr covering method, host, path, matched service, injected credential key names, upstream status, and duration. Credential **values** are never logged. |
     | `--max-response-bytes` | `0` (unlimited) | Maximum response body bytes the MITM proxy streams back to agents. `0` means unlimited — responses are streamed with a small buffer so there is no memory risk. When a limit is set and the upstream response exceeds it, the proxy returns 502 (if the size is known upfront) or aborts the connection mid-stream (if chunked). Also respects `AGENT_VAULT_MAX_RESPONSE_BYTES`; the flag takes precedence. |
     | `--max-request-bytes` | `1073741824` (1 GiB) | Maximum request body bytes the MITM proxy forwards to upstreams. Requests exceeding this receive HTTP 413. Also respects `AGENT_VAULT_MAX_REQUEST_BYTES`; the flag takes precedence. |
+    | `--telemetry` | `true` | Enable or disable anonymous usage telemetry. Also respects the `AGENT_VAULT_TELEMETRY` env var; the env var takes precedence. |
 
     **Environment variables:**
 
@@ -62,6 +63,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `INFISICAL_LDAP_AUTH_IDENTITY_ID` | LDAP Auth identity ID. All three LDAP vars are required together. |
     | `INFISICAL_LDAP_AUTH_USERNAME` | LDAP bind username. |
     | `INFISICAL_LDAP_AUTH_PASSWORD` | LDAP bind password. |
+    | `AGENT_VAULT_TELEMETRY` | Set to `false` to disable anonymous usage telemetry. No credential values or request payloads are ever included. |
   </Accordion>
 
   <Accordion title="agent-vault server stop">
@@ -339,6 +341,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--no-firewall` | `false` | Skip the iptables egress lockdown (`--isolation=container` only; debug, prints a warning). |
     | `--home-volume-shared` | `false` | Share `/home/claude/.claude` across invocations via a persistent docker volume (`--isolation=container` only). Default is a per-invocation volume — auth doesn't persist but concurrent runs can't corrupt each other. |
     | `--share-agent-dir` | `false` | Bind-mount the host's agent state dir (`~/.claude`) at `/home/claude/.claude` so the container reuses your host login (`--isolation=container` only). On Linux the container's `claude` user is remapped to your host uid/gid so writes land owned by you. Mutually exclusive with `--home-volume-shared`. |
+    | `--telemetry` | `true` | Enable or disable anonymous usage telemetry. Also respects the `AGENT_VAULT_TELEMETRY` env var; the env var takes precedence. |
   </Accordion>
 
   <Accordion title="agent-vault vault token">

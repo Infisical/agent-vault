@@ -164,6 +164,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(userSessionAbsoluteTTL.Seconds())))
 
+		s.captureEvent(r, "av.register", nil, map[string]string{"email": req.Email, "role": "owner"})
 		jsonCreated(w, registerResponse{
 			Email:                user.Email,
 			Role:                 "owner",
@@ -209,6 +210,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		msg = "Account created. Check your email for a verification code."
 	}
 
+	s.captureEvent(r, "av.register", nil, map[string]string{"email": req.Email, "role": "member"})
 	jsonCreated(w, map[string]interface{}{
 		"email":                 req.Email,
 		"requires_verification": true,
@@ -660,6 +662,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(userSessionAbsoluteTTL.Seconds())))
 
+	s.captureEvent(r, "av.login", nil, map[string]string{"email": user.Email})
 	jsonOK(w, loginResponse{
 		Token:     session.ID,
 		ExpiresAt: formatExpiresAt(session.ExpiresAt),

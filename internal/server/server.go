@@ -29,6 +29,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/ratelimit"
 	"github.com/Infisical/agent-vault/internal/requestlog"
 	"github.com/Infisical/agent-vault/internal/store"
+	"github.com/Infisical/agent-vault/internal/telemetry"
 )
 
 //go:embed all:webdist
@@ -91,6 +92,7 @@ type Server struct {
 	// in Run alongside the syncer when a client is attached. Nil disables it.
 	infisicalDynamic *infisical.DynamicResolver
 	oauthRefresher   *oauth.Refresher
+	telemetry        *telemetry.Telemetry
 }
 
 // lockVaultServices acquires the per-vault mutation lock. Callers MUST
@@ -132,6 +134,51 @@ func (s *Server) AttachLogSink(sink requestlog.Sink) {
 // LogSink returns the server's log sink. Shared with the MITM ingress so
 // both paths feed the same pipeline.
 func (s *Server) LogSink() requestlog.Sink { return s.logSink }
+
+// AttachTelemetry sets the PostHog telemetry client. When nil (the
+// default), captureEvent is a no-op.
+func (s *Server) AttachTelemetry(t *telemetry.Telemetry) { s.telemetry = t }
+
+// captureEvent sends a telemetry event if telemetry is configured.
+// actor may be nil for pre-auth endpoints (login, register); callers
+// pass what they already have and never re-resolve from the DB.
+func (s *Server) captureEvent(r *http.Request, event string, actor *Actor, extra map[string]string) {
+	if s.telemetry == nil {
+		return
+	}
+	props := make(map[string]string, len(extra)+3)
+	for k, v := range extra {
+		props[k] = v
+	}
+
+	if avClient := r.Header.Get("X-AV-Client"); avClient != "" {
+		props["source"] = "cli"
+		props["client_version"] = avClient
+	} else if _, err := r.Cookie("av_session"); err == nil {
+		props["source"] = "web"
+	} else {
+		props["source"] = "api"
+	}
+
+	distinctID := ""
+	if actor != nil {
+		props["actor_type"] = actor.Type
+		if actor.User != nil {
+			distinctID = actor.User.Email
+		} else if actor.Agent != nil {
+			distinctID = "agent:" + actor.Agent.Name
+		}
+	}
+	if distinctID == "" {
+		if email, ok := extra["email"]; ok && email != "" {
+			distinctID = email
+		} else {
+			distinctID = "anonymous_server"
+		}
+	}
+
+	s.telemetry.CaptureEvent(distinctID, event, props)
+}
 
 // SessionResolver returns a brokercore.SessionResolver backed by this
 // server's store.

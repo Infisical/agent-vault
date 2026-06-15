@@ -75,6 +75,8 @@ func (s *Server) handleCredentialsSet(w http.ResponseWriter, r *http.Request) {
 		setKeys = append(setKeys, key)
 	}
 
+	actor, _ := s.actorFromSession(r.Context(), sessionFromContext(r.Context()))
+	s.captureEvent(r, "av.credential-set", actor, nil)
 	jsonOK(w, credentialsSetResponse{Set: setKeys})
 }
 
@@ -370,6 +372,8 @@ func (s *Server) handleCredentialsDelete(w http.ResponseWriter, r *http.Request)
 		deleted = append(deleted, key)
 	}
 
+	actor, _ := s.actorFromSession(r.Context(), sessionFromContext(r.Context()))
+	s.captureEvent(r, "av.credential-delete", actor, nil)
 	jsonOK(w, credentialsDeleteResponse{Deleted: deleted})
 }
 

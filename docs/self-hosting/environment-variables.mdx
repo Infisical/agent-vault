@@ -70,3 +70,11 @@ GCP IAM and GCP ID Token share `INFISICAL_GCP_AUTH_IDENTITY_ID`; setting `INFISI
   The Infisical machine identity should have **read-only** access. Agent Vault never writes back, and a read-only identity caps blast radius if the broker is compromised.
 </Tip>
 
+## Telemetry
+
+Agent Vault collects anonymous usage telemetry to help improve the product. No credential values, request payloads, or secret data are ever included. Events capture command invocations and feature usage with the authenticated user's email for company attribution.
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `AGENT_VAULT_TELEMETRY` | Optional (defaults to `true`) | Set to `false` to disable anonymous usage telemetry. Also overridable with `--telemetry=false` on the CLI. |
+

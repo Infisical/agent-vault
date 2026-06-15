@@ -21,6 +21,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/isolation"
 	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/Infisical/agent-vault/internal/store"
+	"github.com/Infisical/agent-vault/internal/telemetry"
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 )
@@ -163,6 +164,13 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		vault = v
 		token = scopedToken
 	}
+
+	// 3a. Telemetry: record that an agent session was started. Placed
+	// before the container/host split so both modes are captured. The
+	// host path ends in syscall.Exec which replaces the process, so
+	// we flush synchronously here.
+	captureRunEvent(args[0], mode, vault)
+	tel.Close()
 
 	if mode == IsolationContainer {
 		return runContainer(cmd, args, token, addr, vault)
@@ -655,6 +663,25 @@ func requestScopedSession(addr, adminToken, vault string, ttlSeconds int) (strin
 		return "", fmt.Errorf("parsing scoped session response: %w", err)
 	}
 	return result.Token, nil
+}
+
+func captureRunEvent(command string, mode IsolationMode, vault string) {
+	distinctID := telemetry.MachineID()
+	if sess, _ := session.Load(); sess != nil && sess.Email != "" {
+		distinctID = sess.Email
+	}
+	if distinctID == "" {
+		distinctID = "anonymous_cli"
+	}
+	agentName := filepath.Base(command)
+	if name, _, ok := agentSkillDir(command); ok {
+		agentName = name
+	}
+	tel.CaptureEvent(distinctID, "av.run", map[string]string{
+		"agent":     agentName,
+		"isolation": string(mode),
+		"vault":     vault,
+	})
 }
 
 func init() {

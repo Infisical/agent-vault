@@ -26,7 +26,9 @@ import (
 	"github.com/Infisical/agent-vault/internal/pidfile"
 	"github.com/Infisical/agent-vault/internal/requestlog"
 	"github.com/Infisical/agent-vault/internal/server"
+	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/Infisical/agent-vault/internal/store"
+	"github.com/Infisical/agent-vault/internal/telemetry"
 	"github.com/spf13/cobra"
 )
 
@@ -157,11 +159,13 @@ var serverCmd = &cobra.Command{
 		notifier := notify.New(smtpCfg)
 		srv := server.New(addr, db, masterKey.Key(), notifier, initialized, baseURL, logger)
 		srv.SetSkills(skillCLI)
+		srv.AttachTelemetry(tel)
 		shutdownLogs := attachLogSink(srv, db, logger)
 		defer shutdownLogs()
 		if err := attachServerExtensions(srv, host, mitmPort, masterKey.Key(), logger, maxRespBytes, maxReqBytes); err != nil {
 			return err
 		}
+		captureServerStart(mitmPort)
 		return srv.Start()
 	},
 }
@@ -521,11 +525,13 @@ func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger, maxR
 	notifier := notify.New(smtpCfg)
 	srv := server.New(addr, db, key, notifier, initialized, baseURL, logger)
 	srv.SetSkills(skillCLI)
+	srv.AttachTelemetry(tel)
 	shutdownLogs := attachLogSink(srv, db, logger)
 	defer shutdownLogs()
 	if err := attachServerExtensions(srv, host, mitmPort, key, logger, maxRespBytes, maxReqBytes); err != nil {
 		return err
 	}
+	captureServerStart(mitmPort)
 	return srv.Start()
 }
 
@@ -660,6 +666,19 @@ var stopCmd = &cobra.Command{
 		fmt.Fprintf(cmd.OutOrStdout(), "%s Server stopped.\n", successText("✓"))
 		return nil
 	},
+}
+
+func captureServerStart(mitmPort int) {
+	distinctID := telemetry.MachineID()
+	if sess, _ := session.Load(); sess != nil && sess.Email != "" {
+		distinctID = sess.Email
+	}
+	if distinctID == "" {
+		distinctID = "anonymous_server"
+	}
+	tel.CaptureEvent(distinctID, "av.server-start", map[string]string{
+		"mitm_enabled": strconv.FormatBool(mitmPort > 0),
+	})
 }
 
 func init() {
