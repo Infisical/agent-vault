@@ -46,7 +46,7 @@ func (t *Telemetry) CaptureEvent(distinctID, event string, properties map[string
 	for k, v := range properties {
 		props.Set(k, v)
 	}
-	t.client.Enqueue(posthog.Capture{
+	_ = t.client.Enqueue(posthog.Capture{
 		DistinctId: distinctID,
 		Event:      event,
 		Properties: props,
@@ -61,7 +61,7 @@ func (t *Telemetry) Identify(distinctID string, properties map[string]string) {
 	for k, v := range properties {
 		props.Set(k, v)
 	}
-	t.client.Enqueue(posthog.Identify{
+	_ = t.client.Enqueue(posthog.Identify{
 		DistinctId: distinctID,
 		Properties: props,
 	})
@@ -71,7 +71,7 @@ func (t *Telemetry) Alias(distinctID, alias string) {
 	if t == nil || t.client == nil || alias == "" {
 		return
 	}
-	t.client.Enqueue(posthog.Alias{
+	_ = t.client.Enqueue(posthog.Alias{
 		DistinctId: distinctID,
 		Alias:      alias,
 	})
@@ -81,7 +81,7 @@ func (t *Telemetry) Close() {
 	if t == nil || t.client == nil {
 		return
 	}
-	t.client.Close()
+	_ = t.client.Close()
 }
 
 // IsDisabled returns true when the AGENT_VAULT_TELEMETRY env var is
