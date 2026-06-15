@@ -101,7 +101,7 @@ var (
 // is unavailable (e.g. minimal Docker containers).
 func MachineID() string {
 	machineIDOnce.Do(func() {
-		if mid, err := machineid.ID(); err == nil && mid != "" {
+		if mid, err := machineid.ProtectedID("agent-vault"); err == nil && mid != "" {
 			machineIDValue = "anonymous_agent_vault_" + mid
 			return
 		}

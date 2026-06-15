@@ -678,9 +678,9 @@ func captureRunEvent(command string, mode IsolationMode, vault string) {
 		agentName = name
 	}
 	tel.CaptureEvent(distinctID, "av.run", map[string]string{
-		"agent":     agentName,
-		"isolation": string(mode),
-		"vault":     vault,
+		"agent_name": agentName,
+		"isolation":  string(mode),
+		"vault":      vault,
 	})
 }
 
