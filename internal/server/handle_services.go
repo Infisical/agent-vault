@@ -322,7 +322,7 @@ func (s *Server) handleServicesCredentialUsage(w http.ResponseWriter, r *http.Re
 	}
 	var refs []serviceRef
 	for _, svc := range services {
-		for _, sk := range svc.Auth.CredentialKeys() {
+		for _, sk := range svc.CredentialKeys() {
 			if sk == key {
 				refs = append(refs, serviceRef{Name: svc.Name, Host: svc.MatcherPattern()})
 				break

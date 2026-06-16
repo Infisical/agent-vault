@@ -55,7 +55,37 @@ export default function CredentialsTab() {
 
   // Service suggestions: credentials matching catalog entries that aren't used by any service
   interface CatalogTemplate { id: string; name: string; host: string; suggested_credential_key: string; }
-  interface ServiceInfo { name: string; host: string; auth: { type: string; token?: string; username?: string; password?: string; key?: string; headers?: Record<string, string> }; }
+  interface ServiceInfo { name: string; host: string; auth: { type: string; token?: string; username?: string; password?: string; key?: string; headers?: Record<string, string> }; substitutions?: { key: string; placeholder: string; in?: string[] }[]; }
+
+  // Mirrors Service.CredentialKeys() in broker.go: auth keys + substitution keys.
+  function serviceCredentialKeys(svc: ServiceInfo): string[] {
+    const keys: string[] = [];
+    switch (svc.auth.type) {
+      case "bearer":
+        if (svc.auth.token) keys.push(svc.auth.token);
+        break;
+      case "basic":
+        if (svc.auth.username) keys.push(svc.auth.username);
+        if (svc.auth.password) keys.push(svc.auth.password);
+        break;
+      case "api-key":
+        if (svc.auth.key) keys.push(svc.auth.key);
+        break;
+      case "custom":
+        if (svc.auth.headers) {
+          for (const v of Object.values(svc.auth.headers)) {
+            for (const m of v.matchAll(/\{\{\s*(\w+)\s*\}\}/g)) keys.push(m[1]);
+          }
+        }
+        break;
+    }
+    if (svc.substitutions) {
+      for (const sub of svc.substitutions) {
+        if (sub.key) keys.push(sub.key);
+      }
+    }
+    return keys;
+  }
   const [catalog, setCatalog] = useState<CatalogTemplate[]>([]);
   const [usedCredentialKeys, setUsedCredentialKeys] = useState<Set<string>>(new Set());
 
@@ -76,16 +106,7 @@ export default function CredentialsTab() {
         const services: ServiceInfo[] = data.services ?? [];
         const keys = new Set<string>();
         for (const svc of services) {
-          if (svc.auth.token) keys.add(svc.auth.token);
-          if (svc.auth.username) keys.add(svc.auth.username);
-          if (svc.auth.password) keys.add(svc.auth.password);
-          if (svc.auth.key) keys.add(svc.auth.key);
-          if (svc.auth.headers) {
-            for (const v of Object.values(svc.auth.headers)) {
-              const matches = v.matchAll(/\{\{\s*(\w+)\s*\}\}/g);
-              for (const m of matches) keys.add(m[1]);
-            }
-          }
+          for (const k of serviceCredentialKeys(svc)) keys.add(k);
         }
         setUsedCredentialKeys(keys);
       }
