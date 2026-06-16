@@ -3,6 +3,10 @@ title: "Deploy your agent in a container"
 description: "Run an Agent Vault-wrapped agent in an unattended container (k8s, Fly, ECS) using a pre-supplied token — no interactive `auth login` required."
 ---
 
+import EnterpriseCTA from "/snippets/enterprise-cta.mdx";
+
+<EnterpriseCTA />
+
 For local development, `agent-vault run` uses the on-disk admin session created by `auth login`. That doesn't fit unattended container deploys: there's no TTY to prompt and no session file to mount. This guide covers the **agent mode** flow — pre-supply a token via env, and `agent-vault run` skips the mint step and uses it as the credential for the child.
 
 ## Prerequisites

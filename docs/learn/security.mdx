@@ -3,6 +3,10 @@ title: "Security"
 description: "How Agent Vault protects credentials at rest, in transit, and across the network."
 ---
 
+import EnterpriseCTA from "/snippets/enterprise-cta.mdx";
+
+<EnterpriseCTA />
+
 Agent Vault is designed around a single principle: **Agent Vault never reveals vault-stored credentials to agents**. Credentials are encrypted at rest, decrypted only in memory at proxy time, and injected into outbound requests server-side. No credential value stored in the vault is ever returned in an API response or written to a log.
 
 This page covers the cryptographic primitives, token model, network protections, and operational safeguards that make this possible.
