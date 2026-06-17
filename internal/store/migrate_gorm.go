@@ -153,7 +153,7 @@ func ensureNameColumn(db *sql.DB, dialect string) error {
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var cid int
 			var colName, colType string
