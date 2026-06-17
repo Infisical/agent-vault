@@ -8,7 +8,7 @@ func init() {
 	// database. Skipped on SQLite (where SQL migrations 001-050 already
 	// created the schema). Also skipped if the schema already exists
 	// (e.g., re-run after a crash).
-	RegisterGORMMigration(51, "051_postgres_baseline", func(db *gorm.DB) error {
+	RegisterGORMMigration(51, "20260617143022_postgres_baseline", func(db *gorm.DB) error {
 		if db.Name() == "sqlite" {
 			return nil
 		}
@@ -22,7 +22,7 @@ func init() {
 	// Migration 52: Add ca_state table for both dialects.
 	// Stores the CA root certificate and encrypted private key in the
 	// database so multiple instances can share the same CA.
-	RegisterGORMMigration(52, "052_add_ca_state", func(db *gorm.DB) error {
+	RegisterGORMMigration(52, "20260617143022_add_ca_state", func(db *gorm.DB) error {
 		if db.Migrator().HasTable("ca_state") {
 			return nil
 		}
@@ -52,7 +52,7 @@ func init() {
 	// The column itself is added by ensureNameColumn() in the GORM runner
 	// bootstrap (before any migrations execute). This migration just
 	// advances the version and records its own name.
-	RegisterGORMMigration(53, "053_schema_migrations_name_column", func(db *gorm.DB) error {
+	RegisterGORMMigration(53, "20260617143022_schema_migrations_name_column", func(db *gorm.DB) error {
 		return nil
 	})
 }
