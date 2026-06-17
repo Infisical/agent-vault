@@ -9,7 +9,7 @@ func init() {
 	// created the schema). Also skipped if the schema already exists
 	// (e.g., re-run after a crash).
 	RegisterGORMMigration(51, "051_postgres_baseline", func(db *gorm.DB) error {
-		if db.Dialector.Name() == "sqlite" {
+		if db.Name() == "sqlite" {
 			return nil
 		}
 		// Check if tables already exist (idempotent).
@@ -26,7 +26,7 @@ func init() {
 		if db.Migrator().HasTable("ca_state") {
 			return nil
 		}
-		if db.Dialector.Name() == "postgres" {
+		if db.Name() == "postgres" {
 			return db.Exec(`CREATE TABLE ca_state (
 				id             INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
 				root_cert      BYTEA NOT NULL,

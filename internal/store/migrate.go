@@ -197,7 +197,7 @@ func copyInstanceSettings(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDia
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -228,7 +228,7 @@ func copyMasterKey(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialect Di
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -260,7 +260,7 @@ func copyVaults(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialect Diale
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -303,7 +303,7 @@ func copyVaultSettings(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialec
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -334,7 +334,7 @@ func copyUsers(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialect Dialec
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -375,7 +375,7 @@ func copyAgents(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialect Diale
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -414,7 +414,7 @@ func copyVaultGrants(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialect 
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -445,7 +445,7 @@ func copyCredentials(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialect 
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -488,7 +488,7 @@ func copyCredentialOAuth(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDial
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -576,7 +576,7 @@ func copyCredentialOAuthStates(ctx context.Context, src *SQLStore, tx *sql.Tx, d
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -612,7 +612,7 @@ func copyBrokerConfigs(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialec
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -658,7 +658,7 @@ func copySessions(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialect Dia
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -723,7 +723,7 @@ func copyProposals(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialect Di
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -785,7 +785,7 @@ func copyProposalCredentials(ctx context.Context, src *SQLStore, tx *sql.Tx, dst
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -814,7 +814,7 @@ func copyUserInvites(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialect 
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -854,7 +854,7 @@ func copyUserInviteVaults(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDia
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -881,7 +881,7 @@ func copyEmailVerifications(ctx context.Context, src *SQLStore, tx *sql.Tx, dstD
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -917,7 +917,7 @@ func copyPasswordResets(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDiale
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -956,7 +956,7 @@ func copyVaultCredentialStores(ctx context.Context, src *SQLStore, tx *sql.Tx, d
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -1005,7 +1005,7 @@ func copyDynamicSecretLeases(ctx context.Context, src *SQLStore, tx *sql.Tx, dst
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	n := 0
 	for rows.Next() {
@@ -1111,7 +1111,7 @@ func copyCAState(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialect Dial
 		// Table doesn't exist -- not an error, just nothing to copy.
 		return 0, nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	if !rows.Next() {
 		return 0, rows.Err()

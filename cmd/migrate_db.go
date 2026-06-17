@@ -46,7 +46,7 @@ func runMigrateDB(cmd *cobra.Command, args []string) error {
 	// 1. Check the server is not running.
 	if pid, err := pidfile.Read(); err == nil {
 		if pidfile.IsRunning(pid) {
-			return fmt.Errorf("Agent Vault server is running (PID %d); stop it before migrating", pid)
+			return fmt.Errorf("agent vault server is running (PID %d); stop it before migrating", pid)
 		}
 	}
 
@@ -71,7 +71,7 @@ func runMigrateDB(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("opening source database: %w", err)
 	}
-	defer srcStore.Close()
+	defer func() { _ = srcStore.Close() }()
 
 	// 4. Dry-run mode: count rows and exit.
 	if dryRun {
@@ -94,7 +94,7 @@ func runMigrateDB(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("opening destination database: %w", err)
 	}
-	defer dstStoreIface.Close()
+	defer func() { _ = dstStoreIface.Close() }()
 
 	dstStore, ok := dstStoreIface.(*store.SQLStore)
 	if !ok {

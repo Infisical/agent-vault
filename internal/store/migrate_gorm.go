@@ -58,7 +58,7 @@ func runGORMMigrations(sqlDB *sql.DB, dialectName string) error {
 		if err != nil {
 			return fmt.Errorf("acquiring connection for migration lock: %w", err)
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", int64(7956324891)); err != nil {
 			return fmt.Errorf("acquiring migration lock: %w", err)
@@ -85,10 +85,12 @@ func runGORMMigrations(sqlDB *sql.DB, dialectName string) error {
 
 	// Ensure schema_migrations table exists.
 	if dialectName == "postgres" {
-		sqlDB.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		if _, err := sqlDB.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 			version    INTEGER PRIMARY KEY,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`)
+		)`); err != nil {
+			return fmt.Errorf("creating schema_migrations table: %w", err)
+		}
 	}
 	// (SQLite's schema_migrations is created by migrateSQLite)
 
@@ -99,7 +101,9 @@ func runGORMMigrations(sqlDB *sql.DB, dialectName string) error {
 
 	// Find current version.
 	var current int
-	sqlDB.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&current)
+	if err := sqlDB.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&current); err != nil {
+		return fmt.Errorf("querying current migration version: %w", err)
+	}
 
 	// Downgrade guard: if the DB has versions beyond what we know about,
 	// the binary is older than the schema.

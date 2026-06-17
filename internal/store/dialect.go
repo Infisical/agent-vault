@@ -226,19 +226,18 @@ func rebindDollar(query string) string {
 	inString := false
 	for i := 0; i < len(query); i++ {
 		ch := query[i]
-		if ch == '\'' {
-			if inString && i+1 < len(query) && query[i+1] == '\'' {
-				b.WriteByte('\'')
-				b.WriteByte('\'')
-				i++
-			} else {
-				inString = !inString
-				b.WriteByte(ch)
-			}
-		} else if ch == '?' && !inString {
+		switch {
+		case ch == '\'' && inString && i+1 < len(query) && query[i+1] == '\'':
+			b.WriteByte('\'')
+			b.WriteByte('\'')
+			i++
+		case ch == '\'':
+			inString = !inString
+			b.WriteByte(ch)
+		case ch == '?' && !inString:
 			n++
 			fmt.Fprintf(&b, "$%d", n)
-		} else {
+		default:
 			b.WriteByte(ch)
 		}
 	}
