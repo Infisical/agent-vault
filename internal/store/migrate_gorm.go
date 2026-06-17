@@ -135,9 +135,18 @@ func runGORMMigrations(sqlDB *sql.DB, dialectName string) error {
 			if err := m.Fn(tx); err != nil {
 				return err
 			}
+			// Extract integer version from name prefix for backward compat
+			// with older binaries that read MAX(version). Only for small
+			// sequential versions (001-999); timestamp-prefixed names
+			// overflow int4 on Postgres.
+			var version *int
+			var v int
+			if _, err := fmt.Sscanf(m.Name, "%d_", &v); err == nil && v < 1000 {
+				version = &v
+			}
 			return tx.Exec(
-				"INSERT INTO schema_migrations (name) VALUES (?)",
-				m.Name,
+				"INSERT INTO schema_migrations (name, version) VALUES (?, ?)",
+				m.Name, version,
 			).Error
 		}); err != nil {
 			return fmt.Errorf("migration %s: %w", m.Name, err)
@@ -162,18 +171,24 @@ func upgradeSchemamigrationsTable(db *sql.DB, dialect string) error {
 
 	if !tableExists {
 		// Fresh install -- create the new format directly.
+		// Includes version and applied_at columns for backward compat
+		// with older binaries that query SELECT MAX(version).
 		switch dialect {
 		case "sqlite":
 			_, err = db.Exec(`CREATE TABLE schema_migrations (
 				id             INTEGER PRIMARY KEY AUTOINCREMENT,
 				name           TEXT NOT NULL UNIQUE,
-				migration_time TEXT NOT NULL DEFAULT (datetime('now'))
+				version        INTEGER,
+				migration_time TEXT NOT NULL DEFAULT (datetime('now')),
+				applied_at     TEXT NOT NULL DEFAULT (datetime('now'))
 			)`)
 		case "postgres":
 			_, err = db.Exec(`CREATE TABLE schema_migrations (
 				id             SERIAL PRIMARY KEY,
 				name           TEXT NOT NULL UNIQUE,
-				migration_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
+				version        INTEGER,
+				migration_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				applied_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			)`)
 		}
 		return err
@@ -195,19 +210,23 @@ func upgradeSchemamigrationsTable(db *sql.DB, dialect string) error {
 		return fmt.Errorf("renaming old table: %w", err)
 	}
 
-	// 2. Create new table.
+	// 2. Create new table (with version + applied_at for backward compat).
 	switch dialect {
 	case "sqlite":
 		_, err = db.Exec(`CREATE TABLE schema_migrations (
 			id             INTEGER PRIMARY KEY AUTOINCREMENT,
 			name           TEXT NOT NULL UNIQUE,
-			migration_time TEXT NOT NULL DEFAULT (datetime('now'))
+			version        INTEGER,
+			migration_time TEXT NOT NULL DEFAULT (datetime('now')),
+			applied_at     TEXT NOT NULL DEFAULT (datetime('now'))
 		)`)
 	case "postgres":
 		_, err = db.Exec(`CREATE TABLE schema_migrations (
 			id             SERIAL PRIMARY KEY,
 			name           TEXT NOT NULL UNIQUE,
-			migration_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			version        INTEGER,
+			migration_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			applied_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`)
 	}
 	if err != nil {
@@ -241,7 +260,7 @@ func upgradeSchemamigrationsTable(db *sql.DB, dialect string) error {
 		if !ok {
 			name = fmt.Sprintf("%03d_unknown", version)
 		}
-		if _, err := db.Exec("INSERT INTO schema_migrations (name) VALUES (?)", name); err != nil {
+		if _, err := db.Exec("INSERT INTO schema_migrations (name, version) VALUES (?, ?)", name, version); err != nil {
 			return fmt.Errorf("backfilling version %d: %w", version, err)
 		}
 	}
