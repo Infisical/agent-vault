@@ -647,8 +647,16 @@ func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bo
 	child.Stdin = pr
 	child.Stdout = logFile
 	child.Stderr = logFile
-	childEnv := append(os.Environ(), "_AGENT_VAULT_DETACHED=1")
-	if flagURL, _ := cmd.Flags().GetString("database-url"); flagURL != "" {
+	flagURL, _ := cmd.Flags().GetString("database-url")
+	childEnv := make([]string, 0, len(os.Environ())+2)
+	for _, kv := range os.Environ() {
+		if flagURL != "" && strings.HasPrefix(kv, "DATABASE_URL=") {
+			continue
+		}
+		childEnv = append(childEnv, kv)
+	}
+	childEnv = append(childEnv, "_AGENT_VAULT_DETACHED=1")
+	if flagURL != "" {
 		childEnv = append(childEnv, "DATABASE_URL="+flagURL)
 	}
 	child.Env = childEnv
