@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sort"
@@ -24,22 +25,45 @@ var (
 )
 
 // RegisterGORMMigration adds a GORM-based migration to the global registry.
-// Called from init() in each migration file.
 func RegisterGORMMigration(version int, name string, fn func(db *gorm.DB) error) {
 	gormMigMu.Lock()
 	defer gormMigMu.Unlock()
 	gormMigrations = append(gormMigrations, GORMMigration{Version: version, Name: name, Fn: fn})
 }
 
+// maxGORMVersion returns the highest registered GORM migration version.
+func maxGORMVersion() int {
+	max := 0
+	for _, m := range gormMigrations {
+		if m.Version > max {
+			max = m.Version
+		}
+	}
+	return max
+}
+
 // runGORMMigrations applies any pending GORM-based migrations.
-// It wraps the existing *sql.DB in a GORM instance for DDL, then GORM
-// is done. The *sql.DB continues to serve runtime queries.
-//
-// This runs AFTER the SQL-file migrations, so it picks up from whatever
-// version the SQL runner left off at.
+// On Postgres, it acquires an advisory lock on a pinned connection
+// to prevent concurrent migration runs across pods.
 func runGORMMigrations(sqlDB *sql.DB, dialectName string) error {
 	if len(gormMigrations) == 0 {
 		return nil
+	}
+
+	// For Postgres: pin a connection and acquire an advisory lock
+	// to prevent concurrent migration runs across pods.
+	if dialectName == "postgres" {
+		ctx := context.Background()
+		conn, err := sqlDB.Conn(ctx)
+		if err != nil {
+			return fmt.Errorf("acquiring connection for migration lock: %w", err)
+		}
+		defer conn.Close()
+
+		if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", int64(7956324891)); err != nil {
+			return fmt.Errorf("acquiring migration lock: %w", err)
+		}
+		defer func() { _, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", int64(7956324891)) }()
 	}
 
 	var dialector gorm.Dialector
@@ -59,7 +83,16 @@ func runGORMMigrations(sqlDB *sql.DB, dialectName string) error {
 		return fmt.Errorf("initializing gorm for migrations: %w", err)
 	}
 
-	// Ensure the name column exists on schema_migrations.
+	// Ensure schema_migrations table exists.
+	if dialectName == "postgres" {
+		sqlDB.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+			version    INTEGER PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`)
+	}
+	// (SQLite's schema_migrations is created by migrateSQLite)
+
+	// Ensure the name column exists.
 	if err := ensureNameColumn(sqlDB, dialectName); err != nil {
 		return fmt.Errorf("adding name column to schema_migrations: %w", err)
 	}
@@ -67,6 +100,13 @@ func runGORMMigrations(sqlDB *sql.DB, dialectName string) error {
 	// Find current version.
 	var current int
 	sqlDB.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&current)
+
+	// Downgrade guard: if the DB has versions beyond what we know about,
+	// the binary is older than the schema.
+	maxKnown := maxGORMVersion()
+	if current > maxKnown {
+		return fmt.Errorf("database schema version %d is newer than the highest known migration %d; upgrade the binary", current, maxKnown)
+	}
 
 	// Sort and apply pending migrations.
 	sorted := make([]GORMMigration, len(gormMigrations))
