@@ -181,6 +181,12 @@ Step-by-step companion guide: [Run Hermes on a VPS](https://docs.agent-vault.dev
 
 3. Tokens: You should create an [agent](https://docs.agent-vault.dev/agents/overview) in Agent Vault to represent a long-lived agent. For ephemeral sandboxes, you may prefer to mint short-lived, vault-scoped tokens for sandboxed agents to use to proxy requests through Agent Vault.
 
+## PostgreSQL (Production)
+
+By default Agent Vault stores all state in a local SQLite database, which requires no setup. For production deployments, or when running multiple instances, set the `DATABASE_URL` environment variable (or `--database-url` flag) to a PostgreSQL connection string and Agent Vault switches to Postgres as its backend. All instances share the same database, so state is consistent across replicas.
+
+Migrate existing data with `agent-vault migrate-db --to postgres://...` before switching. See the [PostgreSQL guide](https://docs.agent-vault.dev/self-hosting/postgres) for deployment examples (Kubernetes, Docker Compose), architecture notes, and operational details.
+
 ## SDK
 
 Agent Vault offers a TypeScript SDK in the event you'd like an orchestrator to mint a short-lived token and pass proxy config into a sandboxed agent to have it proxy requests through Agent Vault that way.

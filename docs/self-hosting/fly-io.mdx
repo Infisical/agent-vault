@@ -77,6 +77,7 @@ description: "Deploy Agent Vault to Fly.io with persistent storage"
 - **Entrypoint**: `scripts/docker-entrypoint.sh` forwards arguments to the `agent-vault` binary, which natively reads `AGENT_VAULT_MASTER_PASSWORD` from the environment
 - **Storage**: Persistent volume `agent_vault_data` mounted at `/data` -- all state is in a single SQLite file
 - **Cold starts**: `min_machines_running` defaults to `0`, so the app scales to zero when idle. The first request after sleep incurs a few seconds of cold-start latency. Set it to `1` in `fly.toml` if you need always-on availability.
+- **PostgreSQL with Fly Postgres**: For production deployments or to run multiple Agent Vault machines, create a [Fly Postgres](https://fly.io/docs/postgres/) cluster (`fly postgres create`), attach it to your app (`fly postgres attach`), and Fly will set `DATABASE_URL` automatically. Agent Vault detects it and switches from SQLite to Postgres. See the [PostgreSQL guide](/self-hosting/postgres) for details.
 
 ## Connecting agents
 

@@ -508,7 +508,12 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 	// proposed entries against current existing state using the same
 	// helper as the create path. The lock serializes load → merge →
 	// apply against concurrent direct upserts on /services.
-	defer s.lockVaultServices(ns.ID)()
+	unlock, err := s.lockVaultServices(ctx, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "lock failed")
+		return
+	}
+	defer unlock()
 
 	existingServices, err := s.loadServices(ctx, ns.ID)
 	if err != nil {

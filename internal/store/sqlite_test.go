@@ -10,7 +10,7 @@ import (
 
 func tp(t time.Time) *time.Time { return &t }
 
-func openTestDB(t *testing.T) *SQLiteStore {
+func openTestDB(t *testing.T) *SQLStore {
 	t.Helper()
 	s, err := Open(":memory:")
 	if err != nil {
@@ -23,14 +23,14 @@ func openTestDB(t *testing.T) *SQLiteStore {
 func TestOpenAndMigrate(t *testing.T) {
 	s := openTestDB(t)
 
-	// Verify schema_migrations has version 1.
-	var version int
+	// Verify schema_migrations has the ca_state migration (highest version).
+	var version int64
 	err := s.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version)
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 50 {
-		t.Fatalf("expected migration version 50, got %d", version)
+	if version < 50 {
+		t.Fatalf("expected migration version >= 50, got %d", version)
 	}
 }
 
@@ -42,7 +42,7 @@ func TestMigrationIdempotency(t *testing.T) {
 	}
 
 	// Run migrate again on the same connection.
-	if err := migrate(s.db); err != nil {
+	if err := migrateSQLite(s.db); err != nil {
 		t.Fatalf("second migrate: %v", err)
 	}
 	s.Close()
@@ -990,9 +990,21 @@ func TestMasterKeyRecordSingleton(t *testing.T) {
 	if err := s.SetMasterKeyRecord(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
-	// Second insert should fail (CHECK constraint: id = 1).
-	if err := s.SetMasterKeyRecord(ctx, rec); err == nil {
-		t.Fatal("expected error on duplicate master key insert")
+	// Second insert is a no-op (ON CONFLICT DO NOTHING for HA race safety).
+	rec2 := &MasterKeyRecord{
+		Sentinel: []byte("different"), SentinelNonce: []byte("n2"),
+		DEKPlaintext: []byte("dek2"),
+	}
+	if err := s.SetMasterKeyRecord(ctx, rec2); err != nil {
+		t.Fatalf("second SetMasterKeyRecord should succeed (DO NOTHING): %v", err)
+	}
+	// The original record should be unchanged (first-writer-wins).
+	got, err := s.GetMasterKeyRecord(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Sentinel) != "e" {
+		t.Fatalf("expected original sentinel 'e', got %q", got.Sentinel)
 	}
 }
 

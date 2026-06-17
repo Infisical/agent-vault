@@ -1,6 +1,7 @@
 package ca
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -36,18 +37,37 @@ const (
 
 var serialLimit = new(big.Int).Lsh(big.NewInt(1), 128)
 
+// CAStore is the narrow persistence interface the CA needs to load/save
+// its root certificate and encrypted private key from a shared database.
+// When set on Options, the CA uses DB storage instead of local files.
+type CAStore interface {
+	GetCAState(ctx context.Context) (*CAStateRecord, error)
+	SetCAState(ctx context.Context, state *CAStateRecord) error
+}
+
+// CAStateRecord holds the CA root cert and encrypted key for DB storage.
+type CAStateRecord struct {
+	RootCert     []byte // PEM-encoded certificate
+	RootKeyCT    []byte // AES-256-GCM ciphertext of DER-encoded private key
+	RootKeyNonce []byte // GCM nonce
+}
+
 // Options configures a SoftCA. Zero values pick sensible defaults.
 type Options struct {
-	Dir       string           // default: ~/.agent-vault/ca
+	Dir       string           // default: ~/.agent-vault/ca (ignored when Store is set)
 	LeafTTL   time.Duration    // default: 24h
 	CacheSize int              // default: 1024
 	Clock     func() time.Time // default: time.Now
+	// Store, when non-nil, causes the CA to load/save its root from a
+	// shared database instead of local files. Used for HA deployments
+	// where multiple pods share one Postgres database.
+	Store CAStore
 	// ExtraSANs are additional hostnames or IP literals added as
 	// SubjectAltNames to every minted leaf, alongside the per-request SNI.
 	// Typically populated with the server's own externally-reachable
 	// hostname so clients that verify the proxy-hop cert against that
 	// name (rather than the upstream SNI) succeed without a shim.
-	// Empty and malformed entries are silently dropped — non-IP entries
+	// Empty and malformed entries are silently dropped -- non-IP entries
 	// must satisfy the same label rules enforced on the per-request SNI.
 	ExtraSANs []string
 }
@@ -73,24 +93,13 @@ type encryptedKeyFile struct {
 	Ciphertext string `json:"ciphertext"`
 }
 
-// New loads an existing CA from opts.Dir or generates a new one.
+// New loads an existing CA from opts.Dir (or opts.Store for DB-backed HA)
+// or generates a new one.
 // masterKey must be 32 bytes (AES-256-GCM); it encrypts/decrypts the root
 // private key at rest.
 func New(masterKey []byte, opts Options) (*SoftCA, error) {
 	if len(masterKey) != 32 {
 		return nil, fmt.Errorf("masterKey must be 32 bytes, got %d", len(masterKey))
-	}
-
-	dir := opts.Dir
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("resolving home dir: %w", err)
-		}
-		dir = filepath.Join(home, ".agent-vault", defaultDirName)
-	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, fmt.Errorf("creating ca dir: %w", err)
 	}
 
 	leafTTL := opts.LeafTTL
@@ -124,13 +133,32 @@ func New(masterKey []byte, opts Options) (*SoftCA, error) {
 	}
 
 	ca := &SoftCA{
-		dir:      dir,
 		leafTTL:  leafTTL,
 		clock:    clock,
 		cache:    newLRU(cacheSize),
 		extraDNS: extraDNS,
 		extraIPs: extraIPs,
 	}
+
+	if opts.Store != nil {
+		if err := ca.initFromDB(opts.Store, masterKey); err != nil {
+			return nil, err
+		}
+		return ca, nil
+	}
+
+	dir := opts.Dir
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("resolving home dir: %w", err)
+		}
+		dir = filepath.Join(home, ".agent-vault", defaultDirName)
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, fmt.Errorf("creating ca dir: %w", err)
+	}
+	ca.dir = dir
 
 	certPath := filepath.Join(dir, rootCertFile)
 	keyPath := filepath.Join(dir, rootKeyFile)
@@ -150,6 +178,107 @@ func New(masterKey []byte, opts Options) (*SoftCA, error) {
 		return nil, fmt.Errorf("inconsistent CA state in %s (cert: %v, key: %v)", dir, certErr, keyErr)
 	}
 	return ca, nil
+}
+
+// initFromDB loads the CA from a shared database, or generates and stores
+// a new one if none exists. Used for HA deployments where multiple pods
+// share one database.
+func (c *SoftCA) initFromDB(s CAStore, masterKey []byte) error {
+	ctx := context.Background()
+
+	state, err := s.GetCAState(ctx)
+	if err != nil {
+		return fmt.Errorf("loading CA from database: %w", err)
+	}
+	if state != nil {
+		return c.loadFromRecord(state, masterKey)
+	}
+
+	certPEM, keyCT, keyNonce, err := c.generateMaterials(masterKey)
+	if err != nil {
+		return fmt.Errorf("generating new CA: %w", err)
+	}
+
+	if err := s.SetCAState(ctx, &CAStateRecord{
+		RootCert:     certPEM,
+		RootKeyCT:    keyCT,
+		RootKeyNonce: keyNonce,
+	}); err != nil {
+		return fmt.Errorf("saving CA to database: %w", err)
+	}
+
+	// Re-read in case another pod won the race (SetCAState uses ON CONFLICT DO NOTHING).
+	state, err = s.GetCAState(ctx)
+	if err != nil {
+		return fmt.Errorf("re-reading CA from database: %w", err)
+	}
+	if state == nil {
+		return fmt.Errorf("CA state missing after insert")
+	}
+	return c.loadFromRecord(state, masterKey)
+}
+
+// loadFromRecord decrypts a CAStateRecord and sets the CA root.
+func (c *SoftCA) loadFromRecord(state *CAStateRecord, masterKey []byte) error {
+	block, _ := pem.Decode(state.RootCert)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return fmt.Errorf("invalid root cert PEM in database")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("parsing root cert from database: %w", err)
+	}
+
+	keyDER, err := crypto.Decrypt(state.RootKeyCT, state.RootKeyNonce, masterKey)
+	if err != nil {
+		return fmt.Errorf("decrypting root key from database: %w", err)
+	}
+	key, err := x509.ParseECPrivateKey(keyDER)
+	if err != nil {
+		return fmt.Errorf("parsing root key from database: %w", err)
+	}
+
+	c.setRoot(cert, key, state.RootCert)
+	return nil
+}
+
+// generateMaterials creates a new CA root cert and encrypted key without
+// writing them anywhere. Returns (certPEM, keyCT, keyNonce).
+func (c *SoftCA) generateMaterials(masterKey []byte) ([]byte, []byte, []byte, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("generating root key: %w", err)
+	}
+	serial, err := randomSerial()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	now := c.clock()
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: rootCommonName},
+		NotBefore:             now.Add(-clockSkew),
+		NotAfter:              now.Add(rootValidity),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("creating root cert: %w", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("marshaling root key: %w", err)
+	}
+	ciphertext, nonce, err := crypto.Encrypt(keyDER, masterKey)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("encrypting root key: %w", err)
+	}
+
+	return certPEM, ciphertext, nonce, nil
 }
 
 func (c *SoftCA) load(certPath, keyPath string, masterKey []byte) error {

@@ -9,12 +9,12 @@ import (
 	"strings"
 )
 
-//go:embed migrations/*.sql
-var migrationFS embed.FS
+//go:embed migrations/sqlite/*.sql
+var sqliteMigrationFS embed.FS
 
-// migrate runs all unapplied SQL migrations against db.
+// migrateSQLite runs all unapplied SQL migrations against a SQLite db.
 // It creates the schema_migrations tracking table on first run.
-func migrate(db *sql.DB) error {
+func migrateSQLite(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -27,7 +27,7 @@ func migrate(db *sql.DB) error {
 		return fmt.Errorf("querying current migration version: %w", err)
 	}
 
-	entries, err := migrationFS.ReadDir("migrations")
+	entries, err := sqliteMigrationFS.ReadDir("migrations/sqlite")
 	if err != nil {
 		return fmt.Errorf("reading embedded migrations: %w", err)
 	}
@@ -50,7 +50,7 @@ func migrate(db *sql.DB) error {
 			continue
 		}
 
-		sqlBytes, err := migrationFS.ReadFile("migrations/" + name)
+		sqlBytes, err := sqliteMigrationFS.ReadFile("migrations/sqlite/" + name)
 		if err != nil {
 			return fmt.Errorf("reading migration %s: %w", name, err)
 		}
@@ -87,7 +87,7 @@ func migrate(db *sql.DB) error {
 				if strings.Contains(upper, "OFF") {
 					needsFKOff = true
 				}
-				continue // skip all FK pragmas — handled via dedicated connection
+				continue // skip all FK pragmas -- handled via dedicated connection
 			}
 			cleanStmts = append(cleanStmts, stmt)
 		}

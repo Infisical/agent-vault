@@ -25,6 +25,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--log-level` | `info` | Log level: `info` (default) or `debug`. At `debug`, emits one structured line per proxied request on stderr covering method, host, path, matched service, injected credential key names, upstream status, and duration. Credential **values** are never logged. |
     | `--max-response-bytes` | `0` (unlimited) | Maximum response body bytes the MITM proxy streams back to agents. `0` means unlimited — responses are streamed with a small buffer so there is no memory risk. When a limit is set and the upstream response exceeds it, the proxy returns 502 (if the size is known upfront) or aborts the connection mid-stream (if chunked). Also respects `AGENT_VAULT_MAX_RESPONSE_BYTES`; the flag takes precedence. |
     | `--max-request-bytes` | `1073741824` (1 GiB) | Maximum request body bytes the MITM proxy forwards to upstreams. Requests exceeding this receive HTTP 413. Also respects `AGENT_VAULT_MAX_REQUEST_BYTES`; the flag takes precedence. |
+    | `--database-url` | (empty, SQLite) | PostgreSQL connection URL for [production deployments](/self-hosting/postgres). When set, Agent Vault uses Postgres instead of the built-in SQLite database. Also respects `DATABASE_URL`; the flag takes precedence. |
     | `--telemetry` | `true` | Enable or disable anonymous usage telemetry. Also respects the `AGENT_VAULT_TELEMETRY` env var; the env var takes precedence. |
 
     **Environment variables:**
@@ -32,6 +33,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | Variable | Description |
     |----------|-------------|
     | `PORT` | Server listen port (default `14321`). The `--port` flag takes precedence. |
+    | `DATABASE_URL` | PostgreSQL connection URL (e.g. `postgres://user:pass@host:5432/agentvault`). When set, Agent Vault uses Postgres instead of SQLite. The `--database-url` flag takes precedence. See [PostgreSQL](/self-hosting/postgres). |
     | `AGENT_VAULT_MASTER_PASSWORD` | Derives a KEK that wraps the data encryption key. Omit for passwordless mode. |
     | `AGENT_VAULT_LOG_LEVEL` | Fallback for `--log-level` when the flag is not set. Accepts `info` or `debug`. |
     | `AGENT_VAULT_MAX_RESPONSE_BYTES` | Maximum response body bytes streamed to agents (default `0` = unlimited). The `--max-response-bytes` flag takes precedence. |
@@ -72,6 +74,38 @@ description: "Complete reference for all Agent Vault CLI commands."
     ```
 
     Stop a running server. Reads the PID from `~/.agent-vault/agent-vault.pid` and sends SIGTERM.
+  </Accordion>
+</AccordionGroup>
+
+## Database migration
+
+<AccordionGroup>
+  <Accordion title="agent-vault migrate-db">
+    ```bash
+    agent-vault migrate-db [flags]
+    ```
+
+    Copy all data from the current SQLite database to a PostgreSQL instance. The server must be stopped before running this command. The source SQLite database is not modified.
+
+    After a successful migration, set `DATABASE_URL` (or `--database-url` on the server) and restart. See [PostgreSQL](/self-hosting/postgres) for the full guide.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--to` | | Destination PostgreSQL connection URL (required). Example: `postgres://user:pass@host:5432/agentvault`. |
+    | `--from` | `~/.agent-vault/agent-vault.db` | Source SQLite database path. Override only if using a non-default data directory. |
+    | `--dry-run` | `false` | Validate connectivity and print a row-count summary without writing any data. |
+
+    ```bash
+    # Preview what would be migrated
+    agent-vault migrate-db --to postgres://user:pass@db:5432/agentvault --dry-run
+
+    # Run the migration
+    agent-vault migrate-db --to postgres://user:pass@db:5432/agentvault
+
+    # Migrate from a non-default SQLite path
+    agent-vault migrate-db --from /data/.agent-vault/agent-vault.db \
+      --to postgres://user:pass@db:5432/agentvault
+    ```
   </Accordion>
 </AccordionGroup>
 

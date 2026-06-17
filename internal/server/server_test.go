@@ -389,7 +389,15 @@ func (m *mockStore) ExpirePendingProposals(_ context.Context, before time.Time) 
 	return 0, nil
 }
 
-func (m *mockStore) Close() error { return nil }
+func (m *mockStore) Close() error                                     { return nil }
+func (m *mockStore) Ping(_ context.Context) error                      { return nil }
+func (m *mockStore) DialectName() string                               { return "sqlite" }
+func (m *mockStore) GetCAState(_ context.Context) (*store.CAState, error) { return nil, nil }
+func (m *mockStore) SetCAState(_ context.Context, _ *store.CAState) error { return nil }
+
+func (m *mockStore) LockVault(_ context.Context, _ string) (func(), error) {
+	return func() {}, nil
+}
 
 // --- Request log stubs (unused in server tests; storage-level tests
 // live in the store package). ---

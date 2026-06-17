@@ -233,23 +233,36 @@ var masterPasswordRemoveCmd = &cobra.Command{
 // Master password operations require exclusive access to the database.
 func ensureServerStopped() error {
 	pid, err := pidfile.Read()
-	if err != nil {
-		return nil // no PID file means no server running
+	if err == nil && pidfile.IsRunning(pid) {
+		return fmt.Errorf("server is running (PID %d) -- stop it first with 'agent-vault server stop'", pid)
 	}
-	if pidfile.IsRunning(pid) {
-		return fmt.Errorf("server is running (PID %d) — stop it first with 'agent-vault server stop'", pid)
+	if os.Getenv("DATABASE_URL") != "" {
+		fmt.Fprintln(os.Stderr,
+			"warning: DATABASE_URL is set. If other Agent Vault pods share this database,",
+			"stop ALL pods before changing the master password.",
+		)
 	}
 	return nil
 }
 
-// openDB opens the SQLite store at the default path.
-func openDB() (*store.SQLiteStore, func(), error) {
+// openDB opens the store, using DATABASE_URL when set or the default
+// SQLite path otherwise.
+func openDB() (store.Store, func(), error) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL != "" {
+		db, err := store.OpenStore(store.StoreConfig{DatabaseURL: dbURL})
+		if err != nil {
+			return nil, nil, fmt.Errorf("opening store: %w", err)
+		}
+		return db, func() { _ = db.Close() }, nil
+	}
+
 	dbPath, err := store.DefaultDBPath()
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolving db path: %w", err)
 	}
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		return nil, nil, fmt.Errorf("database not found at %s — run 'agent-vault server' first", dbPath)
+		return nil, nil, fmt.Errorf("database not found at %s -- run 'agent-vault server' first", dbPath)
 	}
 	db, err := store.Open(dbPath)
 	if err != nil {

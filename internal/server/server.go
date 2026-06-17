@@ -77,12 +77,6 @@ type Server struct {
 	// backstop. Bounded by a periodic prune (see runTouchCachePruner)
 	// that drops entries past the throttle window.
 	touchCache sync.Map // raw token (string) -> time.Time
-	// vaultServiceMu serializes the load → mutate → save cycle for
-	// /services handlers and proposal apply. SQLite's MaxOpenConns(1)
-	// only serializes individual statements; without this lock two
-	// concurrent upserts can both pass collision checks against the
-	// same pre-state.
-	vaultServiceMu sync.Map // vaultID (string) -> *sync.Mutex
 	// infisicalClient is nil when INFISICAL_URL is unset; create handlers
 	// reject kind="infisical" then.
 	infisicalClient *infisical.Client
@@ -95,13 +89,10 @@ type Server struct {
 	telemetry        *telemetry.Telemetry
 }
 
-// lockVaultServices acquires the per-vault mutation lock. Callers MUST
-// defer the returned unlock func.
-func (s *Server) lockVaultServices(vaultID string) func() {
-	v, _ := s.vaultServiceMu.LoadOrStore(vaultID, &sync.Mutex{})
-	mu := v.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
+// lockVaultServices acquires the per-vault mutation lock via the store's
+// LockVault. Callers MUST defer the returned unlock func.
+func (s *Server) lockVaultServices(ctx context.Context, vaultID string) (func(), error) {
+	return s.store.LockVault(ctx, vaultID)
 }
 
 // RateLimit returns the server's rate-limit registry. Exported so the
@@ -409,7 +400,12 @@ type Store interface {
 	TrimRequestLogsToCap(ctx context.Context, vaultID string, cap int64) (int64, error)
 	VaultIDsWithLogs(ctx context.Context) ([]string, error)
 
+	// LockVault acquires an exclusive advisory lock for the given vault.
+	LockVault(ctx context.Context, vaultID string) (unlock func(), err error)
+
 	Close() error
+	Ping(ctx context.Context) error
+	DialectName() string
 }
 
 // contextKey is an unexported type for context keys in this package.

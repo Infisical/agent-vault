@@ -65,6 +65,7 @@
               "self-hosting/local",
               "self-hosting/docker",
               "self-hosting/fly-io",
+              "self-hosting/postgres",
               "self-hosting/environment-variables",
               "self-hosting/maintenance",
               "guides/instance-settings",
@@ -290,6 +291,7 @@
     { "source": "/agents/persistent-agents", "destination": "/agents/overview" },
     { "source": "/how-it-works", "destination": "/" },
     { "source": "/learn/connect-custom-agent", "destination": "/guides/connect-custom-agent" },
-    { "source": "/first-proposal", "destination": "/quickstart/claude-code" }
+    { "source": "/first-proposal", "destination": "/quickstart/claude-code" },
+    { "source": "/self-hosting/ha-postgres", "destination": "/self-hosting/postgres" }
   ]
 }

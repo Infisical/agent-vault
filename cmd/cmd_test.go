@@ -32,7 +32,7 @@ func TestCommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"server", "auth", "vault", "owner", "account", "catalog", "user", "agent", "ca"}
+	expected := []string{"server", "auth", "vault", "owner", "account", "catalog", "user", "agent", "ca", "migrate-db"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected command %q to be registered, but it was not", name)
@@ -356,7 +356,7 @@ func TestServerPasswordStdinFlag(t *testing.T) {
 	}
 }
 
-func openTestDB(t *testing.T) *store.SQLiteStore {
+func openTestDB(t *testing.T) store.Store {
 	t.Helper()
 	db, err := store.Open(":memory:")
 	if err != nil {

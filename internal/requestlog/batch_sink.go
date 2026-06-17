@@ -11,8 +11,8 @@ import (
 )
 
 // Defaults tuned for the near-real-time tailing UI: batches land inside
-// one ~3s UI poll interval while keeping SQLite writes coalesced under
-// bursty traffic. Operators can override via SQLiteSinkConfig.
+// one ~3s UI poll interval while keeping DB writes coalesced under
+// bursty traffic. Operators can override via BatchSinkConfig.
 const (
 	defaultBufferSize   = 1024
 	defaultBatchSize    = 100
@@ -20,15 +20,15 @@ const (
 	defaultShutdownWait = 3 * time.Second
 )
 
-// sqliteStore is the narrow surface SQLiteSink needs; lets tests
+// batchStore is the narrow surface BatchSink needs; lets tests
 // substitute a fake without standing up the full Store interface.
-type sqliteStore interface {
+type batchStore interface {
 	InsertRequestLogs(ctx context.Context, rows []store.RequestLog) error
 }
 
-// SQLiteSinkConfig controls the SQLiteSink's batching behavior. Zero
+// BatchSinkConfig controls the BatchSink's batching behavior. Zero
 // fields fall back to sensible defaults.
-type SQLiteSinkConfig struct {
+type BatchSinkConfig struct {
 	BufferSize   int
 	BatchSize    int
 	FlushEvery   time.Duration
@@ -41,22 +41,22 @@ type SQLiteSinkConfig struct {
 	OnCommit func(batch []Record)
 }
 
-// SQLiteSink buffers records in a bounded channel and flushes them to
-// SQLite in batches. Non-blocking on the hot path: if the buffer is
+// BatchSink buffers records in a bounded channel and flushes them to
+// the database in batches. Non-blocking on the hot path: if the buffer is
 // full, the record is dropped and the drop counter is incremented.
-type SQLiteSink struct {
-	store   sqliteStore
+type BatchSink struct {
+	store   batchStore
 	logger  *slog.Logger
-	cfg     SQLiteSinkConfig
+	cfg     BatchSinkConfig
 	in      chan Record
 	done    chan struct{}
 	wg      sync.WaitGroup
 	dropped atomic.Uint64
 }
 
-// NewSQLiteSink constructs a sink and starts its background worker.
+// NewBatchSink constructs a sink and starts its background worker.
 // Call Close to flush and stop.
-func NewSQLiteSink(s sqliteStore, logger *slog.Logger, cfg SQLiteSinkConfig) *SQLiteSink {
+func NewBatchSink(s batchStore, logger *slog.Logger, cfg BatchSinkConfig) *BatchSink {
 	if cfg.BufferSize <= 0 {
 		cfg.BufferSize = defaultBufferSize
 	}
@@ -69,7 +69,7 @@ func NewSQLiteSink(s sqliteStore, logger *slog.Logger, cfg SQLiteSinkConfig) *SQ
 	if cfg.ShutdownWait <= 0 {
 		cfg.ShutdownWait = defaultShutdownWait
 	}
-	sk := &SQLiteSink{
+	sk := &BatchSink{
 		store:  s,
 		logger: logger,
 		cfg:    cfg,
@@ -82,7 +82,7 @@ func NewSQLiteSink(s sqliteStore, logger *slog.Logger, cfg SQLiteSinkConfig) *SQ
 }
 
 // Record implements Sink. Non-blocking: drops if the buffer is full.
-func (s *SQLiteSink) Record(_ context.Context, r Record) {
+func (s *BatchSink) Record(_ context.Context, r Record) {
 	select {
 	case s.in <- r:
 	default:
@@ -100,11 +100,11 @@ func (s *SQLiteSink) Record(_ context.Context, r Record) {
 
 // Dropped returns the total records dropped due to buffer overflow
 // since construction. Exposed for metrics and tests.
-func (s *SQLiteSink) Dropped() uint64 { return s.dropped.Load() }
+func (s *BatchSink) Dropped() uint64 { return s.dropped.Load() }
 
 // Close drains pending records and stops the worker. Honors the parent
 // context for its own deadline; falls back to ShutdownWait.
-func (s *SQLiteSink) Close(ctx context.Context) error {
+func (s *BatchSink) Close(ctx context.Context) error {
 	close(s.done)
 
 	wait := s.cfg.ShutdownWait
@@ -124,7 +124,7 @@ func (s *SQLiteSink) Close(ctx context.Context) error {
 	}
 }
 
-func (s *SQLiteSink) run() {
+func (s *BatchSink) run() {
 	defer s.wg.Done()
 
 	batch := make([]Record, 0, s.cfg.BatchSize)
@@ -171,7 +171,7 @@ func (s *SQLiteSink) run() {
 // commit persists batch and fires the OnCommit hook on success. Errors
 // are logged; we do not retry — losing a small slice of logs is
 // acceptable, but blocking the worker on a failing DB is not.
-func (s *SQLiteSink) commit(batch []Record) {
+func (s *BatchSink) commit(batch []Record) {
 	rows := make([]store.RequestLog, len(batch))
 	for i, r := range batch {
 		rows[i] = toStoreRow(r)

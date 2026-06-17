@@ -1,13 +1,25 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"io/fs"
 	"net/http"
 	"os"
+	"time"
 )
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if s.store.DialectName() == "postgres" {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := s.store.Ping(ctx); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{"status": "unhealthy", "error": "database unreachable"})
+			return
+		}
+	}
 	jsonOK(w, map[string]string{"status": "ok"})
 }
 

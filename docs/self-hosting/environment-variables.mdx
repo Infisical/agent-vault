@@ -8,6 +8,7 @@ description: "Configuration for deploying an instance of Agent Vault."
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `PORT` | Optional (defaults to `14321`) | The TCP port the server listens on. Overridden by `--port`. |
+| `DATABASE_URL` | Optional (defaults to SQLite) | PostgreSQL connection URL for [production deployments](/self-hosting/postgres). When set, Agent Vault uses Postgres instead of the built-in SQLite database. All instances must share the same URL. Supports `sslmode` (e.g. `?sslmode=require`). Example: `postgres://user:password@host:5432/agentvault`. Overridden by `--database-url`. |
 | `AGENT_VAULT_MASTER_PASSWORD` | Recommended (passwordless mode if unset) | The master password used to derive the KEK that wraps the data encryption key. Source via your platform's secret store (e.g., `fly secrets set`, Docker secrets); falls back to `--password-stdin` or an interactive prompt. |
 | `AGENT_VAULT_ADDR` | Optional (auto-derived) | The externally-reachable base URL of the server (e.g., `https://vault.example.com`). Used for invite links, discovery responses, and MITM cert SANs. Falls back to `https://<FLY_APP_NAME>.fly.dev` on Fly.io, then `http://{host}:{port}`. |
 | `FLY_APP_NAME` | Set by Fly.io | The Fly.io app name. Used to derive `AGENT_VAULT_ADDR` when unset. |
