@@ -22,6 +22,30 @@ func migrateSQLite(db *sql.DB) error {
 		return fmt.Errorf("creating schema_migrations table: %w", err)
 	}
 
+	// If the table has already been upgraded to the new name-based format
+	// (by a previous run of the GORM runner), skip the SQL runner entirely.
+	// The GORM runner handles everything from here.
+	hasVersion := false
+	pragmaRows, err := db.Query("PRAGMA table_info(schema_migrations)")
+	if err == nil {
+		for pragmaRows.Next() {
+			var cid int
+			var colName, colType string
+			var notNull int
+			var dflt sql.NullString
+			var pk int
+			if err := pragmaRows.Scan(&cid, &colName, &colType, &notNull, &dflt, &pk); err == nil {
+				if colName == "version" {
+					hasVersion = true
+				}
+			}
+		}
+		_ = pragmaRows.Close()
+	}
+	if !hasVersion {
+		return nil
+	}
+
 	var current int
 	if err := db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&current); err != nil {
 		return fmt.Errorf("querying current migration version: %w", err)

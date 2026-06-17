@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -23,29 +24,42 @@ func openTestDB(t *testing.T) *SQLStore {
 func TestOpenAndMigrate(t *testing.T) {
 	s := openTestDB(t)
 
-	// Verify schema_migrations has the ca_state migration (highest version).
-	var version int64
-	err := s.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version)
+	// Verify schema_migrations has migrations applied (new format uses name-based tracking).
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count)
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version < 50 {
-		t.Fatalf("expected migration version >= 50, got %d", version)
+	if count < 50 {
+		t.Fatalf("expected at least 50 migrations applied, got %d", count)
+	}
+
+	// Verify the new format has id, name, migration_time columns.
+	var name string
+	err = s.db.QueryRow("SELECT name FROM schema_migrations WHERE id = 1").Scan(&name)
+	if err != nil {
+		t.Fatalf("querying name column: %v", err)
+	}
+	if name != "001_init" {
+		t.Fatalf("expected first migration name '001_init', got %q", name)
 	}
 }
 
 func TestMigrationIdempotency(t *testing.T) {
 	// Opening twice against the same DB should not fail.
-	s, err := Open(":memory:")
+	dbPath := filepath.Join(t.TempDir(), "idempotency.db")
+	s1, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
+	_ = s1.Close()
 
-	// Run migrate again on the same connection.
-	if err := migrateSQLite(s.db); err != nil {
-		t.Fatalf("second migrate: %v", err)
+	// Second open on the same file should succeed without re-running migrations.
+	s2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
 	}
-	s.Close()
+	_ = s2.Close()
 }
 
 // --- Vault CRUD ---
