@@ -63,8 +63,18 @@ func migratePostgres(db *sql.DB) error {
 		}
 	}
 
-	if current > maxEmbedded {
-		return fmt.Errorf("database schema version %d is newer than the highest embedded migration %d; upgrade the binary", current, maxEmbedded)
+	// Include GORM migration versions in the max check so the
+	// downgrade guard doesn't trip when schema_migrations contains
+	// versions recorded by the GORM runner.
+	maxKnown := maxEmbedded
+	for _, gm := range gormMigrations {
+		if gm.Version > maxKnown {
+			maxKnown = gm.Version
+		}
+	}
+
+	if current > maxKnown {
+		return fmt.Errorf("database schema version %d is newer than the highest embedded migration %d; upgrade the binary", current, maxKnown)
 	}
 
 	for _, entry := range entries {
