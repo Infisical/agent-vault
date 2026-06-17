@@ -102,14 +102,9 @@ func Open(dbPath string) (*SQLStore, error) {
 		fmt.Fprintf(os.Stderr, "[agent-vault] warning: failed to set database permissions: %v\n", err)
 	}
 
-	if err := migrateSQLite(db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("running migrations: %w", err)
-	}
-
 	if err := runGORMMigrations(db, "sqlite"); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("running gorm migrations: %w", err)
+		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
 	return &SQLStore{db: db, dialect: SQLiteDialect{}}, nil

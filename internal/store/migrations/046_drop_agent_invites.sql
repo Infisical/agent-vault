@@ -1,4 +1,0 @@
--- Agent provisioning is now direct via POST /v1/agents. The invite ceremony is gone.
-
-DROP TABLE IF EXISTS agent_invite_vaults;
-DROP TABLE IF EXISTS invites;

@@ -107,6 +107,16 @@ func runGORMMigrations(sqlDB *sql.DB, dialectName string) error {
 		return nil
 	}
 
+	// Disable FK checks for SQLite migrations. Many legacy migrations
+	// do DROP TABLE + RENAME which would cascade-delete FK-referenced
+	// rows if FKs are enforced. PRAGMA must be set outside transactions.
+	if dialectName == "sqlite" {
+		if _, err := sqlDB.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+			return fmt.Errorf("disabling foreign keys: %w", err)
+		}
+		defer sqlDB.Exec("PRAGMA foreign_keys = ON") //nolint:errcheck
+	}
+
 	// Open GORM only when we have pending migrations.
 	gormDB, err := gorm.Open(dialector, &gorm.Config{
 		DisableAutomaticPing: true,
@@ -225,7 +235,7 @@ func upgradeSchemamigrationsTable(db *sql.DB, dialect string) error {
 		return err
 	}
 
-	nameMap := buildSQLiteMigrationNameMap()
+	nameMap := buildVersionToNameMap()
 	for _, version := range oldVersions {
 		name, ok := nameMap[version]
 		if !ok {
@@ -263,21 +273,15 @@ func loadAppliedMigrations(db *sql.DB) (map[string]bool, error) {
 	return applied, rows.Err()
 }
 
-// buildSQLiteMigrationNameMap creates a version -> name mapping from the
-// embedded SQLite migration filenames (e.g., 1 -> "001_init").
-func buildSQLiteMigrationNameMap() map[int]string {
+// buildVersionToNameMap creates a version -> name mapping from the registered
+// GORM migrations. Old migrations (001_init, etc.) have names that start with
+// zero-padded numbers which parse to the original version integers.
+func buildVersionToNameMap() map[int]string {
 	m := make(map[int]string)
-	entries, err := sqliteMigrationFS.ReadDir("migrations")
-	if err != nil {
-		return m
-	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
+	for _, gm := range gormMigrations {
 		var version int
-		name := strings.TrimSuffix(e.Name(), ".sql")
-		if _, err := fmt.Sscanf(e.Name(), "%d_", &version); err == nil {
+		name := gm.Name
+		if _, err := fmt.Sscanf(name, "%d_", &version); err == nil {
 			m[version] = name
 		}
 	}
