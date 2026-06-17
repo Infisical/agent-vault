@@ -1062,13 +1062,13 @@ func copyRequestLogs(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialect 
 				&matchedService, &credKeys, &status, &latencyMs, &errorCode,
 				&createdAt, &authScheme, &authHeader,
 			); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return total, err
 			}
 
 			ca, err := convertTime(createdAt, src.dialect, dstDialect)
 			if err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return total, fmt.Errorf("converting created_at: %w", err)
 			}
 
@@ -1083,12 +1083,12 @@ func copyRequestLogs(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialect 
 				ca, authScheme, authHeader,
 			)
 			if err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return total, err
 			}
 			batchCount++
 		}
-		rows.Close()
+		_ = rows.Close()
 		if err := rows.Err(); err != nil {
 			return total, err
 		}
