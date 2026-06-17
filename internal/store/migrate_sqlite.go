@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-//go:embed migrations/sqlite/*.sql
+//go:embed migrations/*.sql
 var sqliteMigrationFS embed.FS
 
 // migrateSQLite runs all unapplied SQL migrations against a SQLite db.
@@ -51,7 +51,7 @@ func migrateSQLite(db *sql.DB) error {
 		return fmt.Errorf("querying current migration version: %w", err)
 	}
 
-	entries, err := sqliteMigrationFS.ReadDir("migrations/sqlite")
+	entries, err := sqliteMigrationFS.ReadDir("migrations")
 	if err != nil {
 		return fmt.Errorf("reading embedded migrations: %w", err)
 	}
@@ -74,7 +74,7 @@ func migrateSQLite(db *sql.DB) error {
 			continue
 		}
 
-		sqlBytes, err := sqliteMigrationFS.ReadFile("migrations/sqlite/" + name)
+		sqlBytes, err := sqliteMigrationFS.ReadFile("migrations/" + name)
 		if err != nil {
 			return fmt.Errorf("reading migration %s: %w", name, err)
 		}

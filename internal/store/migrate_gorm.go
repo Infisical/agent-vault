@@ -267,7 +267,7 @@ func loadAppliedMigrations(db *sql.DB) (map[string]bool, error) {
 // embedded SQLite migration filenames (e.g., 1 -> "001_init").
 func buildSQLiteMigrationNameMap() map[int]string {
 	m := make(map[int]string)
-	entries, err := sqliteMigrationFS.ReadDir("migrations/sqlite")
+	entries, err := sqliteMigrationFS.ReadDir("migrations")
 	if err != nil {
 		return m
 	}
