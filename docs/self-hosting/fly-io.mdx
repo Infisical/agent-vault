@@ -113,5 +113,5 @@ agent-vault ca fetch --address https://your-app.fly.dev -o /path/to/ca.pem
 ```
 
 <Tip>
-  Changing the master password re-wraps the data encryption key without re-encrypting credentials. Use `agent-vault master-password change` while the server is stopped.
+  Changing the master password re-wraps the data encryption key without re-encrypting credentials. For single-instance (SQLite) deployments, use `agent-vault master-password change` while the server is stopped. When using Fly Postgres, update the secret with `fly secrets set AGENT_VAULT_MASTER_PASSWORD=...` and redeploy instead.
 </Tip>

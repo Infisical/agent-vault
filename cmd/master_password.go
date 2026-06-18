@@ -232,15 +232,18 @@ var masterPasswordRemoveCmd = &cobra.Command{
 // ensureServerStopped checks that no server process is running.
 // Master password operations require exclusive access to the database.
 func ensureServerStopped() error {
+	if os.Getenv("DATABASE_URL") != "" {
+		return fmt.Errorf(
+			"master-password commands cannot be used when DATABASE_URL is set " +
+				"because multiple instances may share this database.\n\n" +
+				"Manage AGENT_VAULT_MASTER_PASSWORD through your platform's secret store. " +
+				"To change it: stop all instances, update the secret, and redeploy.\n\n" +
+				"If you are migrating from SQLite, change the password before migration " +
+				"using 'agent-vault master-password change' while still on the SQLite database.")
+	}
 	pid, err := pidfile.Read()
 	if err == nil && pidfile.IsRunning(pid) {
 		return fmt.Errorf("server is running (PID %d) -- stop it first with 'agent-vault server stop'", pid)
-	}
-	if os.Getenv("DATABASE_URL") != "" {
-		fmt.Fprintln(os.Stderr,
-			"warning: DATABASE_URL is set. If other Agent Vault pods share this database,",
-			"stop ALL pods before changing the master password.",
-		)
 	}
 	return nil
 }

@@ -44,7 +44,7 @@ Agent Vault uses a **KEK/DEK key-wrapping architecture**:
 
 Each encryption operation uses a fresh random nonce generated from `crypto/rand`. Credential values are decrypted in memory only at proxy time to resolve auth headers, then discarded.
 
-**Password changes are lightweight**: changing the master password re-wraps the DEK under a new KEK — a single database update with zero credential re-encryption. You can also add a password to a passwordless instance or remove a password entirely using `agent-vault master-password set|change|remove`.
+**Password changes are lightweight**: changing the master password re-wraps the DEK under a new KEK — a single database update with zero credential re-encryption. For single-instance (SQLite) deployments, you can add, change, or remove the password using `agent-vault master-password set|change|remove`. When using PostgreSQL with multiple instances, manage `AGENT_VAULT_MASTER_PASSWORD` through your platform's secret store instead.
 
 <Note>
   The master password is **never stored on disk**. If set via the

@@ -335,6 +335,28 @@ func TestServerCmd_RefusesWhenPIDFileLive(t *testing.T) {
 	}
 }
 
+func TestEnsureServerStopped_BlocksWithDATABASE_URL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb")
+	err := ensureServerStopped()
+	if err == nil {
+		t.Fatal("expected error when DATABASE_URL is set, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot be used") {
+		t.Errorf("error = %q, want substring %q", err.Error(), "cannot be used")
+	}
+}
+
+func TestResetCmd_BlocksWithDATABASE_URL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb")
+	_, err := executeCommand("owner", "reset", "--yes")
+	if err == nil {
+		t.Fatal("expected error when DATABASE_URL is set, got nil")
+	}
+	if !strings.Contains(err.Error(), "not supported") {
+		t.Errorf("error = %q, want substring %q", err.Error(), "not supported")
+	}
+}
+
 func TestServerPasswordStdinFlag(t *testing.T) {
 	var srvCmd *cobra.Command
 	for _, c := range rootCmd.Commands() {
