@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -62,7 +63,8 @@ type Server struct {
 	store       Store
 	encKey      []byte // 32-byte encryption key, held in memory while running
 	notifier    *notify.Notifier
-	initialized bool                // true when at least one owner account exists
+	initialized    bool                // true when at least one owner account exists
+	lastInitCheck  atomic.Int64        // unix-millis of last DB check for initialization (throttle)
 	baseURL     string              // externally-reachable base URL (e.g. "https://sb.example.com")
 	skillCLI    []byte              // embedded CLI skill content (served at GET /v1/skills/cli)
 	mitm        *mitm.Proxy         // transparent MITM proxy; nil only when --mitm-port 0
@@ -953,14 +955,30 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 }
 
 // requireInitialized returns 503 when no owner account exists yet.
+// In multi-instance (Postgres HA) deployments another instance may have
+// handled registration, so we re-check the DB when the in-memory flag is
+// false, throttled to once every 2 seconds to avoid per-request queries.
 func (s *Server) requireInitialized(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.initialized {
-			jsonStatus(w, http.StatusServiceUnavailable, map[string]string{
-				"error":   "not_initialized",
-				"message": "No owner account exists. Run 'agent-vault auth register' to create the first account.",
-			})
-			return
+			now := time.Now().UnixMilli()
+			if now-s.lastInitCheck.Load() < 2000 {
+				jsonStatus(w, http.StatusServiceUnavailable, map[string]string{
+					"error":   "not_initialized",
+					"message": "No owner account exists. Run 'agent-vault auth register' to create the first account.",
+				})
+				return
+			}
+			s.lastInitCheck.Store(now)
+			if count, err := s.store.CountUsers(r.Context()); err == nil && count > 0 {
+				s.initialized = true
+			} else {
+				jsonStatus(w, http.StatusServiceUnavailable, map[string]string{
+					"error":   "not_initialized",
+					"message": "No owner account exists. Run 'agent-vault auth register' to create the first account.",
+				})
+				return
+			}
 		}
 		next(w, r)
 	}

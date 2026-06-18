@@ -253,6 +253,10 @@ docker compose up -d
 
 In production, place an L4 load balancer (HAProxy, nginx stream, cloud LB) in front of the proxy ports and an L7 load balancer in front of the API ports.
 
+<Note>
+  The Docker Compose examples use `?sslmode=disable` because the Postgres container does not serve TLS. For production deployments with managed Postgres or any Postgres instance behind TLS, use `?sslmode=require` or `?sslmode=verify-full`.
+</Note>
+
 ## Architecture notes
 
 - **API/UI (port 14321)**: Standard HTTP. Use an L7 load balancer or Ingress with TLS termination, sticky sessions are not required. Any replica can serve any request.
@@ -276,4 +280,4 @@ The SQLite file is never modified during Postgres operation, so it remains a val
 - **Rate limiting** is per-instance, not cluster-wide. If you run 3 replicas with the default profile, effective cluster-wide limits are roughly 3x the per-instance values. Adjust `AGENT_VAULT_RATELIMIT_PROFILE` or fine-grained overrides if needed.
 - **Background tickers** (log retention, Infisical sync) run independently on every instance. They are idempotent, so duplicate work is harmless but may cause slightly more database load than a single instance.
 - **Health checks** at `GET /health` ping the Postgres connection. Use this for load-balancer health probes and Kubernetes liveness/readiness checks.
-- **Connection pooling**: For large deployments (10+ instances), consider placing PgBouncer or a similar connection pooler between Agent Vault and Postgres to limit the total connection count.
+- **Connection pooling**: Each instance maintains its own connection pool (default: 25 max open, 10 idle, 5-minute lifetime). Tune per-instance with `DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`, and `DB_CONN_MAX_LIFETIME` environment variables. For large deployments (10+ instances), consider placing PgBouncer or a similar connection pooler between Agent Vault and Postgres to limit the aggregate connection count across all instances.

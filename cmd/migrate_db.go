@@ -32,6 +32,7 @@ func init() {
 	migrateDBCmd.Flags().String("to", "", "PostgreSQL connection URL (required, e.g. postgres://user:pass@host/db)")
 	migrateDBCmd.Flags().Bool("dry-run", false, "count rows per table without copying anything")
 	migrateDBCmd.Flags().String("from", "", "path to source SQLite database (default: ~/.agent-vault/agent-vault.db)")
+	migrateDBCmd.Flags().BoolP("yes", "y", false, "skip confirmation prompt (for scripted/CI usage)")
 	_ = migrateDBCmd.MarkFlagRequired("to")
 	rootCmd.AddCommand(migrateDBCmd)
 }
@@ -121,17 +122,21 @@ func runMigrateDB(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "This will copy %d records from SQLite to PostgreSQL.\n", total)
-	fmt.Fprintf(cmd.OutOrStdout(), "Continue? [y/N] ")
 
-	reader := bufio.NewReader(os.Stdin)
-	answer, err := reader.ReadString('\n')
-	if err != nil {
-		return fmt.Errorf("reading confirmation: %w", err)
-	}
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "y" && answer != "yes" {
-		fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
-		return nil
+	autoYes, _ := cmd.Flags().GetBool("yes")
+	if !autoYes {
+		fmt.Fprintf(cmd.OutOrStdout(), "Continue? [y/N] ")
+
+		reader := bufio.NewReader(os.Stdin)
+		answer, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("reading confirmation: %w", err)
+		}
+		answer = strings.TrimSpace(strings.ToLower(answer))
+		if answer != "y" && answer != "yes" {
+			fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
+			return nil
+		}
 	}
 
 	// 8. Copy data.

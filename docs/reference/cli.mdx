@@ -94,6 +94,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--to` | | Destination PostgreSQL connection URL (required). Example: `postgres://user:pass@host:5432/agentvault`. |
     | `--from` | `~/.agent-vault/agent-vault.db` | Source SQLite database path. Override only if using a non-default data directory. |
     | `--dry-run` | `false` | Validate connectivity and print a row-count summary without writing any data. |
+    | `--yes`, `-y` | `false` | Skip the interactive confirmation prompt. Useful for scripted or CI usage. |
 
     ```bash
     # Preview what would be migrated
@@ -101,6 +102,9 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     # Run the migration
     agent-vault migrate-db --to postgres://user:pass@db:5432/agentvault
+
+    # Run without confirmation (scripted/CI)
+    agent-vault migrate-db --to postgres://user:pass@db:5432/agentvault --yes
 
     # Migrate from a non-default SQLite path
     agent-vault migrate-db --from /data/.agent-vault/agent-vault.db \
