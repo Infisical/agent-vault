@@ -278,7 +278,6 @@ CREATE INDEX idx_proposals_vault_status         ON proposals(vault_id, status);
 CREATE INDEX idx_proposals_approval_token_hash  ON proposals(approval_token_hash);
 CREATE INDEX idx_email_verifications_email      ON email_verifications(email, status);
 CREATE INDEX idx_email_verifications_code_hash  ON email_verifications(code_hash);
-CREATE UNIQUE INDEX idx_agents_name             ON agents(name);
 CREATE INDEX idx_vault_grants_vault             ON vault_grants(vault_id);
 CREATE INDEX idx_vault_grants_actor             ON vault_grants(actor_id);
 CREATE INDEX idx_vault_grants_type              ON vault_grants(actor_type);

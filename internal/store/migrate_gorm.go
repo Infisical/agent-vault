@@ -260,7 +260,11 @@ func upgradeSchemamigrationsTable(db *sql.DB, dialect string) error {
 		if !ok {
 			name = fmt.Sprintf("%03d_unknown", version)
 		}
-		if _, err := db.Exec("INSERT INTO schema_migrations (name, version) VALUES (?, ?)", name, version); err != nil {
+		q := "INSERT INTO schema_migrations (name, version) VALUES (?, ?)"
+		if dialect == "postgres" {
+			q = "INSERT INTO schema_migrations (name, version) VALUES ($1, $2)"
+		}
+		if _, err := db.Exec(q, name, version); err != nil {
 			return fmt.Errorf("backfilling version %d: %w", version, err)
 		}
 	}
