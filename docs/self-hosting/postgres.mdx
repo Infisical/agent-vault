@@ -43,10 +43,10 @@ Set `DATABASE_URL` as an environment variable (or pass `--database-url` to the `
 
 ```bash
 # Environment variable (recommended for containers and PaaS)
-export DATABASE_URL=postgres://agentvault:secret@db.example.com:5432/agentvault?sslmode=require
+export DATABASE_URL=postgres://agentvault:<password>@db.example.com:5432/agentvault?sslmode=require
 
 # Or via CLI flag
-agent-vault server --database-url postgres://agentvault:secret@db.example.com:5432/agentvault
+agent-vault server --database-url postgres://agentvault:<password>@db.example.com:5432/agentvault
 ```
 
 ### Master password
@@ -60,6 +60,8 @@ openssl rand -hex 32
 ```
 
 Save the output in your platform's secret store (Kubernetes Secrets, Docker secrets, `fly secrets set`, etc.) and set it as `AGENT_VAULT_MASTER_PASSWORD` on all instances.
+
+To change the master password later: stop all instances, update the value in your secret store, and redeploy. The `agent-vault master-password` CLI commands are not available when `DATABASE_URL` is set.
 
 <Warning>
   Never put `AGENT_VAULT_MASTER_PASSWORD` or `DATABASE_URL` in a Dockerfile or committed config file. Use your platform's secret store.
@@ -101,7 +103,7 @@ Save the output in your platform's secret store (Kubernetes Secrets, Docker secr
 `migrate-db` copies all data from an existing SQLite installation to Postgres in a single transaction. The source database is not modified.
 
 <Tip>
-  If your current master password is short or guessable, strengthen it before migrating. Run `agent-vault master-password change` while still on SQLite -- this is a single-instance operation and straightforward. After migration, password changes require stopping all instances and redeploying.
+  If your current master password is short or guessable, strengthen it before you set `DATABASE_URL`. Run `agent-vault master-password change` while still on SQLite -- this is a single-instance operation and straightforward. After migration, the `master-password` CLI commands are no longer available.
 </Tip>
 
 <Steps>
@@ -113,7 +115,7 @@ Save the output in your platform's secret store (Kubernetes Secrets, Docker secr
   <Step title="Preview the migration">
     ```bash
     agent-vault migrate-db \
-      --to postgres://agentvault:secret@db:5432/agentvault \
+      --to postgres://agentvault:<password>@db:5432/agentvault \
       --dry-run
     ```
 
@@ -122,14 +124,14 @@ Save the output in your platform's secret store (Kubernetes Secrets, Docker secr
   <Step title="Run the migration">
     ```bash
     agent-vault migrate-db \
-      --to postgres://agentvault:secret@db:5432/agentvault
+      --to postgres://agentvault:<password>@db:5432/agentvault
     ```
 
     Pass `--yes` to skip the confirmation prompt in scripted or CI environments.
   </Step>
   <Step title="Switch to Postgres and restart">
     ```bash
-    export DATABASE_URL=postgres://agentvault:secret@db:5432/agentvault
+    export DATABASE_URL=postgres://agentvault:<password>@db:5432/agentvault
     export AGENT_VAULT_MASTER_PASSWORD=<same password as your SQLite instance>
     agent-vault server
     ```
@@ -227,7 +229,7 @@ Create the secret:
 
 ```bash
 kubectl create secret generic agent-vault-secrets \
-  --from-literal=database-url='postgres://agentvault:secret@db:5432/agentvault' \
+  --from-literal=database-url='postgres://agentvault:<password>@db:5432/agentvault' \
   --from-literal=master-password="$(openssl rand -hex 32)"
 ```
 
