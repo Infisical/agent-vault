@@ -10,24 +10,23 @@ Agent Vault uses an embedded SQLite database by default, which requires no setup
 With Postgres, every instance is stateless -- no local volumes, no sticky sessions -- so you can scale horizontally behind a load balancer.
 
 ```
-                  +------------------+
-                  |    PostgreSQL     |
-                  +--------+---------+
-                           |
-            +--------------+--------------+
-            |              |              |
-      +----------+  +----------+  +----------+
-      | Instance |  | Instance |  | Instance |
-      |    1     |  |    2     |  |    N     |
-      | API+MITM |  | API+MITM |  | API+MITM |
-      +----+-----+  +----+-----+  +----+-----+
-           |              |              |
-   +-------+--------------+--------------+-------+
-   |            Load balancer(s)                  |
-   |  L7 (HTTP) for API  |  L4 (TCP) for proxy   |
-   +----------------------------------------------+
-                          |
-                       Agents
+            +--------------+
+            |  PostgreSQL  |
+            +------+-------+
+                   |
+         +---------+---------+
+         |         |         |
+   +-----+---+----+----+----+-----+
+   | Inst. 1  | Inst. 2 | Inst. N |
+   | API+MITM | API+MITM| API+MITM|
+   +----+-----+----+----+----+----+
+        |          |          |
+   +----+----------+----------+----+
+   |        Load balancer(s)       |
+   | L7 for API   | L4 for proxy  |
+   +---------------+---------------+
+                   |
+                Agents
 ```
 
 Each instance connects to the same Postgres database, shares the same CA root certificate (stored encrypted in the database), and uses advisory locks to prevent conflicting writes.
