@@ -7,6 +7,7 @@ import { allowlistConfigured, isAllowedEmail } from "./access.js";
 import { agentConfig } from "./config.js";
 import { runAgent } from "./run-agent.js";
 import { chunkText } from "./slack-format.js";
+import { MAX_THREAD_CONTEXT_MESSAGES, formatThreadTranscript } from "./slack-transcript.js";
 
 // @slack/web-api hard-codes `proxy: false` on its axios client, ignoring
 // HTTPS_PROXY env vars. Pass an explicit agent so the agent-vault MITM proxy
@@ -110,7 +111,7 @@ async function handleMessage(
   // For replies, fetch history in parallel with posting the thinking placeholder.
   const historyPromise = isThreadReply
     ? client.conversations
-        .replies({ channel, ts: threadTs, limit: 200 })
+        .replies({ channel, ts: threadTs, limit: MAX_THREAD_CONTEXT_MESSAGES })
         .catch((err) => {
           // Surface Slack error codes like missing_scope and not_in_channel.
           const code = (err as { data?: { error?: string } })?.data?.error;
@@ -133,14 +134,10 @@ async function handleMessage(
     return;
   }
 
-  const transcript = (history?.messages ?? [])
-    .filter((m) => Boolean(m.text))
-    .map((m) => {
-      const isBot = (botUserId && m.user === botUserId) || Boolean(m.bot_id);
-      const cleanText = stripBotMention(m.text ?? "");
-      return isBot ? `${agentConfig.name}: ${cleanText}` : `<@${m.user}>: ${cleanText}`;
-    })
-    .join("\n");
+  const transcript = formatThreadTranscript(history?.messages ?? [], {
+    agentName: agentConfig.name,
+    botUserId,
+  });
 
   // Always append userMessage explicitly: conversations.replies returns the
   // oldest N messages, so on a long thread the triggering message itself can
