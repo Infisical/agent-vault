@@ -103,12 +103,12 @@ func runMigrateDB(cmd *cobra.Command, args []string) error {
 	}
 
 	// 6. Check destination is empty.
-	extraVaults, err := store.CountDestinationVaults(dstStore)
+	found, err := store.CountDestinationData(dstStore)
 	if err != nil {
 		return fmt.Errorf("checking destination database: %w", err)
 	}
-	if extraVaults > 0 {
-		return fmt.Errorf("destination database already contains data (%d vaults beyond the default); aborting", extraVaults)
+	if found != "" {
+		return fmt.Errorf("destination database already contains data (%s); aborting", found)
 	}
 
 	// 7. Count source rows for confirmation.

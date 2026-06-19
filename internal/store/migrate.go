@@ -58,16 +58,39 @@ func CountSourceTables(src *SQLStore) ([]TableCount, error) {
 	return counts, nil
 }
 
-// CountDestinationVaults returns the number of vaults in the destination
-// database beyond the seeded default row. A non-zero count means the
-// destination already has data.
-func CountDestinationVaults(dst *SQLStore) (int, error) {
-	var n int
-	err := dst.db.QueryRow(
-		dst.dialect.Rebind("SELECT COUNT(*) FROM vaults WHERE id != ?"),
-		"00000000-0000-0000-0000-000000000000",
-	).Scan(&n)
-	return n, err
+// CountDestinationData checks whether the destination database contains any
+// user-created data beyond the baseline schema seed (the default vault and
+// its broker_config). Returns a non-empty description of what was found,
+// or empty string if the destination is clean.
+func CountDestinationData(dst *SQLStore) (string, error) {
+	checks := []struct {
+		label string
+		query string
+		args  []interface{}
+	}{
+		{"vaults", dst.dialect.Rebind("SELECT COUNT(*) FROM vaults WHERE id != ?"), []interface{}{"00000000-0000-0000-0000-000000000000"}},
+		{"users", "SELECT COUNT(*) FROM users", nil},
+		{"agents", "SELECT COUNT(*) FROM agents", nil},
+		{"master_key", "SELECT COUNT(*) FROM master_key", nil},
+		{"sessions", "SELECT COUNT(*) FROM sessions", nil},
+		{"credentials", "SELECT COUNT(*) FROM credentials", nil},
+	}
+	for _, c := range checks {
+		var n int
+		var err error
+		if c.args != nil {
+			err = dst.db.QueryRow(c.query, c.args...).Scan(&n)
+		} else {
+			err = dst.db.QueryRow(c.query).Scan(&n)
+		}
+		if err != nil {
+			return "", fmt.Errorf("checking %s: %w", c.label, err)
+		}
+		if n > 0 {
+			return fmt.Sprintf("%d %s", n, c.label), nil
+		}
+	}
+	return "", nil
 }
 
 // MigrateData copies all data from src (SQLite) to dst (Postgres) in
