@@ -23,9 +23,9 @@ With Postgres, every instance is stateless -- no local volumes, no sticky sessio
       +----+-----+  +----+-----+  +----+-----+
            |              |              |
    +-------+--------------+--------------+-------+
-   |             Load balancer(s)                 |
+   |            Load balancer(s)                  |
    |  L7 (HTTP) for API  |  L4 (TCP) for proxy   |
-   +----------------------+-----------------------+
+   +----------------------------------------------+
                           |
                        Agents
 ```
