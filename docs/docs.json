@@ -52,6 +52,7 @@
             "pages": [
               "guides/connect-coding-agent",
               "guides/connect-custom-agent",
+              "guides/slack-agent-template",
               "guides/deploy-agent-container",
               "guides/hermes-on-vps",
               "guides/openclaw-on-vps",

@@ -1,0 +1,155 @@
+---
+title: "Slack agent template"
+description: "Build a custom Slack agent that uses Agent Vault for brokered credentials."
+---
+
+The Slack agent template is a runnable TypeScript starter for building custom Slack bots that call external APIs through Agent Vault.
+
+Use it when you want the Slack runtime, Agent Vault wiring, and tool-registration pattern in place before adding your own service-specific tools.
+
+## What's included
+
+- Slack Socket Mode bot for app mentions and DMs
+- Thread transcript context
+- Claude Agent SDK runtime
+- Local MCP-style tool registration
+- Optional Slack email allowlist
+- Dockerfile that starts the agent through `agent-vault run`
+- Two starter tools: `echo` and a constrained read-only HTTP API example
+- Mocked tests for the included tools
+
+The template intentionally does **not** ship GitHub, Linear, Notion, or write-action tools. Different agents need different access. Add only the tools your agent needs.
+
+## Copy the template
+
+Clone Agent Vault, then copy the example into a new project:
+
+```bash
+git clone https://github.com/Infisical/agent-vault.git
+cd agent-vault
+cp -R examples/slack-agent-template ../my-slack-agent
+cd ../my-slack-agent
+npm install
+cp .env.example .env
+```
+
+## Configure the agent
+
+Edit `.env`:
+
+```text
+AGENT_NAME="Support Triage Agent"
+AGENT_MISSION="Help the support team summarize Slack requests and draft next steps."
+ANTHROPIC_API_KEY=__anthropic_api_key__
+SLACK_BOT_TOKEN=__slack_bot_token__
+SLACK_APP_TOKEN=__slack_app_token__
+EXAMPLE_API_BASE_URL=https://api.example.com
+```
+
+For local development without Agent Vault, you can use throwaway development credentials. For shared, hosted, or production environments, use placeholders and store the real values in Agent Vault.
+
+## Create the Slack app
+
+1. Create a Slack app from `slack-app-manifest.json`.
+2. Enable Socket Mode.
+3. Create an app-level token with `connections:write`.
+4. Install the app to your workspace.
+5. Set `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN`.
+
+The manifest enables the App Home messages tab so people can DM the agent directly.
+
+## Run locally
+
+Try the CLI harness:
+
+```bash
+npm start "Hello, what tools do you have?"
+```
+
+Run the Slack bot:
+
+```bash
+npm run start:slack
+```
+
+## Run through Agent Vault
+
+For hosted deployments, store real credentials in Agent Vault and pass placeholders to the agent process:
+
+```text
+AGENT_VAULT_ADDR=http://<agent-vault-host>:14321
+AGENT_VAULT_TOKEN=<agent-token>
+AGENT_VAULT_VAULT=<vault-name>
+ANTHROPIC_API_KEY=__anthropic_api_key__
+SLACK_BOT_TOKEN=__slack_bot_token__
+SLACK_APP_TOKEN=__slack_app_token__
+```
+
+The included Dockerfile copies the Agent Vault CLI into the image and starts:
+
+```bash
+agent-vault run -- node dist/slack.js
+```
+
+`agent-vault run` configures proxy and CA environment variables for the child process. Your tools should call normal upstream URLs and let Agent Vault inject credentials at the proxy boundary.
+
+## Add your own tools
+
+Start from `src/tools/example-api.ts`, then replace it with service-specific tools.
+
+Good tools are narrow:
+
+- define structured inputs with Zod
+- validate IDs, paths, and enum values before making requests
+- call real upstream URLs with normal HTTP clients
+- never accept raw credentials as tool input
+- return compact Slack-readable text
+- include mocked tests
+
+For larger integrations, group files by service:
+
+```text
+src/
+  linear/
+    client.ts
+    tools/
+      list-issues.ts
+      draft-comment.ts
+      index.ts
+```
+
+Register new tools in `src/agent.ts`.
+
+## Build with a coding agent
+
+The template is designed to be extended agentically. Give a coding agent a concrete service, access level, and test expectation:
+
+```text
+Add read-only tools for <service>. Use Agent Vault for credentials.
+Keep tools narrow and typed. Add mocked tests.
+Update .env.example and docs/agent-vault.md.
+Do not add write actions unless explicitly requested.
+```
+
+For write workflows, require drafts or explicit confirmation:
+
+```text
+Add a tool that drafts a <service> update but does not submit it.
+Return the draft and required confirmation phrase.
+Do not call mutation endpoints until a user explicitly says "<confirmation phrase>".
+```
+
+## Verify changes
+
+```bash
+npm run typecheck
+npm test
+npm run build
+```
+
+## Related
+
+- [Connect a custom agent](/guides/connect-custom-agent)
+- [Deploy your agent in a container](/guides/deploy-agent-container)
+- [Services](/learn/services)
+- [Credentials](/learn/credentials)

@@ -1,0 +1,28 @@
+{
+  "name": "agent-vault-slack-template",
+  "version": "0.1.0",
+  "description": "A customizable Slack agent template designed to run behind Agent Vault",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "start:slack": "tsx --watch src/slack.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test $(find src -name '*.test.ts')"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.101",
+    "@slack/bolt": "^4.7.0",
+    "@slack/web-api": "^7.15.2",
+    "dotenv": "^17.4.1",
+    "https-proxy-agent": "^9.0.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
+  },
+  "license": "MIT"
+}
