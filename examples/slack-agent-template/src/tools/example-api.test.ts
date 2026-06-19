@@ -50,7 +50,7 @@ describe("buildExampleApiUrl", () => {
   test("builds against the configured base URL", () => {
     assert.equal(
       buildExampleApiUrl("/v1/items?limit=2", "https://api.example.com/base/").toString(),
-      "https://api.example.com/v1/items?limit=2",
+      "https://api.example.com/base/v1/items?limit=2",
     );
   });
 
@@ -77,6 +77,7 @@ describe("exampleApiGet", () => {
 
     assert.equal(calls.length, 1);
     assert.equal(calls[0]?.url, "https://api.example.com/v1/items");
+    assert.equal(calls[0]?.init?.redirect, "error");
     const headers = calls[0]?.init?.headers as Record<string, string> | undefined;
     assert.equal(headers?.Accept, "application/json");
     assert.equal(headers?.Authorization, undefined);

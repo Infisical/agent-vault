@@ -16,11 +16,12 @@ Good tools are narrow, typed, and easy to test:
 1. Define structured inputs with Zod.
 2. Validate or constrain paths, IDs, and enum values before making requests.
 3. Call real upstream URLs with normal HTTP clients.
-4. Do not accept raw credentials as tool input.
-5. Do not read production secrets directly from env.
-6. Let Agent Vault inject credentials at the proxy boundary.
-7. Return compact, Slack-readable text.
-8. Add mocked tests for success, empty, and error cases.
+4. Disable automatic redirects for user-influenced API calls unless you have a specific allowlist.
+5. Do not accept raw credentials as tool input.
+6. Do not read production secrets directly from env.
+7. Let Agent Vault inject credentials at the proxy boundary.
+8. Return compact, Slack-readable text.
+9. Add mocked tests for success, empty, and error cases.
 
 For authenticated APIs, use placeholders in `.env.example` and document the matching Agent Vault service rule.
 

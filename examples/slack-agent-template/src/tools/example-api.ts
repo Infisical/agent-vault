@@ -20,7 +20,16 @@ export function buildExampleApiUrl(path: string, baseUrl = process.env.EXAMPLE_A
   if (!trimmedBaseUrl) {
     throw new Error("EXAMPLE_API_BASE_URL is not set.");
   }
-  return new URL(normalizeExampleApiPath(path), trimmedBaseUrl);
+
+  const base = new URL(trimmedBaseUrl);
+  const normalizedPath = normalizeExampleApiPath(path);
+  const requested = new URL(`https://example.invalid${normalizedPath}`);
+  const basePath = base.pathname.replace(/\/+$/, "");
+
+  base.pathname = `${basePath}${requested.pathname}`;
+  base.search = requested.search;
+  base.hash = "";
+  return base;
 }
 
 function truncateBody(body: string, maxChars = DEFAULT_MAX_BODY_CHARS): string {
@@ -72,6 +81,7 @@ export const exampleApiGet = tool(
 
     const response = await fetch(url, {
       method: "GET",
+      redirect: "error",
       headers: {
         Accept: "application/json",
         "User-Agent": USER_AGENT,
