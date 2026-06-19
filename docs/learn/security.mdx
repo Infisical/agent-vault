@@ -44,7 +44,7 @@ Agent Vault uses a **KEK/DEK key-wrapping architecture**:
 
 Each encryption operation uses a fresh random nonce generated from `crypto/rand`. Credential values are decrypted in memory only at proxy time to resolve auth headers, then discarded.
 
-**Password changes are lightweight**: changing the master password re-wraps the DEK under a new KEK — a single database update with zero credential re-encryption. For single-instance (SQLite) deployments, you can add, change, or remove the password using `agent-vault master-password set|change|remove`. When using PostgreSQL with multiple instances, manage `AGENT_VAULT_MASTER_PASSWORD` through your platform's secret store instead.
+**Password changes are lightweight**: changing the master password re-wraps the DEK under a new KEK — a single database update with zero credential re-encryption. For single-instance (SQLite) deployments, you can add, change, or remove the password using `agent-vault master-password set|change|remove`. When using PostgreSQL with multiple instances, these CLI commands require `--force` after stopping all instances. See the [PostgreSQL guide](/self-hosting/postgres) for detailed rotation steps.
 
 <Note>
   The master password is **never stored on disk**. If set via the
@@ -167,12 +167,20 @@ Hard caps prevent unbounded growth in vault state:
 
 ## Database security
 
-Agent Vault uses SQLite with the following hardening:
+**SQLite** (default, single-instance):
 
 - **File permissions**: Database file is created with mode `0600` (owner read/write only).
 - **Parameterized queries**: All queries use prepared statements, preventing SQL injection.
 - **WAL mode**: Write-ahead logging for crash resilience.
 - **Foreign key cascades**: Deleting a vault automatically cleans up all associated credentials, proposals, agents, and sessions.
+
+**PostgreSQL** (production, multi-instance):
+
+- **Parameterized queries**: Same prepared-statement approach as SQLite, preventing SQL injection.
+- **Foreign key cascades**: Same cascade behavior as SQLite.
+- **TLS**: Use `?sslmode=require` or `?sslmode=verify-full` in your connection URL for encrypted connections to the database.
+- **Access controls**: The database user should have access only to the Agent Vault database. Credentials are encrypted at rest by the DEK regardless of database-level access, but limiting access reduces attack surface.
+- **Advisory locks**: Service-config writes use `pg_advisory_lock` to prevent concurrent conflicting updates across instances.
 
 ## Sensitive data handling
 
