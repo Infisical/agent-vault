@@ -185,7 +185,7 @@ var serverCmd = &cobra.Command{
 		if err := attachServerExtensions(srv, host, mitmPort, masterKey.Key(), db, logger, maxRespBytes, maxReqBytes); err != nil {
 			return err
 		}
-		captureServerStart(mitmPort)
+		captureServerStart(mitmPort, db.DialectName())
 		return srv.Start()
 	},
 }
@@ -606,7 +606,7 @@ func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger, maxR
 	if err := attachServerExtensions(srv, host, mitmPort, key, db, logger, maxRespBytes, maxReqBytes); err != nil {
 		return err
 	}
-	captureServerStart(mitmPort)
+	captureServerStart(mitmPort, db.DialectName())
 	return srv.Start()
 }
 
@@ -755,7 +755,7 @@ var stopCmd = &cobra.Command{
 	},
 }
 
-func captureServerStart(mitmPort int) {
+func captureServerStart(mitmPort int, dbBackend string) {
 	distinctID := telemetry.MachineID()
 	if sess, _ := session.Load(); sess != nil && sess.Email != "" {
 		distinctID = sess.Email
@@ -764,7 +764,8 @@ func captureServerStart(mitmPort int) {
 		distinctID = "anonymous_server"
 	}
 	tel.CaptureEvent(distinctID, "av.server-start", map[string]string{
-		"mitm_enabled": strconv.FormatBool(mitmPort > 0),
+		"mitm_enabled":     strconv.FormatBool(mitmPort > 0),
+		"database_backend": dbBackend,
 	})
 }
 
