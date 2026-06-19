@@ -130,9 +130,11 @@ Save the output in your platform's secret store (Kubernetes Secrets, Docker secr
   <Step title="Switch to Postgres and restart">
     ```bash
     export DATABASE_URL=postgres://agentvault:secret@db:5432/agentvault
-    export AGENT_VAULT_MASTER_PASSWORD=your-master-password
+    export AGENT_VAULT_MASTER_PASSWORD=<same password as your SQLite instance>
     agent-vault server
     ```
+
+    Use the same master password you had on SQLite. The migrated data is encrypted with it.
   </Step>
 </Steps>
 
@@ -226,7 +228,7 @@ Create the secret:
 ```bash
 kubectl create secret generic agent-vault-secrets \
   --from-literal=database-url='postgres://agentvault:secret@db:5432/agentvault' \
-  --from-literal=master-password='your-master-password'
+  --from-literal=master-password="$(openssl rand -hex 32)"
 ```
 
 ## Example: Docker Compose
@@ -280,9 +282,11 @@ volumes:
 Start it:
 
 ```bash
-export AGENT_VAULT_MASTER_PASSWORD=your-master-password
+export AGENT_VAULT_MASTER_PASSWORD=$(openssl rand -hex 32)
 docker compose up -d
 ```
+
+Save the generated password -- you will need it if you restart the stack.
 
 In production, place an L4 load balancer (HAProxy, nginx stream, cloud LB) in front of the proxy ports and an L7 load balancer in front of the API ports.
 
