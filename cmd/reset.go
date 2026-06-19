@@ -23,11 +23,12 @@ it will be stopped automatically before the reset.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if os.Getenv("DATABASE_URL") != "" {
-			return fmt.Errorf(
-				"reset is not supported when DATABASE_URL is set. " +
-					"This command removes local files and does not affect the shared database.\n\n" +
-					"To reset a shared deployment: drop and recreate the database " +
-					"using your database admin tool, then restart all instances.")
+			fmt.Fprintln(cmd.ErrOrStderr(),
+				"This command removes local files and does not affect the shared database.",
+				"To reset a shared deployment: drop and recreate the database",
+				"using your database admin tool, then restart all instances.",
+			)
+			return fmt.Errorf("reset is not supported when DATABASE_URL is set")
 		}
 
 		yes, _ := cmd.Flags().GetBool("yes")
