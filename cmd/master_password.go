@@ -22,7 +22,8 @@ var masterPasswordSetCmd = &cobra.Command{
 	Short: "Set a master password on a passwordless instance",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := ensureServerStopped(); err != nil {
+		force, _ := cmd.Flags().GetBool("force")
+		if err := ensureServerStopped(force); err != nil {
 			return err
 		}
 
@@ -94,7 +95,8 @@ var masterPasswordChangeCmd = &cobra.Command{
 	Short: "Change the master password",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := ensureServerStopped(); err != nil {
+		force, _ := cmd.Flags().GetBool("force")
+		if err := ensureServerStopped(force); err != nil {
 			return err
 		}
 
@@ -171,7 +173,8 @@ var masterPasswordRemoveCmd = &cobra.Command{
 	Short: "Remove the master password (switch to passwordless mode)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := ensureServerStopped(); err != nil {
+		force, _ := cmd.Flags().GetBool("force")
+		if err := ensureServerStopped(force); err != nil {
 			return err
 		}
 
@@ -231,15 +234,22 @@ var masterPasswordRemoveCmd = &cobra.Command{
 
 // ensureServerStopped checks that no server process is running.
 // Master password operations require exclusive access to the database.
-func ensureServerStopped() error {
+func ensureServerStopped(force bool) error {
 	if os.Getenv("DATABASE_URL") != "" {
+		if !force {
+			fmt.Fprintln(os.Stderr,
+				"DATABASE_URL is set, which means multiple instances may share this database.",
+				"To proceed: stop ALL instances, then re-run this command with --force.",
+				"After the change, update AGENT_VAULT_MASTER_PASSWORD in your secret store",
+				"before restarting any instance.",
+			)
+			return fmt.Errorf("master-password commands require --force when DATABASE_URL is set")
+		}
 		fmt.Fprintln(os.Stderr,
-			"Manage AGENT_VAULT_MASTER_PASSWORD through your platform's secret store.",
-			"To change it: stop all instances, update the secret, and redeploy.",
-			"If you are migrating from SQLite, change the password before migration",
-			"using 'agent-vault master-password change' while still on the SQLite database.",
+			"WARNING: DATABASE_URL is set. Make sure ALL instances sharing this database",
+			"are stopped. After the change, update AGENT_VAULT_MASTER_PASSWORD in your",
+			"secret store before restarting any instance.",
 		)
-		return fmt.Errorf("master-password commands cannot be used when DATABASE_URL is set because multiple instances may share this database")
 	}
 	pid, err := pidfile.Read()
 	if err == nil && pidfile.IsRunning(pid) {
@@ -275,6 +285,9 @@ func openDB() (store.Store, func(), error) {
 }
 
 func init() {
+	for _, sub := range []*cobra.Command{masterPasswordSetCmd, masterPasswordChangeCmd, masterPasswordRemoveCmd} {
+		sub.Flags().Bool("force", false, "proceed even when DATABASE_URL is set (requires all instances to be stopped)")
+	}
 	masterPasswordCmd.AddCommand(masterPasswordSetCmd)
 	masterPasswordCmd.AddCommand(masterPasswordChangeCmd)
 	masterPasswordCmd.AddCommand(masterPasswordRemoveCmd)

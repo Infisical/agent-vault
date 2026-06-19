@@ -42,7 +42,7 @@ Each instance connects to the same Postgres database, shares the same CA root ce
 Set `DATABASE_URL` as an environment variable (or pass `--database-url` to the `server` command).
 
 ```bash
-# Environment variable (recommended for containers and PaaS)
+# Environment variable
 export DATABASE_URL=postgres://agentvault:<password>@db.example.com:5432/agentvault?sslmode=require
 
 # Or via CLI flag
@@ -61,7 +61,7 @@ openssl rand -hex 32
 
 Save the output in your platform's secret store (Kubernetes Secrets, Docker secrets, `fly secrets set`, etc.) and set it as `AGENT_VAULT_MASTER_PASSWORD` on all instances.
 
-To change the master password later: stop all instances, update the value in your secret store, and redeploy. The `agent-vault master-password` CLI commands are not available when `DATABASE_URL` is set.
+To rotate the master password: stop all instances, run `agent-vault master-password change --force`, update the value in your secret store, then restart all instances.
 
 <Warning>
   Never put `AGENT_VAULT_MASTER_PASSWORD` or `DATABASE_URL` in a Dockerfile or committed config file. Use your platform's secret store.
@@ -103,7 +103,7 @@ To change the master password later: stop all instances, update the value in you
 `migrate-db` copies all data from an existing SQLite installation to Postgres in a single transaction. The source database is not modified.
 
 <Tip>
-  If your current master password is short or guessable, strengthen it before you set `DATABASE_URL`. Run `agent-vault master-password change` while still on SQLite -- this is a single-instance operation and straightforward. After migration, the `master-password` CLI commands are no longer available.
+  If your master password is weak, you can strengthen it before migrating by running `agent-vault master-password change` while still on SQLite.
 </Tip>
 
 <Steps>

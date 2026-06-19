@@ -337,12 +337,20 @@ func TestServerCmd_RefusesWhenPIDFileLive(t *testing.T) {
 
 func TestEnsureServerStopped_BlocksWithDATABASE_URL(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb")
-	err := ensureServerStopped()
+	err := ensureServerStopped(false)
 	if err == nil {
-		t.Fatal("expected error when DATABASE_URL is set, got nil")
+		t.Fatal("expected error when DATABASE_URL is set without --force, got nil")
 	}
-	if !strings.Contains(err.Error(), "cannot be used") {
-		t.Errorf("error = %q, want substring %q", err.Error(), "cannot be used")
+	if !strings.Contains(err.Error(), "--force") {
+		t.Errorf("error = %q, want substring %q", err.Error(), "--force")
+	}
+}
+
+func TestEnsureServerStopped_AllowsForceWithDATABASE_URL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb")
+	err := ensureServerStopped(true)
+	if err != nil {
+		t.Fatalf("expected no error with --force, got %v", err)
 	}
 }
 
