@@ -38,9 +38,7 @@ For production, generate a strong random value:
 openssl rand -hex 32
 ```
 
-Save the output in your platform's secret store (Kubernetes Secrets, Docker secrets, `fly secrets set`, etc.) and set it as `AGENT_VAULT_MASTER_PASSWORD` on all instances.
-
-To rotate the master password: stop all instances, run `agent-vault master-password change --force` from any machine with `DATABASE_URL` set, update the value in your secret store, then restart all instances. This only re-wraps the encryption key (one row) -- no credentials are re-encrypted and no data is lost. If a pod restarts before the secret is updated, it will fail to start with "wrong password"; update the secret and restart to resolve.
+Save the output in your platform's secret store (Kubernetes Secrets, Docker secrets, `fly secrets set`, etc.) and set it as `AGENT_VAULT_MASTER_PASSWORD` on all instances. To rotate it later, see [`master-password change`](/reference/cli#master-password).
 
 <Warning>
   Never put `AGENT_VAULT_MASTER_PASSWORD` or `DATABASE_URL` in a Dockerfile or committed config file. Use your platform's secret store.
@@ -82,7 +80,7 @@ To rotate the master password: stop all instances, run `agent-vault master-passw
 `migrate-db` copies all data from an existing SQLite installation to Postgres in a single transaction. The source database is not modified.
 
 <Tip>
-  If your master password is weak, strengthen it by running `agent-vault master-password change` while still on SQLite, or after migration using `--force` (see rotation steps above).
+  If your master password is weak, strengthen it by running `agent-vault master-password change` while still on SQLite, or after migration using [`--force`](/reference/cli#master-password).
 </Tip>
 
 <Steps>

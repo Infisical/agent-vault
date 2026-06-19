@@ -1044,6 +1044,8 @@ description: "Complete reference for all Agent Vault CLI commands."
 
 Manage the master password that wraps the data encryption key (DEK). All commands require the server to be stopped. When `DATABASE_URL` is set, these commands require `--force` because multiple instances may share the database -- stop all instances first.
 
+Password changes only re-wrap the encryption key (one database row). No credentials are re-encrypted and no data is lost. If an instance restarts before the secret store is updated, it will fail to start with "wrong password" -- update the secret and restart to resolve.
+
 <AccordionGroup>
   <Accordion title="agent-vault master-password set">
     ```bash
