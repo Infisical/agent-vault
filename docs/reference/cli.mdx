@@ -1042,31 +1042,43 @@ description: "Complete reference for all Agent Vault CLI commands."
 
 ## Master password
 
-Manage the master password that wraps the data encryption key (DEK). All commands require the server to be stopped.
+Manage the master password that wraps the data encryption key (DEK). All commands require the server to be stopped. When `DATABASE_URL` is set, these commands require `--force` because multiple instances may share the database -- stop all instances first.
 
 <AccordionGroup>
   <Accordion title="agent-vault master-password set">
     ```bash
-    agent-vault master-password set
+    agent-vault master-password set [--force]
     ```
 
     Set a master password on a passwordless instance. Wraps the existing DEK under a new KEK derived from the password. No credentials are re-encrypted.
+
+    | Flag | Description |
+    |------|-------------|
+    | `--force` | Proceed when `DATABASE_URL` is set. Requires all instances to be stopped. |
   </Accordion>
 
   <Accordion title="agent-vault master-password change">
     ```bash
-    agent-vault master-password change
+    agent-vault master-password change [--force]
     ```
 
     Change the master password. Re-wraps the DEK under a new KEK. No credentials are re-encrypted.
+
+    | Flag | Description |
+    |------|-------------|
+    | `--force` | Proceed when `DATABASE_URL` is set. Requires all instances to be stopped. |
   </Accordion>
 
   <Accordion title="agent-vault master-password remove">
     ```bash
-    agent-vault master-password remove
+    agent-vault master-password remove [--force]
     ```
 
     Remove the master password, switching to passwordless mode. The DEK is stored in plaintext — security depends on filesystem access controls.
+
+    | Flag | Description |
+    |------|-------------|
+    | `--force` | Proceed when `DATABASE_URL` is set. Requires all instances to be stopped. |
   </Accordion>
 </AccordionGroup>
 
