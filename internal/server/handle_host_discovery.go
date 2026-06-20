@@ -17,6 +17,7 @@ const (
 	discoveredHostsDefaultLimit = 5
 	discoveredHostsMaxLimit     = 100
 	settingDismissedHosts       = "dismissed_discovered_hosts"
+	maxDismissedHosts           = 1000
 )
 
 type discoveredHost struct {
@@ -161,7 +162,7 @@ func (s *Server) handleDismissDiscoveredHost(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
+	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
 		return
 	}
 
@@ -171,6 +172,10 @@ func (s *Server) handleDismissDiscoveredHost(w http.ResponseWriter, r *http.Requ
 	}
 
 	dismissed := loadDismissedHosts(ctx, s.store, ns.ID)
+	if !dismissed[host] && len(dismissed) >= maxDismissedHosts {
+		jsonError(w, http.StatusUnprocessableEntity, "Dismissed hosts limit reached")
+		return
+	}
 	dismissed[host] = true
 	if err := saveDismissedHosts(ctx, s.store, ns.ID, dismissed); err != nil {
 		s.logger.Warn("dismiss-host: save failed", "vault", vaultName, "err", err.Error())
@@ -193,7 +198,7 @@ func (s *Server) handleDismissAllDiscoveredHosts(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
+	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
 		return
 	}
 
@@ -220,7 +225,7 @@ func (s *Server) handleDismissAllDiscoveredHosts(w http.ResponseWriter, r *http.
 		return
 	}
 
-	jsonOK(w, map[string]any{"dismissed": len(dismissed)})
+	jsonOK(w, map[string]any{"dismissed": len(unmatched)})
 }
 
 type vaultSettingStore interface {
