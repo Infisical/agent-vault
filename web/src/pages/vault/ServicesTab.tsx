@@ -161,13 +161,18 @@ export default function ServicesTab() {
   async function dismissDiscoveredHost(host: string) {
     setDismissingHost(host);
     try {
-      await apiFetch(
+      const resp = await apiFetch(
         `/v1/vaults/${encodeURIComponent(vaultName)}/discovered-hosts/${encodeURIComponent(host)}`,
         { method: "DELETE" }
       );
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => null);
+        setError(data?.error || "Failed to dismiss host.");
+        return;
+      }
       await fetchDiscoveredHosts(discoveredExpanded ? 100 : 5);
     } catch {
-      // Degrade silently.
+      setError("Network error while dismissing host.");
     } finally {
       setDismissingHost(null);
     }
@@ -176,14 +181,19 @@ export default function ServicesTab() {
   async function dismissAllDiscoveredHosts() {
     setDismissingHost("__all__");
     try {
-      await apiFetch(
+      const resp = await apiFetch(
         `/v1/vaults/${encodeURIComponent(vaultName)}/discovered-hosts`,
         { method: "DELETE" }
       );
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => null);
+        setError(data?.error || "Failed to dismiss hosts.");
+        return;
+      }
       setDiscoveredHosts([]);
       setDiscoveredTotal(0);
     } catch {
-      // Degrade silently.
+      setError("Network error while dismissing hosts.");
     } finally {
       setDismissingHost(null);
     }

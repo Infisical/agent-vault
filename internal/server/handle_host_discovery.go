@@ -162,7 +162,8 @@ func (s *Server) handleDismissDiscoveredHost(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
+	actor, err := s.requireVaultAdmin(w, r, ns.ID)
+	if err != nil {
 		return
 	}
 
@@ -178,7 +179,7 @@ func (s *Server) handleDismissDiscoveredHost(w http.ResponseWriter, r *http.Requ
 	}
 	dismissed[host] = true
 	if err := saveDismissedHosts(ctx, s.store, ns.ID, dismissed); err != nil {
-		s.logger.Warn("dismiss-host: save failed", "vault", vaultName, "err", err.Error())
+		s.logger.Warn("dismiss-host: save failed", "vault", vaultName, "actor", actor.ID, "actor_type", actor.Type, "err", err.Error())
 		jsonError(w, http.StatusInternalServerError, "Failed to dismiss host")
 		return
 	}
@@ -198,14 +199,15 @@ func (s *Server) handleDismissAllDiscoveredHosts(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
+	actor, err := s.requireVaultAdmin(w, r, ns.ID)
+	if err != nil {
 		return
 	}
 
 	// Collect all currently visible unmatched hosts to dismiss them.
 	unmatched, err := s.store.ListUnmatchedHosts(ctx, ns.ID)
 	if err != nil {
-		s.logger.Warn("dismiss-all: store query failed", "vault", vaultName, "err", err.Error())
+		s.logger.Warn("dismiss-all: store query failed", "vault", vaultName, "actor", actor.ID, "actor_type", actor.Type, "err", err.Error())
 		jsonError(w, http.StatusInternalServerError, "Failed to list discovered hosts")
 		return
 	}
@@ -220,7 +222,7 @@ func (s *Server) handleDismissAllDiscoveredHosts(w http.ResponseWriter, r *http.
 	}
 
 	if err := saveDismissedHosts(ctx, s.store, ns.ID, dismissed); err != nil {
-		s.logger.Warn("dismiss-all: save failed", "vault", vaultName, "err", err.Error())
+		s.logger.Warn("dismiss-all: save failed", "vault", vaultName, "actor", actor.ID, "actor_type", actor.Type, "err", err.Error())
 		jsonError(w, http.StatusInternalServerError, "Failed to dismiss hosts")
 		return
 	}
