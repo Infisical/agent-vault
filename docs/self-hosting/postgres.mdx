@@ -125,6 +125,8 @@ Save the output in your platform's secret store (Kubernetes Secrets, Docker secr
   The SQLite file is left intact. If anything goes wrong, remove `DATABASE_URL` and restart to fall back immediately.
 </Tip>
 
+<EnterpriseCTA />
+
 ## Example: Kubernetes
 
 A minimal setup with two replicas. The MITM proxy terminates TLS itself, so it needs a Layer-4 (TCP) load balancer. The API/UI can sit behind a standard HTTP Ingress.
