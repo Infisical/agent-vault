@@ -3,6 +3,10 @@ title: "PostgreSQL Database"
 description: "Deploy Agent Vault with PostgreSQL for production and multi-instance setups"
 ---
 
+import EnterpriseCTA from "/snippets/enterprise-cta.mdx";
+
+<EnterpriseCTA />
+
 ## Overview
 
 Agent Vault uses an embedded SQLite database by default, which requires no setup. For production deployments, or when running multiple instances, switch to PostgreSQL.
@@ -279,6 +283,8 @@ In production, place an L4 load balancer (HAProxy, nginx stream, cloud LB) in fr
 - **CA sharing**: The CA root key is stored in the database (encrypted by the DEK), so all instances share the same root certificate. Agents only need to trust one CA regardless of which instance they connect to.
 - **Advisory locks**: Service-config writes acquire a Postgres advisory lock scoped to the vault, preventing concurrent writes from producing an inconsistent config. Reads are lock-free.
 - **Two listener types**: The API (`:14321`) is standard HTTP -- put it behind an L7 load balancer with TLS termination. The MITM proxy (`:14322`) does its own TLS handshake with upstreams, so the load balancer must do TCP (L4) passthrough.
+
+<EnterpriseCTA />
 
 ## Rollback
 
