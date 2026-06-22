@@ -7414,3 +7414,76 @@ func TestCredentialProvider_LateBindsDynamicResolver(t *testing.T) {
 		t.Fatalf("post-bind: expected ok=false err=nil, got ok=%v err=%v", ok, err)
 	}
 }
+
+func TestVaultLeaveMemberSuccess(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/leave", nil)
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	has, _ := ms.HasVaultAccess(context.Background(), "member-user-id", "root-ns-id")
+	if has {
+		t.Fatal("expected member to no longer have vault access after leaving")
+	}
+}
+
+func TestVaultLeaveLastAdminBlocked(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/leave", nil)
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVaultLeaveAdminWithOtherAdmins(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	// Add a second admin so the owner can leave.
+	ms.users["admin2@test.com"] = &store.User{
+		ID: "admin2-user-id", Email: "admin2@test.com", Role: "member", IsActive: true,
+	}
+	ms.GrantVaultRole(context.Background(), "admin2-user-id", "user", "root-ns-id", "admin")
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/leave", nil)
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	has, _ := ms.HasVaultAccess(context.Background(), "owner-user-id", "root-ns-id")
+	if has {
+		t.Fatal("expected owner to no longer have vault access after leaving")
+	}
+}
+
+func TestVaultLeaveNoAccess(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms) // no vault grants
+	srv := newTestServer(withStore(ms))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/leave", nil)
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}

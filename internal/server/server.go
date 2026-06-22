@@ -879,6 +879,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("DELETE /v1/vaults/{name}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultDelete))))
 	mux.HandleFunc("POST /v1/vaults/{name}/rename", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultRename)))))
 	mux.HandleFunc("POST /v1/vaults/{name}/join", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultJoin)))))
+	mux.HandleFunc("POST /v1/vaults/{name}/leave", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultLeave)))))
 	mux.HandleFunc("GET /v1/vaults/{name}/settings", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultSettingsGet))))
 	mux.HandleFunc("PATCH /v1/vaults/{name}/settings", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultSettingsPatch)))))
 	mux.HandleFunc("PATCH /v1/vaults/{name}/credential-store", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultCredentialStorePatch)))))
