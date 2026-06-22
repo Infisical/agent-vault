@@ -9,6 +9,7 @@ import VaultForm, {
   type VaultFormValues,
 } from "../../components/VaultForm";
 import Button from "../../components/Button";
+import Modal from "../../components/Modal";
 import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
 import { ErrorBanner, LoadingSpinner, timeAgo } from "../../components/shared";
 import { apiFetch } from "../../lib/api";
@@ -31,6 +32,8 @@ export default function VaultsListTab() {
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Vault | null>(null);
+  const [leaveTarget, setLeaveTarget] = useState<Vault | null>(null);
+  const [leaveError, setLeaveError] = useState("");
 
   useEffect(() => {
     fetchVaults();
@@ -64,6 +67,22 @@ export default function VaultsListTab() {
       throw new Error(data.error || "Failed to delete vault");
     }
     setDeleteTarget(null);
+    fetchVaults();
+  }
+
+  async function handleLeaveVault() {
+    if (!leaveTarget) return;
+    setLeaveError("");
+    const resp = await apiFetch(
+      `/v1/vaults/${encodeURIComponent(leaveTarget.name)}/leave`,
+      { method: "POST" }
+    );
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      setLeaveError(data.error || "Failed to leave vault");
+      return;
+    }
+    setLeaveTarget(null);
     fetchVaults();
   }
 
@@ -136,6 +155,7 @@ export default function VaultsListTab() {
                     key={vault.id}
                     vault={vault}
                     isOwner={auth.is_owner}
+                    onLeave={setLeaveTarget}
                     onDelete={setDeleteTarget}
                   />
                 ))}
@@ -171,6 +191,28 @@ export default function VaultsListTab() {
         confirmValue={deleteTarget?.name ?? ""}
         inputLabel="Vault name"
       />
+
+      <Modal
+        open={leaveTarget !== null}
+        onClose={() => { setLeaveTarget(null); setLeaveError(""); }}
+        title="Leave vault"
+        description={`You will lose access to "${leaveTarget?.name}" and its credentials. A vault admin can re-add you later.`}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => { setLeaveTarget(null); setLeaveError(""); }}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleLeaveVault}
+              className="!bg-danger !text-white hover:!bg-danger/90"
+            >
+              Leave vault
+            </Button>
+          </>
+        }
+      >
+        {leaveError && <ErrorBanner message={leaveError} />}
+      </Modal>
     </div>
   );
 }
@@ -179,11 +221,13 @@ function VaultCard({
   vault,
   isOwner,
   onJoined,
+  onLeave,
   onDelete,
 }: {
   vault: Vault;
   isOwner: boolean;
   onJoined?: () => void;
+  onLeave?: (vault: Vault) => void;
   onDelete: (vault: Vault) => void;
 }) {
   const [joining, setJoining] = useState(false);
@@ -209,6 +253,12 @@ function VaultCard({
     }
   }
 
+  function handleLeave(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    onLeave?.(vault);
+  }
+
   function handleDelete(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
@@ -216,6 +266,7 @@ function VaultCard({
   }
 
   const isImplicit = vault.membership === "implicit";
+  const canLeave = !isImplicit && !vault.is_default;
   const canDelete = isOwner && !vault.is_default;
 
   const card = (
@@ -241,6 +292,19 @@ function VaultCard({
               {vault.pending_proposals === 1 ? "review needed" : "reviews needed"}
             </span>
           ) : null}
+          {canLeave && (
+            <button
+              onClick={handleLeave}
+              className="p-1 rounded text-text-dim hover:text-danger transition-colors"
+              title="Leave vault"
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
+            </button>
+          )}
           {canDelete && (
             <button
               onClick={handleDelete}
