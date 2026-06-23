@@ -110,12 +110,12 @@ func (s *Server) handleVaultLogsList(w http.ResponseWriter, r *http.Request) {
 	actorNames := map[string]string{}
 	for id := range agentIDs {
 		if ag, err := s.store.GetAgentByID(ctx, id); err == nil {
-			actorNames[id] = ag.Name
+			actorNames["agent:"+id] = ag.Name
 		}
 	}
 	for id := range userIDs {
 		if u, err := s.store.GetUserByID(ctx, id); err == nil {
-			actorNames[id] = u.Email
+			actorNames["user:"+id] = u.Email
 		}
 	}
 
@@ -138,7 +138,7 @@ func (s *Server) handleVaultLogsList(w http.ResponseWriter, r *http.Request) {
 			ErrorCode:      r.ErrorCode,
 			ActorType:      r.ActorType,
 			ActorID:        r.ActorID,
-			ActorName:      actorNames[r.ActorID],
+			ActorName:      actorNames[r.ActorType+":"+r.ActorID],
 			CreatedAt:      r.CreatedAt.Format(time.RFC3339),
 		}
 	}
