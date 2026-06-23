@@ -435,6 +435,15 @@ func (m *mockStore) GetUserByID(_ context.Context, id string) (*store.User, erro
 	return nil, fmt.Errorf("user not found")
 }
 
+func (m *mockStore) GetUserEmailByID(_ context.Context, id string) (string, error) {
+	for _, u := range m.users {
+		if u.ID == id {
+			return u.Email, nil
+		}
+	}
+	return "", fmt.Errorf("user not found")
+}
+
 func (m *mockStore) ListUsers(_ context.Context) ([]store.User, error) {
 	var users []store.User
 	for _, u := range m.users {
@@ -934,6 +943,15 @@ func (m *mockStore) GetAgentByID(_ context.Context, id string) (*store.Agent, er
 		}
 	}
 	return nil, fmt.Errorf("agent not found")
+}
+
+func (m *mockStore) GetAgentNameByID(_ context.Context, id string) (string, error) {
+	for _, ag := range m.agents {
+		if ag.ID == id {
+			return ag.Name, nil
+		}
+	}
+	return "", fmt.Errorf("agent not found")
 }
 
 func (m *mockStore) UpdateAgentRole(_ context.Context, agentID, role string) error {

@@ -1108,6 +1108,17 @@ func (s *SQLStore) GetUserByID(ctx context.Context, id string) (*User, error) {
 	return &u, nil
 }
 
+func (s *SQLStore) GetUserEmailByID(ctx context.Context, id string) (string, error) {
+	var email string
+	err := s.db.QueryRowContext(ctx,
+		s.dialect.Rebind(`SELECT email FROM users WHERE id = ?`), id,
+	).Scan(&email)
+	if err != nil {
+		return "", err
+	}
+	return email, nil
+}
+
 func (s *SQLStore) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.db.QueryContext(ctx,
 		s.dialect.Rebind("SELECT id, email, password_hash, password_salt, kdf_time, kdf_memory, kdf_threads, role, is_active, created_at, updated_at FROM users ORDER BY email"),
@@ -2766,6 +2777,17 @@ func (s *SQLStore) GetAgentByID(ctx context.Context, id string) (*Agent, error) 
 		return nil, err
 	}
 	return ag, nil
+}
+
+func (s *SQLStore) GetAgentNameByID(ctx context.Context, id string) (string, error) {
+	var name string
+	err := s.db.QueryRowContext(ctx,
+		s.dialect.Rebind(`SELECT name FROM agents WHERE id = ?`), id,
+	).Scan(&name)
+	if err != nil {
+		return "", err
+	}
+	return name, nil
 }
 
 func (s *SQLStore) GetAgentByName(ctx context.Context, name string) (*Agent, error) {

@@ -257,6 +257,7 @@ type Store interface {
 	CreateUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, role string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*store.User, error)
 	GetUserByEmail(ctx context.Context, email string) (*store.User, error)
 	GetUserByID(ctx context.Context, id string) (*store.User, error)
+	GetUserEmailByID(ctx context.Context, id string) (string, error)
 	ListUsers(ctx context.Context) ([]store.User, error)
 	UpdateUserRole(ctx context.Context, userID, role string) error
 	UpdateUserPassword(ctx context.Context, userID string, passwordHash, passwordSalt []byte, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) error
@@ -380,6 +381,7 @@ type Store interface {
 	CreateAgent(ctx context.Context, name, createdBy, role string) (*store.Agent, error)
 	CreateAgentWithGrantsAndToken(ctx context.Context, name, createdBy, role string, vaultGrants []store.AgentVaultGrantSpec, tokenExpiresAt *time.Time) (*store.Agent, *store.Session, error)
 	GetAgentByID(ctx context.Context, id string) (*store.Agent, error)
+	GetAgentNameByID(ctx context.Context, id string) (string, error)
 	GetAgentByName(ctx context.Context, name string) (*store.Agent, error)
 	ListAgents(ctx context.Context, vaultID string) ([]store.Agent, error)
 	ListAllAgents(ctx context.Context) ([]store.Agent, error)
