@@ -15,6 +15,7 @@ import Input from "../../components/Input";
 import FormField from "../../components/FormField";
 import Toggle from "../../components/Toggle";
 import SegmentedTabs from "../../components/SegmentedTabs";
+import Combobox from "../../components/Combobox";
 import {
   type Auth,
   type Substitution,
@@ -413,6 +414,7 @@ export default function ServicesTab() {
       {editingIndex !== null && (
         <ServiceModal
           title={editingIndex === -1 ? "Add Service" : "Edit Service"}
+          vaultName={vaultName}
           initial={editingIndex >= 0 ? services[editingIndex] : undefined}
           defaultHost={editingIndex === -1 ? addWithHost?.host : undefined}
           defaultName={editingIndex === -1 && addWithHost ? slugifyHost(addWithHost.host) : undefined}
@@ -445,6 +447,7 @@ export default function ServicesTab() {
 
 function ServiceModal({
   title,
+  vaultName,
   initial,
   defaultHost,
   defaultName,
@@ -456,6 +459,7 @@ function ServiceModal({
   onSave,
 }: {
   title: string;
+  vaultName: string;
   initial?: Service;
   defaultHost?: string;
   defaultName?: string;
@@ -470,6 +474,24 @@ function ServiceModal({
   const [pattern, setPattern] = useState(initial?.host ?? defaultHost ?? "");
   const [enabled, setEnabled] = useState(initial ? initial.enabled !== false : true);
   const [authType, setAuthType] = useState<AuthType>((initial?.auth?.type as AuthType) ?? (defaultAuthScheme as AuthType) ?? "passthrough");
+
+  // Available credential keys for the selector
+  const [credentialKeys, setCredentialKeys] = useState<string[]>([]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const resp = await apiFetch(`/v1/credentials?vault=${encodeURIComponent(vaultName)}`);
+        if (resp.ok) {
+          const data = await resp.json();
+          const creds: { key: string }[] = data.credentials ?? (data.keys ?? []).map((k: string) => ({ key: k }));
+          setCredentialKeys(creds.map((c) => c.key));
+        }
+      } catch {
+        // Supplementary — degrade silently to free-form input.
+      }
+    })();
+  }, [vaultName]);
+  const credentialKeyOptions = credentialKeys.map((k) => ({ id: k, label: k }));
 
   // Bearer fields
   const [token, setToken] = useState(initial?.auth?.token ?? "");
@@ -723,13 +745,12 @@ function ServiceModal({
               tooltip="The UPPER_SNAKE_CASE name of the credential storing the token."
               required
             >
-              <Input
+              <Combobox
                 placeholder="e.g. STRIPE_KEY"
                 value={token}
-                onChange={(e) => setToken(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSubmit();
-                }}
+                onChange={setToken}
+                options={credentialKeyOptions}
+                onSelect={setToken}
               />
             </FormField>
           )}
@@ -741,23 +762,24 @@ function ServiceModal({
                 tooltip="Credential key for the Basic Auth username."
                 required
               >
-                <Input
+                <Combobox
                   placeholder="e.g. ASHBY_API_KEY"
                   value={username}
-                  onChange={(e) => setUsername(e.target.value)}
+                  onChange={setUsername}
+                  options={credentialKeyOptions}
+                  onSelect={setUsername}
                 />
               </FormField>
               <FormField
                 label="Password Credential Key"
                 tooltip="Optional — leave empty if the service only requires a username."
               >
-                <Input
+                <Combobox
                   placeholder="e.g. ASHBY_PASSWORD"
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleSubmit();
-                  }}
+                  onChange={setPassword}
+                  options={credentialKeyOptions}
+                  onSelect={setPassword}
                 />
               </FormField>
             </>
@@ -770,10 +792,12 @@ function ServiceModal({
                 tooltip="The UPPER_SNAKE_CASE name of the credential storing the API key."
                 required
               >
-                <Input
+                <Combobox
                   placeholder="e.g. OPENAI_API_KEY"
                   value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
+                  onChange={setApiKey}
+                  options={credentialKeyOptions}
+                  onSelect={setApiKey}
                 />
               </FormField>
               <FormField
