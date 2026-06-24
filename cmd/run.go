@@ -241,7 +241,7 @@ var knownAgents = []struct {
 	{[]string{"openclaw"}, "OpenClaw", ".openclaw"},
 	{[]string{"pi"}, "Pi", filepath.Join(".pi", "agent")},
 	{[]string{"devin"}, "Devin", filepath.Join(".config", "devin")},
-	{[]string{"windsurf", "devin-desktop"}, "Windsurf", filepath.Join(".codeium", "windsurf")},
+	{[]string{"windsurf", "devin-desktop"}, "Windsurf / Devin Desktop", filepath.Join(".codeium", "windsurf")},
 	{[]string{"cline"}, "Cline", ".cline"},
 	{[]string{"roo"}, "Roo Code", ".roo"},
 }
