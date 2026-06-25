@@ -34,6 +34,18 @@ Each install method below configures a master password at startup. Store it some
     See [Docker deployment](/self-hosting/docker) for Compose, volumes, and full configuration.
 
   </Tab>
+  <Tab title="Helm">
+    Deploy Agent Vault to Kubernetes with the bundled Helm chart:
+
+    ```bash
+    helm install agent-vault ./charts/agent-vault \
+      --set env.AGENT_VAULT_ADDR="http://<your-host>:14321" \
+      --set secretEnv.AGENT_VAULT_MASTER_PASSWORD=REPLACE_ME
+    ```
+
+    The chart keeps the proxy service as an internal `ClusterIP` by default. See [`charts/agent-vault/README.md`](https://github.com/Infisical/agent-vault/tree/main/charts/agent-vault) for PostgreSQL, ingress, and Infisical-backed credential store examples.
+
+  </Tab>
   <Tab title="From source">
     **Prerequisites**: [Go 1.25+](https://go.dev/dl/), [Node.js 22+](https://nodejs.org/)
 

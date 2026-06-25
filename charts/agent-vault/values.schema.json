@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "replicaCount": {"type": "integer", "minimum": 1},
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": {"type": "string"},
+        "pullPolicy": {"type": "string"},
+        "tag": {"type": "string"}
+      }
+    },
+    "server": {
+      "type": "object",
+      "properties": {
+        "host": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "mitmPort": {"type": "integer", "minimum": 0, "maximum": 65535},
+        "logLevel": {"type": "string", "enum": ["debug", "info"]}
+      }
+    },
+    "env": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}},
+    "secretEnv": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}},
+    "existingSecret": {"type": "string"},
+    "existingSecretKeys": {"type": "array", "items": {"type": "string"}},
+    "service": {
+      "type": "object",
+      "properties": {
+        "api": {"type": "object"},
+        "proxy": {"type": "object"}
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"}
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "size": {"type": "string"},
+        "existingClaim": {"type": "string"}
+      }
+    }
+  }
+}
