@@ -239,6 +239,11 @@ var knownAgents = []struct {
 	{[]string{"hermes"}, "Hermes", ".hermes"},
 	{[]string{"opencode"}, "OpenCode", ".opencode"},
 	{[]string{"openclaw"}, "OpenClaw", ".openclaw"},
+	{[]string{"pi"}, "Pi", filepath.Join(".pi", "agent")},
+	{[]string{"devin"}, "Devin", filepath.Join(".config", "devin")},
+	{[]string{"windsurf", "devin-desktop"}, "Windsurf / Devin Desktop", filepath.Join(".codeium", "windsurf")},
+	{[]string{"cline"}, "Cline", ".cline"},
+	{[]string{"roo"}, "Roo Code", ".roo"},
 }
 
 // agentSkillDir returns the display name and skills base directory for a
