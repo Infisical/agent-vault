@@ -95,6 +95,7 @@ export default function ServicesTab() {
   const [discoveredExpanded, setDiscoveredExpanded] = useState(false);
   const [discoveredCollapsed, setDiscoveredCollapsed] = useState(false);
   const [addWithHost, setAddWithHost] = useState<{ host: string; authScheme?: string; authHeader?: string } | null>(null);
+  const [dismissingHost, setDismissingHost] = useState<string | null>(null);
 
   useEffect(() => {
     fetchServices();
@@ -154,6 +155,47 @@ export default function ServicesTab() {
       }
     } catch {
       // Discovered hosts are supplementary; degrade silently.
+    }
+  }
+
+  async function dismissDiscoveredHost(host: string) {
+    setDismissingHost(host);
+    try {
+      const resp = await apiFetch(
+        `/v1/vaults/${encodeURIComponent(vaultName)}/discovered-hosts/${encodeURIComponent(host)}`,
+        { method: "DELETE" }
+      );
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => null);
+        setError(data?.error || "Failed to dismiss host.");
+        return;
+      }
+      await fetchDiscoveredHosts(discoveredExpanded ? 100 : 5);
+    } catch {
+      setError("Network error while dismissing host.");
+    } finally {
+      setDismissingHost(null);
+    }
+  }
+
+  async function dismissAllDiscoveredHosts() {
+    setDismissingHost("__all__");
+    try {
+      const resp = await apiFetch(
+        `/v1/vaults/${encodeURIComponent(vaultName)}/discovered-hosts`,
+        { method: "DELETE" }
+      );
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => null);
+        setError(data?.error || "Failed to dismiss hosts.");
+        return;
+      }
+      setDiscoveredHosts([]);
+      setDiscoveredTotal(0);
+    } catch {
+      setError("Network error while dismissing hosts.");
+    } finally {
+      setDismissingHost(null);
     }
   }
 
@@ -317,12 +359,27 @@ export default function ServicesTab() {
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5"/><path d="M8 5v3M8 10h.01" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
               {discoveredTotal} {discoveredTotal === 1 ? "host" : "hosts"} detected in recent traffic
             </span>
-            <svg
-              className={`w-4 h-4 text-text-muted transition-transform ${discoveredCollapsed ? "" : "rotate-180"}`}
-              viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-            >
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
+            <div className="flex items-center gap-2">
+              {isAdmin && (
+                <button
+                  type="button"
+                  className="text-xs text-text-muted hover:text-text transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    dismissAllDiscoveredHosts();
+                  }}
+                  disabled={dismissingHost === "__all__"}
+                >
+                  {dismissingHost === "__all__" ? "Dismissing\u2026" : "Dismiss all"}
+                </button>
+              )}
+              <svg
+                className={`w-4 h-4 text-text-muted transition-transform ${discoveredCollapsed ? "" : "rotate-180"}`}
+                viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              >
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </div>
           </button>
           {!discoveredCollapsed && (
             <div className="border-t border-info/20 px-4 pb-3">
@@ -334,18 +391,33 @@ export default function ServicesTab() {
                       {dh.request_count} {dh.request_count === 1 ? "request" : "requests"} &middot; {timeAgo(dh.last_seen)}
                     </div>
                   </div>
-                  {isAdmin && (
-                    <button
-                      type="button"
-                      className="rounded border border-border bg-surface px-2.5 py-1 text-xs text-text-muted hover:bg-surface-hover hover:text-text transition-colors"
-                      onClick={() => {
-                        setAddWithHost({ host: dh.host, authScheme: dh.auth_scheme, authHeader: dh.auth_header });
-                        setEditingIndex(-1);
-                      }}
-                    >
-                      Add as service
-                    </button>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        className="rounded border border-border bg-surface px-2.5 py-1 text-xs text-text-muted hover:bg-surface-hover hover:text-text transition-colors"
+                        onClick={() => {
+                          setAddWithHost({ host: dh.host, authScheme: dh.auth_scheme, authHeader: dh.auth_header });
+                          setEditingIndex(-1);
+                        }}
+                      >
+                        Add as service
+                      </button>
+                    )}
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        className="rounded p-1 text-text-muted hover:text-text hover:bg-surface-hover transition-colors"
+                        title="Dismiss"
+                        onClick={() => dismissDiscoveredHost(dh.host)}
+                        disabled={dismissingHost === dh.host}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
               {discoveredTotal > 5 && !discoveredExpanded && (
