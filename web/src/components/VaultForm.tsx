@@ -10,10 +10,13 @@ import { ErrorBanner } from "./shared";
 export type VaultFormValues = {
   name: string;
   policy: "passthrough" | "deny";
-  kind: "builtin" | "infisical";
+  kind: "builtin" | "infisical" | "hashicorp";
   projectID: string;
   environment: string;
   secretPath: string;
+  hcMount: string;
+  hcPath: string;
+  hcKvVersion: string;
 };
 
 export const emptyVaultForm: VaultFormValues = {
@@ -23,6 +26,9 @@ export const emptyVaultForm: VaultFormValues = {
   projectID: "",
   environment: "",
   secretPath: "/",
+  hcMount: "secret",
+  hcPath: "",
+  hcKvVersion: "2",
 };
 
 // Infisical needs a project + environment; everything else may be blank.
@@ -45,10 +51,26 @@ export function buildInfisicalConfig(v: VaultFormValues) {
   };
 }
 
+// HashiCorp needs a KV mount + secret path; everything else may be blank.
+export function hashicorpFieldsValid(v: VaultFormValues): boolean {
+  return v.kind !== "hashicorp" || (!!v.hcMount.trim() && !!v.hcPath.trim());
+}
+
+// Trimmed HashiCorp KV config block.
+export function buildHashicorpConfig(v: VaultFormValues) {
+  return {
+    mount: v.hcMount.trim(),
+    secret_path: v.hcPath.trim(),
+    kv_version: Number(v.hcKvVersion),
+  };
+}
+
 export default function VaultForm({
   values,
   onChange,
   infisicalOptionDisabled,
+  hashicorpOptionDisabled = true,
+  hideHashicorpFields = false,
   storeTooltip,
   showPolicy = false,
   policyDisabled = false,
@@ -62,6 +84,10 @@ export default function VaultForm({
   values: VaultFormValues;
   onChange: (patch: Partial<VaultFormValues>) => void;
   infisicalOptionDisabled: boolean;
+  hashicorpOptionDisabled?: boolean;
+  // The edit/switch flow can't reconfigure a HashiCorp store (create-only), so
+  // it suppresses the mount/path/version inputs and only offers switch-away.
+  hideHashicorpFields?: boolean;
   storeTooltip: ReactNode;
   showPolicy?: boolean;
   policyDisabled?: boolean;
@@ -73,6 +99,7 @@ export default function VaultForm({
   header?: ReactNode;
 }) {
   const isInfisical = values.kind === "infisical";
+  const isHashicorp = values.kind === "hashicorp" && !hideHashicorpFields;
 
   return (
     <div className="space-y-5">
@@ -116,6 +143,9 @@ export default function VaultForm({
           <option value="infisical" disabled={infisicalOptionDisabled}>
             Infisical
           </option>
+          <option value="hashicorp" disabled={hashicorpOptionDisabled}>
+            HashiCorp Vault
+          </option>
         </Select>
       </FormField>
 
@@ -141,6 +171,34 @@ export default function VaultForm({
               value={values.secretPath}
               onChange={(e) => onChange({ secretPath: e.target.value })}
             />
+          </FormField>
+        </div>
+      )}
+
+      {isHashicorp && (
+        <div className="space-y-3">
+          <FormField label="Mount" required>
+            <Input
+              placeholder="secret"
+              value={values.hcMount}
+              onChange={(e) => onChange({ hcMount: e.target.value })}
+            />
+          </FormField>
+          <FormField label="Secret path" required>
+            <Input
+              placeholder="agent-vault/demo"
+              value={values.hcPath}
+              onChange={(e) => onChange({ hcPath: e.target.value })}
+            />
+          </FormField>
+          <FormField label="KV version">
+            <Select
+              value={values.hcKvVersion}
+              onChange={(e) => onChange({ hcKvVersion: e.target.value })}
+            >
+              <option value="2">2</option>
+              <option value="1">1</option>
+            </Select>
           </FormField>
         </div>
       )}

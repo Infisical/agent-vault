@@ -21,6 +21,7 @@ import (
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/crypto"
+	"github.com/Infisical/agent-vault/internal/hashicorp"
 	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/mitm"
 	"github.com/Infisical/agent-vault/internal/netguard"
@@ -59,18 +60,18 @@ type agentVaultJSON struct {
 
 // Server is the Agent Vault HTTP server.
 type Server struct {
-	httpServer  *http.Server
-	store       Store
-	encKey      []byte // 32-byte encryption key, held in memory while running
-	notifier    *notify.Notifier
-	initialized    bool                // true when at least one owner account exists
-	lastInitCheck  atomic.Int64        // unix-millis of last DB check for initialization (throttle)
-	baseURL     string              // externally-reachable base URL (e.g. "https://sb.example.com")
-	skillCLI    []byte              // embedded CLI skill content (served at GET /v1/skills/cli)
-	mitm        *mitm.Proxy         // transparent MITM proxy; nil only when --mitm-port 0
-	logger      *slog.Logger        // structured logger for per-request observability
-	rateLimit   *ratelimit.Registry // tiered rate limiter; shared with the MITM ingress
-	logSink     requestlog.Sink     // per-request persistence sink; never nil (Nop default)
+	httpServer    *http.Server
+	store         Store
+	encKey        []byte // 32-byte encryption key, held in memory while running
+	notifier      *notify.Notifier
+	initialized   bool                // true when at least one owner account exists
+	lastInitCheck atomic.Int64        // unix-millis of last DB check for initialization (throttle)
+	baseURL       string              // externally-reachable base URL (e.g. "https://sb.example.com")
+	skillCLI      []byte              // embedded CLI skill content (served at GET /v1/skills/cli)
+	mitm          *mitm.Proxy         // transparent MITM proxy; nil only when --mitm-port 0
+	logger        *slog.Logger        // structured logger for per-request observability
+	rateLimit     *ratelimit.Registry // tiered rate limiter; shared with the MITM ingress
+	logSink       requestlog.Sink     // per-request persistence sink; never nil (Nop default)
 	// touchCache short-circuits per-request session-touch writes. With
 	// db.SetMaxOpenConns(1), every UPDATE — even a no-op — opens the
 	// single WAL writer slot. Caching the last-touch wall-clock per
@@ -87,8 +88,13 @@ type Server struct {
 	// infisicalDynamic resolves Infisical dynamic-secret leases on demand; built
 	// in Run alongside the syncer when a client is attached. Nil disables it.
 	infisicalDynamic *infisical.DynamicResolver
-	oauthRefresher   *oauth.Refresher
-	telemetry        *telemetry.Telemetry
+	// hashicorpClient is nil when VAULT_ADDR is unset; create handlers reject
+	// kind="hashicorp" then.
+	hashicorpClient *hashicorp.Client
+	// hashicorpSyncer is built in Run; exposed for manual-refresh RefreshOnce.
+	hashicorpSyncer *hashicorp.Syncer
+	oauthRefresher  *oauth.Refresher
+	telemetry       *telemetry.Telemetry
 }
 
 // lockVaultServices acquires the per-vault mutation lock via the store's
@@ -113,6 +119,14 @@ func (s *Server) AttachInfisical(c *infisical.Client) { s.infisicalClient = c }
 // from the attached client. Used by tests to inject a fake fetcher; in prod
 // Start auto-builds one when the field is nil.
 func (s *Server) AttachInfisicalSyncer(syncer *infisical.Syncer) { s.infisicalSyncer = syncer }
+
+// AttachHashicorp registers the HashiCorp Vault client. Must be called before Start.
+func (s *Server) AttachHashicorp(c *hashicorp.Client) { s.hashicorpClient = c }
+
+// AttachHashicorpSyncer pre-wires a syncer instead of letting Start build one
+// from the attached client. Used by tests to inject a fake fetcher; in prod
+// Start auto-builds one when the field is nil.
+func (s *Server) AttachHashicorpSyncer(syncer *hashicorp.Syncer) { s.hashicorpSyncer = syncer }
 
 // AttachLogSink swaps the per-request log sink. Safe to call once at
 // startup, before the HTTP server begins accepting connections. nil
@@ -1012,21 +1026,31 @@ func (s *Server) Start() error {
 	defer stopWorkers()
 	go s.runTouchCachePruner(pruneCtx)
 
-	// syncerDone closes once Syncer.Run has returned AND drained its in-flight
-	// refresh goroutines. We block on it before WipeBytes so a refresh mid-
-	// AES-GCM never reads a zeroed s.encKey (silently produces garbage
-	// ciphertext that lands in the credentials table).
-	syncerDone := make(chan struct{})
+	// Each external-store syncer's done channel closes once its Run has
+	// returned AND drained its in-flight refresh goroutines. We block on all
+	// of them before WipeBytes so a refresh mid-AES-GCM never reads a zeroed
+	// s.encKey (silently produces garbage ciphertext that lands in the
+	// credentials table).
+	var syncerDones []chan struct{}
+	runSyncer := func(run func(context.Context)) {
+		done := make(chan struct{})
+		syncerDones = append(syncerDones, done)
+		go func() {
+			defer close(done)
+			run(pruneCtx)
+		}()
+	}
 	if s.infisicalSyncer == nil && s.infisicalClient != nil {
 		s.infisicalSyncer = infisical.NewSyncer(s.store, s.infisicalClient, s.encKey, s.logger)
 	}
 	if s.infisicalSyncer != nil {
-		go func() {
-			defer close(syncerDone)
-			s.infisicalSyncer.Run(pruneCtx)
-		}()
-	} else {
-		close(syncerDone)
+		runSyncer(s.infisicalSyncer.Run)
+	}
+	if s.hashicorpSyncer == nil && s.hashicorpClient != nil {
+		s.hashicorpSyncer = hashicorp.NewSyncer(s.store, s.hashicorpClient, s.encKey, s.logger)
+	}
+	if s.hashicorpSyncer != nil {
+		runSyncer(s.hashicorpSyncer.Run)
 	}
 
 	// Dynamic-secret resolver: leases minted on demand from the proxy path.
@@ -1094,14 +1118,18 @@ func (s *Server) Start() error {
 		return fmt.Errorf("server shutdown: %w", err)
 	}
 
-	// Stop background workers (syncer + touch-cache pruner) and wait for the
-	// syncer's in-flight refreshes to drain before zeroing s.encKey.
+	// Stop background workers (syncers + touch-cache pruner) and wait for every
+	// external-store syncer's in-flight refreshes to drain before zeroing
+	// s.encKey.
 	stopWorkers()
-	select {
-	case <-syncerDone:
-	case <-time.After(5 * time.Second):
-		fmt.Fprintln(os.Stderr, "warning: infisical syncer did not stop within 5s; skipping key wipe to avoid racing in-flight encrypts")
-		return nil
+	deadline := time.After(5 * time.Second)
+	for _, done := range syncerDones {
+		select {
+		case <-done:
+		case <-deadline:
+			fmt.Fprintln(os.Stderr, "warning: external-store syncer did not stop within 5s; skipping key wipe to avoid racing in-flight encrypts")
+			return nil
+		}
 	}
 
 	// Revoke outstanding dynamic-secret leases (best-effort, self-bounded).
