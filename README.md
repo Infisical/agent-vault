@@ -100,9 +100,19 @@ You can also deploy Agent Vault with Docker:
 
 ```bash
 docker run -it -p 14321:14321 -p 14322:14322 \
-  -e AGENT_VAULT_MASTER_PASSWORD=your-password \
+  -e AGENT_VAULT_MASTER_PASSWORD=REPLACE_ME \
   -v agent-vault-data:/data infisical/agent-vault
 ```
+
+Or deploy it to Kubernetes with the bundled Helm chart:
+
+```bash
+helm install agent-vault ./charts/agent-vault \
+  --set env.AGENT_VAULT_ADDR=http://agent-vault.example.internal:14321 \
+  --set secretEnv.AGENT_VAULT_MASTER_PASSWORD=REPLACE_ME
+```
+
+See [charts/agent-vault](charts/agent-vault) for PostgreSQL, ingress, and Infisical-backed credential store examples.
 
 The server starts the HTTP API on port `14321` and a transparent HTTP/HTTPS proxy on port `14322`; the same listener handles `CONNECT` for `https://` upstreams and absolute-form forward-proxy requests for `http://` upstreams.
 
