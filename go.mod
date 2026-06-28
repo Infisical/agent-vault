@@ -11,7 +11,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jedib0t/go-pretty/v6 v6.8.0
 	github.com/muesli/reflow v0.3.0
-	github.com/posthog/posthog-go v1.15.0
+	github.com/posthog/posthog-go v1.16.1
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/crypto v0.52.0
 	golang.org/x/sync v0.21.0
