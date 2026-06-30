@@ -49,9 +49,14 @@ func MergeServices(existing []broker.Service, proposed []Service) ([]broker.Serv
 		default: // ActionSet: upsert
 			idx, exists := nameIndex[p.Name]
 			switch {
-			case exists && p.Auth == nil && p.Enabled != nil:
-				// Enable/disable-only: preserve Auth/Host/Path.
-				merged[idx].Enabled = p.Enabled
+			case exists && p.Auth == nil && len(p.Substitutions) == 0 && (p.Enabled != nil || p.ResponseRedaction != nil):
+				// Metadata-only update: preserve Auth/Host/Path.
+				if p.Enabled != nil {
+					merged[idx].Enabled = p.Enabled
+				}
+				if p.ResponseRedaction != nil {
+					merged[idx].ResponseRedaction = p.ResponseRedaction
+				}
 			case exists:
 				next := toBrokerService(p)
 				// Empty Substitutions means "leave existing alone";
@@ -88,6 +93,9 @@ func toBrokerService(p Service) broker.Service {
 		Path:    p.Path,
 		Port:    p.Port,
 		Enabled: p.Enabled,
+	}
+	if p.ResponseRedaction != nil {
+		svc.ResponseRedaction = p.ResponseRedaction
 	}
 	if p.Auth != nil {
 		svc.Auth = *p.Auth
