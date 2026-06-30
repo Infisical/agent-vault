@@ -1,5 +1,5 @@
 # ---- Frontend build ----
-FROM node:26-alpine@sha256:3ad34ca6292aec4a91d8ddeb9229e29d9c2f689efd0dd242860889ac71842eba AS frontend
+FROM node:26-alpine@sha256:a2dc166a387cc6ca1e62d0c8e265e49ca985d6e60abc9fe6e6c3d6ce8e63f606 AS frontend
 
 WORKDIR /app
 COPY web/package.json web/package-lock.json ./
