@@ -12,6 +12,7 @@ import Button from "../../components/Button";
 import Select from "../../components/Select";
 import FormField from "../../components/FormField";
 import { apiFetch } from "../../lib/api";
+import { useNavigate } from "@tanstack/react-router";
 
 interface VaultUser {
   email: string;
@@ -23,16 +24,29 @@ function RowActions({
   user,
   vaultName,
   currentEmail,
+  isAdmin,
   onDone,
+  onLeave,
   onError,
 }: {
   user: VaultUser;
   vaultName: string;
   currentEmail: string;
+  isAdmin: boolean;
   onDone: () => void;
+  onLeave: () => void;
   onError: (msg: string) => void;
 }) {
-  if (user.email === currentEmail) return null;
+  if (user.email === currentEmail) {
+    return (
+      <DropdownMenu
+        items={[{ label: "Leave vault", onClick: onLeave, variant: "danger" as const }]}
+        width={192}
+      />
+    );
+  }
+
+  if (!isAdmin) return null;
 
   const newRole = user.role === "admin" ? "member" : "admin";
 
@@ -79,9 +93,29 @@ function RowActions({
 
 export default function UsersTab() {
   const { vaultName, vaultRole, email: currentEmail } = useVaultParams();
+  const navigate = useNavigate();
   const [users, setUsers] = useState<VaultUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [leaveOpen, setLeaveOpen] = useState(false);
+  const [leaveError, setLeaveError] = useState("");
+
+  const isAdmin = vaultRole === "admin";
+
+  async function handleLeave() {
+    setLeaveError("");
+    const resp = await apiFetch(
+      `/v1/vaults/${encodeURIComponent(vaultName)}/leave`,
+      { method: "POST" }
+    );
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      setLeaveError(data.error || "Failed to leave vault");
+      return;
+    }
+    setLeaveOpen(false);
+    navigate({ to: "/" });
+  }
 
   const columns: Column<VaultUser>[] = [
     {
@@ -101,24 +135,22 @@ export default function UsersTab() {
         <span className="text-sm text-text-muted capitalize">{u.role}</span>
       ),
     },
-    ...(vaultRole === "admin"
-      ? [
-          {
-            key: "actions" as const,
-            header: "",
-            align: "right" as const,
-            render: (u: VaultUser) => (
-              <RowActions
-                user={u}
-                vaultName={vaultName}
-                currentEmail={currentEmail}
-                onDone={fetchUsers}
-                onError={setError}
-              />
-            ),
-          },
-        ]
-      : []),
+    {
+      key: "actions" as const,
+      header: "",
+      align: "right" as const,
+      render: (u: VaultUser) => (
+        <RowActions
+          user={u}
+          vaultName={vaultName}
+          currentEmail={currentEmail}
+          isAdmin={isAdmin}
+          onDone={fetchUsers}
+          onLeave={() => setLeaveOpen(true)}
+          onError={setError}
+        />
+      ),
+    },
   ];
 
   useEffect(() => {
@@ -155,7 +187,7 @@ export default function UsersTab() {
             People with access to this vault.
           </p>
         </div>
-        {vaultRole === "admin" && (
+        {isAdmin && (
           <AddUserButton vaultName={vaultName} vaultUsers={users} onAdded={fetchUsers} />
         )}
       </div>
@@ -173,6 +205,28 @@ export default function UsersTab() {
           emptyDescription="Add existing instance users to give them access to this vault."
         />
       )}
+
+      <Modal
+        open={leaveOpen}
+        onClose={() => { setLeaveOpen(false); setLeaveError(""); }}
+        title="Leave vault"
+        description={`You will lose access to "${vaultName}" and its credentials. A vault admin can re-add you later.`}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => { setLeaveOpen(false); setLeaveError(""); }}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleLeave}
+              className="!bg-danger !text-white hover:!bg-danger/90"
+            >
+              Leave vault
+            </Button>
+          </>
+        }
+      >
+        {leaveError && <ErrorBanner message={leaveError} />}
+      </Modal>
     </div>
   );
 }

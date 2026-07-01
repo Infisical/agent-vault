@@ -14,11 +14,11 @@ import (
 
 // fakeCredStore satisfies CredentialStore for tests.
 type fakeCredStore struct {
-	brokerCfg     map[string]*store.BrokerConfig // vaultID → config
-	creds         map[string]*store.Credential   // key = vaultID+"|"+key
-	missKey       string                         // if set, GetCredential for this key returns nil/err
-	policy        UnmatchedHostPolicy            // unmatched-host policy returned by UnmatchedHostPolicy
-	brokerCfgErr  error                          // if non-nil, GetBrokerConfig returns this error
+	brokerCfg    map[string]*store.BrokerConfig // vaultID → config
+	creds        map[string]*store.Credential   // key = vaultID+"|"+key
+	missKey      string                         // if set, GetCredential for this key returns nil/err
+	policy       UnmatchedHostPolicy            // unmatched-host policy returned by UnmatchedHostPolicy
+	brokerCfgErr error                          // if non-nil, GetBrokerConfig returns this error
 
 	getCredentialCalls int // call count — used by passthrough tests to assert no lookup
 }
@@ -733,5 +733,79 @@ func TestInject_CredentialKeysIncludesSubstitution(t *testing.T) {
 	}
 	if res == nil || len(res.CredentialKeys) != 2 {
 		t.Fatalf("expected CredentialKeys to include both auth and substitution keys, got %+v", res)
+	}
+}
+
+// fakeDynamicResolver satisfies DynamicCredentialResolver.
+type fakeDynamicResolver struct {
+	val   string
+	ok    bool
+	err   error
+	calls int
+}
+
+func (f *fakeDynamicResolver) Resolve(_ context.Context, _, _ string) (string, bool, error) {
+	f.calls++
+	return f.val, f.ok, f.err
+}
+
+func TestInject_DynamicFallback_Resolves(t *testing.T) {
+	key32 := make32(0x22)
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "db.example.com",
+		Auth: broker.Auth{Type: "bearer", Token: "DB_POSTGRES_PASSWORD"},
+	}})
+	// No static credential set → GetCredential misses, falls through to dynamic.
+	dyn := &fakeDynamicResolver{val: "leased-pw", ok: true}
+
+	p := NewStoreCredentialProvider(f, key32)
+	p.Dynamic = dyn
+
+	res, err := p.Inject(context.Background(), "v1", "db.example.com", 0, "/")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Headers["Authorization"] != "Bearer leased-pw" {
+		t.Fatalf("got Authorization=%q", res.Headers["Authorization"])
+	}
+	if dyn.calls != 1 {
+		t.Fatalf("expected dynamic resolver called once, got %d", dyn.calls)
+	}
+}
+
+func TestInject_DynamicFallback_NotDynamic_StillMissing(t *testing.T) {
+	key32 := make32(0x22)
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "db.example.com",
+		Auth: broker.Auth{Type: "bearer", Token: "DB_POSTGRES_PASSWORD"},
+	}})
+	dyn := &fakeDynamicResolver{ok: false} // not a dynamic credential
+
+	p := NewStoreCredentialProvider(f, key32)
+	p.Dynamic = dyn
+
+	_, err := p.Inject(context.Background(), "v1", "db.example.com", 0, "/")
+	if !errors.Is(err, ErrCredentialMissing) {
+		t.Fatalf("expected ErrCredentialMissing, got %v", err)
+	}
+}
+
+func TestInject_DynamicFallback_ErrorPropagates(t *testing.T) {
+	key32 := make32(0x22)
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "db.example.com",
+		Auth: broker.Auth{Type: "bearer", Token: "DB_POSTGRES_PASSWORD"},
+	}})
+	dyn := &fakeDynamicResolver{err: errors.New("infisical down")}
+
+	p := NewStoreCredentialProvider(f, key32)
+	p.Dynamic = dyn
+
+	_, err := p.Inject(context.Background(), "v1", "db.example.com", 0, "/")
+	if err == nil {
+		t.Fatalf("expected error to propagate")
 	}
 }

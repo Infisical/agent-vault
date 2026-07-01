@@ -78,6 +78,17 @@ description: "Deploy Agent Vault to Fly.io with persistent storage"
 - **Storage**: Persistent volume `agent_vault_data` mounted at `/data` -- all state is in a single SQLite file
 - **Cold starts**: `min_machines_running` defaults to `0`, so the app scales to zero when idle. The first request after sleep incurs a few seconds of cold-start latency. Set it to `1` in `fly.toml` if you need always-on availability.
 
+## PostgreSQL with Fly Postgres
+
+For production deployments or to run multiple Agent Vault machines, switch from SQLite to PostgreSQL:
+
+```bash
+fly postgres create        # create a Fly Postgres cluster
+fly postgres attach         # attach it to your Agent Vault app
+```
+
+Fly sets `DATABASE_URL` automatically. Agent Vault detects it and uses Postgres on the next deploy. See the [PostgreSQL guide](/self-hosting/postgres) for full setup, migration steps, and configuration details.
+
 ## Connecting agents
 
 <Tabs>
@@ -112,5 +123,5 @@ agent-vault ca fetch --address https://your-app.fly.dev -o /path/to/ca.pem
 ```
 
 <Tip>
-  Changing the master password re-wraps the data encryption key without re-encrypting credentials. Use `agent-vault master-password change` while the server is stopped.
+  Changing the master password re-wraps the data encryption key without re-encrypting credentials. For single-instance (SQLite) deployments, use `agent-vault master-password change` while the server is stopped. When using Fly Postgres, scale to zero (`fly scale count 0`), run `agent-vault master-password change --force` with `DATABASE_URL` set, then update the secret with `fly secrets set AGENT_VAULT_MASTER_PASSWORD=...` and scale back up.
 </Tip>

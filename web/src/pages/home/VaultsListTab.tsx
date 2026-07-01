@@ -2,10 +2,14 @@ import { useState, useEffect, useMemo } from "react";
 import { Link, useNavigate, useRouteContext } from "@tanstack/react-router";
 import type { AuthContext } from "../../router";
 import Sheet from "../../components/Sheet";
-import FormField from "../../components/FormField";
-import Input from "../../components/Input";
-import Select from "../../components/Select";
+import VaultForm, {
+  emptyVaultForm,
+  infisicalFieldsValid,
+  buildInfisicalConfig,
+  type VaultFormValues,
+} from "../../components/VaultForm";
 import Button from "../../components/Button";
+import Modal from "../../components/Modal";
 import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
 import { ErrorBanner, LoadingSpinner, timeAgo } from "../../components/shared";
 import { apiFetch } from "../../lib/api";
@@ -28,6 +32,8 @@ export default function VaultsListTab() {
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Vault | null>(null);
+  const [leaveTarget, setLeaveTarget] = useState<Vault | null>(null);
+  const [leaveError, setLeaveError] = useState("");
 
   useEffect(() => {
     fetchVaults();
@@ -61,6 +67,22 @@ export default function VaultsListTab() {
       throw new Error(data.error || "Failed to delete vault");
     }
     setDeleteTarget(null);
+    fetchVaults();
+  }
+
+  async function handleLeaveVault() {
+    if (!leaveTarget) return;
+    setLeaveError("");
+    const resp = await apiFetch(
+      `/v1/vaults/${encodeURIComponent(leaveTarget.name)}/leave`,
+      { method: "POST" }
+    );
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      setLeaveError(data.error || "Failed to leave vault");
+      return;
+    }
+    setLeaveTarget(null);
     fetchVaults();
   }
 
@@ -133,6 +155,7 @@ export default function VaultsListTab() {
                     key={vault.id}
                     vault={vault}
                     isOwner={auth.is_owner}
+                    onLeave={setLeaveTarget}
                     onDelete={setDeleteTarget}
                   />
                 ))}
@@ -168,6 +191,28 @@ export default function VaultsListTab() {
         confirmValue={deleteTarget?.name ?? ""}
         inputLabel="Vault name"
       />
+
+      <Modal
+        open={leaveTarget !== null}
+        onClose={() => { setLeaveTarget(null); setLeaveError(""); }}
+        title="Leave vault"
+        description={`You will lose access to "${leaveTarget?.name}" and its credentials. A vault admin can re-add you later.`}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => { setLeaveTarget(null); setLeaveError(""); }}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleLeaveVault}
+              className="!bg-danger !text-white hover:!bg-danger/90"
+            >
+              Leave vault
+            </Button>
+          </>
+        }
+      >
+        {leaveError && <ErrorBanner message={leaveError} />}
+      </Modal>
     </div>
   );
 }
@@ -176,11 +221,13 @@ function VaultCard({
   vault,
   isOwner,
   onJoined,
+  onLeave,
   onDelete,
 }: {
   vault: Vault;
   isOwner: boolean;
   onJoined?: () => void;
+  onLeave?: (vault: Vault) => void;
   onDelete: (vault: Vault) => void;
 }) {
   const [joining, setJoining] = useState(false);
@@ -206,6 +253,12 @@ function VaultCard({
     }
   }
 
+  function handleLeave(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    onLeave?.(vault);
+  }
+
   function handleDelete(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
@@ -213,6 +266,7 @@ function VaultCard({
   }
 
   const isImplicit = vault.membership === "implicit";
+  const canLeave = !isImplicit && !vault.is_default;
   const canDelete = isOwner && !vault.is_default;
 
   const card = (
@@ -238,6 +292,19 @@ function VaultCard({
               {vault.pending_proposals === 1 ? "review needed" : "reviews needed"}
             </span>
           ) : null}
+          {canLeave && (
+            <button
+              onClick={handleLeave}
+              className="p-1 rounded text-text-dim hover:text-danger transition-colors"
+              title="Leave vault"
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
+            </button>
+          )}
           {canDelete && (
             <button
               onClick={handleDelete}
@@ -291,17 +358,10 @@ function VaultCard({
 
 function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void }) {
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-
+  const [values, setValues] = useState<VaultFormValues>(emptyVaultForm);
   const [availableStores, setAvailableStores] = useState<string[]>(["builtin"]);
-  const [kind, setKind] = useState<string>("builtin");
-
-  // Infisical-only fields.
-  const [projectID, setProjectID] = useState("");
-  const [environment, setEnvironment] = useState("");
-  const [secretPath, setSecretPath] = useState("/");
 
   useEffect(() => {
     apiFetch("/v1/instance/credential-stores")
@@ -314,42 +374,33 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
 
   function close() {
     setOpen(false);
-    setName("");
+    setValues(emptyVaultForm);
     setError("");
-    setKind("builtin");
-    setProjectID("");
-    setEnvironment("");
-    setSecretPath("/");
   }
 
   async function handleCreate() {
-    if (!name.trim()) return;
+    const trimmed = values.name.trim();
+    if (!trimmed) return;
     setSubmitting(true);
     setError("");
-    const trimmed = name.trim();
-    try {
-      const body: Record<string, unknown> = { name: trimmed };
-      if (kind === "infisical") {
-        if (!projectID.trim() || !environment.trim()) {
-          setError("Project ID and environment are required for Infisical.");
-          setSubmitting(false);
-          return;
-        }
-        const trimmedPath = secretPath.trim() || "/";
-        if (!trimmedPath.startsWith("/")) {
-          setError('Secret path must start with "/".');
-          setSubmitting(false);
-          return;
-        }
-        body.credential_store = {
-          kind: "infisical",
-          config: {
-            project_id: projectID.trim(),
-            environment: environment.trim(),
-            secret_path: trimmedPath,
-          },
-        };
+
+    const body: Record<string, unknown> = { name: trimmed };
+    if (values.kind === "infisical") {
+      if (!infisicalFieldsValid(values)) {
+        setError("Project ID and environment are required for Infisical.");
+        setSubmitting(false);
+        return;
       }
+      try {
+        body.credential_store = { kind: "infisical", config: buildInfisicalConfig(values) };
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Invalid Infisical config.");
+        setSubmitting(false);
+        return;
+      }
+    }
+
+    try {
       const resp = await apiFetch("/v1/vaults", {
         method: "POST",
         body: JSON.stringify(body),
@@ -401,39 +452,25 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
             <Button
               onClick={handleCreate}
               loading={submitting}
-              disabled={
-                !name.trim() ||
-                (kind === "infisical" && (!projectID.trim() || !environment.trim()))
-              }
+              disabled={!values.name.trim() || !infisicalFieldsValid(values)}
             >
               Create
             </Button>
           </>
         }
       >
-        <div className="space-y-4">
-        <p className="text-sm text-text-muted">
-          Create an isolated environment with its own credentials and proxy rules.
-        </p>
-        <FormField
-          label="Vault Name"
-          error={error && kind === "builtin" ? error : undefined}
-        >
-          <Input
-            placeholder="e.g. my-project"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleCreate();
-            }}
-            error={!!error && kind === "builtin"}
-            autoFocus
-          />
-        </FormField>
-
-        <FormField
-          label="Credential store"
-          tooltip={
+        <VaultForm
+          values={values}
+          onChange={(patch) => {
+            setValues((v) => ({ ...v, ...patch }));
+            setError("");
+          }}
+          infisicalOptionDisabled={!infisicalAvailable}
+          namePlaceholder="e.g. my-project"
+          autoFocusName
+          onEnter={handleCreate}
+          error={error}
+          storeTooltip={
             <>
               Built-in keeps credentials in Agent Vault. Infisical syncs read-only from your Infisical instance.
               {!infisicalAvailable && (
@@ -441,45 +478,12 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
               )}
             </>
           }
-        >
-          <Select
-            value={kind}
-            onChange={(e) => setKind(e.target.value)}
-          >
-            <option value="builtin">Built In</option>
-            <option value="infisical" disabled={!infisicalAvailable}>
-              Infisical
-            </option>
-          </Select>
-        </FormField>
-
-        {kind === "infisical" && (
-          <div className="space-y-3">
-            <FormField label="Project ID" required>
-              <Input
-                placeholder="abcdef..."
-                value={projectID}
-                onChange={(e) => setProjectID(e.target.value)}
-              />
-            </FormField>
-            <FormField label="Environment Slug" required>
-              <Input
-                placeholder="dev"
-                value={environment}
-                onChange={(e) => setEnvironment(e.target.value)}
-              />
-            </FormField>
-            <FormField label="Secret path">
-              <Input
-                placeholder="/"
-                value={secretPath}
-                onChange={(e) => setSecretPath(e.target.value)}
-              />
-            </FormField>
-            {error && <ErrorBanner message={error} />}
-          </div>
-        )}
-        </div>
+          header={
+            <p className="text-sm text-text-muted">
+              Create an isolated environment with its own credentials and proxy rules.
+            </p>
+          }
+        />
       </Sheet>
     </>
   );

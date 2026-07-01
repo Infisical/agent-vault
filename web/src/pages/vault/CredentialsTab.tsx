@@ -35,6 +35,7 @@ export default function CredentialsTab() {
     token_auth_method?: string;
     access_token?: string;
     refresh_token?: string;
+    unavailable?: boolean;
   }
   const [credentials, setCredentials] = useState<CredentialInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -54,7 +55,37 @@ export default function CredentialsTab() {
 
   // Service suggestions: credentials matching catalog entries that aren't used by any service
   interface CatalogTemplate { id: string; name: string; host: string; suggested_credential_key: string; }
-  interface ServiceInfo { name: string; host: string; auth: { type: string; token?: string; username?: string; password?: string; key?: string; headers?: Record<string, string> }; }
+  interface ServiceInfo { name: string; host: string; auth: { type: string; token?: string; username?: string; password?: string; key?: string; headers?: Record<string, string> }; substitutions?: { key: string; placeholder: string; in?: string[] }[]; }
+
+  // Mirrors Service.CredentialKeys() in broker.go: auth keys + substitution keys.
+  function serviceCredentialKeys(svc: ServiceInfo): string[] {
+    const keys: string[] = [];
+    switch (svc.auth.type) {
+      case "bearer":
+        if (svc.auth.token) keys.push(svc.auth.token);
+        break;
+      case "basic":
+        if (svc.auth.username) keys.push(svc.auth.username);
+        if (svc.auth.password) keys.push(svc.auth.password);
+        break;
+      case "api-key":
+        if (svc.auth.key) keys.push(svc.auth.key);
+        break;
+      case "custom":
+        if (svc.auth.headers) {
+          for (const v of Object.values(svc.auth.headers)) {
+            for (const m of v.matchAll(/\{\{\s*(\w+)\s*\}\}/g)) keys.push(m[1]);
+          }
+        }
+        break;
+    }
+    if (svc.substitutions) {
+      for (const sub of svc.substitutions) {
+        if (sub.key) keys.push(sub.key);
+      }
+    }
+    return keys;
+  }
   const [catalog, setCatalog] = useState<CatalogTemplate[]>([]);
   const [usedCredentialKeys, setUsedCredentialKeys] = useState<Set<string>>(new Set());
 
@@ -75,16 +106,7 @@ export default function CredentialsTab() {
         const services: ServiceInfo[] = data.services ?? [];
         const keys = new Set<string>();
         for (const svc of services) {
-          if (svc.auth.token) keys.add(svc.auth.token);
-          if (svc.auth.username) keys.add(svc.auth.username);
-          if (svc.auth.password) keys.add(svc.auth.password);
-          if (svc.auth.key) keys.add(svc.auth.key);
-          if (svc.auth.headers) {
-            for (const v of Object.values(svc.auth.headers)) {
-              const matches = v.matchAll(/\{\{\s*(\w+)\s*\}\}/g);
-              for (const m of matches) keys.add(m[1]);
-            }
-          }
+          for (const k of serviceCredentialKeys(svc)) keys.add(k);
         }
         setUsedCredentialKeys(keys);
       }
@@ -249,8 +271,9 @@ export default function CredentialsTab() {
       header: "Type",
       className: "w-[140px]",
       render: (cred) => {
-        const label = cred.type === "oauth" ? "OAuth" : "Static";
-        return <span className="text-xs text-text-dim">{label}</span>;
+        const label =
+          cred.type === "oauth" ? "OAuth" : cred.type === "dynamic" ? "Dynamic" : "Static";
+        return <span className="text-sm text-text">{label}</span>;
       },
     },
     ...(canReveal
@@ -260,7 +283,11 @@ export default function CredentialsTab() {
             header: "Value",
             render: (cred: CredentialInfo) => (
               <div className="flex items-center gap-2">
-                {cred.type === "oauth" && !cred.connected_at ? (
+                {cred.unavailable ? (
+                  <span className="text-sm text-warning italic" title="The Infisical machine identity could not lease this dynamic secret. Grant it dynamic-secret lease permission.">
+                    Unavailable (check lease permissions)
+                  </span>
+                ) : cred.type === "oauth" && !cred.connected_at ? (
                   <span className="text-sm text-text-dim italic">Not connected</span>
                 ) : revealedValues[cred.key] !== undefined ? (
                   <span className="text-sm font-mono text-text break-all select-all">
@@ -271,7 +298,7 @@ export default function CredentialsTab() {
                     ••••••••
                   </span>
                 )}
-                {(cred.type !== "oauth" || cred.connected_at) && (
+                {!cred.unavailable && (cred.type !== "oauth" || cred.connected_at) && (
                   <button
                     onClick={() => toggleReveal(cred.key)}
                     disabled={revealing[cred.key]}
@@ -307,14 +334,16 @@ export default function CredentialsTab() {
             key: "actions",
             header: "",
             align: "right" as const,
-            render: (cred: CredentialInfo) => (
-              <DropdownMenu
-                items={[
-                  { label: "Edit", onClick: () => { setEditingKey(cred.key); setModalOpen(true); } },
-                  { label: "Delete", onClick: () => openDeleteModal(cred.key), variant: "danger" as const },
-                ]}
-              />
-            ),
+            // Dynamic credentials are leased from Infisical, not editable/deletable here.
+            render: (cred: CredentialInfo) =>
+              cred.type === "dynamic" ? null : (
+                <DropdownMenu
+                  items={[
+                    { label: "Edit", onClick: () => { setEditingKey(cred.key); setModalOpen(true); } },
+                    { label: "Delete", onClick: () => openDeleteModal(cred.key), variant: "danger" as const },
+                  ]}
+                />
+              ),
           } as Column<CredentialInfo>,
         ]
       : []),

@@ -18,6 +18,7 @@ builds:
       - -X github.com/Infisical/agent-vault/cmd.version={{.Version}}
       - -X github.com/Infisical/agent-vault/cmd.commit={{.ShortCommit}}
       - -X github.com/Infisical/agent-vault/cmd.date={{.Date}}
+      - -X github.com/Infisical/agent-vault/cmd.posthogAPIKey={{ .Env.POSTHOG_API_KEY }}
     goos:
       - linux
       - darwin

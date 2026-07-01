@@ -22,7 +22,8 @@ var masterPasswordSetCmd = &cobra.Command{
 	Short: "Set a master password on a passwordless instance",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := ensureServerStopped(); err != nil {
+		force, _ := cmd.Flags().GetBool("force")
+		if err := ensureServerStopped(force); err != nil {
 			return err
 		}
 
@@ -94,7 +95,8 @@ var masterPasswordChangeCmd = &cobra.Command{
 	Short: "Change the master password",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := ensureServerStopped(); err != nil {
+		force, _ := cmd.Flags().GetBool("force")
+		if err := ensureServerStopped(force); err != nil {
 			return err
 		}
 
@@ -171,7 +173,8 @@ var masterPasswordRemoveCmd = &cobra.Command{
 	Short: "Remove the master password (switch to passwordless mode)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := ensureServerStopped(); err != nil {
+		force, _ := cmd.Flags().GetBool("force")
+		if err := ensureServerStopped(force); err != nil {
 			return err
 		}
 
@@ -231,25 +234,48 @@ var masterPasswordRemoveCmd = &cobra.Command{
 
 // ensureServerStopped checks that no server process is running.
 // Master password operations require exclusive access to the database.
-func ensureServerStopped() error {
-	pid, err := pidfile.Read()
-	if err != nil {
-		return nil // no PID file means no server running
+func ensureServerStopped(force bool) error {
+	if os.Getenv("DATABASE_URL") != "" {
+		if !force {
+			fmt.Fprintln(os.Stderr,
+				"DATABASE_URL is set, which means multiple instances may share this database.",
+				"To proceed: stop ALL instances, then re-run this command with --force.",
+				"After the change, update AGENT_VAULT_MASTER_PASSWORD in your secret store",
+				"before restarting any instance.",
+			)
+			return fmt.Errorf("master-password commands require --force when DATABASE_URL is set")
+		}
+		fmt.Fprintln(os.Stderr,
+			"WARNING: DATABASE_URL is set. Make sure ALL instances sharing this database",
+			"are stopped. After the change, update AGENT_VAULT_MASTER_PASSWORD in your",
+			"secret store before restarting any instance.",
+		)
 	}
-	if pidfile.IsRunning(pid) {
-		return fmt.Errorf("server is running (PID %d) — stop it first with 'agent-vault server stop'", pid)
+	pid, err := pidfile.Read()
+	if err == nil && pidfile.IsRunning(pid) {
+		return fmt.Errorf("server is running (PID %d) -- stop it first with 'agent-vault server stop'", pid)
 	}
 	return nil
 }
 
-// openDB opens the SQLite store at the default path.
-func openDB() (*store.SQLiteStore, func(), error) {
+// openDB opens the store, using DATABASE_URL when set or the default
+// SQLite path otherwise.
+func openDB() (store.Store, func(), error) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL != "" {
+		db, err := store.OpenStore(store.StoreConfig{DatabaseURL: dbURL})
+		if err != nil {
+			return nil, nil, fmt.Errorf("opening store: %w", err)
+		}
+		return db, func() { _ = db.Close() }, nil
+	}
+
 	dbPath, err := store.DefaultDBPath()
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolving db path: %w", err)
 	}
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		return nil, nil, fmt.Errorf("database not found at %s — run 'agent-vault server' first", dbPath)
+		return nil, nil, fmt.Errorf("database not found at %s -- run 'agent-vault server' first", dbPath)
 	}
 	db, err := store.Open(dbPath)
 	if err != nil {
@@ -259,6 +285,9 @@ func openDB() (*store.SQLiteStore, func(), error) {
 }
 
 func init() {
+	for _, sub := range []*cobra.Command{masterPasswordSetCmd, masterPasswordChangeCmd, masterPasswordRemoveCmd} {
+		sub.Flags().Bool("force", false, "proceed even when DATABASE_URL is set (requires all instances to be stopped)")
+	}
 	masterPasswordCmd.AddCommand(masterPasswordSetCmd)
 	masterPasswordCmd.AddCommand(masterPasswordChangeCmd)
 	masterPasswordCmd.AddCommand(masterPasswordRemoveCmd)

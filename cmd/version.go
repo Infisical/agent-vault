@@ -9,9 +9,10 @@ import (
 
 // Set via ldflags at build time.
 var (
-	version = "dev"
-	commit  = "unknown"
-	date    = "unknown"
+	version        = "dev"
+	commit         = "unknown"
+	date           = "unknown"
+	posthogAPIKey  = ""
 )
 
 func init() {

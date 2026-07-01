@@ -322,7 +322,7 @@ func (s *Server) handleServicesCredentialUsage(w http.ResponseWriter, r *http.Re
 	}
 	var refs []serviceRef
 	for _, svc := range services {
-		for _, sk := range svc.Auth.CredentialKeys() {
+		for _, sk := range svc.CredentialKeys() {
 			if sk == key {
 				refs = append(refs, serviceRef{Name: svc.Name, Host: svc.MatcherPattern()})
 				break
@@ -346,7 +346,8 @@ func (s *Server) handleServicesUpsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
+	actor, err := s.requireVaultAdmin(w, r, ns.ID)
+	if err != nil {
 		return
 	}
 
@@ -377,10 +378,15 @@ func (s *Server) handleServicesUpsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// SQLite serializes statements but not the load → validate → save
+	// The store serializes statements but not the load → validate → save
 	// sequence; without this lock concurrent upserts can both pass the
 	// duplicate-name check against the same pre-state.
-	defer s.lockVaultServices(ns.ID)()
+	unlock, err := s.lockVaultServices(ctx, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "lock failed")
+		return
+	}
+	defer unlock()
 
 	existing, err := s.loadServices(ctx, ns.ID)
 	if err != nil {
@@ -427,6 +433,7 @@ func (s *Server) handleServicesUpsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.captureEvent(r, "av.service-add", actor, map[string]string{"vault": name})
 	jsonOK(w, map[string]interface{}{
 		"vault":          name,
 		"upserted":       upserted,
@@ -444,7 +451,8 @@ func (s *Server) handleServiceRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
+	actor, err := s.requireVaultAdmin(w, r, ns.ID)
+	if err != nil {
 		return
 	}
 
@@ -454,7 +462,12 @@ func (s *Server) handleServiceRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer s.lockVaultServices(ns.ID)()
+	unlock, err := s.lockVaultServices(ctx, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "lock failed")
+		return
+	}
+	defer unlock()
 
 	services, err := s.loadServices(ctx, ns.ID)
 	if err != nil {
@@ -495,6 +508,7 @@ func (s *Server) handleServiceRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.captureEvent(r, "av.service-remove", actor, map[string]string{"vault": name})
 	jsonOK(w, map[string]interface{}{
 		"vault":          name,
 		"removed":        removed.Name,
@@ -538,7 +552,12 @@ func (s *Server) handleServicePatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer s.lockVaultServices(ns.ID)()
+	unlock, err := s.lockVaultServices(ctx, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "lock failed")
+		return
+	}
+	defer unlock()
 
 	services, err := s.loadServices(ctx, ns.ID)
 	if err != nil {
@@ -630,7 +649,12 @@ func (s *Server) handleServicesSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer s.lockVaultServices(ns.ID)()
+	unlock, err := s.lockVaultServices(ctx, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "lock failed")
+		return
+	}
+	defer unlock()
 
 	if _, err := s.store.SetBrokerConfig(ctx, ns.ID, string(servicesJSON)); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to set services")
@@ -655,7 +679,12 @@ func (s *Server) handleServicesClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer s.lockVaultServices(ns.ID)()
+	unlock, err := s.lockVaultServices(ctx, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "lock failed")
+		return
+	}
+	defer unlock()
 
 	if _, err := s.store.SetBrokerConfig(ctx, ns.ID, "[]"); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to clear services")

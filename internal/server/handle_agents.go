@@ -123,6 +123,7 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.captureEvent(r, "av.agent-create", actor, map[string]string{"agent_name": agent.Name})
 	jsonCreated(w, map[string]interface{}{
 		"av_agent_token": sess.ID,
 		"name":           agent.Name,
@@ -282,7 +283,45 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.captureEvent(r, "av.agent-revoke", actor, map[string]string{"agent_name": name})
 	jsonOK(w, map[string]string{"message": fmt.Sprintf("agent %q revoked", name)})
+}
+
+func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := r.PathValue("name")
+
+	actor, err := s.requireInstanceMember(w, r)
+	if err != nil {
+		return
+	}
+
+	agent, err := s.store.GetAgentByName(ctx, name)
+	if err != nil {
+		jsonError(w, http.StatusNotFound, "Agent not found")
+		return
+	}
+
+	if !actor.IsOwner() && agent.Role == "owner" {
+		jsonError(w, http.StatusForbidden, "Only instance owners can manage owner-role agents")
+		return
+	}
+	if !actor.IsOwner() && agent.CreatedBy != actor.ID {
+		jsonError(w, http.StatusForbidden, "Only the owner or agent creator can delete agents")
+		return
+	}
+
+	if agent.Role == "owner" && s.guardLastOwner(ctx, w, "delete") {
+		return
+	}
+
+	if err := s.store.DeleteAgent(ctx, agent.ID); err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to delete agent")
+		return
+	}
+
+	s.captureEvent(r, "av.agent-delete", actor, map[string]string{"agent_name": name})
+	jsonOK(w, map[string]string{"message": fmt.Sprintf("agent %q deleted", name)})
 }
 
 // handleAgentRotate invalidates the agent's existing tokens and mints a new one.
@@ -309,10 +348,6 @@ func (s *Server) handleAgentRotate(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusForbidden, "Only the owner or agent creator can rotate agents")
 		return
 	}
-	if agent.Status != "active" {
-		jsonError(w, http.StatusConflict, "Agent is revoked — cannot rotate")
-		return
-	}
 
 	sess, err := s.store.RotateAgentToken(ctx, agent.ID, nil)
 	if err != nil {
@@ -320,6 +355,7 @@ func (s *Server) handleAgentRotate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.captureEvent(r, "av.agent-rotate", actor, map[string]string{"agent_name": agent.Name})
 	jsonOK(w, map[string]interface{}{
 		"av_agent_token": sess.ID,
 		"name":           agent.Name,
@@ -437,7 +473,8 @@ func (s *Server) handleVaultAgentAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
+	actor, err := s.requireVaultAdmin(w, r, ns.ID)
+	if err != nil {
 		return
 	}
 
@@ -477,6 +514,7 @@ func (s *Server) handleVaultAgentAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.captureEvent(r, "av.vault-agent-add", actor, map[string]string{"vault": nsName, "agent_name": body.Name})
 	jsonCreated(w, map[string]string{
 		"message": fmt.Sprintf("agent %q added to vault %q with role %q", body.Name, nsName, body.Role),
 	})
@@ -493,7 +531,8 @@ func (s *Server) handleVaultAgentRemove(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if _, err := s.requireVaultAdmin(w, r, ns.ID); err != nil {
+	actor, err := s.requireVaultAdmin(w, r, ns.ID)
+	if err != nil {
 		return
 	}
 
@@ -508,6 +547,7 @@ func (s *Server) handleVaultAgentRemove(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	s.captureEvent(r, "av.vault-agent-remove", actor, map[string]string{"vault": nsName, "agent_name": agentName})
 	jsonOK(w, map[string]string{
 		"message": fmt.Sprintf("agent %q removed from vault %q", agentName, nsName),
 	})

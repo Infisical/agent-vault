@@ -4,13 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 )
 
 func tp(t time.Time) *time.Time { return &t }
 
-func openTestDB(t *testing.T) *SQLiteStore {
+func openTestDB(t *testing.T) *SQLStore {
 	t.Helper()
 	s, err := Open(":memory:")
 	if err != nil {
@@ -23,29 +24,42 @@ func openTestDB(t *testing.T) *SQLiteStore {
 func TestOpenAndMigrate(t *testing.T) {
 	s := openTestDB(t)
 
-	// Verify schema_migrations has version 1.
-	var version int
-	err := s.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version)
+	// Verify schema_migrations has migrations applied (new format uses name-based tracking).
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count)
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
-	if version != 49 {
-		t.Fatalf("expected migration version 49, got %d", version)
+	if count < 50 {
+		t.Fatalf("expected at least 50 migrations applied, got %d", count)
+	}
+
+	// Verify the new format has id, name, migration_time columns.
+	var name string
+	err = s.db.QueryRow("SELECT name FROM schema_migrations WHERE id = 1").Scan(&name)
+	if err != nil {
+		t.Fatalf("querying name column: %v", err)
+	}
+	if name != "001_init" {
+		t.Fatalf("expected first migration name '001_init', got %q", name)
 	}
 }
 
 func TestMigrationIdempotency(t *testing.T) {
 	// Opening twice against the same DB should not fail.
-	s, err := Open(":memory:")
+	dbPath := filepath.Join(t.TempDir(), "idempotency.db")
+	s1, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
+	_ = s1.Close()
 
-	// Run migrate again on the same connection.
-	if err := migrate(s.db); err != nil {
-		t.Fatalf("second migrate: %v", err)
+	// Second open on the same file should succeed without re-running migrations.
+	s2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
 	}
-	s.Close()
+	_ = s2.Close()
 }
 
 // --- Vault CRUD ---
@@ -990,9 +1004,21 @@ func TestMasterKeyRecordSingleton(t *testing.T) {
 	if err := s.SetMasterKeyRecord(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
-	// Second insert should fail (CHECK constraint: id = 1).
-	if err := s.SetMasterKeyRecord(ctx, rec); err == nil {
-		t.Fatal("expected error on duplicate master key insert")
+	// Second insert is a no-op (ON CONFLICT DO NOTHING for HA race safety).
+	rec2 := &MasterKeyRecord{
+		Sentinel: []byte("different"), SentinelNonce: []byte("n2"),
+		DEKPlaintext: []byte("dek2"),
+	}
+	if err := s.SetMasterKeyRecord(ctx, rec2); err != nil {
+		t.Fatalf("second SetMasterKeyRecord should succeed (DO NOTHING): %v", err)
+	}
+	// The original record should be unchanged (first-writer-wins).
+	got, err := s.GetMasterKeyRecord(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Sentinel) != "e" {
+		t.Fatalf("expected original sentinel 'e', got %q", got.Sentinel)
 	}
 }
 
@@ -2299,7 +2325,7 @@ func TestCascadeDeleteVaultRemovesCredentialStore(t *testing.T) {
 	}
 }
 
-func TestReplaceVaultCredentials(t *testing.T) {
+func TestReplaceVaultCredentialsForSyncRotates(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 
@@ -2321,12 +2347,12 @@ func TestReplaceVaultCredentials(t *testing.T) {
 	}
 
 	// Replace: keep A (rotated), drop B, add C.
-	err = s.ReplaceVaultCredentials(ctx, v.ID, []EncryptedKV{
+	applied, err := s.ReplaceVaultCredentialsForSync(ctx, v.ID, `{}`, []EncryptedKV{
 		{Key: "A", Ciphertext: []byte("c1-new"), Nonce: []byte("n1-new")},
 		{Key: "C", Ciphertext: []byte("c3"), Nonce: []byte("n3")},
 	})
-	if err != nil {
-		t.Fatalf("ReplaceVaultCredentials: %v", err)
+	if err != nil || !applied {
+		t.Fatalf("ReplaceVaultCredentialsForSync: applied=%v err=%v", applied, err)
 	}
 
 	creds, _ := s.ListCredentials(ctx, v.ID)
@@ -2348,7 +2374,7 @@ func TestReplaceVaultCredentials(t *testing.T) {
 	}
 }
 
-func TestReplaceVaultCredentialsEmptyWipes(t *testing.T) {
+func TestReplaceVaultCredentialsForSyncEmptyWipes(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 
@@ -2363,8 +2389,8 @@ func TestReplaceVaultCredentialsEmptyWipes(t *testing.T) {
 		CreatorActorType:    "user",
 	})
 
-	if err := s.ReplaceVaultCredentials(ctx, v.ID, nil); err != nil {
-		t.Fatalf("ReplaceVaultCredentials nil: %v", err)
+	if applied, err := s.ReplaceVaultCredentialsForSync(ctx, v.ID, `{}`, nil); err != nil || !applied {
+		t.Fatalf("ReplaceVaultCredentialsForSync nil: applied=%v err=%v", applied, err)
 	}
 	creds, _ := s.ListCredentials(ctx, v.ID)
 	if len(creds) != 0 {
@@ -2433,6 +2459,193 @@ func TestListVaultCredentialStoresFiltersBuiltin(t *testing.T) {
 	}
 	if len(list) != 2 {
 		t.Fatalf("expected 2 external stores, got %d (%+v)", len(list), list)
+	}
+}
+
+func TestSetVaultExternalStoreOverwritesBuiltin(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	v, err := s.CreateVault(ctx, "switch-up")
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+	// Seed built-in credentials that the connect should overwrite.
+	if _, err := s.SetCredential(ctx, v.ID, "OLD_KEY", []byte("c-old"), []byte("n-old")); err != nil {
+		t.Fatalf("SetCredential: %v", err)
+	}
+
+	cs, err := s.SetVaultExternalStore(ctx, SetVaultExternalStoreParams{
+		VaultID:             v.ID,
+		Kind:                CredentialStoreInfisical,
+		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+		PollIntervalSeconds: 30,
+		Credentials: []EncryptedKV{
+			{Key: "NEW_KEY", Ciphertext: []byte("c-new"), Nonce: []byte("n-new")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SetVaultExternalStore: %v", err)
+	}
+	// The returned row reflects the write without a follow-up read.
+	if cs == nil || cs.Kind != CredentialStoreInfisical || cs.PollIntervalSeconds != 30 || cs.LastSyncStatus != SyncStatusOK {
+		t.Fatalf("unexpected returned row: %+v", cs)
+	}
+
+	cs, err = s.GetVaultCredentialStore(ctx, v.ID)
+	if err != nil || cs == nil {
+		t.Fatalf("GetVaultCredentialStore: %v cs=%+v", err, cs)
+	}
+	if cs.Kind != CredentialStoreInfisical || cs.PollIntervalSeconds != 30 || cs.LastSyncStatus != SyncStatusOK {
+		t.Fatalf("unexpected store row: %+v", cs)
+	}
+
+	creds, _ := s.ListCredentials(ctx, v.ID)
+	if len(creds) != 1 || creds[0].Key != "NEW_KEY" {
+		t.Fatalf("expected only NEW_KEY after overwrite, got %+v", creds)
+	}
+
+	// Calling again upserts the row (reconfigure) without duplicating.
+	if _, err = s.SetVaultExternalStore(ctx, SetVaultExternalStoreParams{
+		VaultID:             v.ID,
+		Kind:                CredentialStoreInfisical,
+		ConfigJSON:          `{"project_id":"p2","environment":"prod","secret_path":"/x"}`,
+		PollIntervalSeconds: 60,
+		Credentials:         []EncryptedKV{{Key: "K2", Ciphertext: []byte("c"), Nonce: []byte("n")}},
+	}); err != nil {
+		t.Fatalf("SetVaultExternalStore re-run: %v", err)
+	}
+	cs, _ = s.GetVaultCredentialStore(ctx, v.ID)
+	if cs.PollIntervalSeconds != 60 || cs.ConfigJSON != `{"project_id":"p2","environment":"prod","secret_path":"/x"}` {
+		t.Fatalf("upsert did not update row: %+v", cs)
+	}
+	list, _ := s.ListVaultCredentialStores(ctx)
+	if len(list) != 1 {
+		t.Fatalf("expected single store row after upsert, got %d", len(list))
+	}
+}
+
+func TestDeleteVaultCredentialStoreKeepsCredentials(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	u, _ := s.CreateUser(ctx, "disconnect@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	v, err := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+		Name:                "switch-down",
+		Kind:                CredentialStoreInfisical,
+		ConfigJSON:          `{}`,
+		PollIntervalSeconds: 60,
+		Credentials: []EncryptedKV{
+			{Key: "SYNCED_KEY", Ciphertext: []byte("c"), Nonce: []byte("n")},
+		},
+		CreatorActorID:   u.ID,
+		CreatorActorType: "user",
+	})
+	if err != nil {
+		t.Fatalf("CreateExternalVault: %v", err)
+	}
+
+	if err := s.DeleteVaultCredentialStore(ctx, v.ID); err != nil {
+		t.Fatalf("DeleteVaultCredentialStore: %v", err)
+	}
+
+	// Row is gone (vault is now built-in).
+	if _, err := s.GetVaultCredentialStore(ctx, v.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows after delete, got %v", err)
+	}
+	list, _ := s.ListVaultCredentialStores(ctx)
+	if len(list) != 0 {
+		t.Fatalf("expected no external stores, got %d", len(list))
+	}
+
+	// Credentials are kept as built-in credentials.
+	creds, _ := s.ListCredentials(ctx, v.ID)
+	if len(creds) != 1 || creds[0].Key != "SYNCED_KEY" {
+		t.Fatalf("expected SYNCED_KEY kept, got %+v", creds)
+	}
+
+	// Deleting again is a no-op (no row to remove).
+	if err := s.DeleteVaultCredentialStore(ctx, v.ID); err != nil {
+		t.Fatalf("DeleteVaultCredentialStore second call: %v", err)
+	}
+}
+
+// ReplaceVaultCredentialsForSync writes only while the row still matches the
+// config the snapshot was fetched against. This closes two races where an
+// in-flight sync would clobber credentials: a concurrent disconnect, and a
+// concurrent switch to a different Infisical config.
+func TestReplaceVaultCredentialsForSyncGatedOnStoreRow(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	const cfgA = `{"project_id":"a","environment":"dev","secret_path":"/"}`
+	u, _ := s.CreateUser(ctx, "sync@test.com", []byte("h"), []byte("s"), "owner", 3, 65536, 4)
+	v, err := s.CreateExternalVault(ctx, CreateExternalVaultParams{
+		Name:                "sync-race",
+		Kind:                CredentialStoreInfisical,
+		ConfigJSON:          cfgA,
+		PollIntervalSeconds: 60,
+		Credentials:         []EncryptedKV{{Key: "KEPT", Ciphertext: []byte("c"), Nonce: []byte("n")}},
+		CreatorActorID:      u.ID,
+		CreatorActorType:    "user",
+	})
+	if err != nil {
+		t.Fatalf("CreateExternalVault: %v", err)
+	}
+
+	// Same config → the sync write lands.
+	applied, err := s.ReplaceVaultCredentialsForSync(ctx, v.ID, cfgA, []EncryptedKV{
+		{Key: "FRESH", Ciphertext: []byte("c2"), Nonce: []byte("n2")},
+	})
+	if err != nil || !applied {
+		t.Fatalf("expected applied write, got applied=%v err=%v", applied, err)
+	}
+	creds, _ := s.ListCredentials(ctx, v.ID)
+	if len(creds) != 1 || creds[0].Key != "FRESH" {
+		t.Fatalf("expected FRESH after applied sync, got %+v", creds)
+	}
+
+	// Reconfigure to a different config, then a still-in-flight sync against the
+	// OLD config: it must be a no-op so the switched-in credentials survive.
+	if _, err := s.SetVaultExternalStore(ctx, SetVaultExternalStoreParams{
+		VaultID:             v.ID,
+		Kind:                CredentialStoreInfisical,
+		ConfigJSON:          `{"project_id":"b","environment":"prod","secret_path":"/x"}`,
+		PollIntervalSeconds: 60,
+		Credentials:         []EncryptedKV{{Key: "SWITCHED", Ciphertext: []byte("c4"), Nonce: []byte("n4")}},
+	}); err != nil {
+		t.Fatalf("SetVaultExternalStore: %v", err)
+	}
+	applied, err = s.ReplaceVaultCredentialsForSync(ctx, v.ID, cfgA, []EncryptedKV{
+		{Key: "STALE", Ciphertext: []byte("c3"), Nonce: []byte("n3")},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceVaultCredentialsForSync after reconfigure: %v", err)
+	}
+	if applied {
+		t.Fatalf("expected applied=false after reconfigure")
+	}
+	creds, _ = s.ListCredentials(ctx, v.ID)
+	if len(creds) != 1 || creds[0].Key != "SWITCHED" {
+		t.Fatalf("expected SWITCHED credentials preserved after reconfigure, got %+v", creds)
+	}
+
+	// Disconnect entirely, then a still-in-flight sync: also a no-op.
+	if err := s.DeleteVaultCredentialStore(ctx, v.ID); err != nil {
+		t.Fatalf("DeleteVaultCredentialStore: %v", err)
+	}
+	applied, err = s.ReplaceVaultCredentialsForSync(ctx, v.ID, cfgA, []EncryptedKV{
+		{Key: "STALE2", Ciphertext: []byte("c5"), Nonce: []byte("n5")},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceVaultCredentialsForSync after disconnect: %v", err)
+	}
+	if applied {
+		t.Fatalf("expected applied=false after disconnect")
+	}
+	creds, _ = s.ListCredentials(ctx, v.ID)
+	if len(creds) != 1 || creds[0].Key != "SWITCHED" {
+		t.Fatalf("expected SWITCHED credentials preserved after disconnect, got %+v", creds)
 	}
 }
 

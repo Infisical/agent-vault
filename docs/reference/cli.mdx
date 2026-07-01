@@ -26,12 +26,15 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--max-response-bytes` | `0` (unlimited) | Maximum response body bytes the MITM proxy streams back to agents. `0` means unlimited — responses are streamed with a small buffer so there is no memory risk. When a limit is set and the upstream response exceeds it, the proxy returns 502 (if the size is known upfront) or aborts the connection mid-stream (if chunked). Also respects `AGENT_VAULT_MAX_RESPONSE_BYTES`; the flag takes precedence. |
     | `--max-request-bytes` | `1073741824` (1 GiB) | Maximum request body bytes the MITM proxy forwards to upstreams. Requests exceeding this receive HTTP 413. Also respects `AGENT_VAULT_MAX_REQUEST_BYTES`; the flag takes precedence. |
     | `--ui-base-path` | `""` (domain root) | URL path prefix to serve the UI **and** API under, e.g. `/vault` — for deployments behind a reverse proxy on a shared domain. The proxy must pass the path through unmodified. `GET /health` stays available at the root, and `GET /` redirects to the prefix. Also respects `AGENT_VAULT_UI_BASE_PATH`; the flag takes precedence. See [Serving under a path prefix](/self-hosting/path-prefix). |
+    | `--database-url` | (empty, SQLite) | PostgreSQL connection URL for [production deployments](/self-hosting/postgres). When set, Agent Vault uses Postgres instead of the built-in SQLite database. Also respects `DATABASE_URL`; the flag takes precedence. |
+    | `--telemetry` | `true` | Enable or disable anonymous usage telemetry. Also respects the `AGENT_VAULT_TELEMETRY` env var; the env var takes precedence. |
 
     **Environment variables:**
 
     | Variable | Description |
     |----------|-------------|
     | `PORT` | Server listen port (default `14321`). The `--port` flag takes precedence. |
+    | `DATABASE_URL` | PostgreSQL connection URL (e.g. `postgres://user:pass@host:5432/agentvault`). When set, Agent Vault uses Postgres instead of SQLite. The `--database-url` flag takes precedence. See [PostgreSQL](/self-hosting/postgres). |
     | `AGENT_VAULT_MASTER_PASSWORD` | Derives a KEK that wraps the data encryption key. Omit for passwordless mode. |
     | `AGENT_VAULT_LOG_LEVEL` | Fallback for `--log-level` when the flag is not set. Accepts `info` or `debug`. |
     | `AGENT_VAULT_MAX_RESPONSE_BYTES` | Maximum response body bytes streamed to agents (default `0` = unlimited). The `--max-response-bytes` flag takes precedence. |
@@ -64,6 +67,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `INFISICAL_LDAP_AUTH_IDENTITY_ID` | LDAP Auth identity ID. All three LDAP vars are required together. |
     | `INFISICAL_LDAP_AUTH_USERNAME` | LDAP bind username. |
     | `INFISICAL_LDAP_AUTH_PASSWORD` | LDAP bind password. |
+    | `AGENT_VAULT_TELEMETRY` | Set to `false` to disable anonymous usage telemetry. No credential values or request payloads are ever included. |
   </Accordion>
 
   <Accordion title="agent-vault server stop">
@@ -72,6 +76,42 @@ description: "Complete reference for all Agent Vault CLI commands."
     ```
 
     Stop a running server. Reads the PID from `~/.agent-vault/agent-vault.pid` and sends SIGTERM.
+  </Accordion>
+</AccordionGroup>
+
+## Database migration
+
+<AccordionGroup>
+  <Accordion title="agent-vault migrate-db">
+    ```bash
+    agent-vault migrate-db [flags]
+    ```
+
+    Copy all data from the current SQLite database to a PostgreSQL instance. The server must be stopped before running this command. The source SQLite database is not modified.
+
+    After a successful migration, set `DATABASE_URL` (or `--database-url` on the server) and restart. See [PostgreSQL](/self-hosting/postgres) for the full guide.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--to` | | Destination PostgreSQL connection URL (required). Example: `postgres://user:pass@host:5432/agentvault`. |
+    | `--from` | `~/.agent-vault/agent-vault.db` | Source SQLite database path. Override only if using a non-default data directory. |
+    | `--dry-run` | `false` | Validate connectivity and print a row-count summary without writing any data. |
+    | `--yes`, `-y` | `false` | Skip the interactive confirmation prompt. Useful for scripted or CI usage. |
+
+    ```bash
+    # Preview what would be migrated
+    agent-vault migrate-db --to postgres://user:pass@db:5432/agentvault --dry-run
+
+    # Run the migration
+    agent-vault migrate-db --to postgres://user:pass@db:5432/agentvault
+
+    # Run without confirmation (scripted/CI)
+    agent-vault migrate-db --to postgres://user:pass@db:5432/agentvault --yes
+
+    # Migrate from a non-default SQLite path
+    agent-vault migrate-db --from /data/.agent-vault/agent-vault.db \
+      --to postgres://user:pass@db:5432/agentvault
+    ```
   </Accordion>
 </AccordionGroup>
 
@@ -207,7 +247,7 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--credential-store` | `builtin` | Credential store kind: `builtin` or `infisical`. Immutable after create. |
+    | `--credential-store` | `builtin` | Credential store kind: `builtin` or `infisical`. Switchable later with `vault credential-store set`. |
     | `--infisical-project-id` | | Infisical project ID. Required when `--credential-store=infisical`. |
     | `--infisical-environment` | | Infisical environment slug (e.g., `dev`, `prod`). Required when `--credential-store=infisical`. |
     | `--infisical-path` | `/` | Infisical secret path (must start with `/`). |
@@ -263,7 +303,26 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential-store show <name>
     ```
 
-    Print the vault's credential-store kind, full config, poll interval, and last sync health. Prints `Credential store: builtin` for vaults with no external source; otherwise the kind name plus the Infisical project, environment, path, poll cadence, and `last_sync_status` / `last_synced_at` / `last_sync_error`. The kind is fixed at create time; this command is read-only.
+    Print the vault's credential-store kind, full config, poll interval, and last sync health. Prints `Credential store: builtin` for vaults with no external source; otherwise the kind name plus the Infisical project, environment, path, poll cadence, and `last_sync_status` / `last_synced_at` / `last_sync_error`. This command is read-only; use `credential-store set` to change the kind.
+  </Accordion>
+
+  <Accordion title="agent-vault vault credential-store set">
+    ```bash
+    agent-vault vault credential-store set <name> --kind=<builtin|infisical> [flags]
+    ```
+
+    Switch the credential store backing an existing vault. Switching to `builtin` requires vault admin or instance owner role; switching to `infisical` requires instance-owner role (the broker's machine identity authorizes the upstream fetch). Prompts for the vault name to confirm unless `--yes` is passed.
+
+    Switching to `infisical` probes the source (same validation as create), then **overwrites** the vault's built-in credentials with the fetched snapshot and starts polling. Switching to `builtin` disconnects the external source (polling stops) but **keeps** the last synced secrets in place as editable built-in credentials. See [Credential stores](/learn/credential-stores#switching-a-vaults-credential-store).
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--kind` | | Target credential store kind: `builtin` or `infisical`. Required. |
+    | `--infisical-project-id` | | Infisical project ID. Required when `--kind=infisical`. |
+    | `--infisical-environment` | | Infisical environment slug (e.g., `dev`, `prod`). Required when `--kind=infisical`. |
+    | `--infisical-path` | `/` | Infisical secret path (must start with `/`). |
+    | `--poll-interval-seconds` | `60` | Refresh cadence floor for the cached secrets. Minimum 10s. |
+    | `--yes` | `false` | Skip confirmation prompt |
   </Accordion>
 
   <Accordion title="agent-vault vault credential-store sync">
@@ -322,6 +381,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--no-firewall` | `false` | Skip the iptables egress lockdown (`--isolation=container` only; debug, prints a warning). |
     | `--home-volume-shared` | `false` | Share `/home/claude/.claude` across invocations via a persistent docker volume (`--isolation=container` only). Default is a per-invocation volume — auth doesn't persist but concurrent runs can't corrupt each other. |
     | `--share-agent-dir` | `false` | Bind-mount the host's agent state dir (`~/.claude`) at `/home/claude/.claude` so the container reuses your host login (`--isolation=container` only). On Linux the container's `claude` user is remapped to your host uid/gid so writes land owned by you. Mutually exclusive with `--home-volume-shared`. |
+    | `--telemetry` | `true` | Enable or disable anonymous usage telemetry. Also respects the `AGENT_VAULT_TELEMETRY` env var; the env var takes precedence. |
   </Accordion>
 
   <Accordion title="agent-vault vault token">
@@ -786,12 +846,20 @@ description: "Complete reference for all Agent Vault CLI commands."
     Show agent details including vaults, status, and active session count.
   </Accordion>
 
+  <Accordion title="agent-vault agent revoke">
+    ```bash
+    agent-vault agent revoke <name>
+    ```
+
+    Revoke an agent and invalidate all its tokens. The agent remains visible with a "revoked" status but can no longer authenticate. Rotate its token to reactivate it.
+  </Accordion>
+
   <Accordion title="agent-vault agent delete">
     ```bash
     agent-vault agent delete <name>
     ```
 
-    Delete an agent and all its sessions across all vaults.
+    Permanently delete an agent, its tokens, and all vault grants. Works on both active and revoked agents.
   </Accordion>
 
   <Accordion title="agent-vault agent rotate">
@@ -799,7 +867,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault agent rotate <name> [flags]
     ```
 
-    Invalidate the agent's existing token and print a new one. Update `AGENT_VAULT_TOKEN` wherever the agent runs.
+    Invalidate the agent's existing token and print a new one. If the agent is revoked, rotation also reactivates it. Update `AGENT_VAULT_TOKEN` wherever the agent runs.
 
     | Flag | Default | Description |
     |------|---------|-------------|
@@ -976,31 +1044,45 @@ description: "Complete reference for all Agent Vault CLI commands."
 
 ## Master password
 
-Manage the master password that wraps the data encryption key (DEK). All commands require the server to be stopped.
+Manage the master password that wraps the data encryption key (DEK). All commands require the server to be stopped. When `DATABASE_URL` is set, these commands require `--force` because multiple instances may share the database -- stop all instances first.
+
+Password changes only re-wrap the encryption key (one database row). No credentials are re-encrypted and no data is lost. If an instance restarts before the secret store is updated, it will fail to start with "wrong password" -- update the secret and restart to resolve.
 
 <AccordionGroup>
   <Accordion title="agent-vault master-password set">
     ```bash
-    agent-vault master-password set
+    agent-vault master-password set [--force]
     ```
 
     Set a master password on a passwordless instance. Wraps the existing DEK under a new KEK derived from the password. No credentials are re-encrypted.
+
+    | Flag | Description |
+    |------|-------------|
+    | `--force` | Proceed when `DATABASE_URL` is set. Requires all instances to be stopped. |
   </Accordion>
 
   <Accordion title="agent-vault master-password change">
     ```bash
-    agent-vault master-password change
+    agent-vault master-password change [--force]
     ```
 
     Change the master password. Re-wraps the DEK under a new KEK. No credentials are re-encrypted.
+
+    | Flag | Description |
+    |------|-------------|
+    | `--force` | Proceed when `DATABASE_URL` is set. Requires all instances to be stopped. |
   </Accordion>
 
   <Accordion title="agent-vault master-password remove">
     ```bash
-    agent-vault master-password remove
+    agent-vault master-password remove [--force]
     ```
 
     Remove the master password, switching to passwordless mode. The DEK is stored in plaintext — security depends on filesystem access controls.
+
+    | Flag | Description |
+    |------|-------------|
+    | `--force` | Proceed when `DATABASE_URL` is set. Requires all instances to be stopped. |
   </Accordion>
 </AccordionGroup>
 

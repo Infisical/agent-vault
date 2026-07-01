@@ -16,6 +16,15 @@ var credentialCmd = &cobra.Command{
 	Short:   "Manage credentials in a vault",
 }
 
+// credTypeLabel renders the credential type column; an empty type means a
+// plain static credential.
+func credTypeLabel(t string) string {
+	if t == "" {
+		return "static"
+	}
+	return t
+}
+
 var credentialListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List credential keys in a vault",
@@ -48,8 +57,10 @@ required — there is no project-file or interactive-picker fallback.`,
 		var result struct {
 			Keys        []string `json:"keys"`
 			Credentials []struct {
-				Key   string `json:"key"`
-				Value string `json:"value"`
+				Key         string `json:"key"`
+				Type        string `json:"type"`
+				Value       string `json:"value"`
+				Unavailable bool   `json:"unavailable"`
 			} `json:"credentials"`
 		}
 		if err := json.Unmarshal(respBody, &result); err != nil {
@@ -62,15 +73,27 @@ required — there is no project-file or interactive-picker fallback.`,
 		}
 
 		t := newTable(cmd.OutOrStdout())
-		if reveal && len(result.Credentials) > 0 {
-			t.AppendHeader(table.Row{"KEY", "VALUE"})
-			for _, cred := range result.Credentials {
-				t.AppendRow(table.Row{cred.Key, cred.Value})
-			}
-		} else {
+		// Type (static/oauth/dynamic) is only present with the credentials list,
+		// which the server returns to members+; key-only listings omit it.
+		switch {
+		case len(result.Credentials) == 0:
 			t.AppendHeader(table.Row{"KEY"})
 			for _, key := range result.Keys {
 				t.AppendRow(table.Row{key})
+			}
+		case reveal:
+			t.AppendHeader(table.Row{"KEY", "TYPE", "VALUE"})
+			for _, cred := range result.Credentials {
+				val := cred.Value
+				if cred.Unavailable {
+					val = "(unavailable: check lease permissions)"
+				}
+				t.AppendRow(table.Row{cred.Key, credTypeLabel(cred.Type), val})
+			}
+		default:
+			t.AppendHeader(table.Row{"KEY", "TYPE"})
+			for _, cred := range result.Credentials {
+				t.AppendRow(table.Row{cred.Key, credTypeLabel(cred.Type)})
 			}
 		}
 		t.Render()

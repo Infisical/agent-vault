@@ -27,6 +27,7 @@ type logItem struct {
 	ErrorCode      string   `json:"error_code"`
 	ActorType      string   `json:"actor_type"`
 	ActorID        string   `json:"actor_id"`
+	ActorName      string   `json:"actor_name,omitempty"`
 	CreatedAt      string   `json:"created_at"`
 }
 
@@ -95,6 +96,29 @@ func (s *Server) handleVaultLogsList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Collect unique actor IDs so we can resolve display names.
+	agentIDs := map[string]struct{}{}
+	userIDs := map[string]struct{}{}
+	for _, r := range rows {
+		switch r.ActorType {
+		case "agent":
+			agentIDs[r.ActorID] = struct{}{}
+		case "user":
+			userIDs[r.ActorID] = struct{}{}
+		}
+	}
+	actorNames := map[string]string{}
+	for id := range agentIDs {
+		if name, err := s.store.GetAgentNameByID(ctx, id); err == nil {
+			actorNames["agent:"+id] = name
+		}
+	}
+	for id := range userIDs {
+		if email, err := s.store.GetUserEmailByID(ctx, id); err == nil {
+			actorNames["user:"+id] = email
+		}
+	}
+
 	items := make([]logItem, len(rows))
 	var latestID int64
 	for i, r := range rows {
@@ -114,6 +138,7 @@ func (s *Server) handleVaultLogsList(w http.ResponseWriter, r *http.Request) {
 			ErrorCode:      r.ErrorCode,
 			ActorType:      r.ActorType,
 			ActorID:        r.ActorID,
+			ActorName:      actorNames[r.ActorType+":"+r.ActorID],
 			CreatedAt:      r.CreatedAt.Format(time.RFC3339),
 		}
 	}

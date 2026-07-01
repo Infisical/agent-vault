@@ -40,7 +40,7 @@ func (f *fakeFetcher) AuthMethod() AuthMethod { return AuthUniversal }
 type fakeStore struct {
 	mu        sync.Mutex
 	rows      []store.VaultCredentialStore
-	replaceCh chan map[string][]store.EncryptedKV // capture each ReplaceVaultCredentials per vault
+	replaceCh chan map[string][]store.EncryptedKV // capture each credential write per vault
 	health    map[string]healthRow
 	repErr    error
 }
@@ -66,14 +66,25 @@ func (f *fakeStore) ListVaultCredentialStores(_ context.Context) ([]store.VaultC
 	return out, nil
 }
 
-func (f *fakeStore) ReplaceVaultCredentials(_ context.Context, vaultID string, items []store.EncryptedKV) error {
+func (f *fakeStore) ReplaceVaultCredentialsForSync(_ context.Context, vaultID, configJSON string, items []store.EncryptedKV) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.repErr != nil {
-		return f.repErr
+		return false, f.repErr
+	}
+	// Mirror the store: a write only lands while a row with the same config exists.
+	found := false
+	for i := range f.rows {
+		if f.rows[i].VaultID == vaultID && f.rows[i].ConfigJSON == configJSON {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return false, nil
 	}
 	f.replaceCh <- map[string][]store.EncryptedKV{vaultID: append([]store.EncryptedKV(nil), items...)}
-	return nil
+	return true, nil
 }
 
 func (f *fakeStore) UpdateVaultCredentialStoreHealth(_ context.Context, vaultID, status, errMsg string, when time.Time) error {
@@ -156,6 +167,39 @@ func TestSyncerRefresh_SuccessReplacesCredentials(t *testing.T) {
 	}
 	if h := fs.getHealth("v1"); h.Status != "ok" || h.Error != "" {
 		t.Fatalf("expected ok health, got %+v", h)
+	}
+}
+
+// A refresh whose vault was disconnected (row removed) between the list scan
+// and the write must drop the snapshot, leaving the kept credentials and the
+// health row untouched — not record a failure.
+func TestSyncerRefresh_DisconnectedMidSyncSkipsWrite(t *testing.T) {
+	dek := makeDEK(t)
+	pastSynced := time.Now().Add(-time.Hour)
+	cs := store.VaultCredentialStore{
+		VaultID:             "v1",
+		Kind:                store.CredentialStoreInfisical,
+		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+		PollIntervalSeconds: 60,
+		LastSyncedAt:        &pastSynced,
+		LastSyncStatus:      "ok",
+	}
+	// Empty store: the row is already gone, mimicking a disconnect that won the
+	// race after the syncer captured `cs`.
+	fs := newFakeStore()
+	ff := &fakeFetcher{secrets: []Secret{{Key: "ALPHA", Value: "a"}}}
+	s := &Syncer{store: fs, fetcher: ff, dek: dek, logger: newDiscardLogger(), clock: time.Now, inFlight: map[string]struct{}{}}
+
+	if err := s.refresh(context.Background(), cs); err != nil {
+		t.Fatalf("refresh should be a clean no-op, got %v", err)
+	}
+	select {
+	case got := <-fs.replaceCh:
+		t.Fatalf("expected no credential write after disconnect, got %+v", got)
+	default:
+	}
+	if h := fs.getHealth("v1"); h.Status != "" {
+		t.Fatalf("expected no health update after disconnect, got %+v", h)
 	}
 }
 

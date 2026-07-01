@@ -32,7 +32,7 @@ func TestCommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"server", "auth", "vault", "owner", "account", "catalog", "user", "agent", "ca"}
+	expected := []string{"server", "auth", "vault", "owner", "account", "catalog", "user", "agent", "ca", "migrate-db"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected command %q to be registered, but it was not", name)
@@ -148,6 +148,45 @@ func TestVaultSubcommandsRegistered(t *testing.T) {
 		if !registered[name] {
 			t.Errorf("expected vault subcommand %q to be registered, but it was not", name)
 		}
+	}
+}
+
+func TestVaultCredentialStoreSubcommandsRegistered(t *testing.T) {
+	vCmd := findSubcommand(rootCmd, "vault")
+	if vCmd == nil {
+		t.Fatal("vault command not found")
+	}
+	csCmd := findSubcommand(vCmd, "credential-store")
+	if csCmd == nil {
+		t.Fatal("credential-store command not found under vault")
+	}
+
+	registered := make(map[string]bool)
+	for _, c := range csCmd.Commands() {
+		registered[c.Name()] = true
+	}
+	for _, name := range []string{"show", "sync", "set"} {
+		if !registered[name] {
+			t.Errorf("expected credential-store subcommand %q to be registered", name)
+		}
+	}
+
+	setCmd := findSubcommand(csCmd, "set")
+	if setCmd == nil {
+		t.Fatal("set command not found under credential-store")
+	}
+	for _, flag := range []string{"kind", "infisical-project-id", "infisical-environment", "infisical-path", "poll-interval-seconds", "yes"} {
+		if setCmd.Flags().Lookup(flag) == nil {
+			t.Errorf("expected credential-store set to define --%s flag", flag)
+		}
+	}
+}
+
+func TestVaultCredentialStoreSetRequiresKind(t *testing.T) {
+	// Missing --kind should fail before any network call.
+	_, err := executeCommand("vault", "credential-store", "set", "my-app", "--yes")
+	if err == nil {
+		t.Fatal("expected error when --kind is omitted")
 	}
 }
 
@@ -296,6 +335,36 @@ func TestServerCmd_RefusesWhenPIDFileLive(t *testing.T) {
 	}
 }
 
+func TestEnsureServerStopped_BlocksWithDATABASE_URL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb")
+	err := ensureServerStopped(false)
+	if err == nil {
+		t.Fatal("expected error when DATABASE_URL is set without --force, got nil")
+	}
+	if !strings.Contains(err.Error(), "--force") {
+		t.Errorf("error = %q, want substring %q", err.Error(), "--force")
+	}
+}
+
+func TestEnsureServerStopped_AllowsForceWithDATABASE_URL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb")
+	err := ensureServerStopped(true)
+	if err != nil {
+		t.Fatalf("expected no error with --force, got %v", err)
+	}
+}
+
+func TestResetCmd_BlocksWithDATABASE_URL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb")
+	_, err := executeCommand("owner", "reset", "--yes")
+	if err == nil {
+		t.Fatal("expected error when DATABASE_URL is set, got nil")
+	}
+	if !strings.Contains(err.Error(), "not supported") {
+		t.Errorf("error = %q, want substring %q", err.Error(), "not supported")
+	}
+}
+
 func TestServerPasswordStdinFlag(t *testing.T) {
 	var srvCmd *cobra.Command
 	for _, c := range rootCmd.Commands() {
@@ -338,7 +407,7 @@ func TestServerUIBasePathFlag(t *testing.T) {
 	}
 }
 
-func openTestDB(t *testing.T) *store.SQLiteStore {
+func openTestDB(t *testing.T) store.Store {
 	t.Helper()
 	db, err := store.Open(":memory:")
 	if err != nil {
@@ -485,7 +554,7 @@ func TestAgentSubcommandsRegistered(t *testing.T) {
 }
 
 func TestTopAgentSubcommandsRegistered(t *testing.T) {
-	// Instance-level agent commands: list, info, delete, rotate, rename, create, set-role
+	// Instance-level agent commands: list, info, revoke, delete, rotate, rename, create, set-role
 	agCmd := findSubcommand(rootCmd, "agent")
 	if agCmd == nil {
 		t.Fatal("agent command not found")
@@ -496,7 +565,7 @@ func TestTopAgentSubcommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"list", "info", "delete", "rotate", "rename", "create", "set-role"}
+	expected := []string{"list", "info", "revoke", "delete", "rotate", "rename", "create", "set-role"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected agent subcommand %q to be registered, but it was not", name)

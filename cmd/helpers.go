@@ -18,6 +18,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/pidfile"
 	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/Infisical/agent-vault/internal/store"
+	"github.com/Infisical/agent-vault/internal/telemetry"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -62,14 +63,16 @@ const (
 // system proxy, so corporate proxies still work for direct CLI usage.
 var httpClient = &http.Client{
 	Timeout: 10 * time.Second,
-	Transport: &http.Transport{
-		Proxy: func(r *http.Request) (*url.URL, error) {
-			if avAddr := os.Getenv("AGENT_VAULT_ADDR"); avAddr != "" {
-				if u, err := url.Parse(avAddr); err == nil && r.URL.Host == u.Host {
-					return nil, nil
+	Transport: &clientHeaderTransport{
+		base: &http.Transport{
+			Proxy: func(r *http.Request) (*url.URL, error) {
+				if avAddr := os.Getenv("AGENT_VAULT_ADDR"); avAddr != "" {
+					if u, err := url.Parse(avAddr); err == nil && r.URL.Host == u.Host {
+						return nil, nil
+					}
 				}
-			}
-			return http.ProxyFromEnvironment(r)
+				return http.ProxyFromEnvironment(r)
+			},
 		},
 	},
 }
@@ -176,7 +179,7 @@ func doRegister(address, email, password, deviceLabel string) (*registerResult, 
 		return nil, nil, err
 	}
 
-	resp, err := http.Post(address+"/v1/auth/register", "application/json", bytes.NewReader(body))
+	resp, err := httpClient.Post(address+"/v1/auth/register", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not reach server at %s: %w", address, err)
 	}
@@ -208,6 +211,8 @@ func doRegister(address, email, password, deviceLabel string) (*registerResult, 
 	if err := session.Save(sess); err != nil {
 		return nil, nil, fmt.Errorf("saving session: %w", err)
 	}
+	tel.Identify(email, map[string]string{"email": email})
+	tel.Alias(email, telemetry.MachineID())
 	return &result.registerResult, sess, nil
 }
 
@@ -226,7 +231,7 @@ func doLogin(address, email, password, deviceLabel string) (*session.ClientSessi
 		return nil, err
 	}
 
-	resp, err := http.Post(address+"/v1/auth/login", "application/json", bytes.NewReader(body))
+	resp, err := httpClient.Post(address+"/v1/auth/login", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("could not reach server at %s: %w", address, err)
 	}
@@ -264,6 +269,8 @@ func doLogin(address, email, password, deviceLabel string) (*session.ClientSessi
 	if err := session.Save(sess); err != nil {
 		return nil, fmt.Errorf("saving session: %w", err)
 	}
+	tel.Identify(email, map[string]string{"email": email})
+	tel.Alias(email, telemetry.MachineID())
 	return sess, nil
 }
 

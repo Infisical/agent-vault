@@ -26,7 +26,9 @@ import (
 	"github.com/Infisical/agent-vault/internal/pidfile"
 	"github.com/Infisical/agent-vault/internal/requestlog"
 	"github.com/Infisical/agent-vault/internal/server"
+	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/Infisical/agent-vault/internal/store"
+	"github.com/Infisical/agent-vault/internal/telemetry"
 	"github.com/spf13/cobra"
 )
 
@@ -110,16 +112,36 @@ var serverCmd = &cobra.Command{
 			_ = pidfile.Remove()
 		}
 
+		dbURL := os.Getenv("DATABASE_URL")
+		if flagURL, _ := cmd.Flags().GetString("database-url"); flagURL != "" {
+			dbURL = flagURL
+		}
 		dbPath, err := store.DefaultDBPath()
-		if err != nil {
+		if err != nil && dbURL == "" {
 			return fmt.Errorf("resolving db path: %w", err)
 		}
 
-		db, err := store.Open(dbPath)
+		db, err := store.OpenStore(store.StoreConfig{
+			DatabaseURL: dbURL,
+			SQLitePath:  dbPath,
+		})
 		if err != nil {
 			return fmt.Errorf("opening store: %w", err)
 		}
 		defer func() { _ = db.Close() }()
+
+		if dbURL != "" {
+			if n, _ := db.CountUsers(context.Background()); n == 0 {
+				if sqlitePath, err2 := store.DefaultDBPath(); err2 == nil {
+					if _, err2 := os.Stat(sqlitePath); err2 == nil {
+						fmt.Fprintln(cmd.OutOrStderr(),
+							"warning: DATABASE_URL is set but the Postgres database has no users.",
+							"If you have existing data in SQLite, run 'agent-vault migrate-db --to <url>' first.",
+						)
+					}
+				}
+			}
+		}
 
 		passwordStdin, _ := cmd.Flags().GetBool("password-stdin")
 		interactive := !passwordStdin && os.Getenv("AGENT_VAULT_MASTER_PASSWORD") == ""
@@ -162,11 +184,13 @@ var serverCmd = &cobra.Command{
 		notifier := notify.New(smtpCfg)
 		srv := server.New(addr, db, masterKey.Key(), notifier, initialized, baseURL, uiBasePath, logger)
 		srv.SetSkills(skillCLI)
+		srv.AttachTelemetry(tel)
 		shutdownLogs := attachLogSink(srv, db, logger)
 		defer shutdownLogs()
-		if err := attachServerExtensions(srv, host, mitmPort, masterKey.Key(), logger, maxRespBytes, maxReqBytes); err != nil {
+		if err := attachServerExtensions(srv, host, mitmPort, masterKey.Key(), db, logger, maxRespBytes, maxReqBytes); err != nil {
 			return err
 		}
+		captureServerStart(mitmPort, db.DialectName())
 		return srv.Start()
 	},
 }
@@ -179,7 +203,7 @@ var serverCmd = &cobra.Command{
 // in server.Start: since the MITM proxy is default-on, environments that
 // cannot create ~/.agent-vault/ca/ (read-only FS, containers without HOME,
 // corrupted state) must still be able to run the core HTTP server.
-func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKey []byte, maxRespBytes, maxReqBytes int64) error {
+func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKey []byte, db store.Store, maxRespBytes, maxReqBytes int64) error {
 	if mitmPort <= 0 {
 		return nil
 	}
@@ -189,7 +213,11 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 			extraSANs = []string{h}
 		}
 	}
-	caProv, err := ca.New(masterKey, ca.Options{ExtraSANs: extraSANs})
+	caOpts := ca.Options{ExtraSANs: extraSANs}
+	if db.DialectName() == "postgres" {
+		caOpts.Store = &caStoreAdapter{db: db}
+	}
+	caProv, err := ca.New(masterKey, caOpts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: transparent proxy disabled (CA init failed: %v); pass --mitm-port 0 to suppress\n", err)
 		return nil
@@ -213,8 +241,8 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 
 // attachServerExtensions wires optional subsystems (MITM, Infisical) onto srv.
 // Both bootstrap paths (foreground and detached child) call this.
-func attachServerExtensions(srv *server.Server, host string, mitmPort int, masterKey []byte, logger *slog.Logger, maxRespBytes, maxReqBytes int64) error {
-	if err := attachMITMIfEnabled(srv, host, mitmPort, masterKey, maxRespBytes, maxReqBytes); err != nil {
+func attachServerExtensions(srv *server.Server, host string, mitmPort int, masterKey []byte, db store.Store, logger *slog.Logger, maxRespBytes, maxReqBytes int64) error {
+	if err := attachMITMIfEnabled(srv, host, mitmPort, masterKey, db, maxRespBytes, maxReqBytes); err != nil {
 		return err
 	}
 	attachInfisicalIfConfigured(srv, logger)
@@ -251,12 +279,12 @@ func attachInfisicalIfConfigured(srv *server.Server, logger *slog.Logger) {
 	}
 }
 
-// attachLogSink wires the request-log pipeline: a SQLiteSink with async
+// attachLogSink wires the request-log pipeline: a BatchSink with async
 // batching feeds persistent storage, and a retention goroutine trims old
 // rows. Returns a shutdown function the caller runs after Start()
 // returns to flush pending records and stop retention.
-func attachLogSink(srv *server.Server, db *store.SQLiteStore, logger *slog.Logger) func() {
-	sink := requestlog.NewSQLiteSink(db, logger, requestlog.SQLiteSinkConfig{})
+func attachLogSink(srv *server.Server, db store.Store, logger *slog.Logger) func() {
+	sink := requestlog.NewBatchSink(db, logger, requestlog.BatchSinkConfig{})
 	srv.AttachLogSink(sink)
 
 	retentionCtx, cancelRetention := context.WithCancel(context.Background())
@@ -274,7 +302,7 @@ func attachLogSink(srv *server.Server, db *store.SQLiteStore, logger *slog.Logge
 
 // promptOwnerSetup interactively creates the owner account.
 // masterPassword is optional — if provided, the admin password is checked against it.
-func promptOwnerSetup(cmd *cobra.Command, db *store.SQLiteStore, masterPassword []byte) error {
+func promptOwnerSetup(cmd *cobra.Command, db store.Store, masterPassword []byte) error {
 	fmt.Fprintln(cmd.OutOrStderr(), boldText("Create owner account:"))
 
 	email, err := auth.PromptEmail("  Admin email: ")
@@ -318,7 +346,7 @@ func promptOwnerSetup(cmd *cobra.Command, db *store.SQLiteStore, masterPassword 
 // unlockOrSetup resolves the master password and returns the DEK.
 // Priority: AGENT_VAULT_MASTER_PASSWORD envvar > --password-stdin > interactive prompt.
 // When no password is provided (envvar empty, no --password-stdin), sets up in passwordless mode.
-func unlockOrSetup(cmd *cobra.Command, db *store.SQLiteStore, passwordStdin bool) (*auth.MasterKey, error) {
+func unlockOrSetup(cmd *cobra.Command, db store.Store, passwordStdin bool) (*auth.MasterKey, error) {
 	// 1. AGENT_VAULT_MASTER_PASSWORD envvar (highest priority, for containerized/cloud deployments)
 	if envPw := os.Getenv("AGENT_VAULT_MASTER_PASSWORD"); envPw != "" {
 		_ = os.Unsetenv("AGENT_VAULT_MASTER_PASSWORD")
@@ -392,7 +420,7 @@ func unlockOrSetup(cmd *cobra.Command, db *store.SQLiteStore, passwordStdin bool
 
 // unlockOrSetupWithPassword resolves the DEK using a known password (no prompting, no retry).
 // Used by the AGENT_VAULT_MASTER_PASSWORD envvar and --password-stdin code paths.
-func unlockOrSetupWithPassword(db *store.SQLiteStore, password []byte) (*auth.MasterKey, error) {
+func unlockOrSetupWithPassword(db store.Store, password []byte) (*auth.MasterKey, error) {
 	ctx := context.Background()
 	record, err := db.GetMasterKeyRecord(ctx)
 	if err != nil {
@@ -426,7 +454,12 @@ func unlockOrSetupWithPassword(db *store.SQLiteStore, password []byte) (*auth.Ma
 
 // setupMasterKey runs first-time DEK generation and KEK wrapping.
 // If password is empty, sets up in passwordless mode.
-func setupMasterKey(db *store.SQLiteStore, password []byte) (*auth.MasterKey, error) {
+//
+// In HA (Postgres), another pod may have already created the master key
+// record. SetMasterKeyRecord uses ON CONFLICT DO NOTHING, so if the
+// record already exists, we re-read it and unlock using the existing
+// record instead of the locally-generated one.
+func setupMasterKey(db store.Store, password []byte) (*auth.MasterKey, error) {
 	var mk *auth.MasterKey
 	var rec *auth.VerificationRecord
 	var err error
@@ -435,18 +468,60 @@ func setupMasterKey(db *store.SQLiteStore, password []byte) (*auth.MasterKey, er
 		mk, rec, err = auth.SetupPasswordless()
 	} else {
 		mk, rec, err = auth.SetupWithPassword(password)
-		crypto.WipeBytes(password)
 	}
 	if err != nil {
+		if len(password) > 0 {
+			crypto.WipeBytes(password)
+		}
 		return nil, fmt.Errorf("setting up master key: %w", err)
 	}
 
+	ctx := context.Background()
 	storeRec := verificationToStoreRecord(rec)
-	if err := db.SetMasterKeyRecord(context.Background(), storeRec); err != nil {
+	if err := db.SetMasterKeyRecord(ctx, storeRec); err != nil {
 		mk.Wipe()
+		if len(password) > 0 {
+			crypto.WipeBytes(password)
+		}
 		return nil, fmt.Errorf("persisting master key record: %w", err)
 	}
-	return mk, nil
+
+	// Re-read the record: if another pod won the race (ON CONFLICT DO
+	// NOTHING), the DB has THEIR record, not ours. We need to unlock
+	// using whatever is actually stored.
+	existing, err := db.GetMasterKeyRecord(ctx)
+	if err != nil {
+		mk.Wipe()
+		if len(password) > 0 {
+			crypto.WipeBytes(password)
+		}
+		return nil, fmt.Errorf("re-reading master key after setup: %w", err)
+	}
+
+	verRec := buildVerificationRecord(existing)
+	if existing.DEKPlaintext != nil {
+		mk.Wipe()
+		if len(password) > 0 {
+			crypto.WipeBytes(password)
+		}
+		return auth.UnlockPasswordless(verRec)
+	}
+
+	if len(password) > 0 {
+		mk.Wipe()
+		unlocked, err := auth.Unlock(password, verRec)
+		crypto.WipeBytes(password)
+		if err != nil {
+			return nil, fmt.Errorf("unlocking with password after race: %w", err)
+		}
+		return unlocked, nil
+	}
+
+	// If we reach here, len(password) == 0 and existing.DEKPlaintext
+	// was handled above (passwordless unlock). The only remaining case
+	// is a password-protected DB record with no local password.
+	mk.Wipe()
+	return nil, fmt.Errorf("master key in database is password-protected but AGENT_VAULT_MASTER_PASSWORD is not set; all pods must use the same master password")
 }
 
 // verificationToStoreRecord converts an auth VerificationRecord to a store MasterKeyRecord.
@@ -509,12 +584,16 @@ func runDetachedChild(host, addr string, mitmPort int, uiBasePath string, logger
 	key := buf[:32]
 	initialized := buf[32] == 1
 
+	dbURL := os.Getenv("DATABASE_URL")
 	dbPath, err := store.DefaultDBPath()
-	if err != nil {
+	if err != nil && dbURL == "" {
 		return fmt.Errorf("resolving db path: %w", err)
 	}
 
-	db, err := store.Open(dbPath)
+	db, err := store.OpenStore(store.StoreConfig{
+		DatabaseURL: dbURL,
+		SQLitePath:  dbPath,
+	})
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
 	}
@@ -526,11 +605,13 @@ func runDetachedChild(host, addr string, mitmPort int, uiBasePath string, logger
 	notifier := notify.New(smtpCfg)
 	srv := server.New(addr, db, key, notifier, initialized, baseURL, uiBasePath, logger)
 	srv.SetSkills(skillCLI)
+	srv.AttachTelemetry(tel)
 	shutdownLogs := attachLogSink(srv, db, logger)
 	defer shutdownLogs()
-	if err := attachServerExtensions(srv, host, mitmPort, key, logger, maxRespBytes, maxReqBytes); err != nil {
+	if err := attachServerExtensions(srv, host, mitmPort, key, db, logger, maxRespBytes, maxReqBytes); err != nil {
 		return err
 	}
+	captureServerStart(mitmPort, db.DialectName())
 	return srv.Start()
 }
 
@@ -574,7 +655,19 @@ func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bo
 	child.Stdin = pr
 	child.Stdout = logFile
 	child.Stderr = logFile
-	child.Env = append(os.Environ(), "_AGENT_VAULT_DETACHED=1")
+	flagURL, _ := cmd.Flags().GetString("database-url")
+	childEnv := make([]string, 0, len(os.Environ())+2)
+	for _, kv := range os.Environ() {
+		if flagURL != "" && strings.HasPrefix(kv, "DATABASE_URL=") {
+			continue
+		}
+		childEnv = append(childEnv, kv)
+	}
+	childEnv = append(childEnv, "_AGENT_VAULT_DETACHED=1")
+	if flagURL != "" {
+		childEnv = append(childEnv, "DATABASE_URL="+flagURL)
+	}
+	child.Env = childEnv
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := child.Start(); err != nil {
@@ -670,9 +763,24 @@ var stopCmd = &cobra.Command{
 	},
 }
 
+func captureServerStart(mitmPort int, dbBackend string) {
+	distinctID := telemetry.MachineID()
+	if sess, _ := session.Load(); sess != nil && sess.Email != "" {
+		distinctID = sess.Email
+	}
+	if distinctID == "" {
+		distinctID = "anonymous_server"
+	}
+	tel.CaptureEvent(distinctID, "av.server-start", map[string]string{
+		"mitm_enabled":     strconv.FormatBool(mitmPort > 0),
+		"database_backend": dbBackend,
+	})
+}
+
 func init() {
 	serverCmd.Flags().IntP("port", "p", defaultPort(), "port to listen on (also respects PORT env var)")
 	serverCmd.Flags().String("host", DefaultHost, "host to bind to")
+	serverCmd.Flags().String("database-url", "", "PostgreSQL connection URL (also respects DATABASE_URL env var)")
 	serverCmd.Flags().BoolP("detach", "d", false, "run server in background after unlocking")
 	serverCmd.Flags().Bool("password-stdin", false, "read master password from stdin (for non-interactive use)")
 	serverCmd.Flags().Int("mitm-port", DefaultMITMPort, "port for the transparent MITM proxy (0 = disabled)")
@@ -682,4 +790,33 @@ func init() {
 	serverCmd.Flags().String("ui-base-path", defaultUIBasePath(), "URL path prefix to serve the UI and API under, e.g. /vault (default: domain root; also respects AGENT_VAULT_UI_BASE_PATH)")
 	serverCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(serverCmd)
+}
+
+// caStoreAdapter bridges store.Store to the ca.CAStore interface.
+type caStoreAdapter struct {
+	db store.Store
+}
+
+func (a *caStoreAdapter) GetCAState(ctx context.Context) (*ca.CAStateRecord, error) {
+	state, err := a.db.GetCAState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if state == nil {
+		return nil, nil
+	}
+	return &ca.CAStateRecord{
+		RootCert:     state.RootCert,
+		RootKeyCT:    state.RootKeyCT,
+		RootKeyNonce: state.RootKeyNonce,
+	}, nil
+}
+
+func (a *caStoreAdapter) SetCAState(ctx context.Context, rec *ca.CAStateRecord) error {
+	return a.db.SetCAState(ctx, &store.CAState{
+		RootCert:     rec.RootCert,
+		RootKeyCT:    rec.RootKeyCT,
+		RootKeyNonce: rec.RootKeyNonce,
+		Source:       "auto",
+	})
 }

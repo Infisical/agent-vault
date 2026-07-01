@@ -1,5 +1,5 @@
 # Agent Vault isolation image. Built locally on first use by EnsureImage.
-FROM node:26-bookworm-slim@sha256:e89172f5e6154ba212269866bf3fbadbca8eb7901e10c0eccf08f2147bfae505
+FROM node:26-bookworm-slim@sha256:3fe807a03a4436e7bc76b7e84e6861899cd75c9028ae99bc00581940141ae150
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \

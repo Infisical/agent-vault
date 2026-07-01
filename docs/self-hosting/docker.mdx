@@ -94,5 +94,18 @@ docker compose up -d
 All state lives in a single SQLite database at `/data/.agent-vault/agent-vault.db`. The Docker image declares `VOLUME /data`, so data survives container restarts as long as you mount a named volume or host path.
 
 <Tip>
-  Changing the master password re-wraps the data encryption key without re-encrypting credentials. Use `agent-vault master-password change` while the server is stopped.
+  Changing the master password re-wraps the data encryption key without re-encrypting credentials. For single-instance (SQLite) deployments, use `agent-vault master-password change` while the server is stopped. When using PostgreSQL, stop all instances and use `--force` (see the [PostgreSQL guide](/self-hosting/postgres)).
 </Tip>
+
+## PostgreSQL for production
+
+For production deployments, or when running multiple instances behind a load balancer, set `DATABASE_URL` to a shared PostgreSQL instance instead of using the built-in SQLite database. All instances read from and write to the same Postgres database, so state is shared automatically.
+
+```bash
+docker run -it -p 14321:14321 -p 14322:14322 \
+  -e DATABASE_URL=postgres://user:password@db:5432/agentvault \
+  -e AGENT_VAULT_MASTER_PASSWORD=your-password \
+  infisical/agent-vault
+```
+
+See the [PostgreSQL guide](/self-hosting/postgres) for a full Docker Compose example with multiple replicas, migration steps, and architecture notes.

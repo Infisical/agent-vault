@@ -1,0 +1,307 @@
+---
+title: "PostgreSQL Database"
+description: "Deploy Agent Vault with PostgreSQL for production and multi-instance setups"
+---
+
+import EnterpriseCTA from "/snippets/enterprise-cta.mdx";
+
+<EnterpriseCTA />
+
+## Overview
+
+Agent Vault uses an embedded SQLite database by default, which requires no setup. For production deployments, or when running multiple instances, switch to PostgreSQL.
+
+With Postgres, every instance is stateless -- no local volumes, no sticky sessions -- so you can scale horizontally behind a load balancer.
+
+Each instance runs the full Agent Vault binary (API on port 14321 + MITM proxy on port 14322), connects to the same Postgres database, shares the same CA root certificate (stored encrypted in the database), and uses advisory locks to prevent conflicting writes. Put an L7 load balancer in front of the API and an L4 (TCP) load balancer in front of the proxy.
+
+## Prerequisites
+
+- **PostgreSQL 13 or later**. Any managed Postgres service (AWS RDS, Cloud SQL, Fly Postgres, Neon, Supabase) works.
+- A connection URL: `postgres://user:password@host:5432/dbname`. Append `?sslmode=require` (or `verify-full`) when the server requires TLS.
+
+## Configuration
+
+Set `DATABASE_URL` as an environment variable (or pass `--database-url` to the `server` command).
+
+```bash
+# Environment variable
+export DATABASE_URL=postgres://agentvault:<password>@db.example.com:5432/agentvault?sslmode=require
+
+# Or via CLI flag
+agent-vault server --database-url postgres://agentvault:<password>@db.example.com:5432/agentvault
+```
+
+### Master password
+
+All instances must share the same `AGENT_VAULT_MASTER_PASSWORD`. This is not the database password -- it protects the encryption key that encrypts your stored credentials at rest.
+
+For production, generate a strong random value:
+
+```bash
+openssl rand -hex 32
+```
+
+Save the output in your platform's secret store (Kubernetes Secrets, Docker secrets, `fly secrets set`, etc.) and set it as `AGENT_VAULT_MASTER_PASSWORD` on all instances. To rotate it later, see [`master-password change`](/reference/cli#master-password).
+
+<Warning>
+  Never put `AGENT_VAULT_MASTER_PASSWORD` or `DATABASE_URL` in a Dockerfile or committed config file. Use your platform's secret store.
+</Warning>
+
+## Fresh setup
+
+<Steps>
+  <Step title="Create the database">
+    ```sql
+    CREATE USER agentvault WITH PASSWORD 'your-password';
+    CREATE DATABASE agentvault OWNER agentvault;
+    ```
+
+    If you are using a managed Postgres service, create the database through your provider's console instead.
+  </Step>
+  <Step title="Start Agent Vault">
+    ```bash
+    export DATABASE_URL=postgres://agentvault:your-password@db:5432/agentvault
+    export AGENT_VAULT_MASTER_PASSWORD=$(openssl rand -hex 32)
+    agent-vault server
+    ```
+
+    Save the generated master password in your secret store -- all instances must use the same value. Schema migrations run automatically on the first startup.
+  </Step>
+  <Step title="Create the owner account">
+    Open `http://<your-host>:14321/register` in your browser to create the first account. The first user becomes the instance [owner](/learn/permissions#instance-roles) with admin access on the default [vault](/learn/vaults).
+
+    If you prefer the CLI:
+
+    ```bash
+    agent-vault auth register --address http://<your-host>:14321
+    ```
+  </Step>
+</Steps>
+
+## Migrating from SQLite
+
+`migrate-db` copies all data from an existing SQLite installation to Postgres in a single transaction. The source database is not modified.
+
+<Tip>
+  If your master password is weak, strengthen it by running `agent-vault master-password change` while still on SQLite, or after migration using [`--force`](/reference/cli#master-password).
+</Tip>
+
+<Steps>
+  <Step title="Stop the server">
+    ```bash
+    agent-vault server stop
+    ```
+  </Step>
+  <Step title="Preview the migration">
+    ```bash
+    agent-vault migrate-db \
+      --to postgres://agentvault:<password>@db:5432/agentvault \
+      --dry-run
+    ```
+
+    This validates connectivity and prints a row-count summary without writing data.
+  </Step>
+  <Step title="Run the migration">
+    ```bash
+    agent-vault migrate-db \
+      --to postgres://agentvault:<password>@db:5432/agentvault
+    ```
+
+    Pass `--yes` to skip the confirmation prompt in scripted or CI environments.
+  </Step>
+  <Step title="Switch to Postgres and restart">
+    ```bash
+    export DATABASE_URL=postgres://agentvault:<password>@db:5432/agentvault
+    export AGENT_VAULT_MASTER_PASSWORD=<same password as your SQLite instance>
+    agent-vault server
+    ```
+
+    Use the same master password you had on SQLite. The migrated data is encrypted with it.
+  </Step>
+</Steps>
+
+<Tip>
+  The SQLite file is left intact. If anything goes wrong, remove `DATABASE_URL` and restart to fall back immediately.
+</Tip>
+
+<EnterpriseCTA />
+
+## Example: Kubernetes
+
+A minimal setup with two replicas. The MITM proxy terminates TLS itself, so it needs a Layer-4 (TCP) load balancer. The API/UI can sit behind a standard HTTP Ingress.
+
+```yaml agent-vault-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-vault
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agent-vault
+  template:
+    metadata:
+      labels:
+        app: agent-vault
+    spec:
+      containers:
+        - name: agent-vault
+          image: infisical/agent-vault:latest
+          ports:
+            - name: api
+              containerPort: 14321
+            - name: proxy
+              containerPort: 14322
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agent-vault-secrets
+                  key: database-url
+            - name: AGENT_VAULT_MASTER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agent-vault-secrets
+                  key: master-password
+            - name: AGENT_VAULT_ADDR
+              value: "https://agent-vault.example.com"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: api
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: api
+            initialDelaySeconds: 3
+            periodSeconds: 5
+---
+# L7 Service for the API/UI (works behind a standard Ingress)
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-vault-api
+spec:
+  selector:
+    app: agent-vault
+  ports:
+    - name: api
+      port: 14321
+      targetPort: api
+---
+# L4 Service for the MITM proxy (TCP passthrough, no HTTP termination)
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-vault-proxy
+spec:
+  type: LoadBalancer
+  selector:
+    app: agent-vault
+  ports:
+    - name: proxy
+      port: 14322
+      targetPort: proxy
+```
+
+Create the secret:
+
+```bash
+kubectl create secret generic agent-vault-secrets \
+  --from-literal=database-url='postgres://agentvault:<password>@db:5432/agentvault' \
+  --from-literal=master-password="$(openssl rand -hex 32)"
+```
+
+## Example: Docker Compose
+
+Two replicas sharing a single Postgres container. In production, replace the Postgres container with a managed database.
+
+```yaml docker-compose.yml
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agentvault
+      POSTGRES_PASSWORD: dbpassword
+      POSTGRES_DB: agentvault
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentvault"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  agent-vault-1:
+    image: infisical/agent-vault
+    ports:
+      - "14321:14321"
+      - "14322:14322"
+    environment:
+      - DATABASE_URL=postgres://agentvault:dbpassword@postgres:5432/agentvault?sslmode=disable
+      - AGENT_VAULT_MASTER_PASSWORD=${AGENT_VAULT_MASTER_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  agent-vault-2:
+    image: infisical/agent-vault
+    ports:
+      - "14323:14321"
+      - "14324:14322"
+    environment:
+      - DATABASE_URL=postgres://agentvault:dbpassword@postgres:5432/agentvault?sslmode=disable
+      - AGENT_VAULT_MASTER_PASSWORD=${AGENT_VAULT_MASTER_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+```
+
+Start it:
+
+```bash
+export AGENT_VAULT_MASTER_PASSWORD=$(openssl rand -hex 32)
+docker compose up -d
+```
+
+Save the generated password -- you will need it if you restart the stack.
+
+In production, place an L4 load balancer (HAProxy, nginx stream, cloud LB) in front of the proxy ports and an L7 load balancer in front of the API ports.
+
+<Note>
+  The Docker Compose examples use `?sslmode=disable` because the local Postgres container does not serve TLS. For production with managed Postgres, use `?sslmode=require` or `?sslmode=verify-full`.
+</Note>
+
+## Architecture
+
+- **Stateless instances**: No local volume is needed. Scale up or down freely. Schema migrations run on startup and are safe to run concurrently from multiple instances.
+- **CA sharing**: The CA root key is stored in the database (encrypted by the DEK), so all instances share the same root certificate. Agents only need to trust one CA regardless of which instance they connect to.
+- **Advisory locks**: Service-config writes acquire a Postgres advisory lock scoped to the vault, preventing concurrent writes from producing an inconsistent config. Reads are lock-free.
+- **Two listener types**: The API (`:14321`) is standard HTTP -- put it behind an L7 load balancer with TLS termination. The MITM proxy (`:14322`) does its own TLS handshake with upstreams, so the load balancer must do TCP (L4) passthrough.
+
+<EnterpriseCTA />
+
+## Rollback
+
+If you need to revert to a single-instance deployment:
+
+1. Stop all Agent Vault instances.
+2. Remove `DATABASE_URL` from the environment.
+3. Restart with the original SQLite data directory mounted.
+
+The SQLite file is never modified during Postgres operation, so it remains a valid point-in-time snapshot from before the migration.
+
+## Operational notes
+
+- **Health checks**: `GET /health` pings the Postgres connection and returns `{"status":"ok"}` or 503. Use this for load-balancer health probes and Kubernetes liveness/readiness checks.
+- **Connection pooling**: Each instance maintains its own connection pool (default: 25 max open, 10 idle, 5-minute lifetime). Tune per-instance with `DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`, and `DB_CONN_MAX_LIFETIME` environment variables. For large deployments (10+ instances), consider placing PgBouncer between Agent Vault and Postgres to limit the aggregate connection count.
+- **Rate limiting** is per-instance, not cluster-wide. If you run 3 replicas with the default profile, effective cluster-wide limits are roughly 3x the per-instance values. Adjust `AGENT_VAULT_RATELIMIT_PROFILE` if needed.
+- **Background tickers** (log retention, credential sync) run independently on every instance. They are idempotent, so duplicate work is harmless.
+- **Instance management**: When running multiple instances, manage them through your container orchestrator (e.g. `kubectl`, `docker compose`). `agent-vault server stop` only affects the local process.

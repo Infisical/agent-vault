@@ -169,6 +169,10 @@ To read a stored credential value (e.g. for writing config files or passing to t
 agent-vault vault credential get <key>
 ```
 
+## Dynamic secrets (Infisical-backed vaults)
+
+If a vault is connected to Infisical, any dynamic secrets at its path are also available as credentials, named `<DYNAMIC_SECRET_NAME>_<FIELD>` in UPPER_SNAKE_CASE (e.g. the `db-postgres` dynamic secret exposes `DB_POSTGRES_USERNAME`, `DB_POSTGRES_PASSWORD`). Reference these keys in a service's auth or substitutions like any other credential; the proxy mints a short-lived lease on first use and reuses it until it expires. Listing credentials shows these fields as rows tagged `type: dynamic` (listing mints a lease to enumerate them). No proposal is needed; these come from the connected Infisical store.
+
 ## WebSocket
 
 WSS and WS connections also go through the proxy with credential injection — in the handshake headers and in WebSocket text frames (when `websocket` is in the substitution surfaces). Just connect to the real WebSocket URL.

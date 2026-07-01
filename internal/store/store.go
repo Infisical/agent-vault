@@ -50,26 +50,26 @@ type Credential struct {
 // an OAuth-type credential. The access token lives in credentials.ciphertext;
 // this table stores everything needed to refresh it.
 type CredentialOAuth struct {
-	VaultID           string
-	CredentialKey     string
-	AuthorizationURL  string // empty = token upload mode
-	TokenURL          string
-	ClientID          string
-	ClientSecretCT    []byte // nil for public clients
-	ClientSecretNonce []byte
-	Scopes            string
-	ScopeSeparator    string
-	DisablePKCE       bool
-	TokenAuthMethod   string // "client_secret_post" or "client_secret_basic"
-	RefreshTokenCT    []byte
-	RefreshTokenNonce []byte
-	TokenExpiresAt    *time.Time
-	ConnectedAt       *time.Time
-	LastRefreshedAt   *time.Time
-	LastRefreshError  string
+	VaultID            string
+	CredentialKey      string
+	AuthorizationURL   string // empty = token upload mode
+	TokenURL           string
+	ClientID           string
+	ClientSecretCT     []byte // nil for public clients
+	ClientSecretNonce  []byte
+	Scopes             string
+	ScopeSeparator     string
+	DisablePKCE        bool
+	TokenAuthMethod    string // "client_secret_post" or "client_secret_basic"
+	RefreshTokenCT     []byte
+	RefreshTokenNonce  []byte
+	TokenExpiresAt     *time.Time
+	ConnectedAt        *time.Time
+	LastRefreshedAt    *time.Time
+	LastRefreshError   string
 	LastRefreshErrorAt *time.Time
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // CredentialOAuthState holds a CSRF state + PKCE verifier for an
@@ -202,11 +202,11 @@ type User struct {
 
 // BrokerConfig holds the brokering services for a vault.
 type BrokerConfig struct {
-	ID          string
-	VaultID     string
+	ID           string
+	VaultID      string
 	ServicesJSON string // JSON-encoded []broker.Service
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // Proposal represents a proposed set of changes (services + credential slots)
@@ -267,6 +267,20 @@ type VaultCredentialStore struct {
 	UpdatedAt           time.Time
 }
 
+// DynamicSecretLease tracks an Infisical dynamic-secret lease so it can be
+// revoked on disconnect/shutdown and swept on restart. Holds no secret
+// material, only what revoke needs.
+type DynamicSecretLease struct {
+	LeaseID           string
+	VaultID           string
+	DynamicSecretName string
+	ProjectID         string
+	Environment       string
+	SecretPath        string
+	ExpireAt          *time.Time
+	CreatedAt         time.Time
+}
+
 // CreateExternalVaultParams carries inputs to CreateExternalVault. The
 // creator is persisted as an admin vault_grants row in the same transaction.
 type CreateExternalVaultParams struct {
@@ -277,6 +291,16 @@ type CreateExternalVaultParams struct {
 	Credentials         []EncryptedKV
 	CreatorActorID      string
 	CreatorActorType    string // "user" or "agent"
+}
+
+// SetVaultExternalStoreParams carries inputs to SetVaultExternalStore, used to
+// connect an existing vault to an external store (built-in → external switch).
+type SetVaultExternalStoreParams struct {
+	VaultID             string
+	Kind                string
+	ConfigJSON          string
+	PollIntervalSeconds int
+	Credentials         []EncryptedKV
 }
 
 // RequestLog is a persisted record of a single proxied request. Secret-free
@@ -387,6 +411,16 @@ type PasswordReset struct {
 	ExpiresAt time.Time
 }
 
+// CAState holds the persisted CA root certificate and encrypted private key.
+type CAState struct {
+	RootCert     []byte
+	RootKeyCT    []byte
+	RootKeyNonce []byte
+	Source       string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
 // Store is the persistence interface for Agent Vault.
 // All methods are safe for concurrent use.
 type Store interface {
@@ -420,6 +454,7 @@ type Store interface {
 	CreateUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, role string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*User, error)
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	GetUserByID(ctx context.Context, id string) (*User, error)
+	GetUserEmailByID(ctx context.Context, id string) (string, error)
 	ListUsers(ctx context.Context) ([]User, error)
 	UpdateUserRole(ctx context.Context, userID, role string) error
 	UpdateUserPassword(ctx context.Context, userID string, passwordHash, passwordSalt []byte, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) error
@@ -519,10 +554,12 @@ type Store interface {
 	// an agent row without a token or with half-applied grants.
 	CreateAgentWithGrantsAndToken(ctx context.Context, name, createdBy, role string, vaultGrants []AgentVaultGrantSpec, tokenExpiresAt *time.Time) (*Agent, *Session, error)
 	GetAgentByID(ctx context.Context, id string) (*Agent, error)
+	GetAgentNameByID(ctx context.Context, id string) (string, error)
 	GetAgentByName(ctx context.Context, name string) (*Agent, error)
 	ListAgents(ctx context.Context, vaultID string) ([]Agent, error)
 	ListAllAgents(ctx context.Context) ([]Agent, error)
 	RevokeAgent(ctx context.Context, id string) error
+	DeleteAgent(ctx context.Context, id string) error
 	RenameAgent(ctx context.Context, id string, newName string) error
 	UpdateAgentRole(ctx context.Context, agentID, role string) error
 	CountAgentTokens(ctx context.Context, agentID string) (int, error)
@@ -549,8 +586,24 @@ type Store interface {
 	GetVaultCredentialStore(ctx context.Context, vaultID string) (*VaultCredentialStore, error)
 	ListVaultCredentialStores(ctx context.Context) ([]VaultCredentialStore, error)
 	UpdateVaultCredentialStoreHealth(ctx context.Context, vaultID, status, errMsg string, syncedAt time.Time) error
-	// ReplaceVaultCredentials atomically wipes and rewrites the vault's credentials.
-	ReplaceVaultCredentials(ctx context.Context, vaultID string, items []EncryptedKV) error
+	// ReplaceVaultCredentialsForSync rewrites credentials only while the
+	// external-store row still matches configJSON; applied=false means the vault
+	// was disconnected or reconfigured mid-sync and nothing was written.
+	ReplaceVaultCredentialsForSync(ctx context.Context, vaultID, configJSON string, items []EncryptedKV) (applied bool, err error)
+	// SetVaultExternalStore connects an existing vault to an external store:
+	// it upserts the credential-store row and replaces the vault's credentials
+	// in one transaction (built-in → external switch), returning the new row.
+	SetVaultExternalStore(ctx context.Context, p SetVaultExternalStoreParams) (*VaultCredentialStore, error)
+	// DeleteVaultCredentialStore removes the external-store row so polling stops;
+	// the vault's already-synced credentials are left in place as built-in
+	// credentials (external → built-in switch).
+	DeleteVaultCredentialStore(ctx context.Context, vaultID string) error
+
+	// Dynamic-secret lease tracking (Infisical). Lease metadata only — never
+	// the leased credential values.
+	InsertDynamicSecretLease(ctx context.Context, lease DynamicSecretLease) error
+	DeleteDynamicSecretLease(ctx context.Context, leaseID string) error
+	ListDynamicSecretLeases(ctx context.Context) ([]DynamicSecretLease, error)
 
 	// Request logs
 	InsertRequestLogs(ctx context.Context, rows []RequestLog) error
@@ -560,8 +613,20 @@ type Store interface {
 	TrimRequestLogsToCap(ctx context.Context, vaultID string, cap int64) (int64, error)
 	VaultIDsWithLogs(ctx context.Context) ([]string, error)
 
+	// CA state (persistent CA root for Postgres HA deployments)
+	GetCAState(ctx context.Context) (*CAState, error)
+	SetCAState(ctx context.Context, state *CAState) error
+
+	// LockVault acquires an exclusive advisory lock for the given vault.
+	// The returned function releases the lock. Callers MUST defer the
+	// release. SQLite uses an in-memory per-vault mutex; Postgres uses
+	// pg_advisory_lock on a pinned connection.
+	LockVault(ctx context.Context, vaultID string) (unlock func(), err error)
+
 	// Lifecycle
 	Close() error
+	Ping(ctx context.Context) error
+	DialectName() string
 }
 
 // DefaultDBPath returns the default path for the SQLite database file (~/.agent-vault/agent-vault.db).
