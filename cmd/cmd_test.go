@@ -386,6 +386,27 @@ func TestServerPasswordStdinFlag(t *testing.T) {
 	}
 }
 
+func TestServerUIBasePathFlag(t *testing.T) {
+	var srvCmd *cobra.Command
+	for _, c := range rootCmd.Commands() {
+		if c.Name() == "server" {
+			srvCmd = c
+			break
+		}
+	}
+	if srvCmd == nil {
+		t.Fatal("server command not found")
+	}
+
+	f := srvCmd.Flags().Lookup("ui-base-path")
+	if f == nil {
+		t.Fatal("expected --ui-base-path flag on server command")
+	}
+	if f.DefValue != "" {
+		t.Errorf("expected --ui-base-path default to be empty (root), got %q", f.DefValue)
+	}
+}
+
 func openTestDB(t *testing.T) store.Store {
 	t.Helper()
 	db, err := store.Open(":memory:")

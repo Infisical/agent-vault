@@ -6,6 +6,7 @@ import {
   Outlet,
 } from "@tanstack/react-router";
 import { apiFetch } from "./lib/api";
+import { basePath } from "./lib/basePath";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import ForgotPassword from "./pages/ForgotPassword";
@@ -394,7 +395,9 @@ const routeTree = rootRoute.addChildren([
 
 // --- Router ---
 
-export const router = createRouter({ routeTree });
+// basepath comes from the <base href> tag the server templates at serve
+// time, so one build works at the root or under any --ui-base-path prefix.
+export const router = createRouter({ routeTree, basepath: basePath || "/" });
 
 // Type registration for type-safe navigation
 declare module "@tanstack/react-router" {

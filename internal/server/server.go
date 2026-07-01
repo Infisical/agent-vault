@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"embed"
@@ -59,18 +60,20 @@ type agentVaultJSON struct {
 
 // Server is the Agent Vault HTTP server.
 type Server struct {
-	httpServer  *http.Server
-	store       Store
-	encKey      []byte // 32-byte encryption key, held in memory while running
-	notifier    *notify.Notifier
-	initialized    bool                // true when at least one owner account exists
-	lastInitCheck  atomic.Int64        // unix-millis of last DB check for initialization (throttle)
-	baseURL     string              // externally-reachable base URL (e.g. "https://sb.example.com")
-	skillCLI    []byte              // embedded CLI skill content (served at GET /v1/skills/cli)
-	mitm        *mitm.Proxy         // transparent MITM proxy; nil only when --mitm-port 0
-	logger      *slog.Logger        // structured logger for per-request observability
-	rateLimit   *ratelimit.Registry // tiered rate limiter; shared with the MITM ingress
-	logSink     requestlog.Sink     // per-request persistence sink; never nil (Nop default)
+	httpServer    *http.Server
+	store         Store
+	encKey        []byte // 32-byte encryption key, held in memory while running
+	notifier      *notify.Notifier
+	initialized   bool                // true when at least one owner account exists
+	lastInitCheck atomic.Int64        // unix-millis of last DB check for initialization (throttle)
+	baseURL       string              // externally-reachable base URL (e.g. "https://sb.example.com"), includes uiBasePath
+	uiBasePath    string              // URL path prefix the server is mounted under ("" = root, else e.g. "/vault")
+	indexHTML     []byte              // SPA index.html with the UI base path injected; nil when the frontend is not built
+	skillCLI      []byte              // embedded CLI skill content (served at GET /v1/skills/cli)
+	mitm          *mitm.Proxy         // transparent MITM proxy; nil only when --mitm-port 0
+	logger        *slog.Logger        // structured logger for per-request observability
+	rateLimit     *ratelimit.Registry // tiered rate limiter; shared with the MITM ingress
+	logSink       requestlog.Sink     // per-request persistence sink; never nil (Nop default)
 	// touchCache short-circuits per-request session-touch writes. With
 	// db.SetMaxOpenConns(1), every UPDATE — even a no-op — opens the
 	// single WAL writer slot. Caching the last-touch wall-clock per
@@ -762,12 +765,24 @@ func limitBody(next http.HandlerFunc) http.HandlerFunc {
 // New creates a new Server listening on the given address.
 // The initialized parameter indicates whether at least one owner account exists.
 // When false, all endpoints except /health and POST /v1/init return 503.
+// uiBasePath must be "" (root) or a NormalizeBasePath-canonical prefix
+// (e.g. "/vault"); when set, the entire surface (UI + API) is served under
+// it and baseURL gets the prefix appended unless already present.
 // logger must be non-nil; tests can pass slog.New(slog.DiscardHandler).
-func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string, logger *slog.Logger) *Server {
+func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string, uiBasePath string, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
 
 	rlCfg, _ := ratelimit.LoadFromEnv()
 	rl := ratelimit.New(rlCfg)
+
+	// Append the prefix to the externally-reachable base URL unless the
+	// operator already included it in AGENT_VAULT_ADDR. uiBasePath starts
+	// with "/" (NormalizeBasePath), so the suffix check can only match at
+	// a path-segment boundary of the trimmed URL.
+	baseURL = strings.TrimRight(baseURL, "/")
+	if uiBasePath != "" && !strings.HasSuffix(baseURL, uiBasePath) {
+		baseURL += uiBasePath
+	}
 
 	s := &Server{
 		httpServer: &http.Server{
@@ -782,11 +797,21 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 		encKey:         encKey,
 		notifier:       notifier,
 		initialized:    initialized,
-		baseURL:        strings.TrimRight(baseURL, "/"),
+		baseURL:        baseURL,
+		uiBasePath:     uiBasePath,
 		logger:         logger,
 		rateLimit:      rl,
 		logSink:        requestlog.Nop{},
 		oauthRefresher: oauth.NewRefresher(),
+	}
+
+	// Template the SPA entrypoint once at startup. Only index.html varies
+	// with the prefix; hashed assets are served verbatim.
+	if indexHTML, err := fs.ReadFile(webDistFS, "webdist/index.html"); err == nil {
+		if uiBasePath != "" && !bytes.Contains(indexHTML, []byte(uiBaseHrefTag)) {
+			logger.Warn("ui-base-path is set but index.html lacks the <base href=\"/\" /> placeholder; the UI will not load under the prefix")
+		}
+		s.indexHTML = injectBasePath(indexHTML, uiBasePath)
 	}
 
 	// Apply SSRF protection to OAuth token endpoint requests.
@@ -933,10 +958,15 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 
 	mux.HandleFunc("POST /v1/auth/logout", s.requireInitialized(ipAuth(s.handleLogout)))
 
-	// React app static assets (Vite outputs to /assets/ with base "/")
+	// React app static assets (Vite output plus web/public/ files copied
+	// to the webdist root).
 	webFS, _ := fs.Sub(webDistFS, "webdist")
-	mux.Handle("GET /assets/", http.FileServer(http.FS(webFS)))
-	mux.Handle("GET /vite.svg", http.FileServer(http.FS(webFS)))
+	staticFiles := http.FileServer(http.FS(webFS))
+	mux.Handle("GET /assets/", staticFiles)
+	mux.Handle("GET /fonts/", staticFiles)
+	mux.Handle("GET /favicon.svg", staticFiles)
+	mux.Handle("GET /favicon.png", staticFiles)
+	mux.Handle("GET /vite.svg", staticFiles)
 
 	// SPA catch-all: serve index.html for all frontend routes
 	mux.HandleFunc("GET /login", s.handleSPA)
@@ -953,6 +983,22 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /change-password", s.handleSPA)
 	mux.HandleFunc("GET /account/{path...}", s.handleSPA)
 	mux.HandleFunc("GET /{$}", s.handleSPA)
+
+	// Mount the entire surface (UI + API) under the UI base path. The
+	// reverse proxy must pass the path through unmodified — the prefix is
+	// part of the real request path, so X-Forwarded-Prefix is not needed.
+	if uiBasePath != "" {
+		outer := http.NewServeMux()
+		outer.Handle(uiBasePath+"/", http.StripPrefix(uiBasePath, mux))
+		outer.Handle(uiBasePath, http.RedirectHandler(uiBasePath+"/", http.StatusMovedPermanently))
+		// Platform health checks probe the root path regardless of where
+		// the app is mounted (spawnDetached's readiness poll relies on
+		// this too).
+		outer.HandleFunc("GET /health", s.handleHealth)
+		// Convenience redirect for humans landing on the bare domain.
+		outer.Handle("/{$}", http.RedirectHandler(uiBasePath+"/", http.StatusFound))
+		s.httpServer.Handler = securityHeaders(rl.GlobalMiddleware(logger)(outer))
+	}
 
 	return s
 }
@@ -1331,14 +1377,19 @@ func isSecureRequest(r *http.Request, baseURL string) bool {
 }
 
 // sessionCookie builds an av_session cookie with all hardening flags set.
-// Secure is set based on TLS state or the server's configured baseURL.
-func sessionCookie(r *http.Request, baseURL, value string, maxAge int) *http.Cookie {
+// Secure is set based on TLS state or the server's configured baseURL; the
+// cookie is scoped to the UI base path when one is configured.
+func (s *Server) sessionCookie(r *http.Request, value string, maxAge int) *http.Cookie {
+	path := "/"
+	if s.uiBasePath != "" {
+		path = s.uiBasePath + "/"
+	}
 	return &http.Cookie{
 		Name:     "av_session",
 		Value:    value,
-		Path:     "/",
+		Path:     path,
 		HttpOnly: true,
-		Secure:   isSecureRequest(r, baseURL),
+		Secure:   isSecureRequest(r, s.baseURL),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   maxAge,
 	}

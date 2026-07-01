@@ -1,4 +1,5 @@
 import { useState, useRef, type FormEvent } from "react";
+import { basePath } from "../lib/basePath";
 import { Link, useLoaderData } from "@tanstack/react-router";
 import Navbar from "../components/Navbar";
 import Button from "../components/Button";
@@ -206,7 +207,7 @@ function ExistingUserForm({
           )}
         </p>
         <a
-          href="/login"
+          href={`${basePath}/login`}
           className="w-full py-3.5 px-4 bg-primary text-primary-text rounded-lg text-[15px] font-semibold transition-colors flex items-center justify-center gap-2 hover:bg-primary-hover no-underline"
         >
           Log In
@@ -326,7 +327,7 @@ function NewUserForm({
           )}
         </p>
         <a
-          href="/login"
+          href={`${basePath}/login`}
           className="w-full py-3.5 px-4 bg-primary text-primary-text rounded-lg text-[15px] font-semibold transition-colors flex items-center justify-center gap-2 hover:bg-primary-hover no-underline"
         >
           Log In

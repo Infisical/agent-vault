@@ -25,6 +25,7 @@ description: "Configuration for deploying an instance of Agent Vault."
 | `AGENT_VAULT_MAX_RESPONSE_BYTES` | Optional (defaults to `0` = unlimited) | Maximum response body bytes the MITM proxy streams back to agents. Responses are streamed with a small buffer so unlimited is safe. When set and exceeded, the proxy returns 502 or aborts the connection. Overridden by `--max-response-bytes`. |
 | `AGENT_VAULT_MAX_REQUEST_BYTES` | Optional (defaults to `1073741824` = 1 GiB) | Maximum request body bytes the MITM proxy forwards to upstreams. Requests exceeding this receive HTTP 413. Overridden by `--max-request-bytes`. |
 | `AGENT_VAULT_ISOLATION` | Optional (defaults to `host`) | Default isolation mode for `agent-vault vault run`. One of: `host`, `container` (see [Container isolation](/guides/container-isolation)). Overridden by `--isolation`. |
+| `AGENT_VAULT_UI_BASE_PATH` | Optional (defaults to empty = domain root) | URL path prefix the UI and API are served under (e.g., `/vault`), for reverse-proxy deployments on a shared domain. The proxy must pass the path through unmodified. Overridden by `--ui-base-path`. See [Serving under a path prefix](/self-hosting/path-prefix). |
 | `DB_MAX_OPEN_CONNS` | Optional (defaults to `25`) | Maximum number of open Postgres connections per instance. Only applies when `DATABASE_URL` is set. See [connection pooling](/self-hosting/postgres#operational-notes). |
 | `DB_MAX_IDLE_CONNS` | Optional (defaults to `10`) | Maximum number of idle Postgres connections kept in the pool per instance. Only applies when `DATABASE_URL` is set. See [connection pooling](/self-hosting/postgres#operational-notes). |
 | `DB_CONN_MAX_LIFETIME` | Optional (defaults to `5m`) | Maximum lifetime of a Postgres connection before it is closed and replaced. Go duration string (e.g. `5m`, `1h`). Only applies when `DATABASE_URL` is set. See [connection pooling](/self-hosting/postgres#operational-notes). |
@@ -81,4 +82,3 @@ Agent Vault collects anonymous usage telemetry to help improve the product. No c
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `AGENT_VAULT_TELEMETRY` | Optional (defaults to `true`) | Set to `false` to disable anonymous usage telemetry. Also overridable with `--telemetry=false` on the CLI. |
-

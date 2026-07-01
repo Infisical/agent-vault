@@ -33,6 +33,13 @@ func defaultMaxResponseBytes() int64 {
 	return 0
 }
 
+// defaultUIBasePath returns the AGENT_VAULT_UI_BASE_PATH env var, otherwise
+// "" (serve at the domain root). Validation happens in the server command
+// via server.NormalizeBasePath.
+func defaultUIBasePath() string {
+	return os.Getenv("AGENT_VAULT_UI_BASE_PATH")
+}
+
 func defaultMaxRequestBytes() int64 {
 	if v := os.Getenv("AGENT_VAULT_MAX_REQUEST_BYTES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
