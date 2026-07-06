@@ -976,6 +976,7 @@ function ServiceModal({
                       }
                       options={credentialOptions}
                       inputClassName="w-full px-3 py-1.5 pr-8 bg-surface-raised border border-border rounded-md font-mono text-sm text-text outline-none transition-colors focus:border-border-focus focus:shadow-[0_0_0_3px_var(--color-primary-ring)]"
+                      menuMaxHeightClassName="max-h-40"
                     />
                   </div>
                 </div>

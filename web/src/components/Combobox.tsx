@@ -19,13 +19,15 @@ interface ComboboxProps {
   placeholder?: string;
   /** Overrides the input's default styling (compact/inline variants). */
   inputClassName?: string;
+  /** Overrides the popover's max-height (e.g. for inputs low on the sheet). */
+  menuMaxHeightClassName?: string;
 }
 
 /**
  * A text input with a suggestion popover. Typing filters the options;
  * text that matches nothing behaves exactly like a plain Input.
  */
-export default function Combobox({ value, onChange, options, onSelect, placeholder, inputClassName }: ComboboxProps) {
+export default function Combobox({ value, onChange, options, onSelect, placeholder, inputClassName, menuMaxHeightClassName }: ComboboxProps) {
   const [open, setOpen] = useState(false);
   const [highlighted, setHighlighted] = useState(0);
   const [typing, setTyping] = useState(false);
@@ -147,8 +149,8 @@ export default function Combobox({ value, onChange, options, onSelect, placehold
         createPortal(
           <div
             ref={listRef}
-            className="fixed z-50 bg-surface border border-border rounded-lg shadow-[0_4px_16px_rgba(0,0,0,0.12)] py-1 max-h-64 overflow-y-auto"
-            style={{ top: pos.top, left: pos.left, width: pos.width, scrollbarWidth: "thin", scrollbarColor: "var(--color-border) var(--color-surface)" }}
+            className={`fixed z-50 bg-surface border border-border rounded-lg shadow-[0_4px_16px_rgba(0,0,0,0.12)] py-1 overflow-y-auto thin-scrollbar ${menuMaxHeightClassName ?? "max-h-64"}`}
+            style={{ top: pos.top, left: pos.left, width: pos.width }}
           >
             {filtered.map((option, i) => (
               <button
