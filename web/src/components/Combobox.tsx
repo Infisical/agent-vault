@@ -16,6 +16,8 @@ interface ComboboxProps {
   options: ComboboxOption[];
   /** Called when an option is explicitly picked from the list. */
   onSelect: (id: string) => void;
+  /** Called on Enter when the suggestion popover is closed. */
+  onEnter?: () => void;
   placeholder?: string;
   /** Overrides the input's default styling (compact/inline variants). */
   inputClassName?: string;
@@ -27,7 +29,7 @@ interface ComboboxProps {
  * A text input with a suggestion popover. Typing filters the options;
  * text that matches nothing behaves exactly like a plain Input.
  */
-export default function Combobox({ value, onChange, options, onSelect, placeholder, inputClassName, menuMaxHeightClassName }: ComboboxProps) {
+export default function Combobox({ value, onChange, options, onSelect, onEnter, placeholder, inputClassName, menuMaxHeightClassName }: ComboboxProps) {
   const [open, setOpen] = useState(false);
   const [highlighted, setHighlighted] = useState(0);
   const [typing, setTyping] = useState(false);
@@ -89,7 +91,10 @@ export default function Combobox({ value, onChange, options, onSelect, placehold
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (!open || filtered.length === 0) return;
+    if (!open || filtered.length === 0) {
+      if (e.key === "Enter") onEnter?.();
+      return;
+    }
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setHighlighted((h) => (h + 1) % filtered.length);
@@ -118,6 +123,7 @@ export default function Combobox({ value, onChange, options, onSelect, placehold
           show();
         }}
         onFocus={() => { setTyping(false); show(); }}
+        onBlur={() => setOpen(false)}
         onKeyDown={handleKeyDown}
         role="combobox"
         aria-expanded={open && filtered.length > 0}

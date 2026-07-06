@@ -133,10 +133,8 @@ export default function ServicesTab() {
         `/v1/credentials?vault=${encodeURIComponent(vaultName)}`
       );
       if (resp.ok) {
-        const data = await resp.json();
-        const keys: string[] =
-          data.credentials?.map((c: { key: string }) => c.key) ?? data.keys ?? [];
-        setCredentialKeys([...new Set(keys)].sort());
+        const data: { keys?: string[] } = await resp.json();
+        setCredentialKeys([...new Set(data.keys ?? [])].sort());
       }
     } catch {
       // Suggestions are optional — degrade silently to manual entry.
@@ -752,6 +750,7 @@ function ServiceModal({
                 value={token}
                 onChange={setToken}
                 onSelect={setToken}
+                onEnter={handleSubmit}
                 options={credentialOptions}
               />
             </FormField>
@@ -769,6 +768,7 @@ function ServiceModal({
                   value={username}
                   onChange={setUsername}
                   onSelect={setUsername}
+                  onEnter={handleSubmit}
                   options={credentialOptions}
                 />
               </FormField>
@@ -781,6 +781,7 @@ function ServiceModal({
                   value={password}
                   onChange={setPassword}
                   onSelect={setPassword}
+                  onEnter={handleSubmit}
                   options={credentialOptions}
                 />
               </FormField>
