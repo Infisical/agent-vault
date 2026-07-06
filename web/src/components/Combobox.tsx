@@ -17,13 +17,15 @@ interface ComboboxProps {
   /** Called when an option is explicitly picked from the list. */
   onSelect: (id: string) => void;
   placeholder?: string;
+  /** Overrides the input's default styling (compact/inline variants). */
+  inputClassName?: string;
 }
 
 /**
  * A text input with a suggestion popover. Typing filters the options;
  * text that matches nothing behaves exactly like a plain Input.
  */
-export default function Combobox({ value, onChange, options, onSelect, placeholder }: ComboboxProps) {
+export default function Combobox({ value, onChange, options, onSelect, placeholder, inputClassName }: ComboboxProps) {
   const [open, setOpen] = useState(false);
   const [highlighted, setHighlighted] = useState(0);
   const [typing, setTyping] = useState(false);
@@ -54,11 +56,26 @@ export default function Combobox({ value, onChange, options, onSelect, placehold
     return () => document.removeEventListener("mousedown", handleClick);
   }, [open]);
 
+  function reposition() {
+    if (!inputRef.current) return;
+    const rect = inputRef.current.getBoundingClientRect();
+    setPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+  }
+
+  // The popover is position:fixed, so scrolling any ancestor (page or the
+  // sheet body) would leave it stranded — track the input while open.
+  useEffect(() => {
+    if (!open) return;
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    return () => {
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
+    };
+  }, [open]);
+
   function show() {
-    if (inputRef.current) {
-      const rect = inputRef.current.getBoundingClientRect();
-      setPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
-    }
+    reposition();
     setHighlighted(0);
     setOpen(true);
   }
@@ -103,7 +120,7 @@ export default function Combobox({ value, onChange, options, onSelect, placehold
         role="combobox"
         aria-expanded={open && filtered.length > 0}
         autoComplete="off"
-        className="w-full px-4 py-3 pr-10 bg-surface-raised border border-border rounded-lg text-text text-sm outline-none transition-colors focus:border-border-focus focus:shadow-[0_0_0_3px_var(--color-primary-ring)]"
+        className={inputClassName ?? "w-full px-4 py-3 pr-10 bg-surface-raised border border-border rounded-lg text-text text-sm outline-none transition-colors focus:border-border-focus focus:shadow-[0_0_0_3px_var(--color-primary-ring)]"}
       />
       <button
         type="button"
