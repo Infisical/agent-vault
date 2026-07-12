@@ -7,6 +7,8 @@ image:
   pullPolicy: IfNotPresent
   # Defaults to Chart.appVersion when empty.
   tag: ""
+  # When set, the digest takes precedence over tag (repository@digest).
+  digest: ""
 
 imagePullSecrets: []
 nameOverride: ""
@@ -14,7 +16,9 @@ fullnameOverride: ""
 
 serviceAccount:
   create: true
-  automount: true
+  # Enable only when Agent Vault uses Kubernetes workload identity (for
+  # example, Infisical Kubernetes Auth).
+  automount: false
   annotations: {}
   name: ""
 
@@ -24,6 +28,8 @@ podLabels: {}
 podSecurityContext:
   fsGroup: 65532
   fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
 
 securityContext:
   allowPrivilegeEscalation: false
@@ -55,28 +61,30 @@ secretEnv: {}
   # INFISICAL_UNIVERSAL_AUTH_CLIENT_ID: ...
   # INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET: ...
 
-# Use an existing Secret for sensitive env vars. All keys in existingSecretKeys
-# are exposed as env vars with matching names.
+# Use an existing Secret for sensitive env vars. Required keys fail pod startup
+# if absent; optional keys are ignored when absent.
 existingSecret: ""
 existingSecretKeys:
-  - AGENT_VAULT_MASTER_PASSWORD
-  - DATABASE_URL
-  - INFISICAL_UNIVERSAL_AUTH_CLIENT_ID
-  - INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET
-  - INFISICAL_KUBERNETES_IDENTITY_ID
-  - INFISICAL_KUBERNETES_SERVICE_ACCOUNT_TOKEN_PATH
-  - INFISICAL_AWS_IAM_AUTH_IDENTITY_ID
-  - INFISICAL_GCP_AUTH_IDENTITY_ID
-  - INFISICAL_GCP_IAM_SERVICE_ACCOUNT_KEY_FILE_PATH
-  - INFISICAL_LDAP_AUTH_IDENTITY_ID
-  - INFISICAL_LDAP_AUTH_USERNAME
-  - INFISICAL_LDAP_AUTH_PASSWORD
-  - AGENT_VAULT_SMTP_HOST
-  - AGENT_VAULT_SMTP_PORT
-  - AGENT_VAULT_SMTP_USERNAME
-  - AGENT_VAULT_SMTP_PASSWORD
-  - AGENT_VAULT_SMTP_FROM
-  - AGENT_VAULT_SMTP_FROM_NAME
+  required:
+    - AGENT_VAULT_MASTER_PASSWORD
+  optional:
+    - DATABASE_URL
+    - INFISICAL_UNIVERSAL_AUTH_CLIENT_ID
+    - INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET
+    - INFISICAL_KUBERNETES_IDENTITY_ID
+    - INFISICAL_KUBERNETES_SERVICE_ACCOUNT_TOKEN_PATH
+    - INFISICAL_AWS_IAM_AUTH_IDENTITY_ID
+    - INFISICAL_GCP_AUTH_IDENTITY_ID
+    - INFISICAL_GCP_IAM_SERVICE_ACCOUNT_KEY_FILE_PATH
+    - INFISICAL_LDAP_AUTH_IDENTITY_ID
+    - INFISICAL_LDAP_AUTH_USERNAME
+    - INFISICAL_LDAP_AUTH_PASSWORD
+    - AGENT_VAULT_SMTP_HOST
+    - AGENT_VAULT_SMTP_PORT
+    - AGENT_VAULT_SMTP_USERNAME
+    - AGENT_VAULT_SMTP_PASSWORD
+    - AGENT_VAULT_SMTP_FROM
+    - AGENT_VAULT_SMTP_FROM_NAME
 
 extraEnv: []
 # - name: AGENT_VAULT_NETWORK_ALLOWLIST
@@ -87,14 +95,29 @@ extraEnvFrom: []
 #     name: agent-vault-extra
 
 service:
+  type: ClusterIP
+  annotations: {}
+  clusterIP: ""
+  loadBalancerClass: ""
+  externalTrafficPolicy: ""
   api:
-    type: ClusterIP
     port: 14321
-    annotations: {}
+    nodePort: 0
   proxy:
-    type: ClusterIP
     port: 14322
-    annotations: {}
+    nodePort: 0
+
+# Ingress policy only. Agent Vault's own netguard separately blocks private,
+# loopback, link-local, and metadata destinations from proxied requests.
+networkPolicy:
+  enabled: true
+  api:
+    # Empty means all sources that can otherwise route to the Service.
+    from: []
+  proxy:
+    # podSelector: {} means all pods in this release namespace.
+    from:
+      - podSelector: {}
 
 # Management UI/API ingress. The MITM proxy port is intentionally not exposed by
 # ingress; keep it reachable only from trusted agent networks.

@@ -6,6 +6,8 @@ metadata:
     {{- include "agent-vault.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: {{ ternary "Recreate" "RollingUpdate" .Values.persistence.enabled }}
   selector:
     matchLabels:
       {{- include "agent-vault.selectorLabels" . | nindent 6 }}
@@ -26,6 +28,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "agent-vault.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -62,7 +65,15 @@ spec:
             {{- end }}
             {{- $secretName := include "agent-vault.secretName" . }}
             {{- if .Values.existingSecret }}
-            {{- range .Values.existingSecretKeys }}
+            {{- range .Values.existingSecretKeys.required }}
+            - name: {{ . }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ . }}
+                  optional: false
+            {{- end }}
+            {{- range .Values.existingSecretKeys.optional }}
             - name: {{ . }}
               valueFrom:
                 secretKeyRef:
@@ -98,6 +109,7 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- if or .Values.persistence.enabled .Values.extraVolumeMounts }}
           volumeMounts:
             {{- if .Values.persistence.enabled }}
             - name: data
@@ -106,6 +118,8 @@ spec:
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- end }}
+      {{- if or .Values.persistence.enabled .Values.extraVolumes }}
       volumes:
         {{- if .Values.persistence.enabled }}
         - name: data
@@ -115,6 +129,7 @@ spec:
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

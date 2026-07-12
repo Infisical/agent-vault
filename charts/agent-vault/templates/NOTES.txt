@@ -4,7 +4,7 @@ Management API/UI service:
   {{ include "agent-vault.fullname" . }}:{{ .Values.service.api.port }}
 
 MITM proxy service:
-  {{ include "agent-vault.fullname" . }}-proxy:{{ .Values.service.proxy.port }}
+  {{ include "agent-vault.fullname" . }}:{{ .Values.service.proxy.port }}
 
 {{- if .Values.ingress.enabled }}
 Management UI ingress:
@@ -13,8 +13,8 @@ Management UI ingress:
 {{- end }}
 {{- else }}
 To access the management UI locally:
-  kubectl port-forward svc/{{ include "agent-vault.fullname" . }} {{ .Values.service.api.port }}:{{ .Values.service.api.port }}
+  kubectl port-forward svc/{{ include "agent-vault.fullname" . }} {{ .Values.service.api.port }}:{{ .Values.service.api.port }} {{ .Values.service.proxy.port }}:{{ .Values.service.proxy.port }}
   open http://127.0.0.1:{{ .Values.service.api.port }}/register
 {{- end }}
 
-Keep the proxy service private to trusted agent networks. Do not expose {{ include "agent-vault.fullname" . }}-proxy publicly.
+Keep the proxy port private to trusted agent networks. Do not expose port {{ .Values.service.proxy.port }} publicly.

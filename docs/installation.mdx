@@ -43,7 +43,7 @@ Each install method below configures a master password at startup. Store it some
       --set secretEnv.AGENT_VAULT_MASTER_PASSWORD=REPLACE_ME
     ```
 
-    The chart keeps the proxy service as an internal `ClusterIP` by default. See [`charts/agent-vault/README.md`](https://github.com/Infisical/agent-vault/tree/main/charts/agent-vault) for PostgreSQL, ingress, and Infisical-backed credential store examples.
+    The chart exposes both listeners on one internal `ClusterIP` Service by default because clients derive the proxy hostname from `AGENT_VAULT_ADDR`. See [`charts/agent-vault/README.md`](https://github.com/Infisical/agent-vault/tree/main/charts/agent-vault) for PostgreSQL, private-network access, ingress, and Infisical-backed credential store examples.
 
   </Tab>
   <Tab title="From source">
