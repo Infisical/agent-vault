@@ -238,7 +238,7 @@ func (p *Proxy) forwardRequest(
 		return
 	}
 
-	inject, err := p.creds.Inject(r.Context(), scope.VaultID, host, port, r.URL.Path)
+	inject, err := p.creds.Inject(r.Context(), scope.VaultID, host, port, r.URL.Path, r.Method)
 	if inject != nil {
 		event.MatchedService = inject.MatchedName
 		event.MatchedHost = inject.MatchedHost
@@ -250,14 +250,25 @@ func (p *Proxy) forwardRequest(
 	if err != nil {
 		errCode := "no_match"
 		status := http.StatusForbidden
-		if errors.Is(err, brokercore.ErrCredentialMissing) {
+		switch {
+		case errors.Is(err, brokercore.ErrCredentialMissing):
 			errCode = "credential_not_found"
 			status = http.StatusBadGateway
 			brokercore.LogCredentialMissing(p.logger, scope.VaultID, event.MatchedService, event.CredentialKeys)
+		case errors.Is(err, brokercore.ErrMethodNotAllowed):
+			errCode = "method_not_allowed"
 		}
 		brokercore.WriteInjectError(w, err, target, scope.VaultName, p.baseURL)
 		emit(status, errCode)
 		return
+	}
+
+	// A method-restricted service also has the well-known method-override
+	// spoofing surfaces stripped, so an allowed method can't stand in for
+	// a denied one. The _method form carried in a POST body is not
+	// inspected.
+	if inject.MethodRestricted {
+		outURL.RawQuery = stripMethodOverrideParam(outURL.RawQuery)
 	}
 
 	var body io.ReadCloser
@@ -291,11 +302,16 @@ func (p *Proxy) forwardRequest(
 
 	wsUpgrade := isWebSocketUpgrade(r)
 
+	var extraStrip []string
+	if inject.MethodRestricted {
+		extraStrip = methodOverrideHeaders
+	}
 	if wsUpgrade {
 		copyWebSocketHandshakeHeaders(r.Header, outReq.Header)
-		brokercore.ApplyInjection(r.Header, outReq.Header, inject, websocketHandshakeHeaderNames...)
+		strip := append(append([]string(nil), websocketHandshakeHeaderNames...), extraStrip...)
+		brokercore.ApplyInjection(r.Header, outReq.Header, inject, strip...)
 	} else {
-		brokercore.ApplyInjection(r.Header, outReq.Header, inject)
+		brokercore.ApplyInjection(r.Header, outReq.Header, inject, extraStrip...)
 	}
 
 	if err := brokercore.ApplySubstitutions(outReq.URL, outReq.Header, inject.Substitutions); err != nil {
@@ -353,7 +369,7 @@ func (p *Proxy) forwardRequest(
 	if resp.StatusCode == http.StatusUnauthorized && inject != nil && !inject.Passthrough &&
 		(r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		_ = resp.Body.Close()
-		retryInject, retryErr := p.creds.Inject(r.Context(), scope.VaultID, host, port, r.URL.Path)
+		retryInject, retryErr := p.creds.Inject(r.Context(), scope.VaultID, host, port, r.URL.Path, r.Method)
 		if retryErr == nil && retryInject != nil && retryInject.Headers != nil {
 			retryReq := outReq.Clone(outReq.Context())
 			for k, v := range retryInject.Headers {
@@ -424,6 +440,33 @@ func (p *Proxy) forwardRequest(
 	}
 
 	emit(resp.StatusCode, "")
+}
+
+// methodOverrideHeaders are the well-known headers some upstreams honor
+// to override the effective HTTP method. Stripped on method-restricted
+// services so an allowed method can't tunnel a denied one.
+var methodOverrideHeaders = []string{"X-Http-Method-Override", "X-Method-Override", "X-Http-Method"}
+
+// stripMethodOverrideParam removes any _method key from a raw query
+// string. The surviving pairs are preserved byte-for-byte — no
+// re-encoding or reordering — so signed URLs keep their signatures.
+func stripMethodOverrideParam(rawQuery string) string {
+	if !strings.Contains(rawQuery, "_method") {
+		return rawQuery
+	}
+	parts := strings.Split(rawQuery, "&")
+	kept := parts[:0]
+	for _, p := range parts {
+		key := p
+		if i := strings.IndexByte(p, '='); i >= 0 {
+			key = p[:i]
+		}
+		if key == "_method" {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	return strings.Join(kept, "&")
 }
 
 // knownAPIKeyHeaders are non-Authorization headers that commonly carry
