@@ -1,5 +1,5 @@
 # ---- Frontend build ----
-FROM node:26-alpine@sha256:3ad34ca6292aec4a91d8ddeb9229e29d9c2f689efd0dd242860889ac71842eba AS frontend
+FROM node:26-alpine@sha256:e88a35be04478413b7c71c455cd9865de9b9360e1f43456be5951032d7ac1a66 AS frontend
 
 WORKDIR /app
 COPY web/package.json web/package-lock.json ./
@@ -28,7 +28,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w \
     -o /agent-vault .
 
 # ---- Runtime stage ----
-FROM alpine:3.24.0@sha256:a2d49ea686c2adfe3c992e47dc3b5e7fa6e6b5055609400dc2acaeb241c829f4
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
 RUN apk add --no-cache ca-certificates \
     && addgroup -S agentvault && adduser -S -G agentvault -u 65532 agentvault \
