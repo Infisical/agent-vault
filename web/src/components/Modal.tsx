@@ -10,7 +10,7 @@ interface ModalProps {
   dismissOnBackdrop?: boolean;
 }
 
-export default function Modal({ open, onClose, title, description, children, footer, dismissOnBackdrop = true }: ModalProps) {
+export default function Modal({ open, onClose, title, description, children, footer, dismissOnBackdrop = false }: ModalProps) {
   useEffect(() => {
     if (!open) return;
     function handleKey(e: KeyboardEvent) {
