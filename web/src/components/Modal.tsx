@@ -7,9 +7,10 @@ interface ModalProps {
   description?: string;
   children: ReactNode;
   footer?: ReactNode;
+  dismissOnBackdrop?: boolean;
 }
 
-export default function Modal({ open, onClose, title, description, children, footer }: ModalProps) {
+export default function Modal({ open, onClose, title, description, children, footer, dismissOnBackdrop = true }: ModalProps) {
   useEffect(() => {
     if (!open) return;
     function handleKey(e: KeyboardEvent) {
@@ -24,7 +25,7 @@ export default function Modal({ open, onClose, title, description, children, foo
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
-      onClick={onClose}
+      onClick={dismissOnBackdrop ? onClose : undefined}
     >
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/40" />

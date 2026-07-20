@@ -634,7 +634,7 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
   }
 
   return (
-    <Modal open onClose={onClose}
+    <Modal open onClose={onClose} dismissOnBackdrop={false}
       title={isEdit ? "Edit Credential" : "Add Credential"}
       description={credType === "oauth" ? "Set up an OAuth 2.0 credential. The proxy automatically refreshes the access token." : "Credentials are injected into proxied requests. Values are encrypted at rest."}
       footer={<>
