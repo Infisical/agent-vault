@@ -43,8 +43,6 @@ func utcTimePtr(t *time.Time) *time.Time {
 	return &u
 }
 
-
-
 // nullableString returns nil for empty strings, enabling SQL NULL inserts.
 func nullableString(s string) interface{} {
 	if s == "" {
@@ -689,12 +687,26 @@ func (s *SQLStore) RenameVault(ctx context.Context, oldName string, newName stri
 
 // --- Credentials ---
 
-func (s *SQLStore) SetCredential(ctx context.Context, vaultID, key string, ciphertext, nonce []byte) (*Credential, error) {
+// SetCredential upserts a built-in credential. If a value already exists
+// for (vaultID, key), it is archived as a CredentialVersion — attributed to
+// actorType/actorID — before being overwritten, so the previous value is
+// never silently lost (see ListCredentialVersions).
+func (s *SQLStore) SetCredential(ctx context.Context, vaultID, key string, ciphertext, nonce []byte, actorType, actorID string) (*Credential, error) {
 	id := newUUID()
 	now := time.Now().UTC()
 	nowStr := s.dialect.FormatTime(now)
 
-	_, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := s.archiveCredentialVersionTx(ctx, tx, vaultID, key, actorType, actorID); err != nil {
+		return nil, err
+	}
+
+	_, err = tx.ExecContext(ctx,
 		s.dialect.Rebind(`INSERT INTO credentials (id, vault_id, key, type, ciphertext, nonce, created_at, updated_at)
 		 VALUES (?, ?, ?, 'static', ?, ?, ?, ?)
 		 ON CONFLICT(vault_id, key) DO UPDATE SET
@@ -707,11 +719,116 @@ func (s *SQLStore) SetCredential(ctx context.Context, vaultID, key string, ciphe
 		return nil, fmt.Errorf("setting credential: %w", err)
 	}
 
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing credential set: %w", err)
+	}
+
 	return &Credential{
 		ID: id, VaultID: vaultID, Key: key, Type: "static",
 		Ciphertext: ciphertext, Nonce: nonce,
 		CreatedAt: now, UpdatedAt: now,
 	}, nil
+}
+
+// archiveCredentialVersionTx snapshots the current value of (vaultID, key)
+// into credential_versions — if one exists; a brand-new key has nothing to
+// archive — then prunes older versions beyond CredentialHistoryMaxVersionsFromEnv.
+// Must run before the caller overwrites the live row, in the same
+// transaction, so the snapshot and the overwrite are atomic.
+func (s *SQLStore) archiveCredentialVersionTx(ctx context.Context, tx *sql.Tx, vaultID, key, actorType, actorID string) error {
+	var ciphertext, nonce []byte
+	err := tx.QueryRowContext(ctx,
+		s.dialect.Rebind("SELECT ciphertext, nonce FROM credentials WHERE vault_id = ? AND key = ?"),
+		vaultID, key,
+	).Scan(&ciphertext, &nonce)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading credential for versioning: %w", err)
+	}
+
+	versionID := newUUID()
+	nowStr := s.dialect.FormatTime(time.Now().UTC())
+	_, err = tx.ExecContext(ctx,
+		s.dialect.Rebind(`INSERT INTO credential_versions (id, vault_id, key, version, ciphertext, nonce, actor_type, actor_id, created_at)
+		 VALUES (?, ?, ?, (SELECT COALESCE(MAX(version), 0) + 1 FROM credential_versions WHERE vault_id = ? AND key = ?), ?, ?, ?, ?, ?)`),
+		versionID, vaultID, key, vaultID, key, ciphertext, nonce, actorType, actorID, nowStr,
+	)
+	if err != nil {
+		return fmt.Errorf("recording credential version: %w", err)
+	}
+
+	maxVersions := CredentialHistoryMaxVersionsFromEnv()
+	if maxVersions <= 0 {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx,
+		s.dialect.Rebind(`DELETE FROM credential_versions WHERE vault_id = ? AND key = ? AND version <= (
+			SELECT COALESCE(MAX(version), 0) - ? FROM credential_versions WHERE vault_id = ? AND key = ?
+		)`),
+		vaultID, key, maxVersions, vaultID, key,
+	)
+	if err != nil {
+		return fmt.Errorf("pruning credential versions: %w", err)
+	}
+	return nil
+}
+
+// ListCredentialVersions returns archived versions of (vaultID, key), most
+// recent first.
+func (s *SQLStore) ListCredentialVersions(ctx context.Context, vaultID, key string) ([]CredentialVersion, error) {
+	rows, err := s.db.QueryContext(ctx,
+		s.dialect.Rebind(`SELECT id, vault_id, key, version, ciphertext, nonce, actor_type, actor_id, created_at
+		 FROM credential_versions WHERE vault_id = ? AND key = ? ORDER BY version DESC`),
+		vaultID, key,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing credential versions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var versions []CredentialVersion
+	for rows.Next() {
+		v, err := s.scanCredentialVersion(rows)
+		if err != nil {
+			return nil, err
+		}
+		versions = append(versions, v)
+	}
+	return versions, rows.Err()
+}
+
+// GetCredentialVersion returns one archived version by its per-key version
+// number. Returns sql.ErrNoRows if it doesn't exist (e.g. pruned, or never
+// existed).
+func (s *SQLStore) GetCredentialVersion(ctx context.Context, vaultID, key string, version int) (*CredentialVersion, error) {
+	row := s.db.QueryRowContext(ctx,
+		s.dialect.Rebind(`SELECT id, vault_id, key, version, ciphertext, nonce, actor_type, actor_id, created_at
+		 FROM credential_versions WHERE vault_id = ? AND key = ? AND version = ?`),
+		vaultID, key, version,
+	)
+	v, err := s.scanCredentialVersion(row)
+	if err != nil {
+		return nil, err
+	}
+	return &v, nil
+}
+
+// credentialVersionScanner abstracts over *sql.Row and *sql.Rows, both of
+// which implement Scan with the same signature.
+type credentialVersionScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func (s *SQLStore) scanCredentialVersion(row credentialVersionScanner) (CredentialVersion, error) {
+	var v CredentialVersion
+	var createdAt interface{}
+	if err := row.Scan(&v.ID, &v.VaultID, &v.Key, &v.Version, &v.Ciphertext, &v.Nonce, &v.ActorType, &v.ActorID, &createdAt); err != nil {
+		return CredentialVersion{}, err
+	}
+	v.CreatedAt, _ = s.dialect.ScanTime(createdAt)
+	return v, nil
 }
 
 func (s *SQLStore) GetCredential(ctx context.Context, vaultID, key string) (*Credential, error) {
@@ -1998,7 +2115,7 @@ func (s *SQLStore) GetProposalCredentials(ctx context.Context, vaultID string, p
 	return creds, rows.Err()
 }
 
-func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []OAuthCredentialConfig) error {
+func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []OAuthCredentialConfig, actorType, actorID string) error {
 	nowStr := s.now()
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -2016,8 +2133,14 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 		return fmt.Errorf("updating broker config: %w", err)
 	}
 
-	// 2. Upsert each static credential.
+	// 2. Upsert each static credential. Archive the value it replaces (if
+	// any) first, same as the direct SetCredential path — an agent's
+	// proposed value overwriting a credential is exactly the kind of
+	// mutation credential history exists to protect against.
 	for key, enc := range credentials {
+		if err := s.archiveCredentialVersionTx(ctx, tx, vaultID, key, actorType, actorID); err != nil {
+			return fmt.Errorf("recording credential version for %q: %w", key, err)
+		}
 		id := newUUID()
 		_, err = tx.ExecContext(ctx,
 			s.dialect.Rebind(`INSERT INTO credentials (id, vault_id, key, type, ciphertext, nonce, created_at, updated_at)

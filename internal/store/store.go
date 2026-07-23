@@ -46,6 +46,28 @@ type Credential struct {
 	UpdatedAt  time.Time
 }
 
+// CredentialVersion is an archived prior value of a built-in credential,
+// captured at the moment it was overwritten. Version numbers are
+// sequential per (VaultID, Key), starting at 1, and never reused —
+// rollback restores a version's value as the new current value (recording
+// yet another version for whatever it replaced), it never rewrites history.
+type CredentialVersion struct {
+	ID         string
+	VaultID    string
+	Key        string
+	Version    int
+	Ciphertext []byte
+	Nonce      []byte
+	// ActorType/ActorID identify who performed the overwrite that archived
+	// this version — "user"/"agent" (matching Actor.Type) when resolvable,
+	// or "session" with the session ID as a fallback for scoped tokens with
+	// no attached user/agent record. Both may be empty for older rows or
+	// system-initiated writes.
+	ActorType string
+	ActorID   string
+	CreatedAt time.Time
+}
+
 // CredentialOAuth stores the OAuth configuration and refresh state for
 // an OAuth-type credential. The access token lives in credentials.ciphertext;
 // this table stores everything needed to refresh it.
@@ -432,11 +454,22 @@ type Store interface {
 	DeleteVault(ctx context.Context, name string) error
 	RenameVault(ctx context.Context, oldName string, newName string) error
 
-	// Credentials
-	SetCredential(ctx context.Context, vaultID, key string, ciphertext, nonce []byte) (*Credential, error)
+	// Credentials. SetCredential's actorType/actorID identify who performed
+	// the write, recorded on the archived CredentialVersion if this call
+	// overwrites an existing value (see CredentialVersion) — pass "", "" if
+	// unknown (e.g. system-initiated writes; the version is still recorded,
+	// just without attribution).
+	SetCredential(ctx context.Context, vaultID, key string, ciphertext, nonce []byte, actorType, actorID string) (*Credential, error)
 	GetCredential(ctx context.Context, vaultID, key string) (*Credential, error)
 	ListCredentials(ctx context.Context, vaultID string) ([]Credential, error)
 	DeleteCredential(ctx context.Context, vaultID, key string) error
+
+	// Credential version history. Rollback has no dedicated store method —
+	// callers fetch the target version with GetCredentialVersion and pass
+	// its Ciphertext/Nonce back through SetCredential, which naturally
+	// archives whatever was current as a new version before restoring it.
+	ListCredentialVersions(ctx context.Context, vaultID, key string) ([]CredentialVersion, error)
+	GetCredentialVersion(ctx context.Context, vaultID, key string, version int) (*CredentialVersion, error)
 
 	// OAuth credentials
 	GetCredentialOAuth(ctx context.Context, vaultID, key string) (*CredentialOAuth, error)
@@ -521,7 +554,7 @@ type Store interface {
 	CountPendingProposals(ctx context.Context, vaultID string) (int, error)
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
 	GetProposalCredentials(ctx context.Context, vaultID string, proposalID int) (map[string]EncryptedCredential, error)
-	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []OAuthCredentialConfig) error
+	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []OAuthCredentialConfig, actorType, actorID string) error
 
 	// User invites (instance-level)
 	CreateUserInvite(ctx context.Context, email, createdBy, role string, expiresAt time.Time, vaults []UserInviteVault) (*UserInvite, error)
