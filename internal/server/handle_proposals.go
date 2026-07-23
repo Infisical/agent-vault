@@ -11,12 +11,26 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/notify"
 	"github.com/Infisical/agent-vault/internal/proposal"
 	"github.com/Infisical/agent-vault/internal/store"
 )
+
+// truncateRunes truncates s to at most maxRunes runes, appending "...".
+// Slicing by byte count (s[:n]) can split a multi-byte UTF-8 character in
+// half, producing invalid UTF-8 that gets corrupted (replaced with U+FFFD)
+// when re-encoded as JSON or HTML — this counts runes instead so messages
+// containing emoji or other non-ASCII text truncate cleanly.
+func truncateRunes(s string, maxRunes int) string {
+	if utf8.RuneCountInString(s) <= maxRunes {
+		return s
+	}
+	runes := []rune(s)
+	return string(runes[:maxRunes]) + "..."
+}
 
 // handleProposalApproveDetails returns proposal approval page data as JSON.
 // The approval token grants read access; user session determines approval capability.
@@ -257,10 +271,7 @@ func (s *Server) notifyProposalCreated(vaultID, vaultName string, proposalID int
 	ctx := context.Background()
 
 	// Truncate for notification bodies.
-	msg := message
-	if len(msg) > 200 {
-		msg = msg[:200] + "..."
-	}
+	msg := truncateRunes(message, 200)
 
 	if s.notifier.Enabled() {
 		s.emailProposalCreated(ctx, vaultID, vaultName, proposalID, msg, approvalURL, agentName)

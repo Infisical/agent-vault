@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/Infisical/agent-vault/internal/netguard"
 )
 
 // WebhookConfig holds outbound webhook notification configuration loaded
@@ -47,9 +49,23 @@ type ProposalWebhookEvent struct {
 	ApprovalURL string `json:"approval_url"`
 }
 
-// webhookHTTPClient is shared across sends; short timeout since this is a
-// fire-and-forget best-effort notification, not on the request's critical path.
-var webhookHTTPClient = &http.Client{Timeout: 10 * time.Second}
+// webhookHTTPClient lazily builds (once per Notifier) the HTTP client used
+// to deliver webhook notifications. The operator-supplied URL is untrusted
+// input — it (or a redirect target it returns) could point at loopback,
+// RFC-1918, or a cloud metadata endpoint, so the transport applies the same
+// netguard SSRF protection used for the OAuth token client and the MITM
+// proxy's egress (see internal/server.New and internal/netguard), rather
+// than the default transport. Short timeout since this is a fire-and-forget
+// best-effort notification, not on the request's critical path.
+func (n *Notifier) webhookHTTPClient() *http.Client {
+	n.webhookClientOnce.Do(func() {
+		transport := http.DefaultTransport.(*http.Transport).Clone() //nolint:forcetypeassert // http.DefaultTransport is always *http.Transport
+		transport.Proxy = nil
+		transport.DialContext = netguard.SafeDialContext(netguard.AllowPrivateFromEnv())
+		n.webhookClient = &http.Client{Timeout: 10 * time.Second, Transport: transport}
+	})
+	return n.webhookClient
+}
 
 // WebhookEnabled reports whether outbound webhook notifications are configured.
 func (n *Notifier) WebhookEnabled() bool {
@@ -82,7 +98,7 @@ func (n *Notifier) SendProposalWebhook(evt ProposalWebhookEvent) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := webhookHTTPClient.Do(req)
+	resp, err := n.webhookHTTPClient().Do(req)
 	if err != nil {
 		return fmt.Errorf("webhook post: %w", err)
 	}

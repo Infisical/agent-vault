@@ -4,10 +4,40 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Infisical/agent-vault/internal/notify"
 )
+
+// TestTruncateRunes_PreservesUTF8Validity verifies truncation is rune-aware:
+// naive byte slicing (s[:n]) can split a multi-byte character in half,
+// producing an invalid UTF-8 string.
+func TestTruncateRunes_PreservesUTF8Validity(t *testing.T) {
+	// 205 repetitions of a 3-byte rune: byte-slicing at index 200 would land
+	// mid-character (200 is not a multiple of 3).
+	msg := strings.Repeat("é", 205)
+
+	got := truncateRunes(msg, 200)
+
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated string is not valid UTF-8: %q", got)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("expected truncated string to end with '...', got %q", got)
+	}
+	if want := strings.Repeat("é", 200) + "..."; got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestTruncateRunes_NoOpUnderLimit(t *testing.T) {
+	msg := "short message"
+	if got := truncateRunes(msg, 200); got != msg {
+		t.Fatalf("expected unchanged string, got %q", got)
+	}
+}
 
 func TestNotifyWebhookTestRequiresOwner(t *testing.T) {
 	ms, agentToken := setupMockStoreWithScopedSession(t, "default", "root-ns-id")
@@ -48,6 +78,8 @@ func TestNotifyWebhookTestNotConfigured(t *testing.T) {
 }
 
 func TestNotifyWebhookTestSuccess(t *testing.T) {
+	t.Setenv("AGENT_VAULT_ALLOW_PRIVATE_RANGES", "true")
+
 	received := make(chan struct{}, 1)
 	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var evt notify.ProposalWebhookEvent
@@ -82,6 +114,8 @@ func TestNotifyWebhookTestSuccess(t *testing.T) {
 }
 
 func TestNotifyWebhookTestUpstreamFailure(t *testing.T) {
+	t.Setenv("AGENT_VAULT_ALLOW_PRIVATE_RANGES", "true")
+
 	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -106,6 +140,8 @@ func TestNotifyWebhookTestUpstreamFailure(t *testing.T) {
 // webhook channel fires independently of the email channel — a vault with no
 // human members (so no email recipients) must still deliver the webhook.
 func TestNotifyProposalCreatedFiresWebhookWithoutEmailRecipients(t *testing.T) {
+	t.Setenv("AGENT_VAULT_ALLOW_PRIVATE_RANGES", "true")
+
 	received := make(chan notify.ProposalWebhookEvent, 1)
 	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var evt notify.ProposalWebhookEvent

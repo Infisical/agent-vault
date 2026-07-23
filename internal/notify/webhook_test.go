@@ -81,6 +81,11 @@ func TestSendProposalWebhook_NoOp(t *testing.T) {
 }
 
 func TestSendProposalWebhook_Generic(t *testing.T) {
+	// httptest servers listen on loopback; allow it so this test exercises
+	// payload delivery rather than the SSRF guard (see
+	// TestSendProposalWebhook_BlocksPrivateRangesByDefault for that).
+	t.Setenv("AGENT_VAULT_ALLOW_PRIVATE_RANGES", "true")
+
 	var received ProposalWebhookEvent
 	var gotContentType string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +119,8 @@ func TestSendProposalWebhook_Generic(t *testing.T) {
 }
 
 func TestSendProposalWebhook_SlackFormat(t *testing.T) {
+	t.Setenv("AGENT_VAULT_ALLOW_PRIVATE_RANGES", "true")
+
 	var body map[string]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -144,6 +151,8 @@ func TestSendProposalWebhook_SlackFormat(t *testing.T) {
 }
 
 func TestSendProposalWebhook_NonSuccessStatus(t *testing.T) {
+	t.Setenv("AGENT_VAULT_ALLOW_PRIVATE_RANGES", "true")
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -157,9 +166,39 @@ func TestSendProposalWebhook_NonSuccessStatus(t *testing.T) {
 }
 
 func TestSendProposalWebhook_UnreachableURL(t *testing.T) {
+	t.Setenv("AGENT_VAULT_ALLOW_PRIVATE_RANGES", "true")
+
 	n := New(nil, &WebhookConfig{URL: "http://127.0.0.1:1/hook", Format: "generic"})
 	err := n.SendProposalWebhook(ProposalWebhookEvent{Event: "proposal.created"})
 	if err == nil {
 		t.Fatal("expected error for unreachable webhook URL")
+	}
+}
+
+// TestSendProposalWebhook_BlocksPrivateRangesByDefault verifies the SSRF
+// fix: without AGENT_VAULT_ALLOW_PRIVATE_RANGES=true, a webhook URL pointing
+// at loopback (or any RFC-1918/link-local/metadata address) is rejected by
+// netguard rather than dialed — otherwise a misconfigured or malicious
+// webhook target could reach the server's private network.
+func TestSendProposalWebhook_BlocksPrivateRangesByDefault(t *testing.T) {
+	t.Setenv("AGENT_VAULT_ALLOW_PRIVATE_RANGES", "")
+
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	n := New(nil, &WebhookConfig{URL: srv.URL, Format: "generic"})
+	err := n.SendProposalWebhook(ProposalWebhookEvent{Event: "proposal.created"})
+	if err == nil {
+		t.Fatal("expected the loopback webhook target to be blocked by default")
+	}
+	if !strings.Contains(err.Error(), "netguard") {
+		t.Fatalf("expected a netguard error, got: %v", err)
+	}
+	if called {
+		t.Fatal("the webhook handler must never be reached when the target is blocked")
 	}
 }

@@ -5,11 +5,13 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"net/http"
 	"net/mail"
 	"net/smtp"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -80,6 +82,9 @@ func LoadSMTPConfig() *SMTPConfig {
 type Notifier struct {
 	config        *SMTPConfig
 	webhookConfig *WebhookConfig
+
+	webhookClientOnce sync.Once
+	webhookClient     *http.Client
 }
 
 // New creates a Notifier. Pass nil for smtpConfig and/or webhookConfig to
