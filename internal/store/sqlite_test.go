@@ -1310,6 +1310,49 @@ func TestExpirePendingProposals(t *testing.T) {
 	}
 }
 
+func TestCountProposalsByStatus(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	counts, err := s.CountProposalsByStatus(ctx)
+	if err != nil {
+		t.Fatalf("CountProposalsByStatus: %v", err)
+	}
+	if len(counts) != 0 {
+		t.Fatalf("expected no rows on an empty table, got %+v", counts)
+	}
+
+	// Spread proposals across two vaults and every terminal status to
+	// verify the count is global (not scoped to one vault).
+	ns1, _ := s.CreateVault(ctx, "status-count-1")
+	ns2, _ := s.CreateVault(ctx, "status-count-2")
+
+	s.CreateProposal(ctx, ns1.ID, "s1", "[]", "[]", "pending one", "", nil)
+	s.CreateProposal(ctx, ns1.ID, "s2", "[]", "[]", "pending two", "", nil)
+	// Proposal IDs are per-vault sequential, so these start back at 1 in ns2.
+	s.CreateProposal(ctx, ns2.ID, "s3", "[]", "[]", "to reject", "", nil)
+	s.UpdateProposalStatus(ctx, ns2.ID, 1, "rejected", "no")
+	s.CreateProposal(ctx, ns2.ID, "s4", "[]", "[]", "to expire", "", nil)
+	// Set directly rather than via ExpirePendingProposals's time-based sweep —
+	// the other proposals in this test were created at the same instant and
+	// would also match a "created before now" cutoff.
+	s.UpdateProposalStatus(ctx, ns2.ID, 2, "expired", "")
+
+	counts, err = s.CountProposalsByStatus(ctx)
+	if err != nil {
+		t.Fatalf("CountProposalsByStatus: %v", err)
+	}
+	if counts["pending"] != 2 {
+		t.Fatalf("expected 2 pending, got %d (%+v)", counts["pending"], counts)
+	}
+	if counts["rejected"] != 1 {
+		t.Fatalf("expected 1 rejected, got %d (%+v)", counts["rejected"], counts)
+	}
+	if counts["expired"] != 1 {
+		t.Fatalf("expected 1 expired, got %d (%+v)", counts["expired"], counts)
+	}
+}
+
 func TestProposalWithCredentials(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()

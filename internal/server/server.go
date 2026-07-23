@@ -22,6 +22,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/infisical"
+	"github.com/Infisical/agent-vault/internal/metrics"
 	"github.com/Infisical/agent-vault/internal/mitm"
 	"github.com/Infisical/agent-vault/internal/netguard"
 	"github.com/Infisical/agent-vault/internal/notify"
@@ -89,6 +90,9 @@ type Server struct {
 	infisicalDynamic *infisical.DynamicResolver
 	oauthRefresher   *oauth.Refresher
 	telemetry        *telemetry.Telemetry
+	// metrics is nil unless AGENT_VAULT_METRICS_ENABLED is set; GET /metrics
+	// 404s when unattached rather than the route not existing at all.
+	metrics *metrics.Metrics
 }
 
 // lockVaultServices acquires the per-vault mutation lock via the store's
@@ -131,6 +135,11 @@ func (s *Server) LogSink() requestlog.Sink { return s.logSink }
 // AttachTelemetry sets the PostHog telemetry client. When nil (the
 // default), captureEvent is a no-op.
 func (s *Server) AttachTelemetry(t *telemetry.Telemetry) { s.telemetry = t }
+
+// AttachMetrics wires a Prometheus /metrics handler, built from
+// metrics.New(). Call before Start(). If never called (the default —
+// AGENT_VAULT_METRICS_ENABLED unset), GET /metrics 404s.
+func (s *Server) AttachMetrics(m *metrics.Metrics) { s.metrics = m }
 
 // captureEvent sends a telemetry event if telemetry is configured.
 // actor may be nil for pre-auth endpoints (login, register); callers
@@ -801,6 +810,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	// server-wide TierGlobal backstop; no per-route limit is useful.
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("POST /v1/auth/register", ipAuth(limitBody(s.handleRegister)))
 	mux.HandleFunc("POST /v1/auth/verify", ipAuth(limitBody(s.handleVerify)))
 	mux.HandleFunc("POST /v1/auth/resend-verification", ipAuth(limitBody(s.handleResendVerification)))

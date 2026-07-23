@@ -16,6 +16,7 @@ description: "Configuration for deploying an instance of Agent Vault."
 | `AGENT_VAULT_NETWORK_ALLOWLIST` | Optional | Comma-separated CIDRs or bare IPs the proxy may dial when `AGENT_VAULT_ALLOW_PRIVATE_RANGES=false` (e.g., `10.163.0.0/16,192.168.1.1`). |
 | `AGENT_VAULT_TRUSTED_PROXIES` | Optional | Comma-separated CIDRs of reverse proxies whose `X-Forwarded-For` headers are honored (e.g., `10.0.0.0/8,172.16.0.0/12`). |
 | `AGENT_VAULT_LOG_LEVEL` | Optional (defaults to `info`) | Log verbosity. One of: `info`, `debug`. `debug` adds one structured line per proxied request (no credential values). Overridden by `--log-level`. |
+| `AGENT_VAULT_METRICS_ENABLED` | Optional (defaults to `false`) | Whether to expose `GET /metrics` in the [Prometheus](/self-hosting/environment-variables#prometheus-metrics) text exposition format. |
 | `AGENT_VAULT_RATELIMIT_PROFILE` | Optional (defaults to `default`) | Rate-limit preset. One of: `default`, `strict` (≈0.5× the defaults), `loose` (≈2×), `off`. |
 | `AGENT_VAULT_RATELIMIT_LOCK` | Optional (defaults to `false`) | Whether to make the rate-limit UI read-only and ignore UI overrides. |
 | `AGENT_VAULT_RATELIMIT_<TIER>_<KNOB>` | Optional | Per-tier override. `TIER` is one of: `AUTH`, `PROXY`, `AUTHED`, `GLOBAL`. `KNOB` is one of: `RATE` (tokens/sec), `BURST`, `WINDOW` (e.g., `5m`), `MAX`, `CONCURRENCY`. Always takes precedence over UI overrides. |
@@ -28,6 +29,20 @@ description: "Configuration for deploying an instance of Agent Vault."
 | `DB_MAX_OPEN_CONNS` | Optional (defaults to `25`) | Maximum number of open Postgres connections per instance. Only applies when `DATABASE_URL` is set. See [connection pooling](/self-hosting/postgres#operational-notes). |
 | `DB_MAX_IDLE_CONNS` | Optional (defaults to `10`) | Maximum number of idle Postgres connections kept in the pool per instance. Only applies when `DATABASE_URL` is set. See [connection pooling](/self-hosting/postgres#operational-notes). |
 | `DB_CONN_MAX_LIFETIME` | Optional (defaults to `5m`) | Maximum lifetime of a Postgres connection before it is closed and replaced. Go duration string (e.g. `5m`, `1h`). Only applies when `DATABASE_URL` is set. See [connection pooling](/self-hosting/postgres#operational-notes). |
+
+## Prometheus metrics
+
+Set `AGENT_VAULT_METRICS_ENABLED=true` to expose `GET /metrics` in the standard Prometheus text exposition format. The endpoint is unauthenticated (consistent with `/health` and `/v1/status`) and disabled by default — treat it the same as any other internal observability surface and expose it only on a trusted network or behind a reverse proxy that adds auth.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `agent_vault_proxy_requests_total` | Counter | `service`, `status` | Proxied requests, by matched service name (or `unmatched`) and response status code. |
+| `agent_vault_proxy_request_duration_seconds` | Histogram | `service` | Latency of proxied requests. |
+| `agent_vault_proposals` | Gauge | `status` | Current number of proposals in each lifecycle status (`pending`, `applied`, `rejected`, `expired`), across all vaults. Queried live from the database on every scrape, so it always reflects the current backlog — e.g. `agent_vault_proposals{status="pending"}` for the pending backlog operators most want to alert on. |
+
+<Tip>
+  Additional counters — netguard-blocked requests and rate-limit rejections — are natural follow-ups; if you'd find those useful, open an issue.
+</Tip>
 
 ## Email SMTP configuration
 

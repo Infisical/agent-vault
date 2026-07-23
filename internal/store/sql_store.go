@@ -1962,6 +1962,30 @@ func (s *SQLStore) CountPendingProposals(ctx context.Context, vaultID string) (i
 	return count, err
 }
 
+// CountProposalsByStatus returns the current number of proposals in each
+// lifecycle status, across every vault. Used by the /metrics endpoint to
+// report a live backlog gauge — intentionally a point-in-time query rather
+// than an incrementally-tracked counter, so it can never drift from the
+// proposals table regardless of how a status transition happened.
+func (s *SQLStore) CountProposalsByStatus(ctx context.Context) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT status, COUNT(*) FROM proposals GROUP BY status")
+	if err != nil {
+		return nil, fmt.Errorf("counting proposals by status: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, fmt.Errorf("scanning proposal status count: %w", err)
+		}
+		counts[status] = count
+	}
+	return counts, rows.Err()
+}
+
 func (s *SQLStore) ExpirePendingProposals(ctx context.Context, before time.Time) (int, error) {
 	nowStr := s.now()
 	res, err := s.db.ExecContext(ctx,
