@@ -6,7 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Infisical/agent-vault/internal/requestlog"
 )
@@ -92,6 +95,94 @@ func TestMetrics_ProposalsGaugeReportsAllStatuses(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected %q in body, got:\n%s", want, body)
 		}
+	}
+}
+
+// countingProposalCounter records how many times CountProposalsByStatus is
+// actually invoked, and can optionally block until released — used to prove
+// concurrent scrapes serialize on one in-flight query rather than each
+// hammering the store, and that a slow query is bounded by a timeout.
+type countingProposalCounter struct {
+	calls   atomic.Int32
+	counts  map[string]int
+	err     error
+	release chan struct{} // if non-nil, CountProposalsByStatus blocks until closed or ctx is done
+}
+
+func (f *countingProposalCounter) CountProposalsByStatus(ctx context.Context) (map[string]int, error) {
+	f.calls.Add(1)
+	if f.release != nil {
+		select {
+		case <-f.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return f.counts, f.err
+}
+
+func TestProposalsCollector_CachesWithinTTL(t *testing.T) {
+	counter := &countingProposalCounter{counts: map[string]int{"pending": 1}}
+	c := newProposalsCollector(counter)
+
+	for i := 0; i < 5; i++ {
+		if _, ok := c.counts(); !ok {
+			t.Fatal("expected counts() to succeed")
+		}
+	}
+
+	if got := counter.calls.Load(); got != 1 {
+		t.Fatalf("expected the store to be queried once within the cache TTL, got %d calls", got)
+	}
+}
+
+// TestProposalsCollector_ConcurrentScrapesShareOneQuery is the regression
+// test for the Greptile-flagged issue: GET /metrics is unauthenticated, so
+// without caching, a flood of concurrent scrapes would each open their own
+// CountProposalsByStatus query and could exhaust the database connection
+// pool. With the mutex-guarded cache, concurrent callers serialize on one
+// in-flight query and share its result.
+func TestProposalsCollector_ConcurrentScrapesShareOneQuery(t *testing.T) {
+	counter := &countingProposalCounter{counts: map[string]int{"pending": 1}, release: make(chan struct{})}
+	c := newProposalsCollector(counter)
+
+	const concurrency = 20
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, ok := c.counts(); !ok {
+				t.Error("expected counts() to succeed")
+			}
+		}()
+	}
+
+	// Give every goroutine a chance to reach the query before releasing it.
+	time.Sleep(50 * time.Millisecond)
+	close(counter.release)
+	wg.Wait()
+
+	if got := counter.calls.Load(); got != 1 {
+		t.Fatalf("expected exactly one underlying query for %d concurrent scrapes, got %d", concurrency, got)
+	}
+}
+
+func TestProposalsCollector_QueryTimesOutRatherThanBlockingForever(t *testing.T) {
+	counter := &countingProposalCounter{counts: map[string]int{"pending": 1}, release: make(chan struct{})}
+	// Never release — the query must give up on its own via the timeout.
+	c := newProposalsCollector(counter)
+
+	done := make(chan struct{})
+	go func() {
+		c.counts()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(proposalsQueryTimeout + 2*time.Second):
+		t.Fatal("expected counts() to give up once the query timeout elapsed, but it kept blocking")
 	}
 }
 
