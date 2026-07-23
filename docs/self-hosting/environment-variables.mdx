@@ -48,6 +48,32 @@ Configure SMTP to enable Agent Vault to send emails for verification codes, vaul
   To verify SMTP is working, run `agent-vault email test`. It sends a test email to the owner's address. See the [Configure Email SMTP](/guides/smtp) guide for step-by-step setup instructions for popular providers like SendGrid, AWS SES, Resend, and more.
 </Tip>
 
+## Outbound webhook notifications
+
+Configure an outbound webhook to notify a team channel (Slack, Discord, or any generic HTTP endpoint) when an agent creates a [proposal](/learn/proposals), independently of email/SMTP.
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `AGENT_VAULT_NOTIFY_WEBHOOK_URL` | Conditional (required to enable webhook notifications) | The URL to POST notification events to. If unset, webhook notifications are disabled. |
+| `AGENT_VAULT_NOTIFY_FORMAT` | Optional (defaults to `generic`) | The payload shape to send. One of: `generic` (a JSON object describing the event), `slack` (a `{"text": ...}` body compatible with Slack Incoming Webhooks and close enough to work with Discord's webhook API too). |
+
+On `proposal.created`, a `POST` request is sent with a JSON body. In `generic` format:
+
+```json
+{
+  "event": "proposal.created",
+  "vault": "my-vault",
+  "proposal_id": 42,
+  "agent_name": "codegen-bot",
+  "message": "need access to stripe",
+  "approval_url": "https://vault.example.com/approve/42?token=..."
+}
+```
+
+<Tip>
+  To verify the webhook is working, run `agent-vault notify webhook test`. It sends a synthetic `proposal.created` event to the configured URL.
+</Tip>
+
 ## Infisical credential store
 
 Setting `INFISICAL_URL` enables Infisical-backed vaults: Agent Vault polls Infisical and caches the encrypted snapshot locally. Local mutations are rejected. See [Credential stores](/learn/credential-stores).

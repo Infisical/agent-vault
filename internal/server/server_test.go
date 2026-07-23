@@ -3962,7 +3962,7 @@ func TestEmailTestSMTPFailure(t *testing.T) {
 		Host: "127.0.0.1",
 		Port: 1, // unreachable port
 		From: "test@example.com",
-	})
+	}, nil)
 	srv := newTestServer(withStore(ms), withNotifier(notifier))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/email/test", nil)
@@ -5091,7 +5091,7 @@ func TestSettingsGetIncludesInviteOnly(t *testing.T) {
 
 func TestSettingsGetIncludesSMTPConfigured(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
-	n := notify.New(nil) // disabled notifier
+	n := notify.New(nil, nil) // disabled notifier
 	srv := newTestServer(withStore(ms), withNotifier(n))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/admin/settings", nil)

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/crypto"
+	"github.com/Infisical/agent-vault/internal/notify"
 	"github.com/Infisical/agent-vault/internal/proposal"
 	"github.com/Infisical/agent-vault/internal/store"
 )
@@ -233,7 +234,7 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 
 	// Notify vault members about the new proposal (fire-and-forget).
 	// The goroutine intentionally outlives the request, so we use a detached context.
-	if s.notifier.Enabled() {
+	if s.notifier.Enabled() || s.notifier.WebhookEnabled() {
 		go s.notifyProposalCreated(vaultID, nsName, cs.ID, req.Message, approvalURL, proposalAgentName) //nolint:gosec // G118: intentional fire-and-forget goroutine
 	}
 
@@ -248,11 +249,41 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// notifyProposalCreated sends an email notification to all vault members
-// when a new proposal is created. Intended to be called in a goroutine.
+// notifyProposalCreated fans out a new-proposal notification across every
+// configured channel (email, webhook). Each channel is independent — a
+// vault with no human members (so no email recipients) still gets a
+// webhook fired, and vice versa. Intended to be called in a goroutine.
 func (s *Server) notifyProposalCreated(vaultID, vaultName string, proposalID int, message, approvalURL, agentName string) {
 	ctx := context.Background()
 
+	// Truncate for notification bodies.
+	msg := message
+	if len(msg) > 200 {
+		msg = msg[:200] + "..."
+	}
+
+	if s.notifier.Enabled() {
+		s.emailProposalCreated(ctx, vaultID, vaultName, proposalID, msg, approvalURL, agentName)
+	}
+
+	if s.notifier.WebhookEnabled() {
+		evt := notify.ProposalWebhookEvent{
+			Event:       "proposal.created",
+			Vault:       vaultName,
+			ProposalID:  proposalID,
+			AgentName:   agentName,
+			Message:     msg,
+			ApprovalURL: approvalURL,
+		}
+		if err := s.notifier.SendProposalWebhook(evt); err != nil {
+			fmt.Fprintf(os.Stderr, "[agent-vault] Failed to send proposal webhook notification: %v\n", err)
+		}
+	}
+}
+
+// emailProposalCreated sends an email notification to all vault members
+// when a new proposal is created.
+func (s *Server) emailProposalCreated(ctx context.Context, vaultID, vaultName string, proposalID int, msg, approvalURL, agentName string) {
 	grants, err := s.store.ListVaultMembersByType(ctx, vaultID, "user")
 	if err != nil || len(grants) == 0 {
 		return
@@ -266,12 +297,6 @@ func (s *Server) notifyProposalCreated(vaultID, vaultName string, proposalID int
 	}
 	if len(emails) == 0 {
 		return
-	}
-
-	// Truncate message for the email body.
-	msg := message
-	if len(msg) > 200 {
-		msg = msg[:200] + "..."
 	}
 
 	subject := fmt.Sprintf("New proposal (#%d) in vault %q", proposalID, vaultName)
