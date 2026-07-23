@@ -735,10 +735,18 @@ func (s *SQLStore) SetCredential(ctx context.Context, vaultID, key string, ciphe
 // archive — then prunes older versions beyond CredentialHistoryMaxVersionsFromEnv.
 // Must run before the caller overwrites the live row, in the same
 // transaction, so the snapshot and the overwrite are atomic.
+//
+// On PostgreSQL the initial SELECT locks the credentials row FOR UPDATE, so
+// two concurrent overwrites of the same (vaultID, key) — e.g. a manual
+// credential set racing a proposal apply — are serialized rather than both
+// computing the same "next version" number and one of them failing on the
+// UNIQUE(vault_id, key, version) constraint. A brand-new key has no row to
+// lock, but that's fine: there's no existing version sequence to race on
+// until a first overwrite happens. SQLite's ForUpdateClause is a no-op.
 func (s *SQLStore) archiveCredentialVersionTx(ctx context.Context, tx *sql.Tx, vaultID, key, actorType, actorID string) error {
 	var ciphertext, nonce []byte
 	err := tx.QueryRowContext(ctx,
-		s.dialect.Rebind("SELECT ciphertext, nonce FROM credentials WHERE vault_id = ? AND key = ?"),
+		s.dialect.Rebind("SELECT ciphertext, nonce FROM credentials WHERE vault_id = ? AND key = ? "+s.dialect.ForUpdateClause()),
 		vaultID, key,
 	).Scan(&ciphertext, &nonce)
 	if errors.Is(err, sql.ErrNoRows) {
