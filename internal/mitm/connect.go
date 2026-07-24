@@ -1,6 +1,7 @@
 package mitm
 
 import (
+	"bufio"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -104,6 +105,34 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A CONNECT tunnel conventionally carries TLS, and terminating it is how
+	// the MITM sees the request to inject credentials. But some proxy clients
+	// tunnel http:// upstreams over CONNECT too and then speak cleartext HTTP
+	// inside — undici's EnvHttpProxyAgent does this, so Node-based agents
+	// (Pi and others in knownAgents) land here with a plain-HTTP payload.
+	// Committing to a TLS handshake unconditionally drops those tunnels. Peek
+	// the first byte to disambiguate without consuming it: a TLS record for a
+	// handshake begins with 0x16, while every HTTP method starts with an
+	// uppercase ASCII letter.
+	br := bufio.NewReader(clientConn)
+	_ = clientConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	first, err := br.Peek(1)
+	_ = clientConn.SetReadDeadline(time.Time{})
+	if err != nil {
+		p.logger.Warn("mitm tunnel peek failed", "host", host, "err", err.Error())
+		_ = clientConn.Close()
+		return
+	}
+	tunnel := &prefixedConn{Conn: clientConn, r: br}
+
+	// Cleartext inside the tunnel ⟹ the upstream is plain http://; serve it
+	// directly without terminating TLS. forwardRequest picks the same scheme
+	// via useTLSUpstream, so the outbound leg stays http as well.
+	if first[0] != tlsRecordTypeHandshake {
+		p.serveTunnel(tunnel, target, host, port, false, scope)
+		return
+	}
+
 	tlsConf := &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		NextProtos: []string{"http/1.1"},
@@ -116,7 +145,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	tlsConn := tls.Server(clientConn, tlsConf)
+	tlsConn := tls.Server(tunnel, tlsConf)
 	_ = tlsConn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := tlsConn.Handshake(); err != nil {
 		// err may carry TLS alert detail from the client — diagnostic, not secret.
@@ -126,14 +155,26 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = tlsConn.SetDeadline(time.Time{})
 
-	// Serve HTTP/1.1 requests off the terminated TLS connection. The
-	// listener yields the connection once, then blocks until Close so
-	// http.Serve stays alive while the connection goroutine is active.
-	// ConnState tracks when the connection leaves the hijacked state and
-	// closes the listener so Serve returns.
-	listener := newOneShotListener(tlsConn)
+	p.serveTunnel(tlsConn, target, host, port, true, scope)
+}
+
+// tlsRecordTypeHandshake is the TLS record content type for a handshake
+// (RFC 8446 §5.1). It is the first byte of a ClientHello and never a valid
+// leading byte of an HTTP request line, which distinguishes a TLS tunnel
+// from a cleartext one.
+const tlsRecordTypeHandshake = 0x16
+
+// serveTunnel serves HTTP/1.1 requests off an established tunnel connection —
+// either a terminated TLS conn or a cleartext one. useTLSUpstream selects the
+// scheme forwardRequest uses for the upstream leg (https for a TLS tunnel,
+// http for a cleartext one). The one-shot listener yields conn once, then
+// blocks until Close so http.Serve stays alive while the connection goroutine
+// is active; ConnState closes the listener once the connection leaves the
+// hijacked state so Serve returns.
+func (p *Proxy) serveTunnel(conn net.Conn, target, host string, port int, useTLSUpstream bool, scope *brokercore.ProxyScope) {
+	listener := newOneShotListener(conn)
 	srv := &http.Server{
-		Handler: p.forwardHandler(target, host, port, scope),
+		Handler: p.forwardHandler(target, host, port, useTLSUpstream, scope),
 		// ReadHeaderTimeout and ReadTimeout bound the request side
 		// (slow-loris defense). IdleTimeout caps keep-alives between
 		// requests. The upstream transport's ResponseHeaderTimeout
@@ -154,6 +195,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = srv.Serve(listener)
 }
+
+// prefixedConn is a net.Conn whose Read draws from a bufio.Reader wrapping
+// the underlying conn, so bytes Peeked before the conn is handed to
+// tls.Server / http.Server are not lost. All other methods (Write, Close,
+// deadlines) delegate to the embedded conn.
+type prefixedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c *prefixedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
 // recordAuthFailure records one auth-failure event against the per-IP
 // TierAuth budget so the read-only pre-gate in handleConnect /

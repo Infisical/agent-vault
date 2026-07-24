@@ -175,9 +175,11 @@ func hostHeaderForScheme(scheme, target string) string {
 // a closed-over target rather than r.Host defeats post-tunnel host
 // rewriting. host is the port-stripped form, already validated in
 // handleConnect; scope is the vault context resolved at CONNECT time.
-func (p *Proxy) forwardHandler(target, host string, port int, scope *brokercore.ProxyScope) http.Handler {
+// useTLSUpstream selects the outbound scheme: https for a TLS-terminated
+// tunnel, http for a cleartext one.
+func (p *Proxy) forwardHandler(target, host string, port int, useTLSUpstream bool, scope *brokercore.ProxyScope) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p.forwardRequest(w, r, target, host, port, true, scope)
+		p.forwardRequest(w, r, target, host, port, useTLSUpstream, scope)
 	})
 }
 
