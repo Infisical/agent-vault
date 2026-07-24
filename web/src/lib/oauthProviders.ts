@@ -1,5 +1,6 @@
 // Built-in OAuth provider presets for the credential form. Selecting one
-// prefills the endpoint fields; users always supply their own client ID/secret.
+// prefills the endpoint fields. An instance operator may also manage the
+// provider's client ID and secret.
 export interface ScopePreset {
   value: string;
   description: string;
@@ -43,10 +44,15 @@ export const OAUTH_PROVIDERS: OAuthProviderPreset[] = [
       { value: "openid", description: "OpenID Connect authentication" },
       { value: "email", description: "View user email address" },
       { value: "profile", description: "View basic profile info" },
+      { value: "https://www.googleapis.com/auth/calendar.readonly", description: "View Google Calendar" },
       { value: "https://www.googleapis.com/auth/calendar", description: "Manage Google Calendar" },
+      { value: "https://www.googleapis.com/auth/drive.metadata.readonly", description: "View Google Drive file metadata" },
       { value: "https://www.googleapis.com/auth/drive", description: "Full access to Google Drive" },
       { value: "https://www.googleapis.com/auth/gmail.readonly", description: "Read Gmail messages" },
+      { value: "https://www.googleapis.com/auth/gmail.modify", description: "Read and manage Gmail messages" },
       { value: "https://www.googleapis.com/auth/spreadsheets", description: "Read and write Google Sheets" },
+      { value: "https://www.googleapis.com/auth/documents", description: "Read and write Google Docs" },
+      { value: "https://www.googleapis.com/auth/presentations", description: "Read and write Google Slides" },
     ],
   },
   {

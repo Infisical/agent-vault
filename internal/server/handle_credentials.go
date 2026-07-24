@@ -94,6 +94,7 @@ type credentialEntry struct {
 	Scopes           *string `json:"scopes,omitempty"`
 	ClientSecret     *string `json:"client_secret,omitempty"`
 	TokenAuthMethod  *string `json:"token_auth_method,omitempty"`
+	ManagedProvider  *string `json:"managed_provider,omitempty"`
 	AccessToken      *string `json:"access_token,omitempty"`
 	RefreshToken     *string `json:"refresh_token,omitempty"`
 	// Unavailable marks a dynamic-secret row whose lease could not be minted
@@ -293,6 +294,9 @@ func (s *Server) enrichOAuthEntry(ctx context.Context, vaultID string, entry *cr
 	}
 	if co.TokenAuthMethod != "" {
 		entry.TokenAuthMethod = &co.TokenAuthMethod
+	}
+	if provider := s.managedOAuthProviderForConfig(co.AuthorizationURL, co.TokenURL, co.ClientID); provider != "" {
+		entry.ManagedProvider = &provider
 	}
 	if co.ConnectedAt != nil {
 		s := oauthSecretSentinel

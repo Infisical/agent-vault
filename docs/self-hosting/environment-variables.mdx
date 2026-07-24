@@ -29,6 +29,17 @@ description: "Configuration for deploying an instance of Agent Vault."
 | `DB_MAX_IDLE_CONNS` | Optional (defaults to `10`) | Maximum number of idle Postgres connections kept in the pool per instance. Only applies when `DATABASE_URL` is set. See [connection pooling](/self-hosting/postgres#operational-notes). |
 | `DB_CONN_MAX_LIFETIME` | Optional (defaults to `5m`) | Maximum lifetime of a Postgres connection before it is closed and replaced. Go duration string (e.g. `5m`, `1h`). Only applies when `DATABASE_URL` is set. See [connection pooling](/self-hosting/postgres#operational-notes). |
 
+## Managed OAuth providers
+
+An instance operator can configure a shared Google OAuth application. Vault users then choose **Google (managed)**, select scopes, and authorize their own Google account without creating or entering OAuth client credentials. Access and refresh tokens remain separate per vault.
+
+Register `{AGENT_VAULT_ADDR}/v1/oauth/callback` as an authorized redirect URI on the Google OAuth Web application. Both variables are required to enable the managed provider.
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_ID` | Conditional | Client ID for the instance-managed Google OAuth Web application. |
+| `AGENT_VAULT_OAUTH_GOOGLE_CLIENT_SECRET` | Conditional | Client secret for the instance-managed Google OAuth Web application. Source it from the deployment platform's secret store. |
+
 ## Email SMTP configuration
 
 Configure SMTP to enable Agent Vault to send emails for verification codes, vault invites, and notifications.
@@ -81,4 +92,3 @@ Agent Vault collects anonymous usage telemetry to help improve the product. No c
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `AGENT_VAULT_TELEMETRY` | Optional (defaults to `true`) | Set to `false` to disable anonymous usage telemetry. Also overridable with `--telemetry=false` on the CLI. |
-
