@@ -47,7 +47,7 @@ Read the full backstory behind Agent Vault [here](https://infisical.com/blog/age
 - **Agent Vault** is the simpler, self-contained option: a single open-source binary that stores credentials itself and runs entirely on infrastructure you control, with no dependency on any other system.
 - **[Infisical Agent Proxy](https://infisical.com/blog/agent-proxy)** is the commercial-grade option, built directly into Infisical. Your secrets, the services they are brokered to, and access control all live in one place, and it comes with everything Infisical supports around secrets management, including dynamic secrets, secret rotation, versioning, and more.
 
-For production and enterprise use cases we recommend Agent Proxy.
+For production and enterprise use cases we recommend Agent Proxy. It is part of Infisical Secrets Management and available on every plan, including the free one.
 
 ## Use Cases
 
