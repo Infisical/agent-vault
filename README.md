@@ -40,6 +40,15 @@ By default, requests not matching any service forward as plain proxy traffic; fl
 
 Read the full backstory behind Agent Vault [here](https://infisical.com/blog/agent-vault-the-open-source-credential-proxy-and-vault-for-agents).
 
+## Agent Vault and Infisical Agent Proxy
+
+[Infisical](https://infisical.com) offers two ways to broker credentials to agents.
+
+- **Agent Vault** is the self-contained, open-source option: a single MIT-licensed binary that stores credentials itself and runs entirely on infrastructure you control, with no dependency on any other system.
+- **[Infisical Agent Proxy](https://infisical.com/blog/agent-proxy)** is the native option, built directly into Infisical. Your secrets, the services they are brokered to, and agent access all live in one place, and it comes with everything Infisical supports around secrets management, including dynamic secrets, secret rotation, and identity-based access control.
+
+For most use cases we recommend Agent Proxy. It takes less to set up, and it is where our work on brokering credentials to agents is focused going forward.
+
 ## Use Cases
 
 Agent Vault works with all kinds of AI Agent use-cases including secure remote coding agents, all-purpose agents, custom agents + harnesses, secure ephemeral sandboxes and more.
