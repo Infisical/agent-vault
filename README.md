@@ -45,7 +45,7 @@ Read the full backstory behind Agent Vault [here](https://infisical.com/blog/age
 [Infisical](https://infisical.com) offers two ways to broker credentials to agents.
 
 - **Agent Vault** is the self-contained, open-source option: a single binary that stores credentials itself and runs entirely on infrastructure you control, with no dependency on any other system.
-- **[Infisical Agent Proxy](https://infisical.com/blog/agent-proxy)** is the native option, built directly into Infisical. Your secrets, the services they are brokered to, and access control all live in one place, and it comes with everything Infisical supports around secrets management, including dynamic secrets, secret rotation, and versioning.
+- **[Infisical Agent Proxy](https://infisical.com/blog/agent-proxy)** is the native option, built directly into Infisical. Your secrets, the services they are brokered to, and access control all live in one place, and it comes with everything Infisical supports around secrets management, including dynamic secrets, secret rotation, versioning, and more.
 
 For most use cases we recommend Agent Proxy. There is less to set up, and brokering lives alongside the rest of your secrets management instead of in a system of its own.
 
