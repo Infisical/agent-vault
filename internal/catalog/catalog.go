@@ -21,6 +21,7 @@ var catalog = []Template{
 	{ID: "github", Name: "GitHub", Host: "api.github.com", Description: "GitHub REST API", AuthType: "bearer", SuggestedCredentialKey: "GITHUB_TOKEN"},
 	{ID: "jira", Name: "Jira", Host: "*.atlassian.net", Description: "Atlassian Jira project tracking", AuthType: "basic", SuggestedCredentialKey: "JIRA_API_TOKEN"},
 	{ID: "linear", Name: "Linear", Host: "api.linear.app", Description: "Project management and issue tracking", AuthType: "bearer", SuggestedCredentialKey: "LINEAR_API_KEY"},
+	{ID: "minimax", Name: "MiniMax", Host: "api.minimax.io", Description: "MiniMax API", AuthType: "bearer", SuggestedCredentialKey: "MINIMAX_API_KEY"},
 	{ID: "notion", Name: "Notion", Host: "api.notion.com", Description: "Notion workspace API", AuthType: "bearer", SuggestedCredentialKey: "NOTION_TOKEN"},
 	{ID: "npm", Name: "NPM", Host: "registry.npmjs.org", Description: "NPM Default registry", AuthType: "bearer", SuggestedCredentialKey: "NPM_TOKEN"},
 	{ID: "npmgh", Name: "Github NPM registry", Host: "npm.pkg.github.com", Description: "Github's NPM registry", AuthType: "bearer", SuggestedCredentialKey: "NPM_GH_TOKEN"},
