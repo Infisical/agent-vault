@@ -55,6 +55,14 @@ export default function Navbar({ email, vaultName, isOwner }: NavbarProps) {
             Community
           </span>
         </div>
+        <a
+          href="https://infisical.com/schedule-demo"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center justify-center px-3 py-1.5 bg-primary text-primary-text rounded-lg text-sm font-semibold hover:bg-primary-hover transition-colors no-underline whitespace-nowrap"
+        >
+          Book a demo
+        </a>
         {email && <UserMenu email={email} isOwner={isOwner} />}
       </div>
     </nav>
