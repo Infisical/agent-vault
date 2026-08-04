@@ -88,6 +88,7 @@ func infisicalStorePayloadFromFlags(cmd *cobra.Command) (map[string]interface{},
 	projectID, _ := cmd.Flags().GetString("infisical-project-id")
 	environment, _ := cmd.Flags().GetString("infisical-environment")
 	secretPath, _ := cmd.Flags().GetString("infisical-path")
+	recursive, _ := cmd.Flags().GetBool("infisical-recursive")
 	pollSecs, _ := cmd.Flags().GetInt("poll-interval-seconds")
 
 	if projectID == "" || environment == "" {
@@ -105,6 +106,7 @@ func infisicalStorePayloadFromFlags(cmd *cobra.Command) (map[string]interface{},
 			"project_id":  projectID,
 			"environment": environment,
 			"secret_path": secretPath,
+			"recursive":   recursive,
 		},
 		"poll_interval_seconds": pollSecs,
 	}, nil
@@ -254,6 +256,10 @@ func printCredentialStore(out io.Writer, cs map[string]interface{}) {
 		fmt.Fprintf(out, "  Project:     %v\n", cfg["project_id"])
 		fmt.Fprintf(out, "  Environment: %v\n", cfg["environment"])
 		fmt.Fprintf(out, "  Path:        %v\n", cfg["secret_path"])
+		// Guarded: servers predating the recursive option omit the field.
+		if v, ok := cfg["recursive"]; ok {
+			fmt.Fprintf(out, "  Recursive:   %v\n", v)
+		}
 	}
 	if v, ok := cs["poll_interval_seconds"]; ok {
 		fmt.Fprintf(out, "  Poll:        %vs\n", v)
@@ -584,6 +590,7 @@ func init() {
 	vaultCreateCmd.Flags().String("infisical-project-id", "", "Infisical project ID (required when --credential-store=infisical)")
 	vaultCreateCmd.Flags().String("infisical-environment", "", "Infisical environment slug, e.g. dev/prod")
 	vaultCreateCmd.Flags().String("infisical-path", "/", "Infisical secret path (default /)")
+	vaultCreateCmd.Flags().Bool("infisical-recursive", false, "Sync secrets from all subfolders of --infisical-path (secret keys must be unique across the whole folder tree)")
 	vaultCreateCmd.Flags().Int("poll-interval-seconds", 60, "Sync cadence floor for the external store (min 10; server wakes every 10s and refreshes vaults past their interval)")
 
 	vaultCmd.AddCommand(vaultCreateCmd)
@@ -597,6 +604,7 @@ func init() {
 	vaultCredentialStoreSetCmd.Flags().String("infisical-project-id", "", "Infisical project ID (required when --kind=infisical)")
 	vaultCredentialStoreSetCmd.Flags().String("infisical-environment", "", "Infisical environment slug, e.g. dev/prod")
 	vaultCredentialStoreSetCmd.Flags().String("infisical-path", "/", "Infisical secret path (default /)")
+	vaultCredentialStoreSetCmd.Flags().Bool("infisical-recursive", false, "Sync secrets from all subfolders of --infisical-path (secret keys must be unique across the whole folder tree)")
 	vaultCredentialStoreSetCmd.Flags().Int("poll-interval-seconds", 60, "Sync cadence floor for the external store (min 10)")
 	vaultCredentialStoreSetCmd.Flags().Bool("yes", false, "Skip confirmation prompt")
 
