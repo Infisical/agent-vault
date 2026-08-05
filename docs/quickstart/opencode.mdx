@@ -73,7 +73,7 @@ Install the Agent Vault CLI on the host or in the container image where OpenCode
 </Tabs>
 
 <Tip>
-`agent-vault run` also installs an Agent Vault skill at `~/.opencode/skills/agent-vault-cli/SKILL.md` that teaches OpenCode how to raise proposals when API access is needed. The skill persists across sessions.
+By default, `agent-vault run` also installs an Agent Vault skill at `~/.opencode/skills/agent-vault-cli/SKILL.md` that teaches OpenCode how to raise proposals when API access is needed. Pass `--no-skills` to skip host-mode skill-file installation or updates. The skill persists across sessions.
 </Tip>
 
 ## Next steps
