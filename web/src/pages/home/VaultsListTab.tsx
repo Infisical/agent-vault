@@ -6,6 +6,8 @@ import VaultForm, {
   emptyVaultForm,
   infisicalFieldsValid,
   buildInfisicalConfig,
+  hashicorpFieldsValid,
+  buildHashicorpConfig,
   type VaultFormValues,
 } from "../../components/VaultForm";
 import Button from "../../components/Button";
@@ -383,7 +385,6 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
     if (!trimmed) return;
     setSubmitting(true);
     setError("");
-
     const body: Record<string, unknown> = { name: trimmed };
     if (values.kind === "infisical") {
       if (!infisicalFieldsValid(values)) {
@@ -398,6 +399,13 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
         setSubmitting(false);
         return;
       }
+    } else if (values.kind === "hashicorp") {
+      if (!hashicorpFieldsValid(values)) {
+        setError("Mount and secret path are required for HashiCorp Vault.");
+        setSubmitting(false);
+        return;
+      }
+      body.credential_store = { kind: "hashicorp", config: buildHashicorpConfig(values) };
     }
 
     try {
@@ -420,6 +428,7 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
   }
 
   const infisicalAvailable = availableStores.includes("infisical");
+  const hashicorpAvailable = availableStores.includes("hashicorp");
 
   return (
     <>
@@ -452,7 +461,11 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
             <Button
               onClick={handleCreate}
               loading={submitting}
-              disabled={!values.name.trim() || !infisicalFieldsValid(values)}
+              disabled={
+                !values.name.trim() ||
+                !infisicalFieldsValid(values) ||
+                !hashicorpFieldsValid(values)
+              }
             >
               Create
             </Button>
@@ -466,15 +479,19 @@ function CreateVaultButton({ onCreated }: { onCreated: (name: string) => void })
             setError("");
           }}
           infisicalOptionDisabled={!infisicalAvailable}
+          hashicorpOptionDisabled={!hashicorpAvailable}
           namePlaceholder="e.g. my-project"
           autoFocusName
           onEnter={handleCreate}
           error={error}
           storeTooltip={
             <>
-              Built-in keeps credentials in Agent Vault. Infisical syncs read-only from your Infisical instance.
+              Built-in keeps credentials in Agent Vault. Infisical and HashiCorp Vault sync read-only from your external instance.
               {!infisicalAvailable && (
                 <> Set <code>INFISICAL_URL</code> on the server to enable Infisical-backed vaults.</>
+              )}
+              {!hashicorpAvailable && (
+                <> Set <code>VAULT_ADDR</code> on the server to enable HashiCorp-backed vaults.</>
               )}
             </>
           }

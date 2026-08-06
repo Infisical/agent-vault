@@ -65,6 +65,11 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `INFISICAL_LDAP_AUTH_IDENTITY_ID` | LDAP Auth identity ID. All three LDAP vars are required together. |
     | `INFISICAL_LDAP_AUTH_USERNAME` | LDAP bind username. |
     | `INFISICAL_LDAP_AUTH_PASSWORD` | LDAP bind password. |
+    | `VAULT_ADDR` | Base URL of a HashiCorp Vault instance. When set, the server constructs a client from one of the auth-method groups below and enables `--credential-store=hashicorp` on `vault create`. Honors the standard Vault client env (`VAULT_CACERT`, `VAULT_SKIP_VERIFY`, `VAULT_NAMESPACE`). See [Environment variables: HashiCorp Vault credential store](/self-hosting/environment-variables#hashicorp-vault-credential-store). |
+    | `VAULT_TOKEN` | HashiCorp Vault token auth. Used when set and no AppRole pair is present. |
+    | `VAULT_ROLE_ID` | HashiCorp Vault AppRole RoleID. Set together with `VAULT_SECRET_ID`; selected over `VAULT_TOKEN` when both are present. |
+    | `VAULT_SECRET_ID` | HashiCorp Vault AppRole SecretID. Set together with `VAULT_ROLE_ID`. |
+    | `VAULT_APPROLE_MOUNT` | HashiCorp Vault AppRole auth mount path (default `approle`). Override for non-default Enterprise/HCP mounts. |
     | `AGENT_VAULT_TELEMETRY` | Set to `false` to disable anonymous usage telemetry. No credential values or request payloads are ever included. |
   </Accordion>
 
@@ -239,16 +244,19 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     Create a new vault. Name must be in slug format (lowercase alphanumeric and hyphens).
 
-    Without flags the vault is "built-in": credentials are stored locally and managed through Agent Vault. With `--credential-store=infisical`, Agent Vault probes Infisical with the supplied config, encrypts the snapshot, and commits the vault, credentials, and your admin grant atomically. If the probe fails nothing is persisted. See [Credential stores](/learn/credential-stores).
+    Without flags the vault is "built-in": credentials are stored locally and managed through Agent Vault. With `--credential-store=infisical` or `--credential-store=hashicorp`, Agent Vault probes the upstream with the supplied config, encrypts the snapshot, and commits the vault, credentials, and your admin grant atomically. If the probe fails nothing is persisted. See [Credential stores](/learn/credential-stores).
 
     External-store vault creation requires instance-owner role. Non-owners receive `403 Owner role required to create external-store vaults` because the broker's configured machine identity, not the caller's, authorizes the upstream fetch.
 
     | Flag | Default | Description |
     |------|---------|-------------|
-    | `--credential-store` | `builtin` | Credential store kind: `builtin` or `infisical`. Switchable later with `vault credential-store set`. |
+    | `--credential-store` | `builtin` | Credential store kind: `builtin`, `infisical`, or `hashicorp`. `builtin` and `infisical` are switchable later with `vault credential-store set`; `hashicorp` is set at create time. |
     | `--infisical-project-id` | | Infisical project ID. Required when `--credential-store=infisical`. |
     | `--infisical-environment` | | Infisical environment slug (e.g., `dev`, `prod`). Required when `--credential-store=infisical`. |
     | `--infisical-path` | `/` | Infisical secret path (must start with `/`). |
+    | `--hashicorp-mount` | `secret` | HashiCorp Vault KV mount path. Required when `--credential-store=hashicorp`. |
+    | `--hashicorp-path` | | HashiCorp Vault secret path within the mount (e.g., `agent-vault/demo`). Required when `--credential-store=hashicorp`. |
+    | `--hashicorp-kv-version` | `2` | HashiCorp Vault KV engine version: `1` or `2`. |
     | `--poll-interval-seconds` | `60` | Refresh cadence floor for the cached secrets. Minimum 10s. The server wakes every 10s and refreshes any vault past its interval, so actual cadence rounds up to the next 10s boundary. |
   </Accordion>
 
@@ -328,7 +336,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault credential-store sync <name>
     ```
 
-    Force an immediate refresh of an external-store vault and print the post-refresh credential-store summary. Available to any vault member. Returns an error if the vault is built-in (no external source), if Infisical is not configured on the server, or if another refresh is already in flight (409). The periodic syncer keeps the vault fresh on its own; use this when a secret has just been rotated upstream and you don't want to wait for the next tick.
+    Force an immediate refresh of an external-store vault and print the post-refresh credential-store summary. Available to any vault member. Returns an error if the vault is built-in (no external source), if the backing store (Infisical or HashiCorp Vault) is not configured on the server, or if another refresh is already in flight (409). The periodic syncer keeps the vault fresh on its own; use this when a secret has just been rotated upstream and you don't want to wait for the next tick.
   </Accordion>
 
   <Accordion title="agent-vault vault init">

@@ -246,6 +246,7 @@ type EncryptedKV struct {
 const (
 	CredentialStoreBuiltin   = "builtin"
 	CredentialStoreInfisical = "infisical"
+	CredentialStoreHashicorp = "hashicorp"
 )
 
 // Wire-protocol values for VaultCredentialStore.LastSyncStatus.
@@ -257,7 +258,7 @@ const (
 // VaultCredentialStore is the per-vault external-source row; absence means built-in.
 type VaultCredentialStore struct {
 	VaultID             string
-	Kind                string // CredentialStoreInfisical
+	Kind                string // CredentialStoreInfisical | CredentialStoreHashicorp
 	ConfigJSON          string // per-kind config blob
 	PollIntervalSeconds int
 	LastSyncedAt        *time.Time
