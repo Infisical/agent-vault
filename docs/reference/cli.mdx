@@ -336,7 +336,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     agent-vault vault init [flags]
     ```
 
-    Bind the current directory to a vault by writing an `agent-vault.json` file. This file is meant to be committed to version control so the whole team shares the vault binding.
+    Bind the current project to a vault by writing an `agent-vault.json` file. This file is meant to be committed to version control so the whole team shares the vault binding. If a config is already discoverable from the current directory, it is updated in place and existing versioned profile configuration is preserved.
 
     Vault resolution priority: `--vault` flag > `AGENT_VAULT_VAULT` env var > `agent-vault.json` > user context > `"default"`.
 
@@ -366,11 +366,14 @@ description: "Complete reference for all Agent Vault CLI commands."
 
     The child process receives `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN`, and `AGENT_VAULT_VAULT`, plus `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` / `NODE_USE_ENV_PROXY` / `OPENCLAW_PROXY_URL` and CA-trust variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `DENO_CERT`) pointing at `~/.agent-vault/mitm-ca.pem`, so standard HTTP and HTTPS clients transparently route through the broker. `OPENCLAW_PROXY_URL` feeds OpenClaw's Proxyline managed proxy (OpenClaw requires this plus `proxy.enabled: true` in its config). `HTTPS_PROXY` and `HTTP_PROXY` both point at the same plain HTTP proxy URL — the listener handles CONNECT for `https://` upstreams and absolute-form forward-proxy requests for `http://` upstreams on the same port. If the server's MITM proxy is unreachable, `vault run` aborts.
 
-    **Agent mode (containerized / unattended deployments).** When `AGENT_VAULT_TOKEN` and `AGENT_VAULT_ADDR` are pre-set on the environment, `vault run` skips the admin-session login and uses the env-supplied token as the credential — `--ttl` is rejected in this mode since the token's lifetime is fixed at mint time. The token is validated against the broker once at startup so bad/expired tokens fail fast with a clear error rather than producing 401s on every proxied call. See [Deploy your agent in a container](/guides/deploy-agent-container).
+    **Agent mode (containerized / unattended deployments).** When `AGENT_VAULT_TOKEN` is pre-set and the address comes from `AGENT_VAULT_ADDR`, `--address`, or a selected project profile, `vault run` skips the admin-session login and uses the env-supplied token as the credential — `--ttl` is rejected in this mode since the token's lifetime is fixed at mint time. The token is validated against the broker once at startup so bad/expired tokens fail fast with a clear error rather than producing 401s on every proxied call. See [Deploy your agent in a container](/guides/deploy-agent-container).
+
+    **Project profiles.** `--profile <name>` loads a named profile from the nearest `agent-vault.json` between the current directory and repository root. The profile selects a vault and may set child-only credential placeholders or public configuration. Profile values override inherited child environment values, while generated Agent Vault and proxy variables always take precedence. `--profile` and `--vault` are mutually exclusive. See [Vaults: Define project profiles](/learn/vaults#define-project-profiles).
 
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--address` | | Server address override |
+    | `--profile` | | Named project profile from `agent-vault.json`; mutually exclusive with `--vault`. |
     | `--ttl` | `0` | Session TTL in seconds (300–604800). Default: server default (24h). |
     | `--isolation` | `host` | Isolation mode for the child: `host` (default, cooperative — runs on the host with `HTTPS_PROXY`/`HTTP_PROXY`) or `container` (non-cooperative Docker container; see [Container isolation](/guides/container-isolation)). Also read from `AGENT_VAULT_ISOLATION`. |
     | `--image` | | Override the bundled container image (`--isolation=container` only). |
