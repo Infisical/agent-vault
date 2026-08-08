@@ -389,6 +389,16 @@ func (m *mockStore) ExpirePendingProposals(_ context.Context, before time.Time) 
 	return 0, nil
 }
 
+func (m *mockStore) CountProposalsByStatus(_ context.Context) (map[string]int, error) {
+	counts := make(map[string]int)
+	for _, css := range m.proposals {
+		for _, cs := range css {
+			counts[cs.Status]++
+		}
+	}
+	return counts, nil
+}
+
 func (m *mockStore) Close() error                                     { return nil }
 func (m *mockStore) Ping(_ context.Context) error                      { return nil }
 func (m *mockStore) DialectName() string                               { return "sqlite" }

@@ -519,6 +519,7 @@ type Store interface {
 	ListProposals(ctx context.Context, vaultID, status string) ([]Proposal, error)
 	UpdateProposalStatus(ctx context.Context, vaultID string, id int, status, reviewNote string) error
 	CountPendingProposals(ctx context.Context, vaultID string) (int, error)
+	CountProposalsByStatus(ctx context.Context) (map[string]int, error)
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
 	GetProposalCredentials(ctx context.Context, vaultID string, proposalID int) (map[string]EncryptedCredential, error)
 	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []OAuthCredentialConfig) error

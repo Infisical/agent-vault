@@ -21,6 +21,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/ca"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/infisical"
+	"github.com/Infisical/agent-vault/internal/metrics"
 	"github.com/Infisical/agent-vault/internal/mitm"
 	"github.com/Infisical/agent-vault/internal/notify"
 	"github.com/Infisical/agent-vault/internal/pidfile"
@@ -180,7 +181,8 @@ var serverCmd = &cobra.Command{
 		srv := server.New(addr, db, masterKey.Key(), notifier, initialized, baseURL, logger)
 		srv.SetSkills(skillCLI)
 		srv.AttachTelemetry(tel)
-		shutdownLogs := attachLogSink(srv, db, logger)
+		metricsSink := attachMetricsIfEnabled(srv, db)
+		shutdownLogs := attachLogSink(srv, db, logger, metricsSink)
 		defer shutdownLogs()
 		if err := attachServerExtensions(srv, host, mitmPort, masterKey.Key(), db, logger, maxRespBytes, maxReqBytes); err != nil {
 			return err
@@ -276,11 +278,18 @@ func attachInfisicalIfConfigured(srv *server.Server, logger *slog.Logger) {
 
 // attachLogSink wires the request-log pipeline: a BatchSink with async
 // batching feeds persistent storage, and a retention goroutine trims old
-// rows. Returns a shutdown function the caller runs after Start()
-// returns to flush pending records and stop retention.
-func attachLogSink(srv *server.Server, db store.Store, logger *slog.Logger) func() {
+// rows. extraSink, when non-nil (Prometheus metrics), fans out alongside
+// the persistence sink via requestlog.MultiSink. Returns a shutdown
+// function the caller runs after Start() returns to flush pending records
+// and stop retention.
+func attachLogSink(srv *server.Server, db store.Store, logger *slog.Logger, extraSink requestlog.Sink) func() {
 	sink := requestlog.NewBatchSink(db, logger, requestlog.BatchSinkConfig{})
-	srv.AttachLogSink(sink)
+
+	var combined requestlog.Sink = sink
+	if extraSink != nil {
+		combined = requestlog.MultiSink{sink, extraSink}
+	}
+	srv.AttachLogSink(combined)
 
 	retentionCtx, cancelRetention := context.WithCancel(context.Background())
 	go requestlog.RunRetention(retentionCtx, db, logger)
@@ -293,6 +302,19 @@ func attachLogSink(srv *server.Server, db store.Store, logger *slog.Logger) func
 			fmt.Fprintf(os.Stderr, "warning: request_log sink flush: %v\n", err)
 		}
 	}
+}
+
+// attachMetricsIfEnabled wires a Prometheus /metrics endpoint when
+// AGENT_VAULT_METRICS_ENABLED is set. Returns the requestlog.Sink that
+// records proxy metrics on the hot path, or nil when metrics are disabled
+// (the caller folds this into the log-sink pipeline via attachLogSink).
+func attachMetricsIfEnabled(srv *server.Server, db store.Store) requestlog.Sink {
+	if !metrics.EnabledFromEnv() {
+		return nil
+	}
+	m := metrics.New(db)
+	srv.AttachMetrics(m)
+	return m.Sink()
 }
 
 // promptOwnerSetup interactively creates the owner account.
@@ -601,7 +623,8 @@ func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger, maxR
 	srv := server.New(addr, db, key, notifier, initialized, baseURL, logger)
 	srv.SetSkills(skillCLI)
 	srv.AttachTelemetry(tel)
-	shutdownLogs := attachLogSink(srv, db, logger)
+	metricsSink := attachMetricsIfEnabled(srv, db)
+	shutdownLogs := attachLogSink(srv, db, logger, metricsSink)
 	defer shutdownLogs()
 	if err := attachServerExtensions(srv, host, mitmPort, key, db, logger, maxRespBytes, maxReqBytes); err != nil {
 		return err

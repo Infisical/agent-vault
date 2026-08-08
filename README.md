@@ -35,6 +35,7 @@ Features:
 - **Purpose-Built Design**: Existing forward proxies like `mitmproxy` or `squid` require modification to perform credential brokering and integrate well with agents. Agent Vault is purpose-built to work with the ergonomics of all types of agent use-cases with a dedicated CLI, multi-tenancy, and agent-specific roadmap backed by [Infisical](https://github.com/Infisical/infisical).
 - **Egress Filtering**: Control which agents should have access to which services and API endpoints on them since authenticated requests flow through Agent Vault.
 - **Request Logging**: Inspect authenticated traffic to monitor and diagnose agent behavior.
+- **Prometheus Metrics**: Opt-in `/metrics` endpoint exposing proxy request counts/latency and proposal backlog for alerting and dashboards. See [environment variables](docs/self-hosting/environment-variables.mdx#prometheus-metrics).
 
 By default, requests not matching any service forward as plain proxy traffic; flip a vault into strict deny mode (`unmatched_host_policy=deny`) to reject them with 403 instead.
 
