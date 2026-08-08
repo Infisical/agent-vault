@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -14,6 +16,8 @@ import (
 const (
 	discoveredHostsDefaultLimit = 5
 	discoveredHostsMaxLimit     = 100
+	settingDismissedHosts       = "dismissed_discovered_hosts"
+	maxDismissedHosts           = 1000
 )
 
 type discoveredHost struct {
@@ -96,10 +100,16 @@ func (s *Server) handleDiscoveredHosts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Filter out hosts that match a currently configured service (host-only matching).
+	// Load dismissed hosts.
+	dismissed := loadDismissedHosts(ctx, s.store, ns.ID)
+
+	// Filter out hosts that match a currently configured service or were dismissed.
 	var filtered []*discoveredHost
 	for _, dh := range deduped {
 		if broker.AnyHostMatches(dh.Host, services) {
+			continue
+		}
+		if dismissed[dh.Host] {
 			continue
 		}
 		filtered = append(filtered, dh)
@@ -138,3 +148,119 @@ func (s *Server) handleDiscoveredHosts(w http.ResponseWriter, r *http.Request) {
 		"total": total,
 	})
 }
+
+// handleDismissDiscoveredHost dismisses a single discovered host so it no
+// longer appears in the suggestions banner.
+func (s *Server) handleDismissDiscoveredHost(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	vaultName := r.PathValue("name")
+	host := r.PathValue("host")
+
+	ns, err := s.store.GetVault(ctx, vaultName)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
+		return
+	}
+
+	actor, err := s.requireVaultAdmin(w, r, ns.ID)
+	if err != nil {
+		return
+	}
+
+	if host == "" {
+		jsonError(w, http.StatusBadRequest, "Host is required")
+		return
+	}
+
+	dismissed := loadDismissedHosts(ctx, s.store, ns.ID)
+	if !dismissed[host] && len(dismissed) >= maxDismissedHosts {
+		jsonError(w, http.StatusUnprocessableEntity, "Dismissed hosts limit reached")
+		return
+	}
+	dismissed[host] = true
+	if err := saveDismissedHosts(ctx, s.store, ns.ID, dismissed); err != nil {
+		s.logger.Warn("dismiss-host: save failed", "vault", vaultName, "actor", actor.ID, "actor_type", actor.Type, "err", err.Error())
+		jsonError(w, http.StatusInternalServerError, "Failed to dismiss host")
+		return
+	}
+
+	jsonOK(w, map[string]any{"dismissed": host})
+}
+
+// handleDismissAllDiscoveredHosts dismisses all currently visible discovered
+// hosts for a vault.
+func (s *Server) handleDismissAllDiscoveredHosts(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	vaultName := r.PathValue("name")
+
+	ns, err := s.store.GetVault(ctx, vaultName)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vaultName))
+		return
+	}
+
+	actor, err := s.requireVaultAdmin(w, r, ns.ID)
+	if err != nil {
+		return
+	}
+
+	// Collect all currently visible unmatched hosts to dismiss them.
+	unmatched, err := s.store.ListUnmatchedHosts(ctx, ns.ID)
+	if err != nil {
+		s.logger.Warn("dismiss-all: store query failed", "vault", vaultName, "actor", actor.ID, "actor_type", actor.Type, "err", err.Error())
+		jsonError(w, http.StatusInternalServerError, "Failed to list discovered hosts")
+		return
+	}
+
+	dismissed := loadDismissedHosts(ctx, s.store, ns.ID)
+	for _, uh := range unmatched {
+		h := uh.Host
+		if stripped, _, err := net.SplitHostPort(h); err == nil {
+			h = stripped
+		}
+		dismissed[h] = true
+	}
+
+	if err := saveDismissedHosts(ctx, s.store, ns.ID, dismissed); err != nil {
+		s.logger.Warn("dismiss-all: save failed", "vault", vaultName, "actor", actor.ID, "actor_type", actor.Type, "err", err.Error())
+		jsonError(w, http.StatusInternalServerError, "Failed to dismiss hosts")
+		return
+	}
+
+	jsonOK(w, map[string]any{"dismissed": len(unmatched)})
+}
+
+type vaultSettingStore interface {
+	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
+	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
+}
+
+func loadDismissedHosts(ctx context.Context, st vaultSettingStore, vaultID string) map[string]bool {
+	raw, err := st.GetVaultSetting(ctx, vaultID, settingDismissedHosts)
+	if err != nil || raw == "" {
+		return make(map[string]bool)
+	}
+	var hosts []string
+	if err := json.Unmarshal([]byte(raw), &hosts); err != nil {
+		return make(map[string]bool)
+	}
+	m := make(map[string]bool, len(hosts))
+	for _, h := range hosts {
+		m[h] = true
+	}
+	return m
+}
+
+func saveDismissedHosts(ctx context.Context, st vaultSettingStore, vaultID string, dismissed map[string]bool) error {
+	hosts := make([]string, 0, len(dismissed))
+	for h := range dismissed {
+		hosts = append(hosts, h)
+	}
+	sort.Strings(hosts)
+	data, err := json.Marshal(hosts)
+	if err != nil {
+		return err
+	}
+	return st.SetVaultSetting(ctx, vaultID, settingDismissedHosts, string(data))
+}
+
