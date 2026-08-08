@@ -54,6 +54,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `AGENT_VAULT_LOGS_MAX_AGE_HOURS` | Retention ceiling for the per-vault request log. Default `168` (7 days). Rows older than this are trimmed by a background job every 15 minutes. Only non-secret metadata is stored. |
     | `AGENT_VAULT_LOGS_MAX_ROWS_PER_VAULT` | Per-vault row cap for the request log. Default `10000`. Whichever limit (age or rows) fills first wins. Set `0` to disable the cap. |
     | `AGENT_VAULT_LOGS_RETENTION_LOCK` | When `true`, owner-UI overrides for log retention are ignored and env values (or defaults) are pinned. |
+    | `AGENT_VAULT_CREDENTIAL_HISTORY_MAX_VERSIONS` | Maximum number of prior versions kept per built-in credential (per vault + key) after being overwritten. Default `10`. Set `0` to disable pruning. See `agent-vault vault credential history`/`rollback`. |
     | `INFISICAL_URL` | Base URL of an Infisical instance. When set, the server constructs a machine-identity client from one of the auth-method groups below and enables `--credential-store=infisical` on `vault create`. See [Credential stores](/learn/credential-stores) for the conceptual overview and [Environment variables: Infisical credential store](/self-hosting/environment-variables#infisical-credential-store) for the priority order when multiple groups are configured. |
     | `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID` | Universal Auth client ID. Set together with `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET`. |
     | `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET` | Universal Auth client secret. Set together with `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID`. |
@@ -670,6 +671,32 @@ description: "Complete reference for all Agent Vault CLI commands."
     | Flag | Default | Description |
     |------|---------|-------------|
     | `--vault` | `default` | Target vault |
+  </Accordion>
+
+  <Accordion title="agent-vault vault credential history">
+    ```bash
+    agent-vault vault credential history <KEY> [flags]
+    ```
+
+    List past values a credential held before being overwritten, most recent first, with the timestamp and actor responsible for each overwrite. Requires member+ role — the same rule as `credential get`/`--reveal`. Alias: `agent-vault vault creds history`. In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--vault` | `default` | Target vault |
+    | `--reveal` | `false` | Show decrypted values for each version (requires member+ role) |
+  </Accordion>
+
+  <Accordion title="agent-vault vault credential rollback">
+    ```bash
+    agent-vault vault credential rollback <KEY> --version <N> [flags]
+    ```
+
+    Restore an archived version (see `credential history`) as the credential's current value. Whatever is currently live is itself archived as a new version first, so a rollback is never destructive. Requires member+ role, same as `credential set`. Alias: `agent-vault vault creds rollback`. In agent mode (`AGENT_VAULT_TOKEN` set), `AGENT_VAULT_VAULT` (or `--vault`) is required — there is no project-file or interactive-picker fallback.
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--vault` | `default` | Target vault |
+    | `--version` | (required) | Version number to restore (see `credential history`) |
   </Accordion>
 </AccordionGroup>
 

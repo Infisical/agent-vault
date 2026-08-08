@@ -33,12 +33,13 @@ type mockStore struct {
 	masterKeyRecord    *store.MasterKeyRecord
 	sessions           map[string]*store.Session
 	vaults             map[string]*store.Vault
-	credentials        map[string]*store.Credential   // keyed by "vaultID:key"
-	brokerConfigs      map[string]*store.BrokerConfig // keyed by vaultID
-	proposals          map[string][]store.Proposal    // keyed by vaultID
-	users              map[string]*store.User         // keyed by email
-	grants             map[string]map[string]string   // keyed by userID -> vaultID -> role
-	userInvites        map[string]*store.UserInvite   // keyed by token
+	credentials        map[string]*store.Credential         // keyed by "vaultID:key"
+	credentialVersions map[string][]store.CredentialVersion // keyed by "vaultID:key", ascending version order
+	brokerConfigs      map[string]*store.BrokerConfig       // keyed by vaultID
+	proposals          map[string][]store.Proposal          // keyed by vaultID
+	users              map[string]*store.User               // keyed by email
+	grants             map[string]map[string]string         // keyed by userID -> vaultID -> role
+	userInvites        map[string]*store.UserInvite         // keyed by token
 	emailVerifications []*store.EmailVerification
 	passwordResets     []*store.PasswordReset
 	agents             map[string]*store.Agent                // keyed by name
@@ -52,16 +53,17 @@ type mockStore struct {
 
 func newMockStore() *mockStore {
 	ms := &mockStore{
-		sessions:      make(map[string]*store.Session),
-		vaults:        make(map[string]*store.Vault),
-		credentials:   make(map[string]*store.Credential),
-		brokerConfigs: make(map[string]*store.BrokerConfig),
-		users:         make(map[string]*store.User),
-		userInvites:   make(map[string]*store.UserInvite),
-		agents:        make(map[string]*store.Agent),
-		settings:      make(map[string]string),
-		vaultSettings: make(map[string]map[string]string),
-		credStores:    make(map[string]*store.VaultCredentialStore),
+		sessions:           make(map[string]*store.Session),
+		vaults:             make(map[string]*store.Vault),
+		credentials:        make(map[string]*store.Credential),
+		credentialVersions: make(map[string][]store.CredentialVersion),
+		brokerConfigs:      make(map[string]*store.BrokerConfig),
+		users:              make(map[string]*store.User),
+		userInvites:        make(map[string]*store.UserInvite),
+		agents:             make(map[string]*store.Agent),
+		settings:           make(map[string]string),
+		vaultSettings:      make(map[string]map[string]string),
+		credStores:         make(map[string]*store.VaultCredentialStore),
 	}
 	// Seed root vault
 	ms.vaults["default"] = &store.Vault{ID: "root-ns-id", Name: "default"}
@@ -244,7 +246,22 @@ func (m *mockStore) GetVault(_ context.Context, name string) (*store.Vault, erro
 	return ns, nil
 }
 
-func (m *mockStore) SetCredential(_ context.Context, vaultID, key string, ciphertext, nonce []byte) (*store.Credential, error) {
+func (m *mockStore) SetCredential(_ context.Context, vaultID, key string, ciphertext, nonce []byte, actorType, actorID string) (*store.Credential, error) {
+	k := vaultID + ":" + key
+	if existing, ok := m.credentials[k]; ok {
+		versions := m.credentialVersions[k]
+		m.credentialVersions[k] = append(versions, store.CredentialVersion{
+			ID:         fmt.Sprintf("credential-version-%s-%d", key, len(versions)+1),
+			VaultID:    vaultID,
+			Key:        key,
+			Version:    len(versions) + 1,
+			Ciphertext: existing.Ciphertext,
+			Nonce:      existing.Nonce,
+			ActorType:  actorType,
+			ActorID:    actorID,
+			CreatedAt:  time.Now(),
+		})
+	}
 	s := &store.Credential{
 		ID:         "credential-" + key,
 		VaultID:    vaultID,
@@ -252,8 +269,27 @@ func (m *mockStore) SetCredential(_ context.Context, vaultID, key string, cipher
 		Ciphertext: ciphertext,
 		Nonce:      nonce,
 	}
-	m.credentials[vaultID+":"+key] = s
+	m.credentials[k] = s
 	return s, nil
+}
+
+func (m *mockStore) ListCredentialVersions(_ context.Context, vaultID, key string) ([]store.CredentialVersion, error) {
+	versions := m.credentialVersions[vaultID+":"+key]
+	out := make([]store.CredentialVersion, len(versions))
+	// Reverse to most-recent-first, matching SQLStore's ORDER BY version DESC.
+	for i, v := range versions {
+		out[len(versions)-1-i] = v
+	}
+	return out, nil
+}
+
+func (m *mockStore) GetCredentialVersion(_ context.Context, vaultID, key string, version int) (*store.CredentialVersion, error) {
+	for _, v := range m.credentialVersions[vaultID+":"+key] {
+		if v.Version == version {
+			return &v, nil
+		}
+	}
+	return nil, sql.ErrNoRows
 }
 
 func (m *mockStore) ListCredentials(_ context.Context, vaultID string) ([]store.Credential, error) {
@@ -367,7 +403,7 @@ func (m *mockStore) GetProposalCredentials(_ context.Context, vaultID string, pr
 	return map[string]store.EncryptedCredential{}, nil
 }
 
-func (m *mockStore) ApplyProposal(_ context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string, _ []store.OAuthCredentialConfig) error {
+func (m *mockStore) ApplyProposal(_ context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string, _ []store.OAuthCredentialConfig, _, _ string) error {
 	// Update proposal status to applied.
 	css := m.proposals[vaultID]
 	for i, cs := range css {
@@ -389,9 +425,9 @@ func (m *mockStore) ExpirePendingProposals(_ context.Context, before time.Time) 
 	return 0, nil
 }
 
-func (m *mockStore) Close() error                                     { return nil }
-func (m *mockStore) Ping(_ context.Context) error                      { return nil }
-func (m *mockStore) DialectName() string                               { return "sqlite" }
+func (m *mockStore) Close() error                                         { return nil }
+func (m *mockStore) Ping(_ context.Context) error                         { return nil }
+func (m *mockStore) DialectName() string                                  { return "sqlite" }
 func (m *mockStore) GetCAState(_ context.Context) (*store.CAState, error) { return nil, nil }
 func (m *mockStore) SetCAState(_ context.Context, _ *store.CAState) error { return nil }
 
@@ -2309,6 +2345,189 @@ func TestCredentialsRevealProxyBlocked(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCredentialHistoryRequiresMember(t *testing.T) {
+	// Scoped session with proxy role — should be blocked, same as reveal.
+	ms, token := setupMockStoreWithScopedSessionRole(t, "default", "root-ns-id", "proxy")
+	encKey := make([]byte, 32)
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/credentials/history?vault=default&key=SECRET", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCredentialHistoryListsArchivedVersionsMostRecentFirst(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	encKey := make([]byte, 32)
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+
+	for _, v := range []string{"v1", "v2", "v3"} {
+		ciphertext, nonce, err := crypto.Encrypt([]byte(v), encKey)
+		if err != nil {
+			t.Fatalf("encrypt: %v", err)
+		}
+		if _, err := ms.SetCredential(context.Background(), "root-ns-id", "SECRET", ciphertext, nonce, "user", "owner-user-id"); err != nil {
+			t.Fatalf("SetCredential: %v", err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/credentials/history?vault=default&key=SECRET", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp credentialHistoryResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// v1 and v2 were archived when overwritten (v3 is current); v2 first.
+	if len(resp.Versions) != 2 {
+		t.Fatalf("expected 2 archived versions, got %d: %+v", len(resp.Versions), resp.Versions)
+	}
+	if resp.Versions[0].Version != 2 || resp.Versions[1].Version != 1 {
+		t.Fatalf("expected versions ordered [2, 1], got [%d, %d]", resp.Versions[0].Version, resp.Versions[1].Version)
+	}
+	for _, v := range resp.Versions {
+		if v.Value != "" {
+			t.Fatalf("expected no value without ?reveal=true, got %q", v.Value)
+		}
+		if v.ActorType != "user" || v.ActorID != "owner-user-id" {
+			t.Fatalf("expected actor attribution on each version, got %s/%s", v.ActorType, v.ActorID)
+		}
+	}
+}
+
+func TestCredentialHistoryRevealIncludesDecryptedValue(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	encKey := make([]byte, 32)
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+
+	for _, v := range []string{"old-value", "new-value"} {
+		ciphertext, nonce, err := crypto.Encrypt([]byte(v), encKey)
+		if err != nil {
+			t.Fatalf("encrypt: %v", err)
+		}
+		if _, err := ms.SetCredential(context.Background(), "root-ns-id", "SECRET", ciphertext, nonce, "user", "owner-user-id"); err != nil {
+			t.Fatalf("SetCredential: %v", err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/credentials/history?vault=default&key=SECRET&reveal=true", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp credentialHistoryResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Versions) != 1 || resp.Versions[0].Value != "old-value" {
+		t.Fatalf("expected 1 archived version with decrypted value %q, got %+v", "old-value", resp.Versions)
+	}
+}
+
+func TestCredentialRollbackRequiresMember(t *testing.T) {
+	ms, token := setupMockStoreWithScopedSessionRole(t, "default", "root-ns-id", "proxy")
+	encKey := make([]byte, 32)
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+
+	body := `{"vault":"default","key":"SECRET","version":1}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/rollback", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCredentialRollbackRestoresPriorValueAndArchivesCurrent(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	encKey := make([]byte, 32)
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+
+	for _, v := range []string{"good-value", "oops-typo"} {
+		ciphertext, nonce, err := crypto.Encrypt([]byte(v), encKey)
+		if err != nil {
+			t.Fatalf("encrypt: %v", err)
+		}
+		if _, err := ms.SetCredential(context.Background(), "root-ns-id", "SECRET", ciphertext, nonce, "user", "owner-user-id"); err != nil {
+			t.Fatalf("SetCredential: %v", err)
+		}
+	}
+	// Live value is now "oops-typo"; version 1 archived "good-value".
+
+	body := `{"vault":"default","key":"SECRET","version":1}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/rollback", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	cred := ms.credentials["root-ns-id:SECRET"]
+	plaintext, err := crypto.Decrypt(cred.Ciphertext, cred.Nonce, encKey)
+	if err != nil {
+		t.Fatalf("decrypt: %v", err)
+	}
+	if string(plaintext) != "good-value" {
+		t.Fatalf("expected rollback to restore %q as current, got %q", "good-value", plaintext)
+	}
+
+	// The rolled-back-from value ("oops-typo") must still be recoverable,
+	// not lost — rollback is itself just another recorded version.
+	versions, err := ms.ListCredentialVersions(context.Background(), "root-ns-id", "SECRET")
+	if err != nil {
+		t.Fatalf("ListCredentialVersions: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("expected 2 archived versions after rollback, got %d", len(versions))
+	}
+	if versions[0].Version != 2 {
+		t.Fatalf("expected the rollback itself to be recorded as version 2, got %d", versions[0].Version)
+	}
+}
+
+func TestCredentialRollbackUnknownVersionReturns404(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	encKey := make([]byte, 32)
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+
+	seedEncryptedCredential(t, ms, encKey, "root-ns-id", "SECRET", "current-value")
+
+	body := `{"vault":"default","key":"SECRET","version":99}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/rollback", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

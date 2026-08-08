@@ -250,11 +250,137 @@ required — there is no project-file or interactive-picker fallback.`,
 	},
 }
 
+var credentialHistoryCmd = &cobra.Command{
+	Use:   "history <key>",
+	Short: "List archived versions of a credential",
+	Long: `List past values a credential held before being overwritten, most recent
+first, with the timestamp and actor (user/agent) responsible for each
+overwrite. Requires member+ role — the same rule as "credential get"/--reveal.
+
+Values are not shown unless --reveal is also passed. Roll one back with
+"agent-vault vault credential rollback <key> --version N".
+
+In agent mode (AGENT_VAULT_TOKEN set), AGENT_VAULT_VAULT (or --vault) is
+required — there is no project-file or interactive-picker fallback.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sess, tokenSource, err := resolveSession()
+		if err != nil {
+			return err
+		}
+
+		vault, err := resolveVaultForCommand(cmd, tokenSource)
+		if err != nil {
+			return err
+		}
+		key := args[0]
+		reveal, _ := cmd.Flags().GetBool("reveal")
+
+		reqURL := sess.Address + "/v1/credentials/history?vault=" + url.QueryEscape(vault) + "&key=" + url.QueryEscape(key)
+		if reveal {
+			reqURL += "&reveal=true"
+		}
+		respBody, err := doAdminRequestWithBody("GET", reqURL, sess.Token, nil)
+		if err != nil {
+			return err
+		}
+
+		var result struct {
+			Versions []struct {
+				Version   int    `json:"version"`
+				ActorType string `json:"actor_type"`
+				ActorID   string `json:"actor_id"`
+				CreatedAt string `json:"created_at"`
+				Value     string `json:"value"`
+			} `json:"versions"`
+		}
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return fmt.Errorf("parsing response: %w", err)
+		}
+
+		if len(result.Versions) == 0 {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "No archived versions for credential %q in vault %q.\n", key, vault)
+			return nil
+		}
+
+		t := newTable(cmd.OutOrStdout())
+		header := table.Row{"VERSION", "REPLACED AT", "ACTOR"}
+		if reveal {
+			header = append(header, "VALUE")
+		}
+		t.AppendHeader(header)
+		for _, v := range result.Versions {
+			actor := "unknown"
+			if v.ActorType != "" || v.ActorID != "" {
+				actor = fmt.Sprintf("%s:%s", v.ActorType, v.ActorID)
+			}
+			row := table.Row{v.Version, v.CreatedAt, actor}
+			if reveal {
+				row = append(row, v.Value)
+			}
+			t.AppendRow(row)
+		}
+		t.Render()
+		return nil
+	},
+}
+
+var credentialRollbackCmd = &cobra.Command{
+	Use:   "rollback <key>",
+	Short: "Restore an archived version of a credential as its current value",
+	Long: `Restore a prior version of a credential (see "credential history") as its
+current value. The value being replaced is itself archived as a new version
+first, so a rollback is never destructive — you can always roll back a
+rollback. Requires member+ role, same as "credential set".
+
+In agent mode (AGENT_VAULT_TOKEN set), AGENT_VAULT_VAULT (or --vault) is
+required — there is no project-file or interactive-picker fallback.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sess, tokenSource, err := resolveSession()
+		if err != nil {
+			return err
+		}
+
+		vault, err := resolveVaultForCommand(cmd, tokenSource)
+		if err != nil {
+			return err
+		}
+		key := args[0]
+
+		version, err := cmd.Flags().GetInt("version")
+		if err != nil || version <= 0 {
+			return fmt.Errorf("--version is required and must be a positive integer (see \"credential history %s\")", key)
+		}
+
+		body, err := json.Marshal(map[string]interface{}{
+			"vault":   vault,
+			"key":     key,
+			"version": version,
+		})
+		if err != nil {
+			return err
+		}
+
+		reqURL := sess.Address + "/v1/credentials/rollback"
+		if _, err := doAdminRequestWithBody("POST", reqURL, sess.Token, body); err != nil {
+			return err
+		}
+
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s Rolled back credential %q in vault %q to version %d\n", successText("✓"), key, vault, version)
+		return nil
+	},
+}
+
 func init() {
 	credentialListCmd.Flags().Bool("reveal", false, "Show decrypted credential values (requires member+ role)")
+	credentialHistoryCmd.Flags().Bool("reveal", false, "Show decrypted values for each version (requires member+ role)")
+	credentialRollbackCmd.Flags().Int("version", 0, "Version number to restore (see \"credential history\")")
 	credentialCmd.AddCommand(credentialListCmd)
 	credentialCmd.AddCommand(credentialGetCmd)
 	credentialCmd.AddCommand(credentialSetCmd)
 	credentialCmd.AddCommand(credentialDeleteCmd)
+	credentialCmd.AddCommand(credentialHistoryCmd)
+	credentialCmd.AddCommand(credentialRollbackCmd)
 	vaultCmd.AddCommand(credentialCmd)
 }
