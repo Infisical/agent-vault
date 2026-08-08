@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "replicaCount": {"type": "integer", "minimum": 1},
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "pullPolicy", "tag", "digest"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]},
+        "tag": {"type": "string"},
+        "digest": {"type": "string", "pattern": "^(|sha256:[a-fA-F0-9]{64})$"}
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create", "automount", "annotations", "name"],
+      "properties": {
+        "create": {"type": "boolean"},
+        "automount": {"type": "boolean"},
+        "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
+        "name": {"type": "string"}
+      }
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "port", "mitmPort", "logLevel"],
+      "properties": {
+        "host": {"type": "string", "minLength": 1},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "mitmPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "logLevel": {"type": "string", "enum": ["debug", "info"]}
+      }
+    },
+    "env": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}},
+    "secretEnv": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}},
+    "existingSecret": {"type": "string"},
+    "existingSecretKeys": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "optional"],
+      "properties": {
+        "required": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "optional": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+      }
+    },
+    "extraEnv": {"type": "array"},
+    "extraEnvFrom": {"type": "array"},
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "annotations", "clusterIP", "loadBalancerClass", "externalTrafficPolicy", "api", "proxy"],
+      "properties": {
+        "type": {"type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"]},
+        "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
+        "clusterIP": {"type": "string"},
+        "loadBalancerClass": {"type": "string"},
+        "externalTrafficPolicy": {"type": "string", "enum": ["", "Cluster", "Local"]},
+        "api": {"$ref": "#/definitions/servicePort"},
+        "proxy": {"$ref": "#/definitions/servicePort"}
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "api", "proxy"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "api": {"$ref": "#/definitions/networkPolicyListener"},
+        "proxy": {"$ref": "#/definitions/networkPolicyListener"}
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "className", "annotations", "hosts", "tls"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "className": {"type": "string"},
+        "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
+        "hosts": {"type": "array"},
+        "tls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["secretName", "hosts"],
+            "properties": {
+              "secretName": {"type": "string", "minLength": 1},
+              "hosts": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}
+            }
+          }
+        }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "accessMode", "size", "storageClass", "annotations", "existingClaim"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "accessMode": {"type": "string", "enum": ["ReadWriteOnce", "ReadOnlyMany", "ReadWriteMany", "ReadWriteOncePod"]},
+        "size": {"type": "string", "minLength": 1},
+        "storageClass": {"type": "string"},
+        "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
+        "existingClaim": {"type": "string"}
+      }
+    },
+    "extraVolumes": {"type": "array"},
+    "extraVolumeMounts": {"type": "array"}
+  },
+  "definitions": {
+    "servicePort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port", "nodePort"],
+      "properties": {
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "nodePort": {
+          "anyOf": [
+            {"const": 0},
+            {"type": "integer", "minimum": 30000, "maximum": 32767}
+          ]
+        }
+      }
+    },
+    "networkPolicyListener": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from"],
+      "properties": {
+        "from": {"type": "array"}
+      }
+    }
+  }
+}
