@@ -2196,26 +2196,63 @@ func TestUserInviteRevokeByIDRejectsInvalidAndNonPendingIDs(t *testing.T) {
 	}
 }
 
-func TestUserInviteRevokeByIDRejectsUnrelatedMember(t *testing.T) {
+func TestUserInviteRevokeByIDDoesNotDiscloseInviteStateToUnrelatedMember(t *testing.T) {
 	ms, _ := setupMockStoreWithSession(t)
 	memberToken := setupMemberSession(t, ms)
 	srv := newTestServer(withStore(ms))
 
-	inv, err := ms.CreateUserInvite(context.Background(), "pending@test.com", "owner-user-id", "member", time.Now().Add(time.Hour), nil)
+	pending, err := ms.CreateUserInvite(context.Background(), "pending@test.com", "owner-user-id", "member", time.Now().Add(time.Hour), nil)
 	if err != nil {
 		t.Fatalf("CreateUserInvite: %v", err)
 	}
-
-	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/v1/users/invites/by-id/%d", inv.ID), nil)
-	req.Header.Set("Authorization", "Bearer "+memberToken)
-	rec := httptest.NewRecorder()
-	srv.httpServer.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	accepted, err := ms.CreateUserInvite(context.Background(), "accepted@test.com", "owner-user-id", "member", time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatalf("CreateUserInvite: %v", err)
 	}
-	if inv.Status != "pending" {
-		t.Fatalf("expected invite to remain pending, got %q", inv.Status)
+	accepted.Status = "accepted"
+
+	for _, inv := range []*store.UserInvite{pending, accepted} {
+		req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/v1/users/invites/by-id/%d", inv.ID), nil)
+		req.Header.Set("Authorization", "Bearer "+memberToken)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for invite %d, got %d: %s", inv.ID, rec.Code, rec.Body.String())
+		}
+	}
+	if pending.Status != "pending" {
+		t.Fatalf("expected pending invite to remain pending, got %q", pending.Status)
+	}
+}
+
+func TestUserInviteReinviteByIDDoesNotDiscloseInviteStateToUnrelatedMember(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	pending, err := ms.CreateUserInvite(context.Background(), "pending@test.com", "owner-user-id", "member", time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatalf("CreateUserInvite: %v", err)
+	}
+	accepted, err := ms.CreateUserInvite(context.Background(), "accepted@test.com", "owner-user-id", "member", time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatalf("CreateUserInvite: %v", err)
+	}
+	accepted.Status = "accepted"
+
+	for _, inv := range []*store.UserInvite{pending, accepted} {
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v1/users/invites/by-id/%d/reinvite", inv.ID), nil)
+		req.Header.Set("Authorization", "Bearer "+memberToken)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for invite %d, got %d: %s", inv.ID, rec.Code, rec.Body.String())
+		}
+	}
+	if pending.Status != "pending" {
+		t.Fatalf("expected pending invite to remain pending, got %q", pending.Status)
 	}
 }
 

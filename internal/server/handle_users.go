@@ -635,13 +635,13 @@ func (s *Server) handleUserInviteRevokeByID(w http.ResponseWriter, r *http.Reque
 		jsonError(w, http.StatusNotFound, "Invite not found")
 		return
 	}
-	if inv.Status != "pending" {
-		jsonError(w, http.StatusConflict, "Invite is not pending")
-		return
-	}
 
 	if !s.canManageUserInvite(ctx, actor, inv) {
-		jsonError(w, http.StatusForbidden, "You don't have permission to revoke this invite")
+		jsonError(w, http.StatusNotFound, "Invite not found")
+		return
+	}
+	if inv.Status != "pending" {
+		jsonError(w, http.StatusConflict, "Invite is not pending")
 		return
 	}
 
@@ -676,13 +676,13 @@ func (s *Server) handleUserInviteReinviteByID(w http.ResponseWriter, r *http.Req
 		jsonError(w, http.StatusNotFound, "Invite not found")
 		return
 	}
-	if existing.Status != "pending" {
-		jsonError(w, http.StatusConflict, "Invite is not pending")
-		return
-	}
 
 	if !s.canManageUserInvite(ctx, actor, existing) {
-		jsonError(w, http.StatusForbidden, "You don't have permission to reinvite")
+		jsonError(w, http.StatusNotFound, "Invite not found")
+		return
+	}
+	if existing.Status != "pending" {
+		jsonError(w, http.StatusConflict, "Invite is not pending")
 		return
 	}
 
