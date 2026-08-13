@@ -599,6 +599,19 @@ func (s *Server) handleUserInviteList(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"invites": items})
 }
 
+func (s *Server) canManageUserInvite(ctx context.Context, actor *Actor, inv *store.UserInvite) bool {
+	if inv.CreatedBy == actor.ID || actor.IsOwner() {
+		return true
+	}
+	for _, v := range inv.Vaults {
+		role, _ := s.store.GetVaultRole(ctx, actor.ID, v.VaultID)
+		if role == "admin" {
+			return true
+		}
+	}
+	return false
+}
+
 // handleUserInviteRevokeByID revokes a pending user invite by its database ID.
 // This is the authenticated administrative path; token-based revoke is only
 // for unauthenticated redemption flows.
@@ -627,18 +640,7 @@ func (s *Server) handleUserInviteRevokeByID(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Authorization: creator, owner, or admin of a pre-assigned vault
-	allowed := inv.CreatedBy == actor.ID || actor.IsOwner()
-	if !allowed {
-		for _, v := range inv.Vaults {
-			role, _ := s.store.GetVaultRole(ctx, actor.ID, v.VaultID)
-			if role == "admin" {
-				allowed = true
-				break
-			}
-		}
-	}
-	if !allowed {
+	if !s.canManageUserInvite(ctx, actor, inv) {
 		jsonError(w, http.StatusForbidden, "You don't have permission to revoke this invite")
 		return
 	}
@@ -679,17 +681,7 @@ func (s *Server) handleUserInviteReinviteByID(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	allowed := existing.CreatedBy == actor.ID || actor.IsOwner()
-	if !allowed {
-		for _, v := range existing.Vaults {
-			role, _ := s.store.GetVaultRole(ctx, actor.ID, v.VaultID)
-			if role == "admin" {
-				allowed = true
-				break
-			}
-		}
-	}
-	if !allowed {
+	if !s.canManageUserInvite(ctx, actor, existing) {
 		jsonError(w, http.StatusForbidden, "You don't have permission to reinvite")
 		return
 	}
