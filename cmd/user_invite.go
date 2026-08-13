@@ -132,8 +132,8 @@ var userInviteCmd = &cobra.Command{
 		}
 
 		var resp struct {
-			Email     string `json:"email"`
-			EmailSent bool   `json:"email_sent"`
+			Email      string `json:"email"`
+			EmailSent  bool   `json:"email_sent"`
 			InviteLink string `json:"invite_link"`
 		}
 		_ = json.Unmarshal(respBody, &resp)
@@ -171,6 +171,7 @@ var userInviteListCmd = &cobra.Command{
 
 		var resp struct {
 			Invites []struct {
+				ID        int    `json:"id"`
 				Email     string `json:"email"`
 				Role      string `json:"role"`
 				Status    string `json:"status"`
@@ -193,7 +194,7 @@ var userInviteListCmd = &cobra.Command{
 		}
 
 		t := newTable(cmd.OutOrStdout())
-		t.AppendHeader(table.Row{"EMAIL", "ROLE", "STATUS", "VAULTS", "INVITED BY", "CREATED", "EXPIRES"})
+		t.AppendHeader(table.Row{"ID", "EMAIL", "ROLE", "STATUS", "VAULTS", "INVITED BY", "CREATED", "EXPIRES"})
 		for _, inv := range resp.Invites {
 			var vaultParts []string
 			for _, v := range inv.Vaults {
@@ -211,7 +212,7 @@ var userInviteListCmd = &cobra.Command{
 			if parsed, err := time.Parse(time.RFC3339, inv.ExpiresAt); err == nil {
 				expires = parsed.Format("2006-01-02 15:04")
 			}
-			t.AppendRow(table.Row{inv.Email, inv.Role, inv.Status, vaults, inv.CreatedBy, created, expires})
+			t.AppendRow(table.Row{inv.ID, inv.Email, inv.Role, inv.Status, vaults, inv.CreatedBy, created, expires})
 		}
 		t.Render()
 		return nil
@@ -219,18 +220,18 @@ var userInviteListCmd = &cobra.Command{
 }
 
 var userInviteRevokeCmd = &cobra.Command{
-	Use:   "revoke <token_suffix>",
+	Use:   "revoke <invite_id>",
 	Short: "Revoke a pending invite",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		tokenSuffix := args[0]
+		inviteID := args[0]
 
 		sess, err := ensureSession()
 		if err != nil {
 			return err
 		}
 
-		reqURL := fmt.Sprintf("%s/v1/users/invites/%s", sess.Address, tokenSuffix)
+		reqURL := fmt.Sprintf("%s/v1/users/invites/by-id/%s", sess.Address, inviteID)
 		if err := doAdminRequest("DELETE", reqURL, sess.Token, nil); err != nil {
 			return err
 		}
