@@ -332,12 +332,12 @@ type Store interface {
 	// User invites (instance-level)
 	CreateUserInvite(ctx context.Context, email, createdBy, role string, expiresAt time.Time, vaults []store.UserInviteVault) (*store.UserInvite, error)
 	GetUserInviteByToken(ctx context.Context, token string) (*store.UserInvite, error)
+	GetUserInviteByID(ctx context.Context, id int) (*store.UserInvite, error)
 	GetPendingUserInviteByEmail(ctx context.Context, email string) (*store.UserInvite, error)
 	ListUserInvites(ctx context.Context, status string) ([]store.UserInvite, error)
 	ListUserInvitesByVault(ctx context.Context, vaultID, status string) ([]store.UserInvite, error)
 	AcceptUserInvite(ctx context.Context, token string) error
-	RevokeUserInvite(ctx context.Context, token string) error
-	UpdateUserInviteVaults(ctx context.Context, token string, vaults []store.UserInviteVault) error
+	RevokeUserInviteByID(ctx context.Context, id int) error
 	CountPendingUserInvites(ctx context.Context) (int, error)
 
 	// Email verification
@@ -910,8 +910,8 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	// Instance-level user invites
 	mux.HandleFunc("POST /v1/users/invites", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleUserInviteCreate)))))
 	mux.HandleFunc("GET /v1/users/invites", s.requireInitialized(s.requireAuth(actorAuthed(s.handleUserInviteList))))
-	mux.HandleFunc("DELETE /v1/users/invites/{token}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleUserInviteRevoke))))
-	mux.HandleFunc("POST /v1/users/invites/{token}/reinvite", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleUserInviteReinvite)))))
+	mux.HandleFunc("DELETE /v1/users/invites/by-id/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleUserInviteRevokeByID))))
+	mux.HandleFunc("POST /v1/users/invites/by-id/{id}/reinvite", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleUserInviteReinviteByID)))))
 	mux.HandleFunc("GET /v1/users/invites/{token}/details", s.requireInitialized(ipUserInviteToken(s.handleUserInviteDetails)))
 	mux.HandleFunc("POST /v1/users/invites/{token}/accept", s.requireInitialized(ipUserInviteToken(limitBody(s.handleUserInviteAccept))))
 

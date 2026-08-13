@@ -526,12 +526,12 @@ type Store interface {
 	// User invites (instance-level)
 	CreateUserInvite(ctx context.Context, email, createdBy, role string, expiresAt time.Time, vaults []UserInviteVault) (*UserInvite, error)
 	GetUserInviteByToken(ctx context.Context, token string) (*UserInvite, error)
+	GetUserInviteByID(ctx context.Context, id int) (*UserInvite, error)
 	GetPendingUserInviteByEmail(ctx context.Context, email string) (*UserInvite, error)
 	ListUserInvites(ctx context.Context, status string) ([]UserInvite, error)
 	ListUserInvitesByVault(ctx context.Context, vaultID, status string) ([]UserInvite, error)
 	AcceptUserInvite(ctx context.Context, token string) error
-	RevokeUserInvite(ctx context.Context, token string) error
-	UpdateUserInviteVaults(ctx context.Context, token string, vaults []UserInviteVault) error
+	RevokeUserInviteByID(ctx context.Context, id int) error
 	CountPendingUserInvites(ctx context.Context) (int, error)
 
 	// Email verification

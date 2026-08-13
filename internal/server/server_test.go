@@ -717,6 +717,15 @@ func (m *mockStore) GetUserInviteByToken(_ context.Context, token string) (*stor
 	return inv, nil
 }
 
+func (m *mockStore) GetUserInviteByID(_ context.Context, id int) (*store.UserInvite, error) {
+	for _, inv := range m.userInvites {
+		if inv.ID == id {
+			return inv, nil
+		}
+	}
+	return nil, fmt.Errorf("user invite not found")
+}
+
 func (m *mockStore) GetPendingUserInviteByEmail(_ context.Context, email string) (*store.UserInvite, error) {
 	for _, inv := range m.userInvites {
 		if inv.Email == email && inv.Status == "pending" && time.Now().Before(inv.ExpiresAt) {
@@ -763,22 +772,17 @@ func (m *mockStore) AcceptUserInvite(_ context.Context, token string) error {
 	return nil
 }
 
-func (m *mockStore) RevokeUserInvite(_ context.Context, token string) error {
-	inv, ok := m.userInvites[token]
-	if !ok || inv.Status != "pending" {
-		return fmt.Errorf("not found or not pending")
+func (m *mockStore) RevokeUserInviteByID(_ context.Context, id int) error {
+	for _, inv := range m.userInvites {
+		if inv.ID == id {
+			if inv.Status != "pending" {
+				return fmt.Errorf("not found or not pending")
+			}
+			inv.Status = "revoked"
+			return nil
+		}
 	}
-	inv.Status = "revoked"
-	return nil
-}
-
-func (m *mockStore) UpdateUserInviteVaults(_ context.Context, token string, vaults []store.UserInviteVault) error {
-	inv, ok := m.userInvites[token]
-	if !ok || inv.Status != "pending" {
-		return fmt.Errorf("not found or not pending")
-	}
-	inv.Vaults = vaults
-	return nil
+	return fmt.Errorf("not found or not pending")
 }
 
 func (m *mockStore) CountPendingUserInvites(_ context.Context) (int, error) {
@@ -2101,6 +2105,117 @@ func TestScopedSessionEnforcesVaultOnSet(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUserInviteListAndRevokeByID(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	inv, err := ms.CreateUserInvite(context.Background(), "pending@test.com", "owner-user-id", "member", time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatalf("CreateUserInvite: %v", err)
+	}
+	// SQL-backed invite lists never expose the creation-only plaintext token.
+	inv.Token = ""
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v1/users/invites?status=pending", nil)
+	listReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	listRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list status 200, got %d: %s", listRec.Code, listRec.Body.String())
+	}
+	var listResp struct {
+		Invites []struct {
+			ID    int    `json:"id"`
+			Token string `json:"token"`
+		} `json:"invites"`
+	}
+	if err := json.NewDecoder(listRec.Body).Decode(&listResp); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listResp.Invites) != 1 {
+		t.Fatalf("expected 1 invite, got %d", len(listResp.Invites))
+	}
+	if listResp.Invites[0].ID != inv.ID {
+		t.Fatalf("expected listed ID %d, got %d", inv.ID, listResp.Invites[0].ID)
+	}
+	if listResp.Invites[0].Token != "" {
+		t.Fatalf("expected no plaintext token in list response, got %q", listResp.Invites[0].Token)
+	}
+
+	revokeReq := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/v1/users/invites/by-id/%d", listResp.Invites[0].ID), nil)
+	revokeReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	revokeRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(revokeRec, revokeReq)
+
+	if revokeRec.Code != http.StatusOK {
+		t.Fatalf("expected revoke status 200, got %d: %s", revokeRec.Code, revokeRec.Body.String())
+	}
+	if inv.Status != "revoked" {
+		t.Fatalf("expected invite status revoked, got %q", inv.Status)
+	}
+}
+
+func TestUserInviteRevokeByIDRejectsInvalidAndNonPendingIDs(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	for _, tc := range []struct {
+		name string
+		path string
+		want int
+	}{
+		{name: "invalid", path: "/v1/users/invites/by-id/not-a-number", want: http.StatusBadRequest},
+		{name: "missing", path: "/v1/users/invites/by-id/999", want: http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodDelete, tc.path, nil)
+			req.Header.Set("Authorization", "Bearer "+ownerToken)
+			rec := httptest.NewRecorder()
+			srv.httpServer.Handler.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("expected %d, got %d: %s", tc.want, rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	inv, err := ms.CreateUserInvite(context.Background(), "accepted@test.com", "owner-user-id", "member", time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatalf("CreateUserInvite: %v", err)
+	}
+	inv.Status = "accepted"
+	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/v1/users/invites/by-id/%d", inv.ID), nil)
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUserInviteRevokeByIDRejectsUnrelatedMember(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms)
+	srv := newTestServer(withStore(ms))
+
+	inv, err := ms.CreateUserInvite(context.Background(), "pending@test.com", "owner-user-id", "member", time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatalf("CreateUserInvite: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/v1/users/invites/by-id/%d", inv.ID), nil)
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if inv.Status != "pending" {
+		t.Fatalf("expected invite to remain pending, got %q", inv.Status)
 	}
 }
 
