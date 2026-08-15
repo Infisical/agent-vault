@@ -6,7 +6,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
-	"time"
 	"fmt"
 	"net"
 	"net/http"
@@ -17,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Infisical/agent-vault/internal/isolation"
 	"github.com/Infisical/agent-vault/internal/session"
@@ -51,6 +51,10 @@ Two modes:
     --ttl has no effect in agent mode and is rejected (the token's lifetime
     is fixed at mint time).
 
+Named profiles can supply the vault, role, TTL, isolation, image, mounts, and
+safe container persistence settings from ~/.agent-vault/profiles.yaml. Explicit
+CLI flags override profile values.
+
 Environment variables set on the child:
   AGENT_VAULT_TOKEN  — bearer token for the Agent Vault server
   AGENT_VAULT_ADDR   — base URL of the Agent Vault HTTP control server
@@ -72,6 +76,7 @@ for http:// on the same port. The root CA PEM is written to
 
 Example:
   ` + examplePrefix + ` -- claude
+  ` + examplePrefix + ` --profile planner -- claude
   ` + examplePrefix + ` --vault myproject -- claude`,
 		Args:                  cobra.MinimumNArgs(1),
 		DisableFlagsInUseLine: true,
@@ -83,6 +88,8 @@ Example:
 
 	c.Flags().String("address", "", "Agent Vault server address (defaults to session address)")
 	c.Flags().Int("ttl", 0, "Session TTL in seconds (300–604800; default: server default 24h)")
+	c.Flags().String("profile", "", "Named run profile from profiles.yaml")
+	c.Flags().String("profiles-file", "", "Run profiles YAML path (default: ~/.agent-vault/profiles.yaml)")
 
 	c.Flags().String("image", "", "Container image override (requires --isolation=container)")
 	c.Flags().StringArray("mount", nil, "Extra bind mount src:dst[:ro] (repeatable; requires --isolation=container)")
@@ -98,9 +105,11 @@ var runCmd = newRunCmd("agent-vault vault run")
 var topRunCmd = newRunCmd("agent-vault run")
 
 func runCmdRunE(cmd *cobra.Command, args []string) error {
-	// 0. Resolve isolation mode and validate flag compatibility before any
-	//    network I/O — the user sees conflicts immediately, not after
-	//    a slow session-mint round-trip.
+	// 0. Apply a named profile, then validate the resolved launch before any
+	//    login or network I/O. Explicit CLI flags always win over profile values.
+	if err := applyRunProfile(cmd); err != nil {
+		return err
+	}
 	mode := *cmd.Flags().Lookup("isolation").Value.(*IsolationMode)
 	if mode == "" {
 		if v := os.Getenv("AGENT_VAULT_ISOLATION"); v != "" {
@@ -113,6 +122,9 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 		mode = IsolationHost
 	}
 	if err := validateIsolationFlagConflicts(cmd, mode); err != nil {
+		return err
+	}
+	if err := validateContainerFlagCombos(cmd); err != nil {
 		return err
 	}
 
@@ -580,7 +592,6 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 	if err := os.WriteFile(caPath, pem, 0o600); err != nil { //nolint:gosec
 		return env, 0, false, fmt.Errorf("write CA: %w", err)
 	}
-
 
 	env = stripEnvKeys(env, mitmInjectedKeys)
 	env = append(env, isolation.BuildProxyEnv(isolation.ProxyEnvParams{
