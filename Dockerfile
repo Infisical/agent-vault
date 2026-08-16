@@ -8,7 +8,7 @@ COPY web/ .
 RUN npm run build
 
 # ---- Go build stage ----
-FROM golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS builder
+FROM golang:1.27rc2-alpine@sha256:dcbb18cc5fa1082364dc6aa95224b6b55429d09cbb9631a053d8064c1c367300 AS builder
 
 ARG VERSION=dev
 ARG COMMIT=unknown
