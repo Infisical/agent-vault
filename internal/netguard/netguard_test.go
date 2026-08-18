@@ -265,7 +265,7 @@ func TestSafeDialContext_AddressFamilies(t *testing.T) {
 			lookup := func(context.Context, string) ([]net.IPAddr, error) {
 				return []net.IPAddr{{IP: tt.ip}}, nil
 			}
-			dial := safeDialContext(true, lookup, (&net.Dialer{Timeout: time.Second}).DialContext)
+			dial := safeDialContext(true, time.Second, lookup, (&net.Dialer{Timeout: time.Second}).DialContext)
 
 			conn, err := dial(context.Background(), "tcp", net.JoinHostPort("dual-stack.test", port))
 			if err != nil {
@@ -298,8 +298,11 @@ func TestSafeDialContext_FallsBackInResolverOrder(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			lookup := func(context.Context, string) ([]net.IPAddr, error) { return tt.ips, nil }
 			var attempts []string
-			dialContext := func(_ context.Context, _, addr string) (net.Conn, error) {
+			var attemptBudgets []time.Duration
+			dialContext := func(ctx context.Context, _, addr string) (net.Conn, error) {
 				attempts = append(attempts, addr)
+				deadline, _ := ctx.Deadline()
+				attemptBudgets = append(attemptBudgets, time.Until(deadline))
 				if len(attempts) == 1 {
 					return nil, errors.New("first family unavailable")
 				}
@@ -307,7 +310,7 @@ func TestSafeDialContext_FallsBackInResolverOrder(t *testing.T) {
 				_ = server.Close()
 				return client, nil
 			}
-			dial := safeDialContext(true, lookup, dialContext)
+			dial := safeDialContext(true, time.Second, lookup, dialContext)
 
 			conn, err := dial(context.Background(), "tcp", "dual-stack.test:443")
 			if err != nil {
@@ -317,6 +320,9 @@ func TestSafeDialContext_FallsBackInResolverOrder(t *testing.T) {
 
 			if !reflect.DeepEqual(attempts, tt.want) {
 				t.Fatalf("dial attempts = %v, want %v", attempts, tt.want)
+			}
+			if attemptBudgets[1] <= attemptBudgets[0] {
+				t.Fatalf("second attempt budget = %v, want more than first attempt budget %v", attemptBudgets[1], attemptBudgets[0])
 			}
 		})
 	}
@@ -332,7 +338,7 @@ func TestSafeDialContext_ValidatesAllAddressesBeforeDialing(t *testing.T) {
 		dialCalled = true
 		return nil, errors.New("unexpected dial")
 	}
-	dial := safeDialContext(false, lookup, dialContext)
+	dial := safeDialContext(false, time.Second, lookup, dialContext)
 
 	_, err := dial(context.Background(), "tcp", "mixed-policy.test:443")
 	if err == nil {
@@ -357,7 +363,7 @@ func TestSafeDialContext_ReturnsAllConnectionFailures(t *testing.T) {
 		}
 		return nil, secondErr
 	}
-	dial := safeDialContext(true, lookup, dialContext)
+	dial := safeDialContext(true, time.Second, lookup, dialContext)
 
 	_, err := dial(context.Background(), "tcp", "unreachable.test:443")
 	if !errors.Is(err, firstErr) || !errors.Is(err, secondErr) {
@@ -377,7 +383,7 @@ func TestSafeDialContext_StopsFallbackOnCancellation(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	dial := safeDialContext(true, lookup, dialContext)
+	dial := safeDialContext(true, time.Second, lookup, dialContext)
 
 	_, err := dial(ctx, "tcp", "canceled.test:443")
 	if !errors.Is(err, context.Canceled) {
@@ -385,5 +391,68 @@ func TestSafeDialContext_StopsFallbackOnCancellation(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Fatalf("dial attempts = %d, want 1", attempts)
+	}
+}
+
+func TestSafeDialContext_SharesRemainingTimeoutAcrossAddresses(t *testing.T) {
+	const timeout = 100 * time.Millisecond
+	lookup := func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("::1")}, {IP: net.ParseIP("127.0.0.1")}}, nil
+	}
+	attempts := 0
+	dialContext := func(ctx context.Context, _, _ string) (net.Conn, error) {
+		attempts++
+		if attempts == 1 {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		client, server := net.Pipe()
+		_ = server.Close()
+		return client, nil
+	}
+	dial := safeDialContext(true, timeout, lookup, dialContext)
+
+	started := time.Now()
+	conn, err := dial(context.Background(), "tcp", "dual-stack.test:443")
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	_ = conn.Close()
+
+	if attempts != 2 {
+		t.Fatalf("dial attempts = %d, want 2", attempts)
+	}
+	if elapsed >= timeout {
+		t.Fatalf("dial elapsed = %v, want less than total timeout %v", elapsed, timeout)
+	}
+}
+
+func TestSafeDialContext_PreservesEarlierCallerDeadline(t *testing.T) {
+	const callerTimeout = 25 * time.Millisecond
+	lookup := func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("::1")}}, nil
+	}
+	attempts := 0
+	dialContext := func(ctx context.Context, _, _ string) (net.Conn, error) {
+		attempts++
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	dial := safeDialContext(true, time.Second, lookup, dialContext)
+	ctx, cancel := context.WithTimeout(context.Background(), callerTimeout)
+	defer cancel()
+
+	started := time.Now()
+	_, err := dial(ctx, "tcp", "deadline.test:443")
+	elapsed := time.Since(started)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context.DeadlineExceeded", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("dial attempts = %d, want 1", attempts)
+	}
+	if elapsed >= 2*callerTimeout {
+		t.Fatalf("dial elapsed = %v, want bounded by caller deadline %v", elapsed, callerTimeout)
 	}
 }

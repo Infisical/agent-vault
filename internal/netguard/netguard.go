@@ -172,11 +172,12 @@ func SafeDialContext(allowPrivate bool) func(ctx context.Context, network, addr 
 		Timeout:   safeDialTimeout,
 		KeepAlive: 30 * time.Second,
 	}
-	return safeDialContext(allowPrivate, net.DefaultResolver.LookupIPAddr, dialer.DialContext)
+	return safeDialContext(allowPrivate, safeDialTimeout, net.DefaultResolver.LookupIPAddr, dialer.DialContext)
 }
 
 func safeDialContext(
 	allowPrivate bool,
+	timeout time.Duration,
 	lookupIPAddr func(context.Context, string) ([]net.IPAddr, error),
 	dialContext func(context.Context, string, string) (net.Conn, error),
 ) func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -210,15 +211,20 @@ func safeDialContext(
 
 		// All IPs are safe — connect directly to validated IPs in resolver order
 		// to prevent DNS rebinding while allowing fallback across address families.
-		dialCtx, cancel := context.WithTimeout(ctx, safeDialTimeout)
+		dialCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		var dialErrs []error
-		for _, ipAddr := range ips {
+		for i, ipAddr := range ips {
 			if err := dialCtx.Err(); err != nil {
 				return nil, err
 			}
+			deadline, _ := dialCtx.Deadline()
+			remaining := time.Until(deadline)
+			attemptTimeout := remaining / time.Duration(len(ips)-i)
+			attemptCtx, attemptCancel := context.WithTimeout(dialCtx, attemptTimeout)
 			ip := ipAddr.IP.String()
-			conn, err := dialContext(dialCtx, network, net.JoinHostPort(ip, port))
+			conn, err := dialContext(attemptCtx, network, net.JoinHostPort(ip, port))
+			attemptCancel()
 			if err == nil {
 				return conn, nil
 			}
