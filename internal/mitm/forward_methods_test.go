@@ -28,6 +28,9 @@ func TestStripMethodOverrideParam(t *testing.T) {
 		{"override without value", "a=1&_method", "a=1"},
 		{"similar keys untouched", "x_method=1&_methodx=2&a=_method", "x_method=1&_methodx=2&a=_method"},
 		{"encoding preserved", "sig=a%2Fb%3D&_method=PUT", "sig=a%2Fb%3D"},
+		{"percent-encoded key stripped", "a=1&%5Fmethod=DELETE&b=2", "a=1&b=2"},
+		{"percent-encoded key lowercase hex", "%5fmethod=PUT&a=1", "a=1"},
+		{"malformed escape untouched", "a=%zz&_method=PUT", "a=%zz"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

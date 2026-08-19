@@ -257,6 +257,7 @@ func (p *Proxy) forwardRequest(
 			brokercore.LogCredentialMissing(p.logger, scope.VaultID, event.MatchedService, event.CredentialKeys)
 		case errors.Is(err, brokercore.ErrMethodNotAllowed):
 			errCode = "method_not_allowed"
+			status = http.StatusForbidden
 		}
 		brokercore.WriteInjectError(w, err, target, scope.VaultName, p.baseURL)
 		emit(status, errCode)
@@ -448,10 +449,13 @@ func (p *Proxy) forwardRequest(
 var methodOverrideHeaders = []string{"X-Http-Method-Override", "X-Method-Override", "X-Http-Method"}
 
 // stripMethodOverrideParam removes any _method key from a raw query
-// string. The surviving pairs are preserved byte-for-byte — no
-// re-encoding or reordering — so signed URLs keep their signatures.
+// string. The key is compared after percent-decoding, so a
+// %5Fmethod spelling is stripped too (frameworks decode parameter names
+// before honoring the override). The surviving pairs are preserved
+// byte-for-byte — no re-encoding or reordering — so signed URLs keep
+// their signatures.
 func stripMethodOverrideParam(rawQuery string) string {
-	if !strings.Contains(rawQuery, "_method") {
+	if rawQuery == "" {
 		return rawQuery
 	}
 	parts := strings.Split(rawQuery, "&")
@@ -460,6 +464,9 @@ func stripMethodOverrideParam(rawQuery string) string {
 		key := p
 		if i := strings.IndexByte(p, '='); i >= 0 {
 			key = p[:i]
+		}
+		if decoded, err := url.QueryUnescape(key); err == nil {
+			key = decoded
 		}
 		if key == "_method" {
 			continue
