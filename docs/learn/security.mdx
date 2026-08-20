@@ -107,6 +107,8 @@ RFC-1918 and other reserved ranges are additionally blocked under the default po
 
 Agent Vault resolves hostnames to IP addresses, validates every resolved IP against the block list, then connects directly to the validated IP. This prevents DNS rebinding attacks where a hostname resolves to a safe IP during validation but a different (internal) IP during connection.
 
+When a proxy request resolves to a blocked address, Agent Vault returns a `502` response with the error code `network_policy_blocked` and records the same code in the vault request log. For an intentional private-network destination, add the narrowest practical IP or CIDR to `AGENT_VAULT_NETWORK_ALLOWLIST`. Alternatively, trusted local deployments can set `AGENT_VAULT_ALLOW_PRIVATE_RANGES=true` to permit all private and reserved ranges. Cloud metadata endpoints remain blocked in both cases.
+
 ## Transport security
 
 All proxied requests are forwarded over **HTTPS**. The agent's session token never reaches the target service: it travels in `Proxy-Authorization` (which is hop-by-hop and never forwarded). Real credentials are injected server-side based on the vault's [services](/learn/services).

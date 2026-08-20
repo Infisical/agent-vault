@@ -61,8 +61,12 @@ func (p *Proxy) forwardWebSocket(
 ) {
 	upstreamConn, upstreamReader, resp, err := p.dialWebSocketUpstream(r.Context(), outReq)
 	if err != nil {
-		http.Error(w, "bad gateway", http.StatusBadGateway)
-		emit(http.StatusBadGateway, "upstream_error")
+		if writeNetworkPolicyProxyError(w, err) {
+			emit(http.StatusBadGateway, "network_policy_blocked")
+		} else {
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			emit(http.StatusBadGateway, "upstream_error")
+		}
 		return
 	}
 	defer func() {
