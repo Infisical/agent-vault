@@ -38,6 +38,7 @@ export default function OAuthRefreshParams({
           <div key={index} className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2 sm:items-center">
             <div className="min-w-0">
               <Input
+                aria-label={`Refresh parameter ${index + 1} name`}
                 placeholder="Parameter name"
                 value={entry.key}
                 onChange={(event) => update(entries.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item))}
@@ -45,6 +46,7 @@ export default function OAuthRefreshParams({
             </div>
             <div className="min-w-0">
               <Input
+                aria-label={`Refresh parameter ${index + 1} value`}
                 placeholder="Parameter value"
                 value={entry.value}
                 onChange={(event) => update(entries.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))}

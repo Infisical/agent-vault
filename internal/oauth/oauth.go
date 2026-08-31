@@ -165,11 +165,11 @@ func Refresh(ctx context.Context, cfg RefreshConfig) (*TokenResponse, error) {
 	if err != nil {
 		if tokenErr, ok := err.(*TokenError); ok {
 			redacted := *tokenErr
-			for _, value := range cfg.RefreshParams {
-				if value != "" {
-					redacted.Body = strings.ReplaceAll(redacted.Body, value, "[REDACTED]")
-				}
-			}
+			// A provider controls this body and may reflect submitted form values
+			// using an encoding that cannot be safely scrubbed. Keep only a
+			// constant message so refresh tokens, client credentials, and extra
+			// parameter values cannot reach API responses, persisted errors, or logs.
+			redacted.Body = "refresh request rejected"
 			return nil, &redacted
 		}
 		return nil, err

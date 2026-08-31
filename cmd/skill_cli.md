@@ -158,7 +158,7 @@ EOF
 
 When the human provides a refresh token during upload, it is validated immediately by refreshing against the provider. If the refresh fails, the upload is rejected.
 
-Use `refresh_params` only when the provider requires extra form fields on refresh, for example `"refresh_params": {"install_id": "provider-cli"}`. It cannot override `grant_type`, `refresh_token`, `client_id`, `client_secret`, or `scope`. Parameter values are not included in Agent Vault logs or validation errors.
+Use `refresh_params` only when the provider requires extra non-secret configuration fields on refresh, for example `"refresh_params": {"install_id": "provider-cli"}`. It cannot override `grant_type`, `refresh_token`, `client_id`, `client_secret`, or `scope`. These values remain visible to authorized operators for review and editing, but are not included in Agent Vault logs or validation errors. Store credentials in the dedicated OAuth token and client-secret fields instead.
 
 ### After approval
 

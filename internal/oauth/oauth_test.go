@@ -256,26 +256,36 @@ func TestRefresh_RejectsReservedAdditionalParams(t *testing.T) {
 	}
 }
 
-func TestRefresh_RedactsAdditionalParamValuesFromProviderErrors(t *testing.T) {
-	const secretValue = "provider-specific-secret"
+func TestRefresh_DiscardsProviderErrorBody(t *testing.T) {
+	const (
+		refreshToken = "refresh-secret"
+		clientSecret = "client-secret"
+		paramValue   = "provider-specific-value"
+	)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "invalid install_id "+secretValue, http.StatusBadRequest)
+		http.Error(w, `{"error":"invalid_grant","description":"`+refreshToken+` `+clientSecret+` `+paramValue+`"}`, http.StatusBadRequest)
 	}))
 	defer ts.Close()
 
 	_, err := Refresh(context.Background(), RefreshConfig{
 		TokenURL:     ts.URL,
 		ClientID:     "client",
-		RefreshToken: "refresh",
+		ClientSecret: clientSecret,
+		RefreshToken: refreshToken,
 		RefreshParams: map[string]string{
-			"install_id": secretValue,
+			"install_id": paramValue,
 		},
 	})
 	if err == nil {
 		t.Fatal("expected provider error")
 	}
-	if strings.Contains(err.Error(), secretValue) {
-		t.Fatalf("provider error exposes refresh parameter value: %v", err)
+	for _, value := range []string{refreshToken, clientSecret, paramValue, "invalid_grant"} {
+		if strings.Contains(err.Error(), value) {
+			t.Fatalf("provider error body was exposed: %v", err)
+		}
+	}
+	if !strings.Contains(err.Error(), "refresh request rejected") {
+		t.Fatalf("expected safe refresh failure message, got: %v", err)
 	}
 }
 

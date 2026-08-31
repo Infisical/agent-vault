@@ -2197,6 +2197,39 @@ func TestOAuthTokenUploadRefreshParams(t *testing.T) {
 	}
 }
 
+func TestOAuthTokenUploadDoesNotExposeProviderErrorBody(t *testing.T) {
+	const (
+		refreshToken = "refresh-secret"
+		clientSecret = "client-secret"
+		paramValue   = "provider-specific-value"
+	)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, refreshToken+" "+clientSecret+" "+paramValue, http.StatusBadRequest)
+	}))
+	defer provider.Close()
+
+	ms, token := setupMockStoreWithScopedSessionRole(t, "default", "root-ns-id", "member")
+	srv := newTestServer(withStore(ms), withEncKey(make([]byte, 32)))
+	previousTokenClient := oauth.TokenClient
+	oauth.TokenClient = provider.Client()
+	t.Cleanup(func() { oauth.TokenClient = previousTokenClient })
+	body := fmt.Sprintf(`{"vault":"default","key":"HEY_OAUTH","refresh_token":%q,"token_url":%q,"client_id":"public-client","client_secret":%q,"refresh_params":{"install_id":%q}}`, refreshToken, provider.URL, clientSecret, paramValue)
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/oauth/tokens", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, value := range []string{refreshToken, clientSecret, paramValue} {
+		if strings.Contains(rec.Body.String(), value) {
+			t.Fatalf("token upload response exposed submitted data: %s", rec.Body.String())
+		}
+	}
+}
+
 func TestOAuthTokenUploadRejectsReservedRefreshParams(t *testing.T) {
 	ms, token := setupMockStoreWithScopedSessionRole(t, "default", "root-ns-id", "member")
 	srv := newTestServer(withStore(ms), withEncKey(make([]byte, 32)))
