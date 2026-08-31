@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -285,6 +286,40 @@ func TestRefresh_DiscardsProviderErrorBody(t *testing.T) {
 		}
 	}
 	if !strings.Contains(err.Error(), "refresh request rejected") {
+		t.Fatalf("expected safe refresh failure message, got: %v", err)
+	}
+}
+
+func TestRefresh_DiscardsProviderRedirectError(t *testing.T) {
+	const (
+		refreshToken = "refresh-secret"
+		clientSecret = "client-secret"
+		paramValue   = "provider-specific-value"
+	)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		location := fmt.Sprintf("unsupported://token.invalid/?refresh_token=%s&client_secret=%s&install_id=%s", refreshToken, clientSecret, paramValue)
+		http.Redirect(w, r, location, http.StatusFound)
+	}))
+	defer ts.Close()
+
+	_, err := Refresh(context.Background(), RefreshConfig{
+		TokenURL:     ts.URL,
+		ClientID:     "client",
+		ClientSecret: clientSecret,
+		RefreshToken: refreshToken,
+		RefreshParams: map[string]string{
+			"install_id": paramValue,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected redirect error")
+	}
+	for _, value := range []string{refreshToken, clientSecret, paramValue, "token.invalid"} {
+		if strings.Contains(err.Error(), value) {
+			t.Fatalf("provider redirect error was exposed: %v", err)
+		}
+	}
+	if err.Error() != "oauth: refresh request failed" {
 		t.Fatalf("expected safe refresh failure message, got: %v", err)
 	}
 }

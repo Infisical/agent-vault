@@ -172,7 +172,7 @@ func Refresh(ctx context.Context, cfg RefreshConfig) (*TokenResponse, error) {
 			redacted.Body = "refresh request rejected"
 			return nil, &redacted
 		}
-		return nil, err
+		return nil, fmt.Errorf("oauth: refresh request failed")
 	}
 	return tok, nil
 }
