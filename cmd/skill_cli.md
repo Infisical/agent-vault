@@ -130,6 +130,7 @@ OAuth config fields:
 - `authorization_url` (required for connect flow): the provider's consent page URL
 - `token_url` (required): where to exchange the code for tokens
 - `scopes` (optional): space-separated permissions to request; omit for provider defaults
+- `refresh_params` (optional): extra string form fields required by the provider during refresh
 - `client_id`, `client_secret`: provided by the human during approval, not in the proposal
 
 ### Token upload (human pastes tokens they already have)
@@ -156,6 +157,8 @@ EOF
 ```
 
 When the human provides a refresh token during upload, it is validated immediately by refreshing against the provider. If the refresh fails, the upload is rejected.
+
+Use `refresh_params` only when the provider requires extra form fields on refresh, for example `"refresh_params": {"install_id": "provider-cli"}`. It cannot override `grant_type`, `refresh_token`, `client_id`, `client_secret`, or `scope`. Parameter values are not included in Agent Vault logs or validation errors.
 
 ### After approval
 

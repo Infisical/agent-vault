@@ -92,11 +92,12 @@ type CredentialSlot struct {
 
 // OAuthConfig holds the OAuth parameters in a credential slot proposal.
 type OAuthConfig struct {
-	AuthorizationURL string `json:"authorization_url,omitempty"`
-	TokenURL         string `json:"token_url"`
-	ClientID         string `json:"client_id,omitempty"`
-	Scopes           string `json:"scopes,omitempty"`
-	ScopeSeparator   string `json:"scope_separator,omitempty"`
-	DisablePKCE      bool   `json:"disable_pkce,omitempty"`
-	TokenAuthMethod  string `json:"token_auth_method,omitempty"`
+	AuthorizationURL string            `json:"authorization_url,omitempty"`
+	TokenURL         string            `json:"token_url"`
+	ClientID         string            `json:"client_id,omitempty"`
+	RefreshParams    map[string]string `json:"refresh_params,omitempty"`
+	Scopes           string            `json:"scopes,omitempty"`
+	ScopeSeparator   string            `json:"scope_separator,omitempty"`
+	DisablePKCE      bool              `json:"disable_pkce,omitempty"`
+	TokenAuthMethod  string            `json:"token_auth_method,omitempty"`
 }

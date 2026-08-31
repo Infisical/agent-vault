@@ -292,6 +292,7 @@ func (p *StoreCredentialProvider) maybeRefreshOAuth(ctx context.Context, vaultID
 			ClientID:        oauthCfg.ClientID,
 			ClientSecret:    clientSecret,
 			RefreshToken:    string(refreshToken),
+			RefreshParams:   oauthCfg.RefreshParams,
 			Scopes:          oauthCfg.Scopes,
 			ScopeSeparator:  oauthCfg.ScopeSeparator,
 			TokenAuthMethod: oauthCfg.TokenAuthMethod,

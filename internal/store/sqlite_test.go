@@ -62,6 +62,39 @@ func TestMigrationIdempotency(t *testing.T) {
 	_ = s2.Close()
 }
 
+func TestCredentialOAuthRefreshParamsRoundTrip(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	ns, err := s.GetVault(ctx, DefaultVault)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]string{"install_id": "hey-cli", "audience": "api"}
+	if err := s.SetCredentialOAuth(ctx, &CredentialOAuth{
+		VaultID:       ns.ID,
+		CredentialKey: "HEY_OAUTH",
+		TokenURL:      "https://example.com/oauth/tokens",
+		ClientID:      "public-client",
+		RefreshParams: want,
+	}); err != nil {
+		t.Fatalf("SetCredentialOAuth: %v", err)
+	}
+
+	got, err := s.GetCredentialOAuth(ctx, ns.ID, "HEY_OAUTH")
+	if err != nil {
+		t.Fatalf("GetCredentialOAuth: %v", err)
+	}
+	if len(got.RefreshParams) != len(want) {
+		t.Fatalf("RefreshParams = %#v, want %#v", got.RefreshParams, want)
+	}
+	for key, value := range want {
+		if got.RefreshParams[key] != value {
+			t.Errorf("RefreshParams[%q] = %q, want %q", key, got.RefreshParams[key], value)
+		}
+	}
+}
+
 // --- Vault CRUD ---
 
 func TestVaultCRUD(t *testing.T) {
@@ -1449,7 +1482,6 @@ func TestCascadeDeleteVaultRemovesProposals(t *testing.T) {
 	}
 }
 
-
 // --- UUID ---
 
 func TestNewUUIDUniqueness(t *testing.T) {
@@ -1676,7 +1708,6 @@ func TestDeleteUserSessions(t *testing.T) {
 		t.Fatalf("expected sql.ErrNoRows after deleting user sessions, got %v", err)
 	}
 }
-
 
 func TestDeleteUserCascadesGrants(t *testing.T) {
 	s := openTestDB(t)
@@ -1954,7 +1985,6 @@ func TestGetSessionBackwardCompat(t *testing.T) {
 		t.Fatalf("expected empty agent_id for old session, got %q", fetched.AgentID)
 	}
 }
-
 
 func TestDeleteAgentTokens(t *testing.T) {
 	s := openTestDB(t)

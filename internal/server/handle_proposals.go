@@ -458,6 +458,7 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 				AuthorizationURL: slot.OAuth.AuthorizationURL,
 				TokenURL:         slot.OAuth.TokenURL,
 				ClientID:         slot.OAuth.ClientID,
+				RefreshParams:    slot.OAuth.RefreshParams,
 				Scopes:           slot.OAuth.Scopes,
 				ScopeSeparator:   slot.OAuth.ScopeSeparator,
 				DisablePKCE:      slot.OAuth.DisablePKCE,

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Infisical/agent-vault/internal/broker"
+	"github.com/Infisical/agent-vault/internal/oauth"
 )
 
 const (
@@ -18,7 +19,6 @@ const (
 	MaxObtainLen             = 500
 	MaxObtainInstructionsLen = 1000
 )
-
 
 // ValidateMessages checks length limits for proposal-level message fields.
 func ValidateMessages(message, userMessage string) error {
@@ -177,6 +177,9 @@ func Validate(services []Service, credentials []CredentialSlot) error {
 				default:
 					return fmt.Errorf("credential slot %q: oauth.token_auth_method must be \"client_secret_post\" or \"client_secret_basic\"", c.Key)
 				}
+			}
+			if err := oauth.ValidateRefreshParams(c.OAuth.RefreshParams); err != nil {
+				return fmt.Errorf("credential slot %q: %w", c.Key, err)
 			}
 		}
 

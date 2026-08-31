@@ -43,8 +43,6 @@ func utcTimePtr(t *time.Time) *time.Time {
 	return &u
 }
 
-
-
 // nullableString returns nil for empty strings, enabling SQL NULL inserts.
 func nullableString(s string) interface{} {
 	if s == "" {
@@ -762,7 +760,7 @@ func (s *SQLStore) DeleteCredential(ctx context.Context, vaultID, key string) er
 
 func (s *SQLStore) GetCredentialOAuth(ctx context.Context, vaultID, key string) (*CredentialOAuth, error) {
 	var co CredentialOAuth
-	var authURL, scopes, scopeSep, tokenAuthMethod sql.NullString
+	var authURL, refreshParamsJSON, scopes, scopeSep, tokenAuthMethod sql.NullString
 	var tokenExpiresAt, connectedAt, lastRefreshedAt, lastRefreshErrorAt interface{}
 	var lastRefreshError sql.NullString
 	var createdAt, updatedAt interface{}
@@ -770,7 +768,7 @@ func (s *SQLStore) GetCredentialOAuth(ctx context.Context, vaultID, key string) 
 
 	err := s.db.QueryRowContext(ctx,
 		s.dialect.Rebind(`SELECT vault_id, credential_key, authorization_url, token_url, client_id,
-		   client_secret_ct, client_secret_nonce, scopes, scope_separator, disable_pkce,
+		   client_secret_ct, client_secret_nonce, refresh_params, scopes, scope_separator, disable_pkce,
 		   token_auth_method, refresh_token_ct, refresh_token_nonce, token_expires_at,
 		   connected_at, last_refreshed_at, last_refresh_error, last_refresh_error_at,
 		   created_at, updated_at
@@ -778,7 +776,7 @@ func (s *SQLStore) GetCredentialOAuth(ctx context.Context, vaultID, key string) 
 		vaultID, key,
 	).Scan(
 		&co.VaultID, &co.CredentialKey, &authURL, &co.TokenURL, &co.ClientID,
-		&co.ClientSecretCT, &co.ClientSecretNonce, &scopes, &scopeSep, &disablePKCERaw,
+		&co.ClientSecretCT, &co.ClientSecretNonce, &refreshParamsJSON, &scopes, &scopeSep, &disablePKCERaw,
 		&tokenAuthMethod, &co.RefreshTokenCT, &co.RefreshTokenNonce, &tokenExpiresAt,
 		&connectedAt, &lastRefreshedAt, &lastRefreshError, &lastRefreshErrorAt,
 		&createdAt, &updatedAt,
@@ -788,6 +786,11 @@ func (s *SQLStore) GetCredentialOAuth(ctx context.Context, vaultID, key string) 
 	}
 
 	co.AuthorizationURL = authURL.String
+	if refreshParamsJSON.String != "" {
+		if err := json.Unmarshal([]byte(refreshParamsJSON.String), &co.RefreshParams); err != nil {
+			return nil, fmt.Errorf("decoding OAuth refresh parameters: %w", err)
+		}
+	}
 	co.Scopes = scopes.String
 	co.ScopeSeparator = scopeSep.String
 	if co.ScopeSeparator == "" {
@@ -809,6 +812,11 @@ func (s *SQLStore) GetCredentialOAuth(ctx context.Context, vaultID, key string) 
 }
 
 func (s *SQLStore) SetCredentialOAuth(ctx context.Context, co *CredentialOAuth) error {
+	refreshParamsJSON, err := json.Marshal(co.RefreshParams)
+	if err != nil {
+		return fmt.Errorf("encoding OAuth refresh parameters: %w", err)
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -846,17 +854,18 @@ func (s *SQLStore) SetCredentialOAuth(ctx context.Context, co *CredentialOAuth) 
 
 	_, err = tx.ExecContext(ctx,
 		s.dialect.Rebind(`INSERT INTO credential_oauth (vault_id, credential_key, authorization_url, token_url, client_id,
-		   client_secret_ct, client_secret_nonce, scopes, scope_separator, disable_pkce, token_auth_method,
+		   client_secret_ct, client_secret_nonce, refresh_params, scopes, scope_separator, disable_pkce, token_auth_method,
 		   refresh_token_ct, refresh_token_nonce, token_expires_at,
 		   connected_at, last_refreshed_at, last_refresh_error, last_refresh_error_at,
 		   created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(vault_id, credential_key) DO UPDATE SET
 		   authorization_url = excluded.authorization_url,
 		   token_url = excluded.token_url,
 		   client_id = excluded.client_id,
 		   client_secret_ct = excluded.client_secret_ct,
 		   client_secret_nonce = excluded.client_secret_nonce,
+		   refresh_params = excluded.refresh_params,
 		   scopes = excluded.scopes,
 		   scope_separator = excluded.scope_separator,
 		   disable_pkce = excluded.disable_pkce,
@@ -880,7 +889,7 @@ func (s *SQLStore) SetCredentialOAuth(ctx context.Context, co *CredentialOAuth) 
 		   last_refresh_error_at = excluded.last_refresh_error_at,
 		   updated_at = excluded.updated_at`),
 		co.VaultID, co.CredentialKey, nullableString(co.AuthorizationURL), co.TokenURL, co.ClientID,
-		co.ClientSecretCT, co.ClientSecretNonce, nullableString(co.Scopes), scopeSep, disablePKCE, tokenAuthMethod,
+		co.ClientSecretCT, co.ClientSecretNonce, string(refreshParamsJSON), nullableString(co.Scopes), scopeSep, disablePKCE, tokenAuthMethod,
 		co.RefreshTokenCT, co.RefreshTokenNonce, tokenExpiresAt,
 		connectedAt, lastRefreshedAt, nullableString(co.LastRefreshError), lastRefreshErrorAt,
 		nowStr, nowStr,
@@ -2035,6 +2044,10 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 
 	// 2b. Upsert each OAuth credential config.
 	for _, oc := range oauthConfigs {
+		refreshParamsJSON, err := json.Marshal(oc.RefreshParams)
+		if err != nil {
+			return fmt.Errorf("encoding OAuth refresh parameters for %q: %w", oc.Key, err)
+		}
 		id := newUUID()
 		_, err = tx.ExecContext(ctx,
 			s.dialect.Rebind(`INSERT INTO credentials (id, vault_id, key, type, ciphertext, nonce, created_at, updated_at)
@@ -2059,9 +2072,9 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 		}
 		_, err = tx.ExecContext(ctx,
 			s.dialect.Rebind(`INSERT INTO credential_oauth (vault_id, credential_key, authorization_url, token_url, client_id,
-			   client_secret_ct, client_secret_nonce, scopes, scope_separator, disable_pkce, token_auth_method,
+			   client_secret_ct, client_secret_nonce, refresh_params, scopes, scope_separator, disable_pkce, token_auth_method,
 			   created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(vault_id, credential_key) DO UPDATE SET
 			   authorization_url = excluded.authorization_url,
 			   token_url = excluded.token_url,
@@ -2072,6 +2085,7 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 			   client_secret_nonce = CASE WHEN excluded.token_url = credential_oauth.token_url
 			     THEN COALESCE(excluded.client_secret_nonce, credential_oauth.client_secret_nonce)
 			     ELSE excluded.client_secret_nonce END,
+			   refresh_params = excluded.refresh_params,
 			   scopes = excluded.scopes,
 			   scope_separator = excluded.scope_separator,
 			   disable_pkce = excluded.disable_pkce,
@@ -2086,7 +2100,7 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 			     THEN credential_oauth.connected_at ELSE NULL END,
 			   updated_at = excluded.updated_at`),
 			vaultID, oc.Key, nullableString(oc.AuthorizationURL), oc.TokenURL, oc.ClientID,
-			oc.ClientSecretCT, oc.ClientSecretNonce, nullableString(oc.Scopes), scopeSep, disablePKCE, tokenAuthMethod,
+			oc.ClientSecretCT, oc.ClientSecretNonce, string(refreshParamsJSON), nullableString(oc.Scopes), scopeSep, disablePKCE, tokenAuthMethod,
 			nowStr, nowStr,
 		)
 		if err != nil {

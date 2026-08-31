@@ -5,6 +5,7 @@ import Navbar from "../components/Navbar";
 import Button from "../components/Button";
 import Input from "../components/Input";
 import FormField from "../components/FormField";
+import OAuthRefreshParams from "../components/OAuthRefreshParams";
 import ProposalPreview, { type ProposalData } from "../components/ProposalPreview";
 import { ErrorBanner } from "../components/shared";
 
@@ -168,6 +169,7 @@ function ApprovalForm({ data }: { data: ApprovalData }) {
 
   // OAuth state per credential key
   const [oauthFields, setOauthFields] = useState<Record<string, Record<string, string>>>({});
+  const [oauthRefreshParams, setOauthRefreshParams] = useState<Record<string, Record<string, string>>>({});
   const [oauthConnected, setOauthConnected] = useState<Record<string, boolean>>({});
   const [oauthConnecting, setOauthConnecting] = useState<Record<string, boolean>>({});
   const pollTimers = useRef<Record<string, ReturnType<typeof setInterval>>>({});
@@ -221,6 +223,7 @@ function ApprovalForm({ data }: { data: ApprovalData }) {
           token_url: fields.token_url || oauth?.token_url || "",
           client_id: fields.client_id || oauth?.client_id || "",
           client_secret: fields.client_secret || "",
+          refresh_params: oauthRefreshParams[credKey] ?? oauth?.refresh_params,
           scopes: fields.scopes || oauth?.scopes || "",
         }),
       });
@@ -271,6 +274,7 @@ function ApprovalForm({ data }: { data: ApprovalData }) {
         access_token: (fields.access_token ?? "").trim(),
         token_url: fields.token_url || oauth?.token_url || "",
         client_id: fields.client_id || oauth?.client_id || "",
+        refresh_params: oauthRefreshParams[credKey] ?? oauth?.refresh_params ?? {},
       };
       if (fields.refresh_token?.trim()) body.refresh_token = fields.refresh_token.trim();
 
@@ -431,7 +435,7 @@ function ApprovalForm({ data }: { data: ApprovalData }) {
                         {cred.obtain_instructions && (
                           <p className="text-sm text-text-muted">{cred.obtain_instructions}</p>
                         )}
-                        <div className="grid grid-cols-2 gap-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           {!cred.oauth?.authorization_url && (
                             <FormField label="Authorization URL" helperText="Leave empty for token upload">
                               <Input
@@ -488,6 +492,10 @@ function ApprovalForm({ data }: { data: ApprovalData }) {
                                 onChange={(e) => updateOauthField(cred.key, "refresh_token", e.target.value)}
                               />
                             </FormField>
+                            <OAuthRefreshParams
+                              value={oauthRefreshParams[cred.key] ?? cred.oauth?.refresh_params}
+                              onChange={(params) => setOauthRefreshParams((prev) => ({ ...prev, [cred.key]: params }))}
+                            />
                             <Button
                               type="button"
                               onClick={() => handleOAuthTokenUpload(cred.key)}

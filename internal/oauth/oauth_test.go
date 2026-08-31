@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -197,6 +198,87 @@ func TestRefresh_HappyPath(t *testing.T) {
 	}
 }
 
+func TestRefresh_AdditionalParams(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		form := parseForm(t, r)
+		if got := form.Get("install_id"); got != "hey-cli" {
+			http.Error(w, "install_id is required", http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token":  "new-access",
+			"refresh_token": "new-refresh",
+			"expires_in":    3600,
+		})
+	}))
+	defer ts.Close()
+
+	tok, err := Refresh(context.Background(), RefreshConfig{
+		TokenURL:     ts.URL,
+		ClientID:     "public-client",
+		RefreshToken: "old-refresh",
+		RefreshParams: map[string]string{
+			"install_id": "hey-cli",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Refresh returned error: %v", err)
+	}
+	if tok.AccessToken != "new-access" {
+		t.Errorf("AccessToken = %q, want new-access", tok.AccessToken)
+	}
+}
+
+func TestRefresh_RejectsReservedAdditionalParams(t *testing.T) {
+	for _, key := range []string{"grant_type", "refresh_token", "client_id", "client_secret", "scope"} {
+		t.Run(key, func(t *testing.T) {
+			const secretValue = "must-not-appear"
+			_, err := Refresh(context.Background(), RefreshConfig{
+				TokenURL:     "http://127.0.0.1/unused",
+				ClientID:     "client",
+				RefreshToken: "refresh",
+				RefreshParams: map[string]string{
+					key: secretValue,
+				},
+			})
+			if err == nil {
+				t.Fatal("expected reserved refresh parameter to be rejected")
+			}
+			if !strings.Contains(err.Error(), key) {
+				t.Errorf("error %q does not identify reserved key %q", err, key)
+			}
+			if strings.Contains(err.Error(), secretValue) {
+				t.Errorf("error exposes refresh parameter value: %q", err)
+			}
+		})
+	}
+}
+
+func TestRefresh_RedactsAdditionalParamValuesFromProviderErrors(t *testing.T) {
+	const secretValue = "provider-specific-secret"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "invalid install_id "+secretValue, http.StatusBadRequest)
+	}))
+	defer ts.Close()
+
+	_, err := Refresh(context.Background(), RefreshConfig{
+		TokenURL:     ts.URL,
+		ClientID:     "client",
+		RefreshToken: "refresh",
+		RefreshParams: map[string]string{
+			"install_id": secretValue,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected provider error")
+	}
+	if strings.Contains(err.Error(), secretValue) {
+		t.Fatalf("provider error exposes refresh parameter value: %v", err)
+	}
+}
+
 func TestRefresh_TokenRotation(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -341,9 +423,9 @@ func TestIsPermanentError(t *testing.T) {
 		{401, true},
 		{403, true},
 		{404, true},
-		{408, false},  // Request Timeout — transient
+		{408, false}, // Request Timeout — transient
 		{422, true},
-		{429, false},  // Too Many Requests — transient
+		{429, false}, // Too Many Requests — transient
 		{500, false},
 		{502, false},
 		{503, false},

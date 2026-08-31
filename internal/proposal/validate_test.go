@@ -27,6 +27,34 @@ func TestValidateValid(t *testing.T) {
 	}
 }
 
+func TestValidateOAuthRefreshParams(t *testing.T) {
+	valid := []CredentialSlot{{
+		Action: ActionSet,
+		Key:    "HEY_OAUTH",
+		Type:   "oauth",
+		OAuth: &OAuthConfig{
+			TokenURL:      "https://example.com/oauth/tokens",
+			RefreshParams: map[string]string{"install_id": "hey-cli"},
+		},
+	}}
+	if err := Validate(nil, valid); err != nil {
+		t.Fatalf("expected refresh params to validate, got %v", err)
+	}
+
+	invalid := valid
+	invalid[0].OAuth = &OAuthConfig{
+		TokenURL:      "https://example.com/oauth/tokens",
+		RefreshParams: map[string]string{"refresh_token": "must-not-appear"},
+	}
+	err := Validate(nil, invalid)
+	if err == nil || !strings.Contains(err.Error(), "refresh_token") {
+		t.Fatalf("expected reserved refresh parameter error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "must-not-appear") {
+		t.Fatalf("validation error exposes refresh parameter value: %v", err)
+	}
+}
+
 func TestValidateNoRulesOrCredentials(t *testing.T) {
 	err := Validate(nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "at least one service or credential") {
@@ -317,7 +345,7 @@ func TestValidateProposalSubstitutionWithoutAuth(t *testing.T) {
 	on := true
 	services := []Service{{
 		Action:  ActionSet,
-		Name:   "api-twilio-com",
+		Name:    "api-twilio-com",
 		Host:    "api.twilio.com",
 		Enabled: &on,
 		Substitutions: []broker.Substitution{
