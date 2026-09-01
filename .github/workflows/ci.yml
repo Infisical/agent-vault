@@ -33,7 +33,7 @@ jobs:
 
       - name: Detect changed paths
         id: filter
-        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
         with:
           filters: |
             # Only gates `go-mod-tidy`. `go-test` and `go-lint` run on every
@@ -121,7 +121,7 @@ jobs:
           printf '<!doctype html><title>ci-stub</title>' > internal/server/webdist/index.html
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v6.5.0
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v6.5.0
         with:
           version: v2.11
 
