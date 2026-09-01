@@ -935,7 +935,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 
 	// React app static assets (Vite outputs to /assets/ with base "/")
 	webFS, _ := fs.Sub(webDistFS, "webdist")
-	mux.Handle("GET /assets/", http.FileServer(http.FS(webFS)))
+	mux.Handle("GET /assets/", immutableStatic(http.FileServer(http.FS(webFS))))
 	mux.Handle("GET /vite.svg", http.FileServer(http.FS(webFS)))
 
 	// SPA catch-all: serve index.html for all frontend routes
@@ -955,6 +955,48 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /{$}", s.handleSPA)
 
 	return s
+}
+
+// immutableStatic marks content-hashed build output as permanently cacheable.
+// Vite embeds a content hash in every /assets/ filename, so the bytes behind a
+// given URL never change and a rebuild emits new filenames instead. Without
+// this header browsers refetch every chunk on each load: embed.FS reports a
+// zero ModTime, so http.FileServer sends neither Last-Modified nor ETag and
+// there is nothing to revalidate against. index.html is served separately by
+// handleSPA with no-store, so new builds are still picked up immediately.
+//
+// Only successful responses are marked. During a rolling upgrade a browser can
+// load index.html from an already-updated instance and request its chunks from
+// one still serving the previous build; caching that 404 for a year would wedge
+// the UI for that browser until it cleared its cache.
+func immutableStatic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(&immutableWriter{ResponseWriter: w}, r)
+	})
+}
+
+// immutableWriter sets the long-lived Cache-Control header on 200 and 206
+// responses, just before the status line is written.
+type immutableWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+func (w *immutableWriter) WriteHeader(code int) {
+	if !w.wroteHeader {
+		w.wroteHeader = true
+		if code == http.StatusOK || code == http.StatusPartialContent {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *immutableWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(b)
 }
 
 // requireInitialized returns 503 when no owner account exists yet.
