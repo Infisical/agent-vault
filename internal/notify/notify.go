@@ -1,15 +1,17 @@
-// Package notify provides SMTP email notification support for Agent Vault.
+// Package notify provides SMTP email and outbound webhook notification support for Agent Vault.
 package notify
 
 import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"net/http"
 	"net/mail"
 	"net/smtp"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -73,18 +75,25 @@ func LoadSMTPConfig() *SMTPConfig {
 	}
 }
 
-// Notifier sends email notifications via SMTP.
-// If created with a nil config, all operations are silent no-ops.
+// Notifier sends email notifications via SMTP and/or event notifications via
+// an outbound webhook. Each channel is independently optional — pass nil for
+// either config to disable that channel; a Notifier with both nil is a
+// silent no-op.
 type Notifier struct {
-	config *SMTPConfig
+	config        *SMTPConfig
+	webhookConfig *WebhookConfig
+
+	webhookClientOnce sync.Once
+	webhookClient     *http.Client
 }
 
-// New creates a Notifier. Pass nil config to create a no-op notifier.
-func New(config *SMTPConfig) *Notifier {
-	return &Notifier{config: config}
+// New creates a Notifier. Pass nil for smtpConfig and/or webhookConfig to
+// disable that channel.
+func New(smtpConfig *SMTPConfig, webhookConfig *WebhookConfig) *Notifier {
+	return &Notifier{config: smtpConfig, webhookConfig: webhookConfig}
 }
 
-// Enabled reports whether SMTP is configured.
+// Enabled reports whether SMTP email is configured.
 func (n *Notifier) Enabled() bool {
 	return n != nil && n.config != nil
 }
