@@ -7506,14 +7506,14 @@ func TestVaultLeaveNoAccess(t *testing.T) {
 	}
 }
 
-func TestImmutableStaticSetsCacheHeaderOnlyOnSuccess(t *testing.T) {
+func TestCacheStaticSetsCacheHeaderOnlyOnSuccess(t *testing.T) {
 	cases := []struct {
 		name   string
 		status int
 		want   string
 	}{
-		{"hashed asset found", http.StatusOK, "public, max-age=31536000, immutable"},
-		{"range request", http.StatusPartialContent, "public, max-age=31536000, immutable"},
+		{"hashed asset found", http.StatusOK, cacheImmutable},
+		{"range request", http.StatusPartialContent, cacheImmutable},
 		// A rolling upgrade can route a chunk request to an instance still on
 		// the previous build; caching that 404 for a year would wedge the UI.
 		{"chunk missing", http.StatusNotFound, ""},
@@ -7522,7 +7522,7 @@ func TestImmutableStaticSetsCacheHeaderOnlyOnSuccess(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := immutableStatic(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := cacheStatic(cacheImmutable, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tc.status)
 			}))
 
@@ -7539,9 +7539,9 @@ func TestImmutableStaticSetsCacheHeaderOnlyOnSuccess(t *testing.T) {
 	}
 }
 
-func TestImmutableStaticSetsCacheHeaderOnImplicit200(t *testing.T) {
+func TestCacheStaticSetsCacheHeaderOnImplicit200(t *testing.T) {
 	// http.FileServer writes the body without an explicit WriteHeader call.
-	h := immutableStatic(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := cacheStatic(cacheImmutable, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("console.log(1)"))
 	}))
 
@@ -7551,11 +7551,28 @@ func TestImmutableStaticSetsCacheHeaderOnImplicit200(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", rec.Code)
 	}
-	want := "public, max-age=31536000, immutable"
-	if got := rec.Header().Get("Cache-Control"); got != want {
-		t.Fatalf("expected Cache-Control %q, got %q", want, got)
+	if got := rec.Header().Get("Cache-Control"); got != cacheImmutable {
+		t.Fatalf("expected Cache-Control %q, got %q", cacheImmutable, got)
 	}
 	if rec.Body.String() != "console.log(1)" {
 		t.Fatalf("body was altered: %q", rec.Body.String())
+	}
+}
+
+func TestCacheStaticUsesShorterLifetimeForUnhashedFiles(t *testing.T) {
+	// Favicons and fonts are copied verbatim from web/public/, so their names
+	// carry no content hash and they must stay revalidatable.
+	h := cacheStatic(cacheDay, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("woff2"))
+	}))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/fonts/UncutSans-Book.woff2", nil))
+
+	if got := rec.Header().Get("Cache-Control"); got != cacheDay {
+		t.Fatalf("expected Cache-Control %q, got %q", cacheDay, got)
+	}
+	if cacheDay == cacheImmutable {
+		t.Fatal("unhashed files must not share the immutable lifetime")
 	}
 }
