@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -78,6 +79,46 @@ func writeRawRequestLine(t *testing.T, conn net.Conn, line string, headers map[s
 		t.Fatalf("read response: %v", err)
 	}
 	return resp
+}
+
+func TestNetworkPolicyBlockedMessage(t *testing.T) {
+	tests := []struct {
+		name       string
+		reason     netguard.BlockReason
+		want       string
+		notContain string
+	}{
+		{
+			name:       "private range has remediation",
+			reason:     netguard.BlockReasonPrivateRange,
+			want:       "AGENT_VAULT_NETWORK_ALLOWLIST",
+			notContain: "metadata endpoints are always blocked",
+		},
+		{
+			name:       "metadata endpoint is unconditional",
+			reason:     netguard.BlockReasonMetadata,
+			want:       "metadata endpoints are always blocked",
+			notContain: "AGENT_VAULT_NETWORK_ALLOWLIST",
+		},
+		{
+			name:       "unknown reason remains safe",
+			reason:     netguard.BlockReason("future_reason"),
+			want:       "blocked by Agent Vault's network policy",
+			notContain: "AGENT_VAULT_NETWORK_ALLOWLIST",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			message := networkPolicyBlockedMessage(tt.reason)
+			if !strings.Contains(message, tt.want) {
+				t.Errorf("message = %q, want it to contain %q", message, tt.want)
+			}
+			if tt.notContain != "" && strings.Contains(message, tt.notContain) {
+				t.Errorf("message = %q, do not want it to contain %q", message, tt.notContain)
+			}
+		})
+	}
 }
 
 // TestMITMForwardPlainHTTPInjectsCredentials is the flagship test for
@@ -451,7 +492,8 @@ func TestMITMForwardSSRFLoopbackBlocked(t *testing.T) {
 	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
 		upstreamHost: {result: &brokercore.InjectResult{Passthrough: true}},
 	}}
-	proxyURL, clientRoots, p := setupProxy(t, sr, cp)
+	sink := &recordingSink{}
+	proxyURL, clientRoots, p := setupProxy(t, sr, cp, func(o *Options) { o.LogSink = sink })
 	// Override the dialler with a stricter SafeDialContext that blocks
 	// loopback (setupProxy seeded ALLOW_PRIVATE_RANGES=true for the
 	// other tests; we bypass that policy here directly).
@@ -465,6 +507,27 @@ func TestMITMForwardSSRFLoopbackBlocked(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502 (loopback blocked at dial)", resp.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
+	if got := resp.Header.Get(brokercore.ProxyErrorHeader); got != "true" {
+		t.Errorf("%s = %q, want true", brokercore.ProxyErrorHeader, got)
+	}
+	if body["error"] != "network_policy_blocked" {
+		t.Errorf("response error = %q, want network_policy_blocked", body["error"])
+	}
+	if !strings.Contains(body["message"], "AGENT_VAULT_NETWORK_ALLOWLIST") {
+		t.Errorf("response message = %q, want actionable allowlist guidance", body["message"])
+	}
+
+	records := sink.snapshot()
+	if len(records) != 1 {
+		t.Fatalf("request log rows = %d, want 1", len(records))
+	}
+	if records[0].ErrorCode != "network_policy_blocked" {
+		t.Errorf("request log error_code = %q, want network_policy_blocked", records[0].ErrorCode)
 	}
 }
 

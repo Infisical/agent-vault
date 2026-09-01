@@ -11,6 +11,36 @@ import (
 	"time"
 )
 
+// BlockReason identifies the network-policy rule that rejected an outbound
+// address. It is intentionally coarse: callers can provide actionable errors
+// without exposing the specific CIDR layout of the broker host.
+type BlockReason string
+
+const (
+	// BlockReasonMetadata is used for cloud metadata endpoints, which remain
+	// blocked even when private ranges are enabled or explicitly allowlisted.
+	BlockReasonMetadata BlockReason = "metadata_endpoint"
+
+	// BlockReasonPrivateRange is used for private, loopback, link-local, CGN,
+	// and other reserved ranges controlled by the operator's private-range
+	// policy and allowlist.
+	BlockReasonPrivateRange BlockReason = "private_range"
+)
+
+// BlockedAddressError reports that an outbound address was rejected by
+// Agent Vault's network policy. Host and IP are retained for structured server
+// diagnostics; proxy handlers should avoid returning the resolved IP to
+// untrusted clients.
+type BlockedAddressError struct {
+	Host   string
+	IP     net.IP
+	Reason BlockReason
+}
+
+func (e *BlockedAddressError) Error() string {
+	return fmt.Sprintf("netguard: connection to %s (%s) blocked by network policy", e.Host, e.IP.String())
+}
+
 // AllowPrivateFromEnv reads AGENT_VAULT_ALLOW_PRIVATE_RANGES and returns whether
 // the proxy should allow connections to private/reserved IP ranges (RFC-1918,
 // loopback, link-local, IPv6 ULA, CGN). Defaults to false (block) when unset
@@ -131,33 +161,39 @@ func parseCIDR(s string) net.IPNet {
 	return *ipNet
 }
 
-// isBlockedIP checks if an IP is blocked. When allowPrivate is false,
-// private/reserved ranges are blocked unless the IP is in the allowlist.
-// IMDS endpoints are always blocked, even when allowlisted.
-func isBlockedIP(ip net.IP, allowPrivate bool, allowed []net.IPNet) bool {
+// blockReason checks if an IP is blocked and returns the policy rule that
+// rejected it. When allowPrivate is false, private/reserved ranges are blocked
+// unless the IP is in the allowlist. IMDS endpoints are always blocked, even
+// when allowlisted.
+func blockReason(ip net.IP, allowPrivate bool, allowed []net.IPNet) (BlockReason, bool) {
 	for _, n := range alwaysBlocked {
 		if n.Contains(ip) {
-			return true
+			return BlockReasonMetadata, true
 		}
 	}
 
 	if allowPrivate {
-		return false
+		return "", false
 	}
 
 	for _, n := range allowed {
 		if n.Contains(ip) {
-			return false
+			return "", false
 		}
 	}
 
 	for _, n := range privateRanges {
 		if n.Contains(ip) {
-			return true
+			return BlockReasonPrivateRange, true
 		}
 	}
 
-	return false
+	return "", false
+}
+
+func isBlockedIP(ip net.IP, allowPrivate bool, allowed []net.IPNet) bool {
+	_, blocked := blockReason(ip, allowPrivate, allowed)
+	return blocked
 }
 
 // SafeDialContext returns a DialContext function that blocks connections to
@@ -189,9 +225,12 @@ func SafeDialContext(allowPrivate bool) func(ctx context.Context, network, addr 
 
 		// Check all resolved IPs before connecting.
 		for _, ipAddr := range ips {
-			if isBlockedIP(ipAddr.IP, allowPrivate, allowed) {
-				return nil, fmt.Errorf("netguard: connection to %s (%s) blocked by network policy",
-					host, ipAddr.IP.String())
+			if reason, blocked := blockReason(ipAddr.IP, allowPrivate, allowed); blocked {
+				return nil, &BlockedAddressError{
+					Host:   host,
+					IP:     ipAddr.IP,
+					Reason: reason,
+				}
 			}
 		}
 

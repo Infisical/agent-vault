@@ -182,6 +182,7 @@ WSS and WS connections also go through the proxy with credential injection — i
 - 401: invalid or expired token
 - 403 with `proposal_hint`: host not allowed — create a proposal
 - 403 `service_disabled`: host is configured but disabled by operator — tell the user
+- 502 `network_policy_blocked`: target resolved to an address denied by outbound network policy — tell the operator to allowlist an intentional private destination; cloud metadata endpoints cannot be allowed
 - 502: missing credential or upstream unreachable
 - 502 `oauth_not_connected`: OAuth credential approved but not yet connected — tell the user to complete the connection in the dashboard
 - 502 `oauth_refresh_failed`: OAuth token expired and refresh failed — tell the user to reconnect in the dashboard
