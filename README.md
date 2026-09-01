@@ -35,6 +35,7 @@ Features:
 - **Purpose-Built Design**: Existing forward proxies like `mitmproxy` or `squid` require modification to perform credential brokering and integrate well with agents. Agent Vault is purpose-built to work with the ergonomics of all types of agent use-cases with a dedicated CLI, multi-tenancy, and agent-specific roadmap backed by [Infisical](https://github.com/Infisical/infisical).
 - **Egress Filtering**: Control which agents should have access to which services and API endpoints on them since authenticated requests flow through Agent Vault.
 - **Request Logging**: Inspect authenticated traffic to monitor and diagnose agent behavior.
+- **Credential History & Rollback**: Every overwrite of a built-in credential archives the value it replaces, so an accidental overwrite is never destructive. Inspect and restore with `vault credential history`/`rollback`. See [credentials](docs/learn/credentials.mdx#credential-history-and-rollback).
 
 By default, requests not matching any service forward as plain proxy traffic; flip a vault into strict deny mode (`unmatched_host_policy=deny`) to reject them with 403 instead.
 
