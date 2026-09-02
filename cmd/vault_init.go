@@ -11,8 +11,8 @@ import (
 
 var vaultInitCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Bind the current directory to a vault (writes agent-vault.json)",
-	Long:  "Writes an agent-vault.json file in the current directory so all team members automatically target the same vault. The file is meant to be committed to version control.",
+	Short: "Bind the current project to a vault (writes agent-vault.json)",
+	Long:  "Writes an agent-vault.json file in the current project so all team members automatically target the same vault. If a config is already discoverable from the current directory, it is updated in place. The file is meant to be committed to version control.",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := ensureSession()
@@ -29,14 +29,27 @@ var vaultInitCmd = &cobra.Command{
 			}
 		}
 
-		// Check for existing file and confirm overwrite.
-		if data, err := os.ReadFile(ProjectConfigFile); err == nil {
-			var existing struct {
-				Vault string `json:"vault"`
+		// Check for existing file and confirm changing the legacy binding.
+		// Preserve versioned profile configuration when adding or updating the
+		// top-level vault field.
+		configPath := ProjectConfigFile
+		if path, found, err := findProjectConfig(); err != nil {
+			return err
+		} else if found {
+			configPath = path
+		}
+
+		cfg := projectConfig{}
+		if data, err := os.ReadFile(configPath); err == nil {
+			if err := json.Unmarshal(data, &cfg); err != nil {
+				return fmt.Errorf("parsing existing %s: %w", configPath, err)
 			}
-			if json.Unmarshal(data, &existing) == nil && existing.Vault != "" {
-				fmt.Fprintf(os.Stderr, "Current binding: vault %q\n", existing.Vault)
-				if existing.Vault == vaultName {
+			if err := validateProjectConfig(&cfg); err != nil {
+				return fmt.Errorf("validating existing %s: %w", configPath, err)
+			}
+			if cfg.Vault != "" {
+				fmt.Fprintf(os.Stderr, "Current binding: vault %q\n", cfg.Vault)
+				if cfg.Vault == vaultName {
 					fmt.Fprintln(os.Stderr, "Already bound to this vault, nothing to do.")
 					return nil
 				}
@@ -55,18 +68,18 @@ var vaultInitCmd = &cobra.Command{
 			}
 		}
 
-		cfg := map[string]string{"vault": vaultName}
+		cfg.Vault = vaultName
 		data, err := json.MarshalIndent(cfg, "", "  ")
 		if err != nil {
 			return err
 		}
 		data = append(data, '\n')
 
-		if err := os.WriteFile(ProjectConfigFile, data, 0o600); err != nil {
-			return fmt.Errorf("writing %s: %w", ProjectConfigFile, err)
+		if err := os.WriteFile(configPath, data, 0o600); err != nil {
+			return fmt.Errorf("writing %s: %w", configPath, err)
 		}
 
-		fmt.Fprintf(os.Stderr, "%s Wrote %s (vault: %s)\n", successText("✓"), ProjectConfigFile, vaultName)
+		fmt.Fprintf(os.Stderr, "%s Wrote %s (vault: %s)\n", successText("✓"), configPath, vaultName)
 		fmt.Fprintln(os.Stderr, "Commit this file so your team shares the vault binding.")
 		return nil
 	},

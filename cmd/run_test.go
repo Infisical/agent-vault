@@ -18,7 +18,7 @@ import (
 // the other is a bug. `vault` is inherited from vaultCmd's persistent flags
 // on `vault run` and registered locally on the top-level `run`.
 var expectedRunFlags = []string{
-	"address", "ttl", "vault",
+	"address", "ttl", "vault", "profile",
 	"isolation", "image", "mount", "keep", "no-firewall",
 	"home-volume-shared", "share-agent-dir",
 }
@@ -56,6 +56,19 @@ func TestTopLevelRunRegistered(t *testing.T) {
 		if tCmd.Flag(name) == nil {
 			t.Errorf("expected top-level run flag --%s to be registered", name)
 		}
+	}
+}
+
+func TestProfileCanSelectVaultWithInheritedFlag(t *testing.T) {
+	parent := &cobra.Command{Use: "vault"}
+	parent.PersistentFlags().String("vault", "", "")
+	child := newRunCmd("test")
+	parent.AddCommand(child)
+
+	setResolvedRunProfileVault(child, "profile-vault")
+	got, err := resolveVaultForAgentMode(child)
+	if err != nil || got != "profile-vault" {
+		t.Fatalf("resolved vault=%q err=%v, want profile-vault", got, err)
 	}
 }
 

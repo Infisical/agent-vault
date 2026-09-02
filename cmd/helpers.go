@@ -13,12 +13,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/charmbracelet/huh"
 	"github.com/Infisical/agent-vault/internal/auth"
 	"github.com/Infisical/agent-vault/internal/pidfile"
 	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/Infisical/agent-vault/internal/store"
 	"github.com/Infisical/agent-vault/internal/telemetry"
+	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -480,20 +480,13 @@ func ensureSession() (*session.ClientSession, error) {
 	return sess, nil
 }
 
-// ProjectConfigFile is the name of the project-level vault binding file.
-const ProjectConfigFile = "agent-vault.json"
-
-// loadProjectVault reads agent-vault.json from the working directory.
+// loadProjectVault reads the nearest agent-vault.json up to the repository
+// root. Invalid files preserve the legacy behavior of returning no binding;
+// profile-based runs report those errors explicitly through resolveRunProfile.
 // Returns the vault name or "" if the file doesn't exist or is invalid.
 func loadProjectVault() string {
-	data, err := os.ReadFile(ProjectConfigFile)
-	if err != nil {
-		return ""
-	}
-	var cfg struct {
-		Vault string `json:"vault"`
-	}
-	if json.Unmarshal(data, &cfg) != nil {
+	cfg, _, found, err := loadProjectConfig()
+	if err != nil || !found {
 		return ""
 	}
 	return cfg.Vault
@@ -536,12 +529,24 @@ const (
 //
 // If a token is set but AGENT_VAULT_ADDR is missing, returns a clear error
 // rather than silently falling through to interactive login — masking that
-// misconfig produces "why don't my creds work" tickets.
+// misconfig produces "why don't my creds work" tickets. The run command uses
+// resolveSessionWithAddress so --address or a profile can satisfy this too.
 func resolveSession() (*session.ClientSession, string, error) {
+	return resolveSessionWithAddress("")
+}
+
+// resolveSessionWithAddress is the run-command variant of resolveSession. It
+// lets --address or a project profile supply the broker address in agent mode,
+// while keeping resolveSession's existing environment-only contract for other
+// commands.
+func resolveSessionWithAddress(address string) (*session.ClientSession, string, error) {
 	token := os.Getenv(envVarToken)
-	addr := os.Getenv("AGENT_VAULT_ADDR")
+	addr := address
+	if addr == "" {
+		addr = os.Getenv("AGENT_VAULT_ADDR")
+	}
 	if token != "" && addr == "" {
-		return nil, "", fmt.Errorf("%s is set but AGENT_VAULT_ADDR is empty — both are required for agent mode", envVarToken)
+		return nil, "", fmt.Errorf("%s is set but no server address is configured — set AGENT_VAULT_ADDR, pass --address, or select a profile with address", envVarToken)
 	}
 	if token != "" {
 		return &session.ClientSession{Token: token, Address: strings.TrimRight(addr, "/")}, envVarToken, nil
@@ -747,4 +752,3 @@ func validInstanceRole(s string) bool {
 	}
 	return false
 }
-
