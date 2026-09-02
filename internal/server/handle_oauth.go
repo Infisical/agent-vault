@@ -26,6 +26,7 @@ const oauthSecretSentinel = "••••••••"
 type oauthConnectRequest struct {
 	Vault            string `json:"vault"`
 	Key              string `json:"key"`
+	Provider         string `json:"provider,omitempty"`
 	AuthorizationURL string `json:"authorization_url"`
 	TokenURL         string `json:"token_url"`
 	ClientID         string `json:"client_id"`
@@ -40,6 +41,10 @@ func (s *Server) handleOAuthConnect(w http.ResponseWriter, r *http.Request) {
 	var req oauthConnectRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := s.applyManagedOAuthProvider(&req); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if req.Vault == "" {
@@ -118,17 +123,17 @@ func (s *Server) handleOAuthConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.SetCredentialOAuth(ctx, &store.CredentialOAuth{
-		VaultID:          ns.ID,
-		CredentialKey:    req.Key,
-		AuthorizationURL: req.AuthorizationURL,
-		TokenURL:         req.TokenURL,
-		ClientID:         req.ClientID,
-		ClientSecretCT:   clientSecretCT,
+		VaultID:           ns.ID,
+		CredentialKey:     req.Key,
+		AuthorizationURL:  req.AuthorizationURL,
+		TokenURL:          req.TokenURL,
+		ClientID:          req.ClientID,
+		ClientSecretCT:    clientSecretCT,
 		ClientSecretNonce: clientSecretNonce,
-		Scopes:           req.Scopes,
-		ScopeSeparator:   scopeSep,
-		DisablePKCE:      req.DisablePKCE,
-		TokenAuthMethod:  tokenAuthMethod,
+		Scopes:            req.Scopes,
+		ScopeSeparator:    scopeSep,
+		DisablePKCE:       req.DisablePKCE,
+		TokenAuthMethod:   tokenAuthMethod,
 	}); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to save OAuth configuration")
 		return
@@ -552,7 +557,6 @@ func (s *Server) redirectOAuthComplete(w http.ResponseWriter, r *http.Request, v
 	}
 	http.Redirect(w, r, u, http.StatusFound)
 }
-
 
 func isValidHTTPURL(raw string) bool {
 	u, err := url.Parse(raw)
