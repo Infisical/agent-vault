@@ -43,8 +43,6 @@ func utcTimePtr(t *time.Time) *time.Time {
 	return &u
 }
 
-
-
 // nullableString returns nil for empty strings, enabling SQL NULL inserts.
 func nullableString(s string) interface{} {
 	if s == "" {
@@ -229,6 +227,133 @@ func (s *SQLStore) DeleteVaultSetting(ctx context.Context, vaultID, key string) 
 		s.dialect.Rebind(`DELETE FROM vault_settings WHERE vault_id = ? AND key = ?`),
 		vaultID, key)
 	return err
+}
+
+// --- Vault Skills ---
+
+// ListSkills returns every skill in the vault, name-ordered, without the
+// markdown bodies — callers that need a body fetch it with GetSkill.
+func (s *SQLStore) ListSkills(ctx context.Context, vaultID string) ([]SkillMeta, error) {
+	rows, err := s.db.QueryContext(ctx,
+		s.dialect.Rebind(`SELECT name, description, created_at, updated_at
+		   FROM skills WHERE vault_id = ? ORDER BY name`), vaultID)
+	if err != nil {
+		return nil, fmt.Errorf("listing skills: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []SkillMeta
+	for rows.Next() {
+		var m SkillMeta
+		var createdAt, updatedAt interface{}
+		if err := rows.Scan(&m.Name, &m.Description, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scanning skill: %w", err)
+		}
+		m.CreatedAt, _ = s.dialect.ScanTime(createdAt)
+		m.UpdatedAt, _ = s.dialect.ScanTime(updatedAt)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLStore) scanSkill(row rowScanner) (*Skill, error) {
+	var sk Skill
+	var createdAt, updatedAt interface{}
+	if err := row.Scan(&sk.VaultID, &sk.Name, &sk.Description, &sk.Content, &createdAt, &updatedAt); err != nil {
+		return nil, err
+	}
+	sk.CreatedAt, _ = s.dialect.ScanTime(createdAt)
+	sk.UpdatedAt, _ = s.dialect.ScanTime(updatedAt)
+	return &sk, nil
+}
+
+// GetSkill returns one skill including its markdown body. Returns a bare
+// sql.ErrNoRows when absent, matching GetVaultSetting/GetCredential.
+func (s *SQLStore) GetSkill(ctx context.Context, vaultID, name string) (*Skill, error) {
+	row := s.db.QueryRowContext(ctx,
+		s.dialect.Rebind(`SELECT vault_id, name, description, content, created_at, updated_at
+		   FROM skills WHERE vault_id = ? AND name = ?`), vaultID, name)
+	return s.scanSkill(row)
+}
+
+// InsertSkill creates a skill, returning ErrSkillExists when the name is
+// already taken in the vault.
+func (s *SQLStore) InsertSkill(ctx context.Context, sk Skill) (*Skill, error) {
+	// Truncate to second resolution: SQLite persists timestamps as
+	// time.DateTime, so an untruncated returned value would not match what
+	// the next read gives back and the UI timestamp would shift on refresh.
+	now := time.Now().UTC().Truncate(time.Second)
+	nowVal := s.dialect.FormatTime(now)
+	res, err := s.db.ExecContext(ctx,
+		s.dialect.Rebind(`INSERT INTO skills (vault_id, name, description, content, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(vault_id, name) DO NOTHING`),
+		sk.VaultID, sk.Name, sk.Description, sk.Content, nowVal, nowVal)
+	if err != nil {
+		return nil, fmt.Errorf("inserting skill: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, ErrSkillExists
+	}
+	sk.CreatedAt = now
+	sk.UpdatedAt = now
+	return &sk, nil
+}
+
+// UpdateSkill replaces the skill named oldName with sk, which may carry a new
+// name. Returns sql.ErrNoRows when oldName is absent and ErrSkillExists when a
+// rename would collide. Callers hold the per-vault lock; the composite primary
+// key is the backstop.
+func (s *SQLStore) UpdateSkill(ctx context.Context, vaultID, oldName string, sk Skill) (*Skill, error) {
+	if sk.Name != oldName {
+		// Distinguish a rename collision from a missing row, which a bare
+		// constraint violation cannot do portably across the two dialects.
+		if _, err := s.GetSkill(ctx, vaultID, sk.Name); err == nil {
+			return nil, ErrSkillExists
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("checking skill name: %w", err)
+		}
+	}
+	// RETURNING folds the row-count check and the CreatedAt re-read into the
+	// write, so the markdown body crosses the connection once instead of
+	// twice.
+	row := s.db.QueryRowContext(ctx,
+		s.dialect.Rebind(`UPDATE skills SET name = ?, description = ?, content = ?, updated_at = ?
+		   WHERE vault_id = ? AND name = ?
+		 RETURNING vault_id, name, description, content, created_at, updated_at`),
+		sk.Name, sk.Description, sk.Content,
+		s.dialect.FormatTime(time.Now().UTC().Truncate(time.Second)), vaultID, oldName)
+	updated, err := s.scanSkill(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, sql.ErrNoRows
+	}
+	if err != nil {
+		// The pre-check above is not atomic with the write: a concurrent
+		// create of the target name turns this into a primary-key violation.
+		// Re-check rather than pattern-match driver error strings, so the
+		// caller still gets ErrSkillExists (409) instead of a 500 on both
+		// dialects. Only reachable under real concurrency, so no unit test
+		// covers it — TestSkillRenameCollisionReturnsErrSkillExists exercises
+		// the pre-check path instead.
+		if sk.Name != oldName {
+			if _, getErr := s.GetSkill(ctx, vaultID, sk.Name); getErr == nil {
+				return nil, ErrSkillExists
+			}
+		}
+		return nil, fmt.Errorf("updating skill: %w", err)
+	}
+	return updated, nil
+}
+
+func (s *SQLStore) DeleteSkill(ctx context.Context, vaultID, name string) error {
+	res, err := s.db.ExecContext(ctx,
+		s.dialect.Rebind(`DELETE FROM skills WHERE vault_id = ? AND name = ?`), vaultID, name)
+	if err != nil {
+		return fmt.Errorf("deleting skill: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // --- External Credential Stores ---
