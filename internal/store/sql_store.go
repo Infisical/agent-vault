@@ -43,8 +43,6 @@ func utcTimePtr(t *time.Time) *time.Time {
 	return &u
 }
 
-
-
 // nullableString returns nil for empty strings, enabling SQL NULL inserts.
 func nullableString(s string) interface{} {
 	if s == "" {
@@ -329,6 +327,18 @@ func (s *SQLStore) UpdateSkill(ctx context.Context, vaultID, oldName string, sk 
 		return nil, sql.ErrNoRows
 	}
 	if err != nil {
+		// The pre-check above is not atomic with the write: a concurrent
+		// create of the target name turns this into a primary-key violation.
+		// Re-check rather than pattern-match driver error strings, so the
+		// caller still gets ErrSkillExists (409) instead of a 500 on both
+		// dialects. Only reachable under real concurrency, so no unit test
+		// covers it — TestSkillRenameCollisionReturnsErrSkillExists exercises
+		// the pre-check path instead.
+		if sk.Name != oldName {
+			if _, getErr := s.GetSkill(ctx, vaultID, sk.Name); getErr == nil {
+				return nil, ErrSkillExists
+			}
+		}
 		return nil, fmt.Errorf("updating skill: %w", err)
 	}
 	return updated, nil
