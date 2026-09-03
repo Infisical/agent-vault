@@ -91,9 +91,9 @@ type Server struct {
 	telemetry        *telemetry.Telemetry
 }
 
-// lockVaultServices acquires the per-vault mutation lock via the store's
+// lockVault acquires the per-vault mutation lock via the store's
 // LockVault. Callers MUST defer the returned unlock func.
-func (s *Server) lockVaultServices(ctx context.Context, vaultID string) (func(), error) {
+func (s *Server) lockVault(ctx context.Context, vaultID string) (func(), error) {
 	return s.store.LockVault(ctx, vaultID)
 }
 
@@ -362,6 +362,13 @@ type Store interface {
 	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
 	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
 	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
+
+	// Vault skills (markdown instruction documents)
+	ListSkills(ctx context.Context, vaultID string) ([]store.SkillMeta, error)
+	GetSkill(ctx context.Context, vaultID, name string) (*store.Skill, error)
+	InsertSkill(ctx context.Context, sk store.Skill) (*store.Skill, error)
+	UpdateSkill(ctx context.Context, vaultID, oldName string, sk store.Skill) (*store.Skill, error)
+	DeleteSkill(ctx context.Context, vaultID, name string) error
 
 	// External credential stores
 	CreateExternalVault(ctx context.Context, p store.CreateExternalVaultParams) (*store.Vault, error)
@@ -895,6 +902,13 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("DELETE /v1/vaults/{name}/services/{host}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServiceRemove))))
 	mux.HandleFunc("DELETE /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServicesClear))))
 	mux.HandleFunc("GET /v1/vaults/{name}/services/credential-usage", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServicesCredentialUsage))))
+	// Per-vault skills. Reads are open to any vault grant; mutations are
+	// vault admin only (enforced in the handlers).
+	mux.HandleFunc("GET /v1/vaults/{name}/skills", s.requireInitialized(s.requireAuth(actorAuthed(s.handleSkillsList))))
+	mux.HandleFunc("POST /v1/vaults/{name}/skills", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleSkillCreate)))))
+	mux.HandleFunc("GET /v1/vaults/{name}/skills/{skill}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleSkillGet))))
+	mux.HandleFunc("PATCH /v1/vaults/{name}/skills/{skill}", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleSkillPatch)))))
+	mux.HandleFunc("DELETE /v1/vaults/{name}/skills/{skill}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleSkillDelete))))
 	mux.HandleFunc("GET /v1/vaults/{name}/logs", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultLogsList))))
 	mux.HandleFunc("GET /v1/vaults/{name}/discovered-hosts", s.requireInitialized(s.requireAuth(actorAuthed(s.handleDiscoveredHosts))))
 	// Public static reads — immutable payloads with no credentials on
