@@ -250,6 +250,39 @@ func TestSkillFieldLimitsMatchAgentSkillsSpec(t *testing.T) {
 	}
 }
 
+// The description is emitted as one YAML scalar in SKILL.md frontmatter, so
+// newlines must not survive into storage.
+func TestSkillDescriptionIsFlattenedToOneLine(t *testing.T) {
+	ms, srv, token := setupSkillsServer(t)
+
+	body, _ := json.Marshal(map[string]string{
+		"name":        "multiline-desc",
+		"description": "  first line\nsecond   line\r\nthird\t line  ",
+		"content":     "# body\n",
+	})
+	rec := skillReq(t, srv, token, http.MethodPost, "/v1/vaults/default/skills", string(body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	got := ms.skills["root-ns-id"]["multiline-desc"].Description
+	if want := "first line second line third line"; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+	if strings.ContainsAny(got, "\n\r\t") {
+		t.Fatalf("description still carries line breaks: %q", got)
+	}
+
+	// The same normalization applies on the patch path.
+	patch, _ := json.Marshal(map[string]string{"description": "one\ntwo"})
+	rec = skillReq(t, srv, token, http.MethodPatch, "/v1/vaults/default/skills/multiline-desc", string(patch))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := ms.skills["root-ns-id"]["multiline-desc"].Description; got != "one two" {
+		t.Fatalf("patched description = %q, want %q", got, "one two")
+	}
+}
+
 func TestSkillCreateNormalizesCRLF(t *testing.T) {
 	ms, srv, token := setupSkillsServer(t)
 

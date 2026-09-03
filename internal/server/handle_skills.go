@@ -69,6 +69,16 @@ func normalizeSkillContent(content string) string {
 	return strings.ReplaceAll(content, "\r\n", "\n")
 }
 
+// normalizeSkillDescription flattens the description to a single line.
+// It is emitted as one YAML scalar in SKILL.md frontmatter, where an
+// embedded newline would either break the document or silently truncate the
+// value, so line breaks are folded to spaces rather than rejected — pasting
+// a wrapped sentence should just work. strings.Fields also collapses runs of
+// whitespace and trims, making this idempotent.
+func normalizeSkillDescription(description string) string {
+	return strings.Join(strings.Fields(description), " ")
+}
+
 // validateSkillPayload enforces the skill field rules. Names reuse
 // broker.ValidateSlug because a skill name becomes a directory name when
 // `vault run` writes the skill to an agent's filesystem.
@@ -177,7 +187,7 @@ func (s *Server) handleSkillCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Name = strings.TrimSpace(req.Name)
-	req.Description = strings.TrimSpace(req.Description)
+	req.Description = normalizeSkillDescription(req.Description)
 	req.Content = normalizeSkillContent(req.Content)
 	if err := validateSkillPayload(req.Name, req.Description, req.Content); err != nil {
 		jsonError(w, http.StatusBadRequest, err.Error())
@@ -257,7 +267,7 @@ func (s *Server) handleSkillPatch(w http.ResponseWriter, r *http.Request) {
 		merged.Name = strings.TrimSpace(*req.Name)
 	}
 	if req.Description != nil {
-		merged.Description = strings.TrimSpace(*req.Description)
+		merged.Description = normalizeSkillDescription(*req.Description)
 	}
 	if req.Content != nil {
 		merged.Content = normalizeSkillContent(*req.Content)

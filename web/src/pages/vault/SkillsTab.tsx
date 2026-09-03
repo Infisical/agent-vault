@@ -66,7 +66,11 @@ export default function SkillsTab() {
   const { vaultName, vaultRole } = useVaultParams();
   const [skills, setSkills] = useState<SkillRow[]>([]);
   const [loading, setLoading] = useState(true);
+  // `error` gates the table: it means the list itself could not be loaded.
+  // Transient per-row failures go to `actionError`, which shows above the
+  // table so a failed action never hides the data.
   const [error, setError] = useState("");
+  const [actionError, setActionError] = useState("");
   // Opening the edit form needs the markdown body, which the list omits, so
   // this holds a fetched record rather than an index into `skills`.
   const [editing, setEditing] = useState<EditingState>(null);
@@ -100,11 +104,14 @@ export default function SkillsTab() {
   }
 
   async function openEdit(name: string) {
+    setActionError("");
     try {
       const data = await apiRequest<{ skill: SkillDetail }>(skillUrl(name));
       setEditing({ mode: "edit", skill: data.skill });
     } catch {
-      setError(`Failed to load "${name}".`);
+      // Most likely another admin deleted it; refresh so the row goes away.
+      setActionError(`Could not open "${name}". It may have just been deleted.`);
+      fetchSkills();
     }
   }
 
@@ -209,6 +216,12 @@ export default function SkillsTab() {
         )}
       </div>
 
+      {actionError && (
+        <div className="mb-4">
+          <ErrorBanner message={actionError} />
+        </div>
+      )}
+
       {loading ? (
         <LoadingSpinner />
       ) : error ? (
@@ -234,7 +247,13 @@ export default function SkillsTab() {
         description={`Permanently delete "${deleteName}". Agents will no longer receive these instructions.`}
         footer={
           <>
-            <Button variant="secondary" onClick={() => setDeleteName(null)}>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setDeleteName(null);
+                setDeleteError("");
+              }}
+            >
               Cancel
             </Button>
             <Button
@@ -371,11 +390,17 @@ function SkillSheet({
                 ).toLocaleString()} characters.`
               : undefined
           }
-          helperText="Tells an agent when to reach for this skill. Shown in the skills table."
+          helperText="A single line telling an agent when to reach for this skill. Shown in the skills table."
         >
+          {/* Wraps for room, but stays one line: this becomes a single YAML
+              scalar in SKILL.md frontmatter, so Enter is suppressed rather
+              than silently folded to a space on save. */}
           <Textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.preventDefault();
+            }}
             rows={2}
             placeholder="Use when deploying to the staging environment."
             error={descriptionTooLong}
