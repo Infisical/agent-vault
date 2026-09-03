@@ -257,6 +257,7 @@ type Store interface {
 	CreateUser(ctx context.Context, email string, passwordHash, passwordSalt []byte, role string, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) (*store.User, error)
 	GetUserByEmail(ctx context.Context, email string) (*store.User, error)
 	GetUserByID(ctx context.Context, id string) (*store.User, error)
+	GetUserEmailByID(ctx context.Context, id string) (string, error)
 	ListUsers(ctx context.Context) ([]store.User, error)
 	UpdateUserRole(ctx context.Context, userID, role string) error
 	UpdateUserPassword(ctx context.Context, userID string, passwordHash, passwordSalt []byte, kdfTime uint32, kdfMemory uint32, kdfThreads uint8) error
@@ -380,6 +381,7 @@ type Store interface {
 	CreateAgent(ctx context.Context, name, createdBy, role string) (*store.Agent, error)
 	CreateAgentWithGrantsAndToken(ctx context.Context, name, createdBy, role string, vaultGrants []store.AgentVaultGrantSpec, tokenExpiresAt *time.Time) (*store.Agent, *store.Session, error)
 	GetAgentByID(ctx context.Context, id string) (*store.Agent, error)
+	GetAgentNameByID(ctx context.Context, id string) (string, error)
 	GetAgentByName(ctx context.Context, name string) (*store.Agent, error)
 	ListAgents(ctx context.Context, vaultID string) ([]store.Agent, error)
 	ListAllAgents(ctx context.Context) ([]store.Agent, error)
@@ -933,8 +935,16 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 
 	// React app static assets (Vite outputs to /assets/ with base "/")
 	webFS, _ := fs.Sub(webDistFS, "webdist")
-	mux.Handle("GET /assets/", http.FileServer(http.FS(webFS)))
-	mux.Handle("GET /vite.svg", http.FileServer(http.FS(webFS)))
+	static := http.FileServer(http.FS(webFS))
+	mux.Handle("GET /assets/", cacheStatic(cacheImmutable, static))
+	// Files Vite copies verbatim out of web/public/. index.html links the
+	// favicons and the built CSS references /fonts/, so without these routes
+	// they 404 despite being embedded, and the UI silently falls back to
+	// system fonts. Their names carry no content hash, so they get a modest
+	// lifetime instead of immutable.
+	mux.Handle("GET /fonts/", cacheStatic(cacheDay, static))
+	mux.Handle("GET /favicon.svg", cacheStatic(cacheDay, static))
+	mux.Handle("GET /favicon.png", cacheStatic(cacheDay, static))
 
 	// SPA catch-all: serve index.html for all frontend routes
 	mux.HandleFunc("GET /login", s.handleSPA)
@@ -953,6 +963,56 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /{$}", s.handleSPA)
 
 	return s
+}
+
+// Cache lifetimes for the embedded frontend build output. /assets/ filenames
+// carry a Vite content hash, so those bytes never change and a rebuild emits
+// new names. Files copied verbatim from web/public/ (favicons, fonts) keep
+// stable names across builds, so they get a modest lifetime instead.
+const (
+	cacheImmutable = "public, max-age=31536000, immutable"
+	cacheDay       = "public, max-age=86400"
+)
+
+// cacheStatic sets Cache-Control on responses from the embedded build output.
+// Without it browsers refetch every asset on each load: embed.FS reports a zero
+// ModTime, so http.FileServer sends neither Last-Modified nor ETag and there is
+// nothing to revalidate against. index.html is served separately by handleSPA
+// with no-store, so new builds are still picked up immediately.
+//
+// Only successful responses are marked. During a rolling upgrade a browser can
+// load index.html from an already-updated instance and request its chunks from
+// one still serving the previous build; caching that 404 for a year would wedge
+// the UI for that browser until it cleared its cache.
+func cacheStatic(cacheControl string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(&staticCacheWriter{ResponseWriter: w, cacheControl: cacheControl}, r)
+	})
+}
+
+// staticCacheWriter sets the Cache-Control header on 200 and 206 responses,
+// just before the status line is written.
+type staticCacheWriter struct {
+	http.ResponseWriter
+	cacheControl string
+	wroteHeader  bool
+}
+
+func (w *staticCacheWriter) WriteHeader(code int) {
+	if !w.wroteHeader {
+		w.wroteHeader = true
+		if code == http.StatusOK || code == http.StatusPartialContent {
+			w.Header().Set("Cache-Control", w.cacheControl)
+		}
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *staticCacheWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(b)
 }
 
 // requireInitialized returns 503 when no owner account exists yet.

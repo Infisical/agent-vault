@@ -18,6 +18,7 @@ export interface LogEntry {
   error_code: string;
   actor_type: string;
   actor_id: string;
+  actor_name?: string;
   created_at: string;
 }
 
@@ -341,7 +342,19 @@ function LogDetailModal({ log, onClose }: { log: LogEntry; onClose: () => void }
         "—"
       ),
     ],
-    ["Actor", log.actor_type ? `${log.actor_type}:${log.actor_id}` : "—"],
+    [
+      "Actor",
+      log.actor_type
+        ? log.actor_name
+          ? (
+              <span>
+                <span className="font-medium">{log.actor_name}</span>
+                <span className="text-text-muted ml-1.5 text-xs font-mono">({log.actor_type}:{log.actor_id})</span>
+              </span>
+            )
+          : `${log.actor_type}:${log.actor_id}`
+        : "—",
+    ],
     ["Error code", log.error_code || "—"],
     ["ID", <span className="font-mono">{log.id}</span>],
   ];

@@ -435,6 +435,15 @@ func (m *mockStore) GetUserByID(_ context.Context, id string) (*store.User, erro
 	return nil, fmt.Errorf("user not found")
 }
 
+func (m *mockStore) GetUserEmailByID(_ context.Context, id string) (string, error) {
+	for _, u := range m.users {
+		if u.ID == id {
+			return u.Email, nil
+		}
+	}
+	return "", fmt.Errorf("user not found")
+}
+
 func (m *mockStore) ListUsers(_ context.Context) ([]store.User, error) {
 	var users []store.User
 	for _, u := range m.users {
@@ -934,6 +943,15 @@ func (m *mockStore) GetAgentByID(_ context.Context, id string) (*store.Agent, er
 		}
 	}
 	return nil, fmt.Errorf("agent not found")
+}
+
+func (m *mockStore) GetAgentNameByID(_ context.Context, id string) (string, error) {
+	for _, ag := range m.agents {
+		if ag.ID == id {
+			return ag.Name, nil
+		}
+	}
+	return "", fmt.Errorf("agent not found")
 }
 
 func (m *mockStore) UpdateAgentRole(_ context.Context, agentID, role string) error {
@@ -7485,5 +7503,76 @@ func TestVaultLeaveNoAccess(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCacheStaticSetsCacheHeaderOnlyOnSuccess(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		want   string
+	}{
+		{"hashed asset found", http.StatusOK, cacheImmutable},
+		{"range request", http.StatusPartialContent, cacheImmutable},
+		// A rolling upgrade can route a chunk request to an instance still on
+		// the previous build; caching that 404 for a year would wedge the UI.
+		{"chunk missing", http.StatusNotFound, ""},
+		{"server error", http.StatusInternalServerError, ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := cacheStatic(cacheImmutable, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+			}))
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/assets/index-abc123.js", nil))
+
+			if rec.Code != tc.status {
+				t.Fatalf("expected status %d, got %d", tc.status, rec.Code)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != tc.want {
+				t.Fatalf("expected Cache-Control %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestCacheStaticSetsCacheHeaderOnImplicit200(t *testing.T) {
+	// http.FileServer writes the body without an explicit WriteHeader call.
+	h := cacheStatic(cacheImmutable, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("console.log(1)"))
+	}))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/assets/index-abc123.js", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != cacheImmutable {
+		t.Fatalf("expected Cache-Control %q, got %q", cacheImmutable, got)
+	}
+	if rec.Body.String() != "console.log(1)" {
+		t.Fatalf("body was altered: %q", rec.Body.String())
+	}
+}
+
+func TestCacheStaticUsesShorterLifetimeForUnhashedFiles(t *testing.T) {
+	// Favicons and fonts are copied verbatim from web/public/, so their names
+	// carry no content hash and they must stay revalidatable.
+	h := cacheStatic(cacheDay, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("woff2"))
+	}))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/fonts/UncutSans-Book.woff2", nil))
+
+	if got := rec.Header().Get("Cache-Control"); got != cacheDay {
+		t.Fatalf("expected Cache-Control %q, got %q", cacheDay, got)
+	}
+	if cacheDay == cacheImmutable {
+		t.Fatal("unhashed files must not share the immutable lifetime")
 	}
 }

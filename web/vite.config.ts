@@ -13,6 +13,26 @@ export default defineConfig({
   build: {
     outDir: "../internal/server/webdist",
     emptyOutDir: true,
+    rolldownOptions: {
+      output: {
+        // Split the framework out of the app bundle. Roughly half of the
+        // output is React + the router, which only changes when we bump those
+        // deps; keeping them in their own chunks means a new agent-vault
+        // release only invalidates the app chunk in the browser cache.
+        codeSplitting: {
+          groups: [
+            {
+              name: "vendor-react",
+              test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/,
+            },
+            {
+              name: "vendor-router",
+              test: /node_modules[\\/]@tanstack[\\/]/,
+            },
+          ],
+        },
+      },
+    },
   },
   server: {
     proxy: {
