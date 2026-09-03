@@ -20,7 +20,7 @@ Infisical's paid bug bounty is a separate **private, invitation-only program** c
 
 ## Supported versions
 
-Security fixes ship in the latest release. We always recommend running the latest version of Agent Vault. If you self-host, upgrading promptly is the fastest way to stay protected.
+Security fixes ship in the latest release. Keep your Agent Vault installation updated proactively so you pick them up.
 
 ## General security contact
 
