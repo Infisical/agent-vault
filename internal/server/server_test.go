@@ -3695,6 +3695,72 @@ func TestVaultSyncNow_InvalidKeyRedactedForNonAdmin(t *testing.T) {
 	}
 }
 
+func TestVaultSyncNow_DuplicateKeyReturns400(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
+		VaultID: "root-ns-id", Kind: "infisical",
+		ConfigJSON: `{"project_id":"p","environment":"dev","secret_path":"/","recursive":true}`,
+	}
+	srv := newTestServer(withStore(ms))
+	dupErr := fmt.Errorf("%w: %q found at /github, /stripe (secret keys must be unique across all folders when recursive sync is enabled; rename the secret upstream)",
+		infisical.ErrDuplicateKey, "TOKEN")
+	attachStubSyncer(t, srv, ms, &stubFetcher{err: dupErr})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/sync", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["code"] != "external_store_duplicate_key" {
+		t.Fatalf("expected code=external_store_duplicate_key, got %v", resp)
+	}
+	// Key and folder paths must appear so the operator can fix them upstream.
+	for _, want := range []string{"TOKEN", "/github", "/stripe"} {
+		if !strings.Contains(resp["error"], want) {
+			t.Fatalf("error must contain %q; got %q", want, resp["error"])
+		}
+	}
+}
+
+// TestVaultSyncNow_DuplicateKeyRedactedForNonAdmin: like ErrInvalidKey, the
+// colliding key name and folder paths are upstream topology and must be
+// redacted for callers who cannot see the vault's upstream config.
+func TestVaultSyncNow_DuplicateKeyRedactedForNonAdmin(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
+		VaultID: "root-ns-id", Kind: "infisical",
+		ConfigJSON: `{"project_id":"p","environment":"dev","secret_path":"/","recursive":true}`,
+	}
+	srv := newTestServer(withStore(ms))
+	dupErr := fmt.Errorf("%w: %q found at /github, /stripe", infisical.ErrDuplicateKey, "TOKEN")
+	attachStubSyncer(t, srv, ms, &stubFetcher{err: dupErr})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/sync", nil)
+	req.Header.Set("Authorization", "Bearer "+memberToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["code"] != "external_store_duplicate_key" {
+		t.Fatalf("expected code=external_store_duplicate_key, got %v", resp)
+	}
+	for _, leak := range []string{"TOKEN", "/github", "/stripe"} {
+		if strings.Contains(resp["error"], leak) {
+			t.Fatalf("non-admin response must not leak %q; got %q", leak, resp["error"])
+		}
+	}
+}
+
 func TestVaultSyncNow_GenericUpstreamFailureReturns502(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
