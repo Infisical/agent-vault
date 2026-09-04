@@ -2,6 +2,7 @@ package netguard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -160,16 +161,26 @@ func isBlockedIP(ip net.IP, allowPrivate bool, allowed []net.IPNet) bool {
 	return false
 }
 
+const safeDialTimeout = 10 * time.Second
+
 // SafeDialContext returns a DialContext function that blocks connections to
 // forbidden IP ranges. When allowPrivate is true, only IMDS endpoints are
 // blocked. When false, private/reserved ranges are also blocked unless
 // allowlisted via AGENT_VAULT_NETWORK_ALLOWLIST.
 func SafeDialContext(allowPrivate bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	dialer := &net.Dialer{
-		Timeout:   10 * time.Second,
+		Timeout:   safeDialTimeout,
 		KeepAlive: 30 * time.Second,
 	}
+	return safeDialContext(allowPrivate, safeDialTimeout, net.DefaultResolver.LookupIPAddr, dialer.DialContext)
+}
 
+func safeDialContext(
+	allowPrivate bool,
+	timeout time.Duration,
+	lookupIPAddr func(context.Context, string) ([]net.IPAddr, error),
+	dialContext func(context.Context, string, string) (net.Conn, error),
+) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	var allowed []net.IPNet
 	if !allowPrivate {
 		allowed = AllowlistFromEnv()
@@ -182,7 +193,7 @@ func SafeDialContext(allowPrivate bool) func(ctx context.Context, network, addr 
 		}
 
 		// Resolve the hostname to IP addresses.
-		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		ips, err := lookupIPAddr(ctx, host)
 		if err != nil {
 			return nil, fmt.Errorf("netguard: DNS lookup failed for %q: %w", host, err)
 		}
@@ -194,9 +205,34 @@ func SafeDialContext(allowPrivate bool) func(ctx context.Context, network, addr 
 					host, ipAddr.IP.String())
 			}
 		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("netguard: DNS lookup returned no addresses for %q", host)
+		}
 
-		// All IPs are safe — connect directly to a validated IP to prevent
-		// DNS rebinding (TOCTOU: a second resolution could return a different IP).
-		return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		// All IPs are safe — connect directly to validated IPs in resolver order
+		// to prevent DNS rebinding while allowing fallback across address families.
+		dialCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		var dialErrs []error
+		for i, ipAddr := range ips {
+			if err := dialCtx.Err(); err != nil {
+				return nil, err
+			}
+			deadline, _ := dialCtx.Deadline()
+			remaining := time.Until(deadline)
+			attemptTimeout := remaining / time.Duration(len(ips)-i)
+			attemptCtx, attemptCancel := context.WithTimeout(dialCtx, attemptTimeout)
+			ip := ipAddr.IP.String()
+			conn, err := dialContext(attemptCtx, network, net.JoinHostPort(ip, port))
+			attemptCancel()
+			if err == nil {
+				return conn, nil
+			}
+			dialErrs = append(dialErrs, fmt.Errorf("%s: %w", ip, err))
+			if err := dialCtx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		return nil, fmt.Errorf("netguard: connection to %s failed: %w", host, errors.Join(dialErrs...))
 	}
 }
