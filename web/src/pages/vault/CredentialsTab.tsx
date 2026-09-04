@@ -11,6 +11,7 @@ import FormField from "../../components/FormField";
 import Select from "../../components/Select";
 import Combobox from "../../components/Combobox";
 import CreatableSelect from "../../components/CreatableSelect";
+import OAuthRefreshParams from "../../components/OAuthRefreshParams";
 import { Link } from "@tanstack/react-router";
 import { apiFetch, apiRequest } from "../../lib/api";
 import { OAUTH_PROVIDERS } from "../../lib/oauthProviders";
@@ -30,6 +31,7 @@ export default function CredentialsTab() {
     authorization_url?: string;
     token_url?: string;
     client_id?: string;
+    refresh_params?: Record<string, string>;
     scopes?: string;
     client_secret?: string;
     token_auth_method?: string;
@@ -513,7 +515,7 @@ interface Entry {
 }
 
 function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved }: {
-  vaultName: string; editingKey: string | null; editingCred?: { type?: string; authorization_url?: string; token_url?: string; client_id?: string; scopes?: string; client_secret?: string; token_auth_method?: string; access_token?: string; refresh_token?: string }; onClose: () => void; onSaved: () => void;
+  vaultName: string; editingKey: string | null; editingCred?: { type?: string; authorization_url?: string; token_url?: string; client_id?: string; refresh_params?: Record<string, string>; scopes?: string; client_secret?: string; token_auth_method?: string; access_token?: string; refresh_token?: string }; onClose: () => void; onSaved: () => void;
 }) {
   const isEdit = editingKey !== null;
   const editType = editingCred?.type;
@@ -528,6 +530,7 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
   const [oauthAuthUrl, setOauthAuthUrl] = useState(editingCred?.authorization_url ?? "");
   const [oauthTokenUrl, setOauthTokenUrl] = useState(editingCred?.token_url ?? "");
   const [oauthClientId, setOauthClientId] = useState(editingCred?.client_id ?? "");
+  const [oauthRefreshParams, setOauthRefreshParams] = useState<Record<string, string>>(editingCred?.refresh_params ?? {});
   const [oauthClientSecret, setOauthClientSecret] = useState(editingCred?.client_secret ?? "");
   const [oauthTokenAuthMethod, setOauthTokenAuthMethod] = useState(editingCred?.token_auth_method ?? (editingCred?.client_secret ? "client_secret_post" : "none"));
   const [oauthScopes, setOauthScopes] = useState<string[]>(editingCred?.scopes ? editingCred.scopes.split(" ").filter(Boolean) : []);
@@ -566,6 +569,7 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
         if (oauthClientId.trim()) body.client_id = oauthClientId.trim();
         if (oauthClientSecret.trim() && oauthClientSecret !== "••••••••") body.client_secret = oauthClientSecret.trim();
         if (oauthTokenAuthMethod && oauthTokenAuthMethod !== "none") body.token_auth_method = oauthTokenAuthMethod;
+        body.refresh_params = oauthRefreshParams;
         const resp = await apiFetch("/v1/credentials/oauth/tokens", { method: "POST", body: JSON.stringify(body) });
         if (!resp.ok) { const d = await resp.json(); throw new Error(d.error || "Failed to save."); }
       }
@@ -595,7 +599,7 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
     try {
       const resp = await apiFetch("/v1/credentials/oauth/connect", {
         method: "POST",
-        body: JSON.stringify({ vault: vaultName, key: oauthKey.trim(), authorization_url: oauthAuthUrl.trim(), token_url: oauthTokenUrl.trim(), client_id: oauthClientId.trim(), client_secret: oauthClientSecret.trim() || undefined, scopes: oauthScopes.join(" ") || undefined, token_auth_method: oauthTokenAuthMethod === "none" ? undefined : oauthTokenAuthMethod }),
+        body: JSON.stringify({ vault: vaultName, key: oauthKey.trim(), authorization_url: oauthAuthUrl.trim(), token_url: oauthTokenUrl.trim(), client_id: oauthClientId.trim(), client_secret: oauthClientSecret.trim() || undefined, refresh_params: oauthRefreshParams, scopes: oauthScopes.join(" ") || undefined, token_auth_method: oauthTokenAuthMethod === "none" ? undefined : oauthTokenAuthMethod }),
       });
       if (!resp.ok) { const d = await resp.json(); throw new Error(d.error || "Failed to start OAuth."); }
       const data = await resp.json();
@@ -711,10 +715,10 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
                 />
               </FormField>
               <FormField label="Token URL"><Input placeholder="e.g. https://oauth2.googleapis.com/token" value={oauthTokenUrl} onChange={(e) => setOauthTokenUrl(e.target.value)} /></FormField>
-              <div className="flex gap-3">
-                <div className="flex-1"><FormField label="Client ID"><Input placeholder="OAuth app client ID" value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} /></FormField></div>
-                <div className="flex-1"><FormField label="Client Secret" helperText="Optional for public clients"><Input placeholder="OAuth app client secret" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} type="password" /></FormField></div>
-                <div className="w-36"><FormField label="Auth Method">
+              <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_9rem] gap-3">
+                <div><FormField label="Client ID"><Input placeholder="OAuth app client ID" value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} /></FormField></div>
+                <div><FormField label="Client Secret" helperText="Optional for public clients"><Input placeholder="OAuth app client secret" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} type="password" /></FormField></div>
+                <div><FormField label="Auth Method">
                   <Select value={oauthTokenAuthMethod} onChange={(e) => setOauthTokenAuthMethod(e.target.value)}>
                     <option value="none">None</option>
                     <option value="client_secret_post">POST body</option>
@@ -733,9 +737,9 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
             </>
           ) : (
             <>
-              <div className="flex gap-3">
-                <div className="flex-1"><FormField label="Access Token" helperText="Optional when refresh token is provided"><Input placeholder="Access token" value={oauthAccessToken} onChange={(e) => setOauthAccessToken(e.target.value)} type="password" /></FormField></div>
-                <div className="flex-1"><FormField label="Refresh Token" helperText="Validated immediately on save"><Input placeholder="Refresh token" value={oauthRefreshToken} onChange={(e) => setOauthRefreshToken(e.target.value)} type="password" /></FormField></div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div><FormField label="Access Token" helperText="Optional when refresh token is provided"><Input placeholder="Access token" value={oauthAccessToken} onChange={(e) => setOauthAccessToken(e.target.value)} type="password" /></FormField></div>
+                <div><FormField label="Refresh Token" helperText="Validated immediately on save"><Input placeholder="Refresh token" value={oauthRefreshToken} onChange={(e) => setOauthRefreshToken(e.target.value)} type="password" /></FormField></div>
               </div>
               <FormField label="Token URL" helperText="Required for refresh. Pick a provider or paste any URL.">
                 <Combobox
@@ -746,10 +750,10 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
                   onSelect={applyProvider}
                 />
               </FormField>
-              <div className="flex gap-3">
-                <div className="flex-1"><FormField label="Client ID" helperText="Required for refresh"><Input placeholder="OAuth app client ID" value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} /></FormField></div>
-                <div className="flex-1"><FormField label="Client Secret" helperText="Optional"><Input placeholder="OAuth app client secret" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} type="password" /></FormField></div>
-                <div className="w-36"><FormField label="Auth Method">
+              <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_9rem] gap-3">
+                <div><FormField label="Client ID" helperText="Required for refresh"><Input placeholder="OAuth app client ID" value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} /></FormField></div>
+                <div><FormField label="Client Secret" helperText="Optional"><Input placeholder="OAuth app client secret" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} type="password" /></FormField></div>
+                <div><FormField label="Auth Method">
                   <Select value={oauthTokenAuthMethod} onChange={(e) => setOauthTokenAuthMethod(e.target.value)}>
                     <option value="none">None</option>
                     <option value="client_secret_post">POST body</option>
@@ -757,6 +761,7 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
                   </Select>
                 </FormField></div>
               </div>
+              <OAuthRefreshParams value={oauthRefreshParams} onChange={setOauthRefreshParams} />
             </>
           )}
         </>)}

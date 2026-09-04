@@ -57,6 +57,7 @@ type CredentialOAuth struct {
 	ClientID           string
 	ClientSecretCT     []byte // nil for public clients
 	ClientSecretNonce  []byte
+	RefreshParams      map[string]string
 	Scopes             string
 	ScopeSeparator     string
 	DisablePKCE        bool
@@ -95,6 +96,7 @@ type OAuthCredentialConfig struct {
 	ClientID          string
 	ClientSecretCT    []byte
 	ClientSecretNonce []byte
+	RefreshParams     map[string]string
 	Scopes            string
 	ScopeSeparator    string
 	DisablePKCE       bool

@@ -35,6 +35,7 @@ export interface OAuthConfig {
   authorization_url?: string;
   token_url?: string;
   client_id?: string;
+  refresh_params?: Record<string, string>;
   scopes?: string;
   scope_separator?: string;
   disable_pkce?: boolean;

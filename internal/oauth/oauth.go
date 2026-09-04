@@ -41,9 +41,30 @@ type RefreshConfig struct {
 	ClientID        string
 	ClientSecret    string
 	RefreshToken    string
+	RefreshParams   map[string]string
 	Scopes          string
 	ScopeSeparator  string // defaults to " " (space)
 	TokenAuthMethod string // "client_secret_post" (default) or "client_secret_basic"
+}
+
+var reservedRefreshParams = []string{
+	"grant_type",
+	"refresh_token",
+	"client_id",
+	"client_secret",
+	"scope",
+}
+
+// ValidateRefreshParams rejects additional parameters that could override
+// Agent Vault's refresh-token grant fields. Values are deliberately omitted
+// from errors because providers may treat additional parameters as secrets.
+func ValidateRefreshParams(params map[string]string) error {
+	for _, key := range reservedRefreshParams {
+		if _, ok := params[key]; ok {
+			return fmt.Errorf("oauth: refresh parameter %q is reserved", key)
+		}
+	}
+	return nil
 }
 
 // TokenError is returned when the token endpoint responds with a non-2xx status.
@@ -100,6 +121,10 @@ func Exchange(ctx context.Context, cfg ExchangeConfig) (*TokenResponse, error) {
 
 // Refresh performs a refresh_token grant per RFC 6749 §6.
 func Refresh(ctx context.Context, cfg RefreshConfig) (*TokenResponse, error) {
+	if err := ValidateRefreshParams(cfg.RefreshParams); err != nil {
+		return nil, err
+	}
+
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {cfg.RefreshToken},
@@ -113,6 +138,9 @@ func Refresh(ctx context.Context, cfg RefreshConfig) (*TokenResponse, error) {
 		// Scopes is stored with the provider's separator; normalise to space
 		// for the wire format (RFC 6749 §3.3).
 		form.Set("scope", strings.ReplaceAll(cfg.Scopes, sep, " "))
+	}
+	for key, value := range cfg.RefreshParams {
+		form.Set(key, value)
 	}
 
 	authMethod := cfg.TokenAuthMethod
@@ -133,7 +161,20 @@ func Refresh(ctx context.Context, cfg RefreshConfig) (*TokenResponse, error) {
 		req.SetBasicAuth(cfg.ClientID, cfg.ClientSecret)
 	}
 
-	return doTokenRequest(req)
+	tok, err := doTokenRequest(req)
+	if err != nil {
+		if tokenErr, ok := err.(*TokenError); ok {
+			redacted := *tokenErr
+			// A provider controls this body and may reflect submitted form values
+			// using an encoding that cannot be safely scrubbed. Keep only a
+			// constant message so refresh tokens, client credentials, and extra
+			// parameter values cannot reach API responses, persisted errors, or logs.
+			redacted.Body = "refresh request rejected"
+			return nil, &redacted
+		}
+		return nil, fmt.Errorf("oauth: refresh request failed")
+	}
+	return tok, nil
 }
 
 // applyClientAuth adds client credentials to the form body when using

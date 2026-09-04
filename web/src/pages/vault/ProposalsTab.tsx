@@ -6,6 +6,7 @@ import Modal from "../../components/Modal";
 import Button from "../../components/Button";
 import Input from "../../components/Input";
 import FormField from "../../components/FormField";
+import OAuthRefreshParams from "../../components/OAuthRefreshParams";
 import ProposalPreview, { parseServices, parseCredentials, type CredentialSlot } from "../../components/ProposalPreview";
 import { apiFetch, isAbortError } from "../../lib/api";
 
@@ -243,6 +244,7 @@ function ProposalModal({
 
   // OAuth state
   const [oauthFields, setOauthFields] = useState<Record<string, Record<string, string>>>({});
+  const [oauthRefreshParams, setOauthRefreshParams] = useState<Record<string, Record<string, string>>>({});
   const [oauthConnected, setOauthConnected] = useState<Record<string, boolean>>({});
   const [oauthConnecting, setOauthConnecting] = useState<Record<string, boolean>>({});
   const pollTimers = useRef<Record<string, ReturnType<typeof setInterval>>>({});
@@ -278,6 +280,7 @@ function ProposalModal({
           authorization_url: fields.authorization_url || oauth?.authorization_url || "",
           token_url: fields.token_url || oauth?.token_url || "",
           client_id: fields.client_id || "", client_secret: fields.client_secret || "",
+          refresh_params: oauthRefreshParams[credKey] ?? oauth?.refresh_params,
           scopes: fields.scopes || oauth?.scopes || "",
         }),
       });
@@ -305,6 +308,7 @@ function ProposalModal({
       if (fields.refresh_token?.trim()) body.refresh_token = fields.refresh_token.trim();
       body.token_url = fields.token_url || oauth?.token_url || "";
       body.client_id = fields.client_id || oauth?.client_id || "";
+      body.refresh_params = oauthRefreshParams[credKey] ?? oauth?.refresh_params ?? {};
       const resp = await apiFetch("/v1/credentials/oauth/tokens", { method: "POST", body: JSON.stringify(body) });
       if (!resp.ok) { const d = await resp.json(); throw new Error(d.error || "Failed to upload tokens."); }
       setOauthConnected((p) => ({ ...p, [credKey]: true }));
@@ -418,7 +422,7 @@ function ProposalModal({
                             <p><span className="text-text-muted">Token URL:</span> {cred.oauth?.token_url}</p>
                             {cred.oauth?.scopes && <p><span className="text-text-muted">Scopes:</span> {cred.oauth.scopes}</p>}
                           </div>
-                          <div className="grid grid-cols-2 gap-3">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <FormField label="Client ID"><Input placeholder="OAuth app client ID" value={fields.client_id ?? ""} onChange={(e) => updateOauthField(cred.key, "client_id", e.target.value)} /></FormField>
                             <FormField label="Client Secret"><Input type="password" placeholder="OAuth app client secret" value={fields.client_secret ?? ""} onChange={(e) => updateOauthField(cred.key, "client_secret", e.target.value)} /></FormField>
                           </div>
@@ -436,6 +440,10 @@ function ProposalModal({
                           <FormField label="Access Token" helperText="Optional when refresh token is provided"><Input type="password" placeholder="Access token" value={fields.access_token ?? ""} onChange={(e) => updateOauthField(cred.key, "access_token", e.target.value)} /></FormField>
                           <FormField label="Refresh Token" helperText="Validated immediately on save"><Input type="password" placeholder="Refresh token" value={fields.refresh_token ?? ""} onChange={(e) => updateOauthField(cred.key, "refresh_token", e.target.value)} /></FormField>
                           <FormField label="Client ID" helperText="Required for refresh"><Input placeholder="OAuth client ID" value={fields.client_id ?? cred.oauth?.client_id ?? ""} onChange={(e) => updateOauthField(cred.key, "client_id", e.target.value)} /></FormField>
+                          <OAuthRefreshParams
+                            value={oauthRefreshParams[cred.key] ?? cred.oauth?.refresh_params}
+                            onChange={(params) => setOauthRefreshParams((prev) => ({ ...prev, [cred.key]: params }))}
+                          />
                           <Button type="button" onClick={() => handleOAuthTokenUpload(cred.key)} disabled={!(fields.access_token ?? "").trim() && !(fields.refresh_token ?? "").trim()} loading={submitting} className="w-full">
                             Save Tokens
                           </Button>

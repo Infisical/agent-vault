@@ -22,6 +22,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/notify"
+	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
@@ -33,7 +34,8 @@ type mockStore struct {
 	masterKeyRecord    *store.MasterKeyRecord
 	sessions           map[string]*store.Session
 	vaults             map[string]*store.Vault
-	credentials        map[string]*store.Credential   // keyed by "vaultID:key"
+	credentials        map[string]*store.Credential // keyed by "vaultID:key"
+	oauthCredentials   map[string]*store.CredentialOAuth
 	brokerConfigs      map[string]*store.BrokerConfig // keyed by vaultID
 	proposals          map[string][]store.Proposal    // keyed by vaultID
 	users              map[string]*store.User         // keyed by email
@@ -52,16 +54,17 @@ type mockStore struct {
 
 func newMockStore() *mockStore {
 	ms := &mockStore{
-		sessions:      make(map[string]*store.Session),
-		vaults:        make(map[string]*store.Vault),
-		credentials:   make(map[string]*store.Credential),
-		brokerConfigs: make(map[string]*store.BrokerConfig),
-		users:         make(map[string]*store.User),
-		userInvites:   make(map[string]*store.UserInvite),
-		agents:        make(map[string]*store.Agent),
-		settings:      make(map[string]string),
-		vaultSettings: make(map[string]map[string]string),
-		credStores:    make(map[string]*store.VaultCredentialStore),
+		sessions:         make(map[string]*store.Session),
+		vaults:           make(map[string]*store.Vault),
+		credentials:      make(map[string]*store.Credential),
+		oauthCredentials: make(map[string]*store.CredentialOAuth),
+		brokerConfigs:    make(map[string]*store.BrokerConfig),
+		users:            make(map[string]*store.User),
+		userInvites:      make(map[string]*store.UserInvite),
+		agents:           make(map[string]*store.Agent),
+		settings:         make(map[string]string),
+		vaultSettings:    make(map[string]map[string]string),
+		credStores:       make(map[string]*store.VaultCredentialStore),
 	}
 	// Seed root vault
 	ms.vaults["default"] = &store.Vault{ID: "root-ns-id", Name: "default"}
@@ -389,9 +392,9 @@ func (m *mockStore) ExpirePendingProposals(_ context.Context, before time.Time) 
 	return 0, nil
 }
 
-func (m *mockStore) Close() error                                     { return nil }
-func (m *mockStore) Ping(_ context.Context) error                      { return nil }
-func (m *mockStore) DialectName() string                               { return "sqlite" }
+func (m *mockStore) Close() error                                         { return nil }
+func (m *mockStore) Ping(_ context.Context) error                         { return nil }
+func (m *mockStore) DialectName() string                                  { return "sqlite" }
 func (m *mockStore) GetCAState(_ context.Context) (*store.CAState, error) { return nil, nil }
 func (m *mockStore) SetCAState(_ context.Context, _ *store.CAState) error { return nil }
 
@@ -1201,13 +1204,39 @@ func (m *mockStore) ListDynamicSecretLeases(_ context.Context) ([]store.DynamicS
 	return nil, nil
 }
 
-func (m *mockStore) GetCredentialOAuth(_ context.Context, _, _ string) (*store.CredentialOAuth, error) {
-	return nil, nil
+func (m *mockStore) GetCredentialOAuth(_ context.Context, vaultID, key string) (*store.CredentialOAuth, error) {
+	co, ok := m.oauthCredentials[vaultID+":"+key]
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	return co, nil
 }
-func (m *mockStore) SetCredentialOAuth(_ context.Context, _ *store.CredentialOAuth) error {
+func (m *mockStore) SetCredentialOAuth(_ context.Context, co *store.CredentialOAuth) error {
+	m.oauthCredentials[co.VaultID+":"+co.CredentialKey] = co
+	m.credentials[co.VaultID+":"+co.CredentialKey] = &store.Credential{
+		ID: "credential-" + co.CredentialKey, VaultID: co.VaultID, Key: co.CredentialKey, Type: "oauth",
+	}
 	return nil
 }
-func (m *mockStore) UpdateCredentialOAuthTokens(_ context.Context, _, _ string, _, _, _, _ []byte, _ *time.Time) error {
+
+func (m *mockStore) UpdateCredentialOAuthTokens(_ context.Context, vaultID, key string, accessCT, accessNonce, refreshCT, refreshNonce []byte, expiresAt *time.Time) error {
+	cred := m.credentials[vaultID+":"+key]
+	if cred == nil {
+		return sql.ErrNoRows
+	}
+	cred.Ciphertext = accessCT
+	cred.Nonce = accessNonce
+	co := m.oauthCredentials[vaultID+":"+key]
+	if co == nil {
+		return sql.ErrNoRows
+	}
+	if len(refreshCT) > 0 {
+		co.RefreshTokenCT = refreshCT
+		co.RefreshTokenNonce = refreshNonce
+	}
+	co.TokenExpiresAt = expiresAt
+	now := time.Now().UTC()
+	co.ConnectedAt = &now
 	return nil
 }
 func (m *mockStore) UpdateCredentialOAuthError(_ context.Context, _, _, _ string) error {
@@ -2121,6 +2150,141 @@ func TestScopedSessionAllowsOwnVaultOnSet(t *testing.T) {
 	}
 }
 
+func TestOAuthTokenUploadRefreshParams(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		if r.Form.Get("install_id") != "hey-cli" {
+			http.Error(w, "install_id is required", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"rotated-access","refresh_token":"rotated-refresh","expires_in":3600}`)
+	}))
+	defer provider.Close()
+
+	ms, token := setupMockStoreWithScopedSessionRole(t, "default", "root-ns-id", "member")
+	encKey := make([]byte, 32)
+	srv := newTestServer(withStore(ms), withEncKey(encKey))
+	previousTokenClient := oauth.TokenClient
+	oauth.TokenClient = provider.Client()
+	t.Cleanup(func() { oauth.TokenClient = previousTokenClient })
+	body := fmt.Sprintf(`{"vault":"default","key":"HEY_OAUTH","refresh_token":"original-refresh","token_url":%q,"client_id":"public-client","refresh_params":{"install_id":"hey-cli"}}`, provider.URL)
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/oauth/tokens", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "original-refresh") || strings.Contains(rec.Body.String(), "rotated-refresh") || strings.Contains(rec.Body.String(), "rotated-access") {
+		t.Fatalf("token upload response exposed a token: %s", rec.Body.String())
+	}
+	co := ms.oauthCredentials["root-ns-id:HEY_OAUTH"]
+	if co == nil || co.RefreshParams["install_id"] != "hey-cli" {
+		t.Fatalf("stored refresh params = %#v", co)
+	}
+	refreshToken, err := crypto.Decrypt(co.RefreshTokenCT, co.RefreshTokenNonce, encKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(refreshToken) != "rotated-refresh" {
+		t.Fatalf("stored refresh token = %q, want rotated token", refreshToken)
+	}
+}
+
+func TestOAuthTokenUploadDoesNotExposeProviderErrorBody(t *testing.T) {
+	const (
+		refreshToken = "refresh-secret"
+		clientSecret = "client-secret"
+		paramValue   = "provider-specific-value"
+	)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, refreshToken+" "+clientSecret+" "+paramValue, http.StatusBadRequest)
+	}))
+	defer provider.Close()
+
+	ms, token := setupMockStoreWithScopedSessionRole(t, "default", "root-ns-id", "member")
+	srv := newTestServer(withStore(ms), withEncKey(make([]byte, 32)))
+	previousTokenClient := oauth.TokenClient
+	oauth.TokenClient = provider.Client()
+	t.Cleanup(func() { oauth.TokenClient = previousTokenClient })
+	body := fmt.Sprintf(`{"vault":"default","key":"HEY_OAUTH","refresh_token":%q,"token_url":%q,"client_id":"public-client","client_secret":%q,"refresh_params":{"install_id":%q}}`, refreshToken, provider.URL, clientSecret, paramValue)
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/oauth/tokens", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, value := range []string{refreshToken, clientSecret, paramValue} {
+		if strings.Contains(rec.Body.String(), value) {
+			t.Fatalf("token upload response exposed submitted data: %s", rec.Body.String())
+		}
+	}
+}
+
+func TestOAuthTokenUploadDoesNotExposeProviderRedirectError(t *testing.T) {
+	const (
+		refreshToken = "refresh-secret"
+		clientSecret = "client-secret"
+		paramValue   = "provider-specific-value"
+	)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		location := fmt.Sprintf("unsupported://token.invalid/?refresh_token=%s&client_secret=%s&install_id=%s", refreshToken, clientSecret, paramValue)
+		http.Redirect(w, r, location, http.StatusFound)
+	}))
+	defer provider.Close()
+
+	ms, token := setupMockStoreWithScopedSessionRole(t, "default", "root-ns-id", "member")
+	srv := newTestServer(withStore(ms), withEncKey(make([]byte, 32)))
+	previousTokenClient := oauth.TokenClient
+	oauth.TokenClient = provider.Client()
+	t.Cleanup(func() { oauth.TokenClient = previousTokenClient })
+	body := fmt.Sprintf(`{"vault":"default","key":"HEY_OAUTH","refresh_token":%q,"token_url":%q,"client_id":"public-client","client_secret":%q,"refresh_params":{"install_id":%q}}`, refreshToken, provider.URL, clientSecret, paramValue)
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/oauth/tokens", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, value := range []string{refreshToken, clientSecret, paramValue, "token.invalid"} {
+		if strings.Contains(rec.Body.String(), value) {
+			t.Fatalf("token upload response exposed provider redirect data: %s", rec.Body.String())
+		}
+	}
+}
+
+func TestOAuthTokenUploadRejectsReservedRefreshParams(t *testing.T) {
+	ms, token := setupMockStoreWithScopedSessionRole(t, "default", "root-ns-id", "member")
+	srv := newTestServer(withStore(ms), withEncKey(make([]byte, 32)))
+	body := `{"vault":"default","key":"HEY_OAUTH","access_token":"access-secret","refresh_params":{"client_secret":"must-not-appear"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/oauth/tokens", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "client_secret") {
+		t.Fatalf("response does not identify reserved key: %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "must-not-appear") || strings.Contains(rec.Body.String(), "access-secret") {
+		t.Fatalf("response exposed a secret: %s", rec.Body.String())
+	}
+}
+
 func TestCredentialsListSuccess(t *testing.T) {
 	ms, token := setupMockStoreWithSession(t)
 	srv := newTestServer(withStore(ms))
@@ -2657,6 +2821,29 @@ func TestProposalCreateSuccess(t *testing.T) {
 	}
 	if resp["id"].(float64) != 1 {
 		t.Fatalf("expected id 1, got %v", resp["id"])
+	}
+}
+
+func TestProposalOAuthRefreshParamsRoundTrip(t *testing.T) {
+	srv, _, token := setupProposalTest(t)
+	body := `{"credentials":[{"action":"set","key":"HEY_OAUTH","type":"oauth","oauth":{"token_url":"https://example.com/oauth/tokens","client_id":"public-client","refresh_params":{"install_id":"hey-cli"}}}],"message":"configure HEY OAuth"}`
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/proposals", strings.NewReader(body))
+	createReq.Header.Set("Authorization", "Bearer "+token)
+	createRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/proposals/1", nil)
+	getReq.Header.Set("Authorization", "Bearer "+token)
+	getRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", getRec.Code, getRec.Body.String())
+	}
+	if !strings.Contains(getRec.Body.String(), `"refresh_params":{"install_id":"hey-cli"}`) {
+		t.Fatalf("proposal response lost refresh params: %s", getRec.Body.String())
 	}
 }
 

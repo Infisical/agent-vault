@@ -186,6 +186,7 @@ OAuth config fields:
 - `token_url` (required): the provider's token endpoint, used for token exchange and refresh.
 - `scopes` (optional): space-separated permissions to request during the consent flow.
 - `client_id` (optional): pre-fill the client ID field on the approval page.
+- `refresh_params` (optional): additional non-secret string form fields sent during refresh. The reserved fields `grant_type`, `refresh_token`, `client_id`, `client_secret`, and `scope` cannot be overridden. Values remain visible to authorized operators for review and editing, but are never written to logs or validation errors. Store credentials in the dedicated OAuth token and client-secret fields instead.
 
 The `value` field must not be set for OAuth slots -- tokens are obtained through the connect flow or pasted by the human.
 

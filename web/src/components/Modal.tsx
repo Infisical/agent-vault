@@ -40,6 +40,7 @@ export default function Modal({ open, onClose, title, description, children, foo
             <h2 className="text-lg font-semibold text-text">{title}</h2>
             <button
               onClick={onClose}
+              aria-label="Close modal"
               className="w-8 h-8 flex items-center justify-center rounded-full text-text-dim hover:text-text hover:bg-bg transition-colors"
             >
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

@@ -5,20 +5,28 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/crypto"
+	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
 // fakeCredStore satisfies CredentialStore for tests.
 type fakeCredStore struct {
+	mu           sync.Mutex
 	brokerCfg    map[string]*store.BrokerConfig // vaultID → config
 	creds        map[string]*store.Credential   // key = vaultID+"|"+key
-	missKey      string                         // if set, GetCredential for this key returns nil/err
-	policy       UnmatchedHostPolicy            // unmatched-host policy returned by UnmatchedHostPolicy
-	brokerCfgErr error                          // if non-nil, GetBrokerConfig returns this error
+	oauth        map[string]*store.CredentialOAuth
+	missKey      string              // if set, GetCredential for this key returns nil/err
+	policy       UnmatchedHostPolicy // unmatched-host policy returned by UnmatchedHostPolicy
+	brokerCfgErr error               // if non-nil, GetBrokerConfig returns this error
 
 	getCredentialCalls int // call count — used by passthrough tests to assert no lookup
 }
@@ -27,6 +35,7 @@ func newFakeCredStore() *fakeCredStore {
 	return &fakeCredStore{
 		brokerCfg: map[string]*store.BrokerConfig{},
 		creds:     map[string]*store.Credential{},
+		oauth:     map[string]*store.CredentialOAuth{},
 		policy:    PolicyPassthrough,
 	}
 }
@@ -42,6 +51,8 @@ func (f *fakeCredStore) GetBrokerConfig(_ context.Context, vaultID string) (*sto
 	return c, nil
 }
 func (f *fakeCredStore) GetCredential(_ context.Context, vaultID, key string) (*store.Credential, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.getCredentialCalls++
 	if key == f.missKey {
 		return nil, errors.New("missing")
@@ -75,8 +86,65 @@ func (f *fakeCredStore) setCred(t *testing.T, key32 []byte, vaultID, key, plaint
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.creds[vaultID+"|"+key] = &store.Credential{
 		VaultID: vaultID, Key: key, Ciphertext: ct, Nonce: nonce,
+	}
+}
+
+func (f *fakeCredStore) GetCredentialOAuth(_ context.Context, vaultID, key string) (*store.CredentialOAuth, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	co, ok := f.oauth[vaultID+"|"+key]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	copy := *co
+	return &copy, nil
+}
+
+func (f *fakeCredStore) UpdateCredentialOAuthTokens(_ context.Context, vaultID, key string, accessCT, accessNonce, refreshCT, refreshNonce []byte, expiresAt *time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cred := f.creds[vaultID+"|"+key]
+	co := f.oauth[vaultID+"|"+key]
+	if cred == nil || co == nil {
+		return errors.New("not found")
+	}
+	cred.Ciphertext = accessCT
+	cred.Nonce = accessNonce
+	if len(refreshCT) > 0 {
+		co.RefreshTokenCT = refreshCT
+		co.RefreshTokenNonce = refreshNonce
+	}
+	co.TokenExpiresAt = expiresAt
+	return nil
+}
+
+func (f *fakeCredStore) UpdateCredentialOAuthError(_ context.Context, _, _, _ string) error {
+	return nil
+}
+
+func (f *fakeCredStore) setOAuth(t *testing.T, key32 []byte, vaultID, key, tokenURL string, refreshParams map[string]string) {
+	t.Helper()
+	refreshCT, refreshNonce, err := crypto.Encrypt([]byte("old-refresh"), key32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiresAt := time.Now().Add(-time.Minute)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.creds[vaultID+"|"+key].Type = "oauth"
+	f.oauth[vaultID+"|"+key] = &store.CredentialOAuth{
+		VaultID:           vaultID,
+		CredentialKey:     key,
+		TokenURL:          tokenURL,
+		ClientID:          "public-client",
+		RefreshParams:     refreshParams,
+		RefreshTokenCT:    refreshCT,
+		RefreshTokenNonce: refreshNonce,
+		TokenExpiresAt:    &expiresAt,
 	}
 }
 
@@ -105,6 +173,65 @@ func TestInject_BearerHappyPath(t *testing.T) {
 	}
 	if res.Headers["Authorization"] != "Bearer s3cret" {
 		t.Fatalf("got Authorization=%q", res.Headers["Authorization"])
+	}
+}
+
+func TestInjectOAuthRefreshParamsRemainSingleflightDeduplicated(t *testing.T) {
+	var refreshCalls atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refreshCalls.Add(1)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		if r.Form.Get("install_id") != "hey-cli" {
+			http.Error(w, "install_id is required", http.StatusBadRequest)
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"fresh-access","refresh_token":"fresh-refresh","expires_in":3600}`))
+	}))
+	defer provider.Close()
+	previousTokenClient := oauth.TokenClient
+	oauth.TokenClient = provider.Client()
+	t.Cleanup(func() { oauth.TokenClient = previousTokenClient })
+
+	key32 := make32(0x12)
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{Host: "api.example.com", Auth: broker.Auth{Type: "bearer", Token: "HEY_OAUTH"}}})
+	f.setCred(t, key32, "v1", "HEY_OAUTH", "stale-access")
+	f.setOAuth(t, key32, "v1", "HEY_OAUTH", provider.URL, map[string]string{"install_id": "hey-cli"})
+	p := NewStoreCredentialProvider(f, key32)
+	p.OAuthStore = f
+	p.Refresher = oauth.NewRefresher()
+
+	const callers = 8
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			result, err := p.Inject(context.Background(), "v1", "api.example.com", 0, "/")
+			if err == nil && result.Headers["Authorization"] != "Bearer fresh-access" {
+				err = errors.New("fresh access token was not injected")
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if refreshCalls.Load() != 1 {
+		t.Fatalf("refresh endpoint called %d times, want 1", refreshCalls.Load())
 	}
 }
 

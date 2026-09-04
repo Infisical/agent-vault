@@ -24,16 +24,17 @@ const oauthStateTTL = 10 * time.Minute
 const oauthSecretSentinel = "••••••••"
 
 type oauthConnectRequest struct {
-	Vault            string `json:"vault"`
-	Key              string `json:"key"`
-	AuthorizationURL string `json:"authorization_url"`
-	TokenURL         string `json:"token_url"`
-	ClientID         string `json:"client_id"`
-	ClientSecret     string `json:"client_secret,omitempty"`
-	Scopes           string `json:"scopes,omitempty"`
-	ScopeSeparator   string `json:"scope_separator,omitempty"`
-	DisablePKCE      bool   `json:"disable_pkce,omitempty"`
-	TokenAuthMethod  string `json:"token_auth_method,omitempty"`
+	Vault            string            `json:"vault"`
+	Key              string            `json:"key"`
+	AuthorizationURL string            `json:"authorization_url"`
+	TokenURL         string            `json:"token_url"`
+	ClientID         string            `json:"client_id"`
+	ClientSecret     string            `json:"client_secret,omitempty"`
+	RefreshParams    map[string]string `json:"refresh_params,omitempty"`
+	Scopes           string            `json:"scopes,omitempty"`
+	ScopeSeparator   string            `json:"scope_separator,omitempty"`
+	DisablePKCE      bool              `json:"disable_pkce,omitempty"`
+	TokenAuthMethod  string            `json:"token_auth_method,omitempty"`
 }
 
 func (s *Server) handleOAuthConnect(w http.ResponseWriter, r *http.Request) {
@@ -71,6 +72,10 @@ func (s *Server) handleOAuthConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ClientID == "" {
 		jsonError(w, http.StatusBadRequest, "\"client_id\" is required")
+		return
+	}
+	if err := oauth.ValidateRefreshParams(req.RefreshParams); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -118,17 +123,18 @@ func (s *Server) handleOAuthConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.SetCredentialOAuth(ctx, &store.CredentialOAuth{
-		VaultID:          ns.ID,
-		CredentialKey:    req.Key,
-		AuthorizationURL: req.AuthorizationURL,
-		TokenURL:         req.TokenURL,
-		ClientID:         req.ClientID,
-		ClientSecretCT:   clientSecretCT,
+		VaultID:           ns.ID,
+		CredentialKey:     req.Key,
+		AuthorizationURL:  req.AuthorizationURL,
+		TokenURL:          req.TokenURL,
+		ClientID:          req.ClientID,
+		ClientSecretCT:    clientSecretCT,
 		ClientSecretNonce: clientSecretNonce,
-		Scopes:           req.Scopes,
-		ScopeSeparator:   scopeSep,
-		DisablePKCE:      req.DisablePKCE,
-		TokenAuthMethod:  tokenAuthMethod,
+		RefreshParams:     req.RefreshParams,
+		Scopes:            req.Scopes,
+		ScopeSeparator:    scopeSep,
+		DisablePKCE:       req.DisablePKCE,
+		TokenAuthMethod:   tokenAuthMethod,
 	}); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to save OAuth configuration")
 		return
@@ -318,14 +324,15 @@ func (s *Server) handleOAuthStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 type oauthTokenUploadRequest struct {
-	Vault           string `json:"vault"`
-	Key             string `json:"key"`
-	AccessToken     string `json:"access_token,omitempty"`
-	RefreshToken    string `json:"refresh_token,omitempty"`
-	TokenURL        string `json:"token_url,omitempty"`
-	ClientID        string `json:"client_id,omitempty"`
-	ClientSecret    string `json:"client_secret,omitempty"`
-	TokenAuthMethod string `json:"token_auth_method,omitempty"`
+	Vault           string            `json:"vault"`
+	Key             string            `json:"key"`
+	AccessToken     string            `json:"access_token,omitempty"`
+	RefreshToken    string            `json:"refresh_token,omitempty"`
+	TokenURL        string            `json:"token_url,omitempty"`
+	ClientID        string            `json:"client_id,omitempty"`
+	ClientSecret    string            `json:"client_secret,omitempty"`
+	RefreshParams   map[string]string `json:"refresh_params,omitempty"`
+	TokenAuthMethod string            `json:"token_auth_method,omitempty"`
 }
 
 func (s *Server) handleOAuthTokenUpload(w http.ResponseWriter, r *http.Request) {
@@ -349,6 +356,10 @@ func (s *Server) handleOAuthTokenUpload(w http.ResponseWriter, r *http.Request) 
 		jsonError(w, http.StatusBadRequest, "\"access_token\" or \"refresh_token\" is required")
 		return
 	}
+	if err := oauth.ValidateRefreshParams(req.RefreshParams); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	ctx := r.Context()
 	ns, err := s.store.GetVault(ctx, req.Vault)
@@ -369,6 +380,7 @@ func (s *Server) handleOAuthTokenUpload(w http.ResponseWriter, r *http.Request) 
 	clientID := req.ClientID
 	clientSecret := req.ClientSecret
 	tokenAuthMethod := req.TokenAuthMethod
+	refreshParams := req.RefreshParams
 	if existing != nil {
 		if tokenURL == "" {
 			tokenURL = existing.TokenURL
@@ -380,6 +392,9 @@ func (s *Server) handleOAuthTokenUpload(w http.ResponseWriter, r *http.Request) 
 		// If the caller sends a different token_url, don't send stored secrets
 		// to the new endpoint (prevents client secret exfiltration).
 		providerUnchanged := tokenURL == existing.TokenURL
+		if refreshParams == nil && providerUnchanged {
+			refreshParams = existing.RefreshParams
+		}
 		if clientSecret == "" && len(existing.ClientSecretCT) > 0 && providerUnchanged {
 			cs, err := crypto.Decrypt(existing.ClientSecretCT, existing.ClientSecretNonce, s.encKey)
 			if err == nil {
@@ -405,6 +420,7 @@ func (s *Server) handleOAuthTokenUpload(w http.ResponseWriter, r *http.Request) 
 			ClientID:        clientID,
 			ClientSecret:    clientSecret,
 			RefreshToken:    req.RefreshToken,
+			RefreshParams:   refreshParams,
 			TokenAuthMethod: tokenAuthMethod,
 		})
 		if refreshErr != nil {
@@ -450,6 +466,7 @@ func (s *Server) handleOAuthTokenUpload(w http.ResponseWriter, r *http.Request) 
 			ClientID:          clientID,
 			ClientSecretCT:    clientSecretCT,
 			ClientSecretNonce: clientSecretNonce,
+			RefreshParams:     refreshParams,
 			TokenAuthMethod:   tokenAuthMethod,
 		}
 		if existing != nil {
@@ -509,7 +526,6 @@ func (s *Server) handleOAuthTokenUpload(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Create credential_oauth row if needed.
 	if existing == nil {
 		if tokenURL == "" {
 			tokenURL = "manual"
@@ -522,7 +538,11 @@ func (s *Server) handleOAuthTokenUpload(w http.ResponseWriter, r *http.Request) 
 			CredentialKey: req.Key,
 			TokenURL:      tokenURL,
 			ClientID:      clientID,
+			RefreshParams: refreshParams,
 		})
+	} else if req.RefreshParams != nil {
+		existing.RefreshParams = refreshParams
+		_ = s.store.SetCredentialOAuth(ctx, existing)
 	}
 
 	// Preserve existing token_expires_at when not uploading a new refresh token.
@@ -552,7 +572,6 @@ func (s *Server) redirectOAuthComplete(w http.ResponseWriter, r *http.Request, v
 	}
 	http.Redirect(w, r, u, http.StatusFound)
 }
-
 
 func isValidHTTPURL(raw string) bool {
 	u, err := url.Parse(raw)

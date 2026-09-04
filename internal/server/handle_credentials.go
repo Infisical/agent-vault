@@ -88,14 +88,15 @@ type credentialEntry struct {
 	LastRefreshedAt  *string `json:"last_refreshed_at,omitempty"`
 	LastRefreshError *string `json:"last_refresh_error,omitempty"`
 	// OAuth config (non-secret fields for edit form pre-fill)
-	AuthorizationURL *string `json:"authorization_url,omitempty"`
-	TokenURL         *string `json:"token_url,omitempty"`
-	ClientID         *string `json:"client_id,omitempty"`
-	Scopes           *string `json:"scopes,omitempty"`
-	ClientSecret     *string `json:"client_secret,omitempty"`
-	TokenAuthMethod  *string `json:"token_auth_method,omitempty"`
-	AccessToken      *string `json:"access_token,omitempty"`
-	RefreshToken     *string `json:"refresh_token,omitempty"`
+	AuthorizationURL *string           `json:"authorization_url,omitempty"`
+	TokenURL         *string           `json:"token_url,omitempty"`
+	ClientID         *string           `json:"client_id,omitempty"`
+	RefreshParams    map[string]string `json:"refresh_params,omitempty"`
+	Scopes           *string           `json:"scopes,omitempty"`
+	ClientSecret     *string           `json:"client_secret,omitempty"`
+	TokenAuthMethod  *string           `json:"token_auth_method,omitempty"`
+	AccessToken      *string           `json:"access_token,omitempty"`
+	RefreshToken     *string           `json:"refresh_token,omitempty"`
 	// Unavailable marks a dynamic-secret row whose lease could not be minted
 	// (e.g. the machine identity lacks lease permission). No value is exposed.
 	Unavailable bool `json:"unavailable,omitempty"`
@@ -283,6 +284,9 @@ func (s *Server) enrichOAuthEntry(ctx context.Context, vaultID string, entry *cr
 	}
 	if co.ClientID != "" {
 		entry.ClientID = &co.ClientID
+	}
+	if len(co.RefreshParams) > 0 {
+		entry.RefreshParams = co.RefreshParams
 	}
 	if co.Scopes != "" {
 		entry.Scopes = &co.Scopes
