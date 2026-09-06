@@ -1,6 +1,7 @@
 package mitm
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -363,6 +364,7 @@ func (p *Proxy) forwardRequest(
 			retryReq.ContentLength = 0
 			if retryResp, retryRTErr := p.upstream.RoundTrip(retryReq); retryRTErr == nil {
 				resp = retryResp
+				inject = retryInject
 				p.logger.Debug("oauth 401 retry succeeded",
 					slog.String("host", host),
 					slog.String("path", r.URL.Path),
@@ -387,6 +389,26 @@ func (p *Proxy) forwardRequest(
 				resp.ContentLength, p.maxResponseBytes))
 		emit(http.StatusBadGateway, "response_too_large")
 		return
+	}
+
+	if inject != nil && len(inject.Redactions) > 0 {
+		modified, rErr := p.applyResponseRedactions(resp, inject.Redactions)
+		if rErr != nil {
+			p.logger.Warn("response redaction failed closed",
+				slog.String("host", target),
+				slog.String("path", r.URL.Path),
+				slog.String("error", rErr.Error()),
+			)
+			brokercore.WriteProxyError(w, http.StatusBadGateway, "response_redaction_error",
+				"Upstream response body could not be safely redacted.")
+			emit(http.StatusBadGateway, "response_redaction_error")
+			return
+		}
+		if modified {
+			resp.Header.Del("Etag")
+			resp.Header.Del("Content-Md5")
+			resp.Header.Del("Digest")
+		}
 	}
 
 	for k, vv := range resp.Header {
@@ -424,6 +446,60 @@ func (p *Proxy) forwardRequest(
 	}
 
 	emit(resp.StatusCode, "")
+}
+
+func (p *Proxy) applyResponseRedactions(resp *http.Response, redactions []brokercore.ResolvedRedaction) (bool, error) {
+	if resp == nil || resp.Body == nil || resp.Body == http.NoBody || len(redactions) == 0 {
+		return false, nil
+	}
+	contentType := resp.Header.Get("Content-Type")
+	if strings.HasPrefix(strings.ToLower(contentType), "text/event-stream") {
+		return false, errors.New("unsupported streaming response")
+	}
+	if !brokercore.ShouldRedactResponseContentType(contentType) {
+		return false, nil
+	}
+	if ce := resp.Header.Get("Content-Encoding"); ce != "" {
+		return false, fmt.Errorf("unsupported encoded response: %s", ce)
+	}
+
+	limit := brokercore.MaxMaterializeBytes
+	if p.maxResponseBytes > 0 && p.maxResponseBytes < limit {
+		limit = p.maxResponseBytes
+	}
+	if resp.ContentLength > limit {
+		return false, fmt.Errorf("response length %d exceeds redaction materialization limit %d", resp.ContentLength, limit)
+	}
+
+	data, err := readResponseBodyForRedaction(resp.Body, limit)
+	if err != nil {
+		return false, err
+	}
+	next, newLen, modified, err := brokercore.ApplyResponseRedactions(
+		io.NopCloser(bytes.NewReader(data)),
+		int64(len(data)),
+		contentType,
+		redactions,
+	)
+	if err != nil {
+		return false, err
+	}
+	resp.Body = next
+	resp.ContentLength = newLen
+	resp.Header.Set("Content-Length", fmt.Sprintf("%d", newLen))
+	return modified, nil
+}
+
+func readResponseBodyForRedaction(body io.ReadCloser, limit int64) ([]byte, error) {
+	defer func() { _ = body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading response for redaction: %w", err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("response exceeds redaction materialization limit %d", limit)
+	}
+	return data, nil
 }
 
 // knownAPIKeyHeaders are non-Authorization headers that commonly carry
