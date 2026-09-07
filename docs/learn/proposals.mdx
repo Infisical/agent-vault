@@ -12,7 +12,7 @@ Each `Proposal` may include:
 - **Credential slots**: [Credential](/learn/credentials) operations covering keys the agent needs a human to supply, values the agent wants to store back, or credentials to delete. For example, a credential slot might ask the human to provide a `STRIPE_KEY` at approval time.
 - **Messages**: A developer-facing `message` and a human-facing `user_message` shown on the browser approval page.
 
-When an agent needs access to a new service, it creates a proposal and shares an approval link in chat. If SMTP is configured, the link is also emailed to vault members. You click the link, provide any required [credentials](/learn/credentials), and approve or deny. Once approved, the agent picks up the new credentials and continues its work.
+When an agent needs access to a new service, it creates a proposal and shares an approval link in chat. If SMTP is configured, the link is also emailed to vault members, and if an [outbound webhook](/self-hosting/environment-variables#outbound-webhook-notifications) is configured, it's posted there too — useful for teams that want proposals routed to a Slack/Discord channel instead of (or in addition to) email. You click the link, provide any required [credentials](/learn/credentials), and approve or deny. Once approved, the agent picks up the new credentials and continues its work.
 
 ## Lifecycle
 

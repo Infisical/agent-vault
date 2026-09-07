@@ -931,6 +931,9 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	// Email
 	mux.HandleFunc("POST /v1/admin/email/test", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleEmailTest)))))
 
+	// Outbound webhook notifications
+	mux.HandleFunc("POST /v1/admin/notify/webhook/test", s.requireInitialized(s.requireAuth(actorAuthed(s.handleNotifyWebhookTest))))
+
 	mux.HandleFunc("POST /v1/auth/logout", s.requireInitialized(ipAuth(s.handleLogout)))
 
 	// React app static assets (Vite outputs to /assets/ with base "/")
