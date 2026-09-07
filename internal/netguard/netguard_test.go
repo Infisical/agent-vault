@@ -1,9 +1,62 @@
 package netguard
 
 import (
+	"context"
+	"errors"
 	"net"
 	"testing"
 )
+
+func TestSafeDialContextReturnsTypedPolicyError(t *testing.T) {
+	tests := []struct {
+		name         string
+		address      string
+		allowPrivate bool
+		wantReason   BlockReason
+		wantHost     string
+		wantIP       string
+	}{
+		{
+			name:         "private range",
+			address:      "127.0.0.1:443",
+			allowPrivate: false,
+			wantReason:   BlockReasonPrivateRange,
+			wantHost:     "127.0.0.1",
+			wantIP:       "127.0.0.1",
+		},
+		{
+			name:         "metadata endpoint",
+			address:      "169.254.169.254:80",
+			allowPrivate: true,
+			wantReason:   BlockReasonMetadata,
+			wantHost:     "169.254.169.254",
+			wantIP:       "169.254.169.254",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := SafeDialContext(tt.allowPrivate)(context.Background(), "tcp", tt.address)
+			if err == nil {
+				t.Fatal("SafeDialContext() error = nil, want a network-policy error")
+			}
+
+			var blockedErr *BlockedAddressError
+			if !errors.As(err, &blockedErr) {
+				t.Fatalf("SafeDialContext() error type = %T, want *BlockedAddressError", err)
+			}
+			if blockedErr.Reason != tt.wantReason {
+				t.Errorf("BlockedAddressError.Reason = %q, want %q", blockedErr.Reason, tt.wantReason)
+			}
+			if blockedErr.Host != tt.wantHost {
+				t.Errorf("BlockedAddressError.Host = %q, want %q", blockedErr.Host, tt.wantHost)
+			}
+			if got := blockedErr.IP.String(); got != tt.wantIP {
+				t.Errorf("BlockedAddressError.IP = %q, want %q", got, tt.wantIP)
+			}
+		})
+	}
+}
 
 func TestIsBlockedIP_AlwaysBlocked(t *testing.T) {
 	// IMDS endpoints are blocked regardless of policy (allowlist does NOT bypass).

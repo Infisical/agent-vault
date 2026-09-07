@@ -2,14 +2,19 @@ package mitm
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"encoding/json"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
+	"github.com/Infisical/agent-vault/internal/netguard"
 )
 
 // fakeConn implements net.Conn for testing. Only SetReadDeadline is used
@@ -19,12 +24,12 @@ type fakeConn struct {
 	io.Writer
 }
 
-func (fakeConn) Close() error                       { return nil }
-func (fakeConn) LocalAddr() net.Addr                { return nil }
-func (fakeConn) RemoteAddr() net.Addr               { return nil }
-func (fakeConn) SetDeadline(time.Time) error        { return nil }
-func (fakeConn) SetReadDeadline(time.Time) error    { return nil }
-func (fakeConn) SetWriteDeadline(time.Time) error   { return nil }
+func (fakeConn) Close() error                     { return nil }
+func (fakeConn) LocalAddr() net.Addr              { return nil }
+func (fakeConn) RemoteAddr() net.Addr             { return nil }
+func (fakeConn) SetDeadline(time.Time) error      { return nil }
+func (fakeConn) SetReadDeadline(time.Time) error  { return nil }
+func (fakeConn) SetWriteDeadline(time.Time) error { return nil }
 
 func maskedTextFrame(t *testing.T, text string) []byte {
 	t.Helper()
@@ -63,6 +68,44 @@ func readFrameText(t *testing.T, r io.Reader) string {
 		t.Fatalf("readWebSocketTextFrame: %v", err)
 	}
 	return text
+}
+
+func TestForwardWebSocketReportsNetworkPolicyBlock(t *testing.T) {
+	p := &Proxy{upstream: &http.Transport{
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, &netguard.BlockedAddressError{
+				Host:   "private.example",
+				IP:     net.ParseIP("10.0.0.1"),
+				Reason: netguard.BlockReasonPrivateRange,
+			}
+		},
+	}}
+	r := httptest.NewRequest(http.MethodGet, "http://broker.test/socket", nil)
+	outReq := httptest.NewRequest(http.MethodGet, "http://private.example/socket", nil)
+	w := httptest.NewRecorder()
+
+	var emittedStatus int
+	var emittedCode string
+	p.forwardWebSocket(w, r, outReq, nil, func(status int, code string) {
+		emittedStatus = status
+		emittedCode = code
+	})
+
+	resp := w.Result()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
+	if body["error"] != "network_policy_blocked" {
+		t.Errorf("response error = %q, want network_policy_blocked", body["error"])
+	}
+	if emittedStatus != http.StatusBadGateway || emittedCode != "network_policy_blocked" {
+		t.Errorf("emitted status/code = %d/%q, want 502/network_policy_blocked", emittedStatus, emittedCode)
+	}
 }
 
 func TestCopyWSFramesSubstitutesTextFrame(t *testing.T) {
