@@ -537,8 +537,10 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Apply atomically.
-	if err := s.store.ApplyProposal(ctx, ns.ID, cs.ID, string(mergedJSON), finalCredentials, deleteCredentialKeys, oauthConfigs); err != nil {
+	// Apply atomically. Attributed to whoever approved the proposal, so any
+	// credential value it overwrites is archived under their identity.
+	actorType, actorID := s.actorTypeAndID(r)
+	if err := s.store.ApplyProposal(ctx, ns.ID, cs.ID, string(mergedJSON), finalCredentials, deleteCredentialKeys, oauthConfigs, actorType, actorID); err != nil {
 		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to apply proposal: %v", err))
 		return
 	}

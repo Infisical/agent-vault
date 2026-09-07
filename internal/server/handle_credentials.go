@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -61,6 +63,8 @@ func (s *Server) handleCredentialsSet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	actorType, actorID := s.actorTypeAndID(r)
+
 	var setKeys []string
 	for key, value := range req.Credentials {
 		ciphertext, nonce, err := crypto.Encrypt([]byte(value), s.encKey)
@@ -68,7 +72,7 @@ func (s *Server) handleCredentialsSet(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, http.StatusInternalServerError, "Encryption failed")
 			return
 		}
-		if _, err := s.store.SetCredential(ctx, ns.ID, key, ciphertext, nonce); err != nil {
+		if _, err := s.store.SetCredential(ctx, ns.ID, key, ciphertext, nonce, actorType, actorID); err != nil {
 			jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to set credential %q", key))
 			return
 		}
@@ -389,4 +393,150 @@ func (s *Server) listCredentialKeys(ctx context.Context, vaultID string) []strin
 		keys[i] = cred.Key
 	}
 	return keys
+}
+
+type credentialVersionEntry struct {
+	Version   int    `json:"version"`
+	ActorType string `json:"actor_type,omitempty"`
+	ActorID   string `json:"actor_id,omitempty"`
+	CreatedAt string `json:"created_at"`
+	Value     string `json:"value,omitempty"`
+}
+
+type credentialHistoryResponse struct {
+	Key      string                   `json:"key"`
+	Versions []credentialVersionEntry `json:"versions"`
+}
+
+// handleCredentialHistory lists archived versions of a built-in credential,
+// most recent first. Gated at member+ for the whole endpoint (not just
+// ?reveal=true) — even the actor/timestamp metadata is sensitive, so this
+// follows credential list's --reveal rule rather than its default
+// any-vault-access rule. Values are included only when reveal=true.
+func (s *Server) handleCredentialHistory(w http.ResponseWriter, r *http.Request) {
+	vault := r.URL.Query().Get("vault")
+	if vault == "" {
+		vault = store.DefaultVault
+	}
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		jsonError(w, http.StatusBadRequest, "key query parameter is required")
+		return
+	}
+	reveal := r.URL.Query().Get("reveal") == "true"
+
+	ctx := r.Context()
+
+	ns, err := s.store.GetVault(ctx, vault)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", vault))
+		return
+	}
+
+	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
+		return
+	}
+
+	if !s.assertBuiltinCredentialStore(w, ctx, ns.ID, ns.Name) {
+		return
+	}
+
+	versions, err := s.store.ListCredentialVersions(ctx, ns.ID, key)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to list credential history")
+		return
+	}
+
+	entries := make([]credentialVersionEntry, len(versions))
+	for i, v := range versions {
+		entries[i] = credentialVersionEntry{
+			Version:   v.Version,
+			ActorType: v.ActorType,
+			ActorID:   v.ActorID,
+			CreatedAt: v.CreatedAt.Format(time.RFC3339),
+		}
+		if reveal {
+			plaintext, err := crypto.Decrypt(v.Ciphertext, v.Nonce, s.encKey)
+			if err != nil {
+				jsonError(w, http.StatusInternalServerError, "Failed to decrypt credential version")
+				return
+			}
+			entries[i].Value = string(plaintext)
+		}
+	}
+
+	jsonOK(w, credentialHistoryResponse{Key: key, Versions: entries})
+}
+
+type credentialRollbackRequest struct {
+	Vault   string `json:"vault"`
+	Key     string `json:"key"`
+	Version int    `json:"version"`
+}
+
+type credentialRollbackResponse struct {
+	Key     string `json:"key"`
+	Version int    `json:"version"`
+}
+
+// handleCredentialRollback restores an archived version as the current
+// value of a built-in credential. This is implemented as a plain
+// SetCredential call with the archived ciphertext/nonce — whatever is
+// currently live gets archived as a new version before the rollback target
+// becomes current (see SQLStore.archiveCredentialVersionTx), so rollback is
+// itself just another recorded version, never a destructive rewrite.
+func (s *Server) handleCredentialRollback(w http.ResponseWriter, r *http.Request) {
+	var req credentialRollbackRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if req.Vault == "" {
+		req.Vault = store.DefaultVault
+	}
+	if req.Key == "" {
+		jsonError(w, http.StatusBadRequest, "key is required")
+		return
+	}
+	if req.Version <= 0 {
+		jsonError(w, http.StatusBadRequest, "version must be a positive integer")
+		return
+	}
+
+	ctx := r.Context()
+
+	ns, err := s.store.GetVault(ctx, req.Vault)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", req.Vault))
+		return
+	}
+
+	// Rollback is a write, same rule as credential set/delete.
+	if _, err := s.requireVaultMember(w, r, ns.ID); err != nil {
+		return
+	}
+
+	if !s.assertBuiltinCredentialStore(w, ctx, ns.ID, ns.Name) {
+		return
+	}
+
+	target, err := s.store.GetCredentialVersion(ctx, ns.ID, req.Key, req.Version)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			jsonError(w, http.StatusNotFound, fmt.Sprintf("Version %d of credential %q not found", req.Version, req.Key))
+			return
+		}
+		jsonError(w, http.StatusInternalServerError, "Failed to load credential version")
+		return
+	}
+
+	actorType, actorID := s.actorTypeAndID(r)
+	if _, err := s.store.SetCredential(ctx, ns.ID, req.Key, target.Ciphertext, target.Nonce, actorType, actorID); err != nil {
+		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to roll back credential %q", req.Key))
+		return
+	}
+
+	actor, _ := s.actorFromSession(r.Context(), sessionFromContext(r.Context()))
+	s.captureEvent(r, "av.credential-rollback", actor, nil)
+	jsonOK(w, credentialRollbackResponse{Key: req.Key, Version: req.Version})
 }

@@ -40,6 +40,29 @@ func TestCommandsRegistered(t *testing.T) {
 	}
 }
 
+func TestCredentialSubcommandsRegistered(t *testing.T) {
+	vaultCmd := findSubcommand(rootCmd, "vault")
+	if vaultCmd == nil {
+		t.Fatal("vault command not found")
+	}
+	credCmd := findSubcommand(vaultCmd, "credential")
+	if credCmd == nil {
+		t.Fatal("credential command not found")
+	}
+
+	registered := make(map[string]bool)
+	for _, c := range credCmd.Commands() {
+		registered[c.Name()] = true
+	}
+
+	expected := []string{"list", "get", "set", "delete", "history", "rollback"}
+	for _, name := range expected {
+		if !registered[name] {
+			t.Errorf("expected credential subcommand %q to be registered, but it was not", name)
+		}
+	}
+}
+
 func TestCASubcommandsRegistered(t *testing.T) {
 	caCmd := findSubcommand(rootCmd, "ca")
 	if caCmd == nil {

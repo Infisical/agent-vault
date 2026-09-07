@@ -59,18 +59,18 @@ type agentVaultJSON struct {
 
 // Server is the Agent Vault HTTP server.
 type Server struct {
-	httpServer  *http.Server
-	store       Store
-	encKey      []byte // 32-byte encryption key, held in memory while running
-	notifier    *notify.Notifier
-	initialized    bool                // true when at least one owner account exists
-	lastInitCheck  atomic.Int64        // unix-millis of last DB check for initialization (throttle)
-	baseURL     string              // externally-reachable base URL (e.g. "https://sb.example.com")
-	skillCLI    []byte              // embedded CLI skill content (served at GET /v1/skills/cli)
-	mitm        *mitm.Proxy         // transparent MITM proxy; nil only when --mitm-port 0
-	logger      *slog.Logger        // structured logger for per-request observability
-	rateLimit   *ratelimit.Registry // tiered rate limiter; shared with the MITM ingress
-	logSink     requestlog.Sink     // per-request persistence sink; never nil (Nop default)
+	httpServer    *http.Server
+	store         Store
+	encKey        []byte // 32-byte encryption key, held in memory while running
+	notifier      *notify.Notifier
+	initialized   bool                // true when at least one owner account exists
+	lastInitCheck atomic.Int64        // unix-millis of last DB check for initialization (throttle)
+	baseURL       string              // externally-reachable base URL (e.g. "https://sb.example.com")
+	skillCLI      []byte              // embedded CLI skill content (served at GET /v1/skills/cli)
+	mitm          *mitm.Proxy         // transparent MITM proxy; nil only when --mitm-port 0
+	logger        *slog.Logger        // structured logger for per-request observability
+	rateLimit     *ratelimit.Registry // tiered rate limiter; shared with the MITM ingress
+	logSink       requestlog.Sink     // per-request persistence sink; never nil (Nop default)
 	// touchCache short-circuits per-request session-touch writes. With
 	// db.SetMaxOpenConns(1), every UPDATE — even a no-op — opens the
 	// single WAL writer slot. Caching the last-touch wall-clock per
@@ -297,10 +297,12 @@ type Store interface {
 	ActivateUser(ctx context.Context, userID string) error
 
 	// Credentials
-	SetCredential(ctx context.Context, vaultID, key string, ciphertext, nonce []byte) (*store.Credential, error)
+	SetCredential(ctx context.Context, vaultID, key string, ciphertext, nonce []byte, actorType, actorID string) (*store.Credential, error)
 	GetCredential(ctx context.Context, vaultID, key string) (*store.Credential, error)
 	ListCredentials(ctx context.Context, vaultID string) ([]store.Credential, error)
 	DeleteCredential(ctx context.Context, vaultID, key string) error
+	ListCredentialVersions(ctx context.Context, vaultID, key string) ([]store.CredentialVersion, error)
+	GetCredentialVersion(ctx context.Context, vaultID, key string, version int) (*store.CredentialVersion, error)
 
 	// OAuth credentials
 	GetCredentialOAuth(ctx context.Context, vaultID, key string) (*store.CredentialOAuth, error)
@@ -326,7 +328,7 @@ type Store interface {
 	CountPendingProposals(ctx context.Context, vaultID string) (int, error)
 	UpdateProposalStatus(ctx context.Context, vaultID string, id int, status, reviewNote string) error
 	GetProposalCredentials(ctx context.Context, vaultID string, proposalID int) (map[string]store.EncryptedCredential, error)
-	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []store.OAuthCredentialConfig) error
+	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []store.OAuthCredentialConfig, actorType, actorID string) error
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
 
 	// User invites (instance-level)
@@ -500,6 +502,23 @@ func (s *Server) actorFromSession(ctx context.Context, sess *store.Session) (*Ac
 		return &Actor{ID: agent.ID, Type: "agent", Role: agent.Role, Agent: agent}, nil
 	}
 	return nil, fmt.Errorf("session has no actor")
+}
+
+// actorTypeAndID resolves the request's session to an (actorType, actorID)
+// pair suitable for attribution on a CredentialVersion row. Falls back to
+// ("session", sess.ID) for scoped session tokens with no attached user/agent
+// record, and ("", "") if there's no session at all (should not normally
+// happen on an authenticated route, but versioning must never block the
+// write it's attached to).
+func (s *Server) actorTypeAndID(r *http.Request) (actorType, actorID string) {
+	sess := sessionFromContext(r.Context())
+	if actor, err := s.actorFromSession(r.Context(), sess); err == nil && actor != nil {
+		return actor.Type, actor.ID
+	}
+	if sess != nil {
+		return "session", sess.ID
+	}
+	return "", ""
 }
 
 // requireActor checks that the request is from any authenticated actor (user or agent).
@@ -822,6 +841,8 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(s.handleCredentialsList))))
 	mux.HandleFunc("POST /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleCredentialsSet)))))
 	mux.HandleFunc("DELETE /v1/credentials", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleCredentialsDelete)))))
+	mux.HandleFunc("GET /v1/credentials/history", s.requireInitialized(s.requireAuth(actorAuthed(s.handleCredentialHistory))))
+	mux.HandleFunc("POST /v1/credentials/rollback", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleCredentialRollback)))))
 
 	// OAuth credential flow
 	mux.HandleFunc("POST /v1/credentials/oauth/connect", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleOAuthConnect)))))

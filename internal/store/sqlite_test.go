@@ -231,7 +231,7 @@ func TestCredentialCRUD(t *testing.T) {
 	nonce := []byte("random-nonce")
 
 	// Set
-	cred, err := s.SetCredential(ctx, ns.ID, "API_KEY", ct, nonce)
+	cred, err := s.SetCredential(ctx, ns.ID, "API_KEY", ct, nonce, "user", "user-1")
 	if err != nil {
 		t.Fatalf("SetCredential: %v", err)
 	}
@@ -274,8 +274,8 @@ func TestSetCredentialUpsert(t *testing.T) {
 	ns, _ := s.CreateVault(ctx, "ns")
 
 	// Set twice with same key, should upsert.
-	s.SetCredential(ctx, ns.ID, "KEY", []byte("v1"), []byte("n1"))
-	s.SetCredential(ctx, ns.ID, "KEY", []byte("v2"), []byte("n2"))
+	s.SetCredential(ctx, ns.ID, "KEY", []byte("v1"), []byte("n1"), "user", "user-1")
+	s.SetCredential(ctx, ns.ID, "KEY", []byte("v2"), []byte("n2"), "user", "user-1")
 
 	got, err := s.GetCredential(ctx, ns.ID, "KEY")
 	if err != nil {
@@ -286,13 +286,241 @@ func TestSetCredentialUpsert(t *testing.T) {
 	}
 }
 
+// --- Credential version history ---
+
+func TestSetCredentialArchivesPreviousVersionOnOverwrite(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	ns, _ := s.CreateVault(ctx, "history-test")
+
+	if _, err := s.SetCredential(ctx, ns.ID, "KEY", []byte("v1"), []byte("n1"), "user", "user-1"); err != nil {
+		t.Fatalf("SetCredential v1: %v", err)
+	}
+
+	// A brand-new key has nothing to archive yet.
+	versions, err := s.ListCredentialVersions(ctx, ns.ID, "KEY")
+	if err != nil {
+		t.Fatalf("ListCredentialVersions: %v", err)
+	}
+	if len(versions) != 0 {
+		t.Fatalf("expected no archived versions before any overwrite, got %d", len(versions))
+	}
+
+	if _, err := s.SetCredential(ctx, ns.ID, "KEY", []byte("v2"), []byte("n2"), "agent", "agent-1"); err != nil {
+		t.Fatalf("SetCredential v2: %v", err)
+	}
+
+	versions, err = s.ListCredentialVersions(ctx, ns.ID, "KEY")
+	if err != nil {
+		t.Fatalf("ListCredentialVersions: %v", err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("expected 1 archived version after one overwrite, got %d", len(versions))
+	}
+	v := versions[0]
+	if v.Version != 1 || string(v.Ciphertext) != "v1" || string(v.Nonce) != "n1" {
+		t.Fatalf("expected archived v1 (version 1), got version=%d ciphertext=%q nonce=%q", v.Version, v.Ciphertext, v.Nonce)
+	}
+	// Attributed to whoever performed the overwrite (the second SetCredential
+	// call), not whoever originally created the value being archived.
+	if v.ActorType != "agent" || v.ActorID != "agent-1" {
+		t.Fatalf("expected archived version to be attributed to the actor who overwrote it (agent/agent-1), got %s/%s", v.ActorType, v.ActorID)
+	}
+
+	// Current value is still the live row, unaffected by archiving.
+	current, err := s.GetCredential(ctx, ns.ID, "KEY")
+	if err != nil {
+		t.Fatalf("GetCredential: %v", err)
+	}
+	if string(current.Ciphertext) != "v2" {
+		t.Fatalf("expected current value v2, got %q", current.Ciphertext)
+	}
+}
+
+func TestListCredentialVersionsOrderedMostRecentFirst(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	ns, _ := s.CreateVault(ctx, "history-order-test")
+
+	for i, v := range []string{"v1", "v2", "v3", "v4"} {
+		if _, err := s.SetCredential(ctx, ns.ID, "KEY", []byte(v), []byte("n"), "user", "user-1"); err != nil {
+			t.Fatalf("SetCredential #%d: %v", i, err)
+		}
+	}
+
+	versions, err := s.ListCredentialVersions(ctx, ns.ID, "KEY")
+	if err != nil {
+		t.Fatalf("ListCredentialVersions: %v", err)
+	}
+	// v1, v2, v3 were archived (v4 is still current); most recent (v3) first.
+	if len(versions) != 3 {
+		t.Fatalf("expected 3 archived versions, got %d", len(versions))
+	}
+	wantOrder := []string{"v3", "v2", "v1"}
+	for i, want := range wantOrder {
+		if string(versions[i].Ciphertext) != want {
+			t.Fatalf("versions[%d]: expected ciphertext %q, got %q", i, want, versions[i].Ciphertext)
+		}
+	}
+	if versions[0].Version != 3 || versions[2].Version != 1 {
+		t.Fatalf("expected version numbers 3..1 descending, got %d..%d", versions[0].Version, versions[2].Version)
+	}
+}
+
+func TestGetCredentialVersionNotFound(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	ns, _ := s.CreateVault(ctx, "history-notfound-test")
+
+	_, err := s.GetCredentialVersion(ctx, ns.ID, "NOPE", 1)
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows for a version that was never recorded, got %v", err)
+	}
+}
+
+func TestCredentialHistoryMaxVersionsPrunesOldest(t *testing.T) {
+	t.Setenv("AGENT_VAULT_CREDENTIAL_HISTORY_MAX_VERSIONS", "2")
+
+	s := openTestDB(t)
+	ctx := context.Background()
+	ns, _ := s.CreateVault(ctx, "history-prune-test")
+
+	for _, v := range []string{"v1", "v2", "v3", "v4"} {
+		if _, err := s.SetCredential(ctx, ns.ID, "KEY", []byte(v), []byte("n"), "", ""); err != nil {
+			t.Fatalf("SetCredential: %v", err)
+		}
+	}
+
+	versions, err := s.ListCredentialVersions(ctx, ns.ID, "KEY")
+	if err != nil {
+		t.Fatalf("ListCredentialVersions: %v", err)
+	}
+	// v1, v2, v3 were archived, capped to the 2 most recent: v3, v2.
+	if len(versions) != 2 {
+		t.Fatalf("expected pruning to cap history at 2 versions, got %d", len(versions))
+	}
+	if string(versions[0].Ciphertext) != "v3" || string(versions[1].Ciphertext) != "v2" {
+		t.Fatalf("expected the 2 most recent versions (v3, v2) to survive pruning, got %q, %q",
+			versions[0].Ciphertext, versions[1].Ciphertext)
+	}
+	// Version *numbers* are never reused/renumbered by pruning, even though
+	// the row for version 1 is gone.
+	if versions[0].Version != 3 || versions[1].Version != 2 {
+		t.Fatalf("expected surviving version numbers 3 and 2, got %d and %d", versions[0].Version, versions[1].Version)
+	}
+}
+
+func TestCredentialHistoryMaxVersionsZeroDisablesPruning(t *testing.T) {
+	t.Setenv("AGENT_VAULT_CREDENTIAL_HISTORY_MAX_VERSIONS", "0")
+
+	s := openTestDB(t)
+	ctx := context.Background()
+	ns, _ := s.CreateVault(ctx, "history-unbounded-test")
+
+	for i := 0; i < 15; i++ {
+		if _, err := s.SetCredential(ctx, ns.ID, "KEY", []byte{byte(i)}, []byte("n"), "", ""); err != nil {
+			t.Fatalf("SetCredential #%d: %v", i, err)
+		}
+	}
+
+	versions, err := s.ListCredentialVersions(ctx, ns.ID, "KEY")
+	if err != nil {
+		t.Fatalf("ListCredentialVersions: %v", err)
+	}
+	if len(versions) != 14 {
+		t.Fatalf("expected all 14 archived versions to survive with pruning disabled, got %d", len(versions))
+	}
+}
+
+func TestApplyProposalArchivesOverwrittenCredential(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	ns, _ := s.CreateVault(ctx, "apply-history-test")
+
+	if _, err := s.SetCredential(ctx, ns.ID, "STRIPE_KEY", []byte("old-enc"), []byte("old-nonce"), "user", "owner-1"); err != nil {
+		t.Fatalf("SetCredential: %v", err)
+	}
+
+	s.CreateProposal(ctx, ns.ID, "s1",
+		`[{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`,
+		`[{"key":"STRIPE_KEY"}]`, "rotate key", "", nil)
+
+	creds := map[string]EncryptedCredential{
+		"STRIPE_KEY": {Ciphertext: []byte("new-enc"), Nonce: []byte("new-nonce")},
+	}
+	if err := s.ApplyProposal(ctx, ns.ID, 1, `[{"host":"api.stripe.com","auth":{"type":"bearer","token":"STRIPE_KEY"}}]`, creds, nil, nil, "user", "approver-1"); err != nil {
+		t.Fatalf("ApplyProposal: %v", err)
+	}
+
+	versions, err := s.ListCredentialVersions(ctx, ns.ID, "STRIPE_KEY")
+	if err != nil {
+		t.Fatalf("ListCredentialVersions: %v", err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("expected the pre-existing value to be archived by proposal apply, got %d versions", len(versions))
+	}
+	if string(versions[0].Ciphertext) != "old-enc" {
+		t.Fatalf("expected archived version to hold the pre-proposal value, got %q", versions[0].Ciphertext)
+	}
+	// Attributed to whoever approved the proposal, not whoever originally set it.
+	if versions[0].ActorType != "user" || versions[0].ActorID != "approver-1" {
+		t.Fatalf("expected archived version attributed to the approving actor (user/approver-1), got %s/%s",
+			versions[0].ActorType, versions[0].ActorID)
+	}
+}
+
+func TestRollbackViaSetCredentialArchivesCurrentAndRestoresPrior(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	ns, _ := s.CreateVault(ctx, "rollback-test")
+
+	if _, err := s.SetCredential(ctx, ns.ID, "KEY", []byte("v1"), []byte("n1"), "user", "user-1"); err != nil {
+		t.Fatalf("SetCredential v1: %v", err)
+	}
+	if _, err := s.SetCredential(ctx, ns.ID, "KEY", []byte("v2-bad"), []byte("n2"), "agent", "agent-1"); err != nil {
+		t.Fatalf("SetCredential v2: %v", err)
+	}
+
+	// Simulate a rollback: fetch version 1 and set it as current again —
+	// this is exactly what the /v1/credentials/rollback handler does.
+	target, err := s.GetCredentialVersion(ctx, ns.ID, "KEY", 1)
+	if err != nil {
+		t.Fatalf("GetCredentialVersion: %v", err)
+	}
+	if _, err := s.SetCredential(ctx, ns.ID, "KEY", target.Ciphertext, target.Nonce, "user", "user-2"); err != nil {
+		t.Fatalf("SetCredential (rollback): %v", err)
+	}
+
+	current, err := s.GetCredential(ctx, ns.ID, "KEY")
+	if err != nil {
+		t.Fatalf("GetCredential: %v", err)
+	}
+	if string(current.Ciphertext) != "v1" {
+		t.Fatalf("expected rollback to restore v1 as current, got %q", current.Ciphertext)
+	}
+
+	// The bad value (v2-bad) must not have been lost — it's archived as
+	// version 2, so rollback is never destructive.
+	versions, err := s.ListCredentialVersions(ctx, ns.ID, "KEY")
+	if err != nil {
+		t.Fatalf("ListCredentialVersions: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("expected 2 archived versions after the rollback (v1, then v2-bad), got %d", len(versions))
+	}
+	if versions[0].Version != 2 || string(versions[0].Ciphertext) != "v2-bad" {
+		t.Fatalf("expected the rollback to archive v2-bad as version 2, got version=%d value=%q",
+			versions[0].Version, versions[0].Ciphertext)
+	}
+}
+
 func TestCascadeDeleteVaultRemovesCredentials(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 
 	ns, _ := s.CreateVault(ctx, "cascade")
-	s.SetCredential(ctx, ns.ID, "S1", []byte("a"), []byte("b"))
-	s.SetCredential(ctx, ns.ID, "S2", []byte("c"), []byte("d"))
+	s.SetCredential(ctx, ns.ID, "S1", []byte("a"), []byte("b"), "", "")
+	s.SetCredential(ctx, ns.ID, "S2", []byte("c"), []byte("d"), "", "")
 
 	if err := s.DeleteVault(ctx, "cascade"); err != nil {
 		t.Fatal(err)
@@ -1354,7 +1582,7 @@ func TestApplyProposal(t *testing.T) {
 		"STRIPE_KEY": {Ciphertext: []byte("real-enc"), Nonce: []byte("real-nonce")},
 	}
 
-	err := s.ApplyProposal(ctx, ns.ID, 1, mergedServices, creds, nil, nil)
+	err := s.ApplyProposal(ctx, ns.ID, 1, mergedServices, creds, nil, nil, "user", "user-1")
 	if err != nil {
 		t.Fatalf("ApplyProposal: %v", err)
 	}
@@ -1391,7 +1619,7 @@ func TestApplyProposalWithCredentialDeletion(t *testing.T) {
 	ns, _ := s.CreateVault(ctx, "apply-delete-test")
 
 	// Pre-seed a credential that will be deleted.
-	s.SetCredential(ctx, ns.ID, "old_key", []byte("old-enc"), []byte("old-nonce"))
+	s.SetCredential(ctx, ns.ID, "old_key", []byte("old-enc"), []byte("old-nonce"), "", "")
 
 	// Create a proposal.
 	s.CreateProposal(ctx, ns.ID, "s1",
@@ -1403,7 +1631,7 @@ func TestApplyProposalWithCredentialDeletion(t *testing.T) {
 		"new_key": {Ciphertext: []byte("new-enc"), Nonce: []byte("new-nonce")},
 	}
 
-	err := s.ApplyProposal(ctx, ns.ID, 1, mergedServices, creds, []string{"old_key"}, nil)
+	err := s.ApplyProposal(ctx, ns.ID, 1, mergedServices, creds, []string{"old_key"}, nil, "user", "user-1")
 	if err != nil {
 		t.Fatalf("ApplyProposal with delete: %v", err)
 	}
@@ -1448,7 +1676,6 @@ func TestCascadeDeleteVaultRemovesProposals(t *testing.T) {
 		t.Fatalf("expected 0 proposal credentials after cascade delete, got %d", len(csCreds))
 	}
 }
-
 
 // --- UUID ---
 
@@ -1676,7 +1903,6 @@ func TestDeleteUserSessions(t *testing.T) {
 		t.Fatalf("expected sql.ErrNoRows after deleting user sessions, got %v", err)
 	}
 }
-
 
 func TestDeleteUserCascadesGrants(t *testing.T) {
 	s := openTestDB(t)
@@ -1954,7 +2180,6 @@ func TestGetSessionBackwardCompat(t *testing.T) {
 		t.Fatalf("expected empty agent_id for old session, got %q", fetched.AgentID)
 	}
 }
-
 
 func TestDeleteAgentTokens(t *testing.T) {
 	s := openTestDB(t)
@@ -2471,7 +2696,7 @@ func TestSetVaultExternalStoreOverwritesBuiltin(t *testing.T) {
 		t.Fatalf("CreateVault: %v", err)
 	}
 	// Seed built-in credentials that the connect should overwrite.
-	if _, err := s.SetCredential(ctx, v.ID, "OLD_KEY", []byte("c-old"), []byte("n-old")); err != nil {
+	if _, err := s.SetCredential(ctx, v.ID, "OLD_KEY", []byte("c-old"), []byte("n-old"), "", ""); err != nil {
 		t.Fatalf("SetCredential: %v", err)
 	}
 
