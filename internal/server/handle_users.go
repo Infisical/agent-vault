@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -571,9 +572,9 @@ func (s *Server) handleUserInviteList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type inviteItem struct {
+		ID        int                   `json:"id"`
 		Email     string                `json:"email"`
 		Role      string                `json:"role"`
-		Token     string                `json:"token"`
 		Status    string                `json:"status"`
 		CreatedBy string                `json:"created_by"`
 		Vaults    []userInviteVaultJSON `json:"vaults"`
@@ -584,9 +585,9 @@ func (s *Server) handleUserInviteList(w http.ResponseWriter, r *http.Request) {
 	items := make([]inviteItem, 0, len(invites))
 	for _, inv := range invites {
 		items = append(items, inviteItem{
+			ID:        inv.ID,
 			Email:     inv.Email,
 			Role:      inv.Role,
-			Token:     inv.Token,
 			Status:    inv.Status,
 			CreatedBy: inv.CreatedBy,
 			Vaults:    vaultsToJSON(inv.Vaults),
@@ -598,7 +599,23 @@ func (s *Server) handleUserInviteList(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"invites": items})
 }
 
-func (s *Server) handleUserInviteRevoke(w http.ResponseWriter, r *http.Request) {
+func (s *Server) canManageUserInvite(ctx context.Context, actor *Actor, inv *store.UserInvite) bool {
+	if inv.CreatedBy == actor.ID || actor.IsOwner() {
+		return true
+	}
+	for _, v := range inv.Vaults {
+		role, _ := s.store.GetVaultRole(ctx, actor.ID, v.VaultID)
+		if role == "admin" {
+			return true
+		}
+	}
+	return false
+}
+
+// handleUserInviteRevokeByID revokes a pending user invite by its database ID.
+// This is the authenticated administrative path; token-based revoke is only
+// for unauthenticated redemption flows.
+func (s *Server) handleUserInviteRevokeByID(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	actor, err := s.requireInstanceMember(w, r)
@@ -606,31 +623,29 @@ func (s *Server) handleUserInviteRevoke(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	token := r.PathValue("token")
-
-	inv, err := s.store.GetUserInviteByToken(ctx, token)
-	if err != nil || inv == nil || inv.Status != "pending" {
-		jsonError(w, http.StatusNotFound, "Invite not found or not pending")
+	idStr := r.PathValue("id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, "Invalid invite ID")
 		return
 	}
 
-	// Authorization: creator, owner, or admin of a pre-assigned vault
-	allowed := inv.CreatedBy == actor.ID || actor.IsOwner()
-	if !allowed {
-		for _, v := range inv.Vaults {
-			role, _ := s.store.GetVaultRole(ctx, actor.ID, v.VaultID)
-			if role == "admin" {
-				allowed = true
-				break
-			}
-		}
-	}
-	if !allowed {
-		jsonError(w, http.StatusForbidden, "You don't have permission to revoke this invite")
+	inv, err := s.store.GetUserInviteByID(ctx, id)
+	if err != nil || inv == nil {
+		jsonError(w, http.StatusNotFound, "Invite not found")
 		return
 	}
 
-	if err := s.store.RevokeUserInvite(ctx, token); err != nil {
+	if !s.canManageUserInvite(ctx, actor, inv) {
+		jsonError(w, http.StatusNotFound, "Invite not found")
+		return
+	}
+	if inv.Status != "pending" {
+		jsonError(w, http.StatusConflict, "Invite is not pending")
+		return
+	}
+
+	if err := s.store.RevokeUserInviteByID(ctx, id); err != nil {
 		jsonError(w, http.StatusNotFound, "Invite not found or not pending")
 		return
 	}
@@ -638,9 +653,10 @@ func (s *Server) handleUserInviteRevoke(w http.ResponseWriter, r *http.Request) 
 	jsonOK(w, map[string]string{"message": "Invite revoked"})
 }
 
-// handleUserInviteReinvite revokes an existing pending invite and creates a
-// new one for the same email/vault assignments, generating a fresh token and link.
-func (s *Server) handleUserInviteReinvite(w http.ResponseWriter, r *http.Request) {
+// handleUserInviteReinviteByID revokes an existing pending invite by ID and
+// creates a new one for the same email/vault assignments, generating a fresh
+// token and link. This is the authenticated administrative path.
+func (s *Server) handleUserInviteReinviteByID(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	actor, err := s.requireInstanceMember(w, r)
@@ -648,10 +664,20 @@ func (s *Server) handleUserInviteReinvite(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	token := r.PathValue("token")
+	idStr := r.PathValue("id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, "Invalid invite ID")
+		return
+	}
 
-	existing, err := s.store.GetUserInviteByToken(ctx, token)
+	existing, err := s.store.GetUserInviteByID(ctx, id)
 	if err != nil || existing == nil {
+		jsonError(w, http.StatusNotFound, "Invite not found")
+		return
+	}
+
+	if !s.canManageUserInvite(ctx, actor, existing) {
 		jsonError(w, http.StatusNotFound, "Invite not found")
 		return
 	}
@@ -660,29 +686,11 @@ func (s *Server) handleUserInviteReinvite(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Authorization: creator, owner, or admin of a pre-assigned vault
-	allowed := existing.CreatedBy == actor.ID || actor.IsOwner()
-	if !allowed {
-		for _, v := range existing.Vaults {
-			role, _ := s.store.GetVaultRole(ctx, actor.ID, v.VaultID)
-			if role == "admin" {
-				allowed = true
-				break
-			}
-		}
-	}
-	if !allowed {
-		jsonError(w, http.StatusForbidden, "You don't have permission to reinvite")
-		return
-	}
-
-	// Revoke the old invite.
-	if err := s.store.RevokeUserInvite(ctx, token); err != nil {
+	if err := s.store.RevokeUserInviteByID(ctx, id); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to revoke old invite")
 		return
 	}
 
-	// Create a new invite with the same email and vault assignments.
 	inv, err := s.store.CreateUserInvite(ctx, existing.Email, actor.ID, existing.Role, time.Now().Add(userInviteTTL), existing.Vaults)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to create new invite")
@@ -693,7 +701,7 @@ func (s *Server) handleUserInviteReinvite(w http.ResponseWriter, r *http.Request
 
 	emailSent := s.sendUserInviteEmail(w, existing.Email, actor.DisplayLabel(), inviteLink, "You've been re-invited to Agent Vault", existing.Vaults, inv.ExpiresAt)
 	if !emailSent && s.notifier.Enabled() {
-		return // error response already written by sendUserInviteEmail
+		return
 	}
 
 	resp := map[string]interface{}{

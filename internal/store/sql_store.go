@@ -43,8 +43,6 @@ func utcTimePtr(t *time.Time) *time.Time {
 	return &u
 }
 
-
-
 // nullableString returns nil for empty strings, enabling SQL NULL inserts.
 func nullableString(s string) interface{} {
 	if s == "" {
@@ -2271,6 +2269,23 @@ func (s *SQLStore) GetUserInviteByToken(ctx context.Context, token string) (*Use
 	return inv, nil
 }
 
+func (s *SQLStore) GetUserInviteByID(ctx context.Context, id int) (*UserInvite, error) {
+	row := s.db.QueryRowContext(ctx,
+		s.dialect.Rebind(`SELECT id, email, role, status, created_by, created_at, expires_at, accepted_at
+		 FROM user_invites WHERE id = ?`), id,
+	)
+	inv, err := s.scanUserInvite(row)
+	if err != nil {
+		return nil, err
+	}
+	vaults, err := s.loadUserInviteVaults(ctx, inv.ID)
+	if err != nil {
+		return nil, err
+	}
+	inv.Vaults = vaults
+	return inv, nil
+}
+
 func (s *SQLStore) GetPendingUserInviteByEmail(ctx context.Context, email string) (*UserInvite, error) {
 	nowStr := s.now()
 	row := s.db.QueryRowContext(ctx,
@@ -2381,55 +2396,20 @@ func (s *SQLStore) AcceptUserInvite(ctx context.Context, token string) error {
 	return nil
 }
 
-func (s *SQLStore) RevokeUserInvite(ctx context.Context, token string) error {
+func (s *SQLStore) RevokeUserInviteByID(ctx context.Context, id int) error {
 	res, err := s.db.ExecContext(ctx,
 		s.dialect.Rebind(`UPDATE user_invites SET status = 'revoked'
-		 WHERE token_hash = ? AND status = 'pending'`),
-		hashToken(token),
+		 WHERE id = ? AND status = 'pending'`),
+		id,
 	)
 	if err != nil {
-		return fmt.Errorf("revoking user invite: %w", err)
+		return fmt.Errorf("revoking user invite by id: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return sql.ErrNoRows
 	}
 	return nil
-}
-
-func (s *SQLStore) UpdateUserInviteVaults(ctx context.Context, token string, vaults []UserInviteVault) error {
-	// Look up invite ID by token hash
-	var inviteID int
-	err := s.db.QueryRowContext(ctx,
-		s.dialect.Rebind(`SELECT id FROM user_invites WHERE token_hash = ? AND status = 'pending'`),
-		hashToken(token),
-	).Scan(&inviteID)
-	if err != nil {
-		return fmt.Errorf("finding user invite: %w", err)
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	_, err = tx.ExecContext(ctx, s.dialect.Rebind(`DELETE FROM user_invite_vaults WHERE user_invite_id = ?`), inviteID)
-	if err != nil {
-		return fmt.Errorf("clearing user invite vaults: %w", err)
-	}
-
-	for _, v := range vaults {
-		_, err := tx.ExecContext(ctx,
-			s.dialect.Rebind(`INSERT INTO user_invite_vaults (user_invite_id, vault_id, vault_role) VALUES (?, ?, ?)`),
-			inviteID, v.VaultID, v.VaultRole,
-		)
-		if err != nil {
-			return fmt.Errorf("inserting user invite vault: %w", err)
-		}
-	}
-
-	return tx.Commit()
 }
 
 func (s *SQLStore) CountPendingUserInvites(ctx context.Context) (int, error) {
