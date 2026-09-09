@@ -1,7 +1,9 @@
 package mitm
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -25,6 +27,23 @@ func mitmIPKey(r *http.Request) string {
 		host = r.RemoteAddr
 	}
 	return "mitm:" + host
+}
+
+// mitmFloodKey is the rate-limit key actually used for the auth-failure
+// flood gate. It keys on the presented credential, not the peer IP:
+// behind an L4 ingress or NAT the backend's RemoteAddr collapses to a
+// small set of shared proxy IPs, so an IP-keyed bucket lets one
+// client's bad credentials exhaust the budget and 429 every other
+// client arriving through the same ingress. The credential is hashed so
+// tokens never appear in rate-limit keys (which may surface in logs or
+// metrics). Requests without a Proxy-Authorization header fall back to
+// the peer IP so unauthenticated garbage is still gated.
+func mitmFloodKey(r *http.Request) string {
+	if creds := r.Header.Get("Proxy-Authorization"); creds != "" {
+		sum := sha256.Sum256([]byte(creds))
+		return "mitm:cred:" + hex.EncodeToString(sum[:8])
+	}
+	return mitmIPKey(r)
 }
 
 // isLoopbackPeer reports whether the HTTP request came from a loopback
@@ -53,7 +72,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// (below) so legitimate agents don't burn the budget. Loopback
 	// is exempt — see isLoopbackPeer.
 	if p.rateLimit != nil && !isLoopbackPeer(r) {
-		if d := p.rateLimit.Check(ratelimit.TierAuth, mitmIPKey(r)); !d.Allow {
+		if d := p.rateLimit.Check(ratelimit.TierAuth, mitmFloodKey(r)); !d.Allow {
 			ratelimit.WriteDenial(w, d, "Too many CONNECT attempts")
 			return
 		}
@@ -162,7 +181,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 // TierAuth entirely (TierProxy covers them). Loopback peers are exempt.
 func (p *Proxy) recordAuthFailure(r *http.Request) {
 	if p.rateLimit != nil && !isLoopbackPeer(r) {
-		p.rateLimit.Allow(ratelimit.TierAuth, mitmIPKey(r))
+		p.rateLimit.Allow(ratelimit.TierAuth, mitmFloodKey(r))
 	}
 }
 
