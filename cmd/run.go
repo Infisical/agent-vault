@@ -6,7 +6,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
-	"time"
 	"fmt"
 	"net"
 	"net/http"
@@ -17,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Infisical/agent-vault/internal/isolation"
 	"github.com/Infisical/agent-vault/internal/session"
@@ -45,8 +45,8 @@ Two modes:
   Agent mode: pre-supply a token via env. Used for unattended / containerized
     deployments where there's no human to interactively log in.
       AGENT_VAULT_TOKEN  — vault-scoped session token or long-lived agent token
-      AGENT_VAULT_ADDR   — broker base URL
-      AGENT_VAULT_VAULT  — vault to scope the run to (required in agent mode for both token types)
+      AGENT_VAULT_ADDR   — broker base URL (or select a profile with address)
+      AGENT_VAULT_VAULT  — vault to scope the run to (or select a profile)
     The token is validated against the broker once before the child is exec'd.
     --ttl has no effect in agent mode and is rejected (the token's lifetime
     is fixed at mint time).
@@ -55,6 +55,11 @@ Environment variables set on the child:
   AGENT_VAULT_TOKEN  — bearer token for the Agent Vault server
   AGENT_VAULT_ADDR   — base URL of the Agent Vault HTTP control server
   AGENT_VAULT_VAULT  — vault the session is scoped to
+
+With --profile, agent-vault.json supplies the vault and optional child-only
+environment values such as credential placeholders and public service URLs.
+Profile values override inherited environment values; Agent Vault's generated
+token, vault, address, proxy, and CA variables always take precedence.
 
 The child also inherits HTTPS_PROXY / HTTP_PROXY / NO_PROXY /
 NODE_USE_ENV_PROXY / OPENCLAW_PROXY_URL plus the root CA trust variables
@@ -72,7 +77,8 @@ for http:// on the same port. The root CA PEM is written to
 
 Example:
   ` + examplePrefix + ` -- claude
-  ` + examplePrefix + ` --vault myproject -- claude`,
+  ` + examplePrefix + ` --vault myproject -- claude
+  ` + examplePrefix + ` --profile development -- claude`,
 		Args:                  cobra.MinimumNArgs(1),
 		DisableFlagsInUseLine: true,
 		RunE:                  runCmdRunE,
@@ -83,6 +89,7 @@ Example:
 
 	c.Flags().String("address", "", "Agent Vault server address (defaults to session address)")
 	c.Flags().Int("ttl", 0, "Session TTL in seconds (300–604800; default: server default 24h)")
+	c.Flags().String("profile", "", "project profile from agent-vault.json (sets vault and child environment)")
 
 	c.Flags().String("image", "", "Container image override (requires --isolation=container)")
 	c.Flags().StringArray("mount", nil, "Extra bind mount src:dst[:ro] (repeatable; requires --isolation=container)")
@@ -98,6 +105,19 @@ var runCmd = newRunCmd("agent-vault vault run")
 var topRunCmd = newRunCmd("agent-vault run")
 
 func runCmdRunE(cmd *cobra.Command, args []string) error {
+	clearResolvedRunProfileVault(cmd)
+	profile, err := resolveRunProfile(cmd)
+	if err != nil {
+		return err
+	}
+	var profileEnv map[string]string
+	var profileAddress string
+	if profile != nil {
+		setResolvedRunProfileVault(cmd, profile.Vault)
+		profileEnv = profile.Env
+		profileAddress = profile.Address
+	}
+
 	// 0. Resolve isolation mode and validate flag compatibility before any
 	//    network I/O — the user sees conflicts immediately, not after
 	//    a slow session-mint round-trip.
@@ -120,16 +140,18 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	//    session (human mode). Agent mode is the path used by containerized
 	//    deployments where there's no TTY and no on-disk session.
 	//    tokenSource is "" in human mode; in agent mode it's envVarToken.
-	sess, tokenSource, err := resolveSession()
+	addr := resolveRunAddress(cmd, profileAddress)
+
+	sess, tokenSource, err := resolveSessionWithAddress(addr)
 	if err != nil {
 		return err
 	}
 	fromEnv := tokenSource != ""
 
-	addr, _ := cmd.Flags().GetString("address")
 	if addr == "" {
 		addr = sess.Address
 	}
+	addr = strings.TrimRight(addr, "/")
 
 	// 2-3. Determine the token + vault. In agent mode the env-supplied
 	//      token IS the credential; we validate it once against the broker
@@ -173,7 +195,7 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	tel.Close()
 
 	if mode == IsolationContainer {
-		return runContainer(cmd, args, token, addr, vault)
+		return runContainer(cmd, args, token, addr, vault, profileEnv)
 	}
 
 	// 4. Resolve the target binary.
@@ -189,13 +211,7 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	//    silently shadow the freshly-injected one. Particularly important
 	//    in agent mode, where the parent env is *guaranteed* to carry these
 	//    keys (that's how agent mode is detected).
-	env := os.Environ()
-	env = stripEnvKeys(env, agentVaultInjectedKeys)
-	env = append(env,
-		"AGENT_VAULT_TOKEN="+token,
-		"AGENT_VAULT_ADDR="+addr,
-		"AGENT_VAULT_VAULT="+vault,
-	)
+	env := buildHostRunEnv(os.Environ(), profileEnv, token, addr, vault)
 
 	// 6. Route the child's HTTP and HTTPS traffic through the transparent
 	//    MITM proxy. The MITM ingress is the only credential-injection
@@ -223,6 +239,26 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	// user-specified binary with user-specified args, identical to the
 	// rationale for the G204 exclusion in .golangci.yml.
 	return syscall.Exec(binary, args, env) //nolint:gosec
+}
+
+func resolveRunAddress(cmd *cobra.Command, profileAddress string) string {
+	if addr, _ := cmd.Flags().GetString("address"); addr != "" {
+		return addr
+	}
+	if addr := os.Getenv("AGENT_VAULT_ADDR"); addr != "" {
+		return addr
+	}
+	return profileAddress
+}
+
+func buildHostRunEnv(parent []string, profileEnv map[string]string, token, addr, vault string) []string {
+	env := applyProfileEnv(parent, profileEnv)
+	env = stripEnvKeys(env, agentVaultInjectedKeys)
+	return append(env,
+		"AGENT_VAULT_TOKEN="+token,
+		"AGENT_VAULT_ADDR="+addr,
+		"AGENT_VAULT_VAULT="+vault,
+	)
 }
 
 // knownAgents maps CLI binary base-names to the (agentName, skillsDir)
@@ -339,10 +375,13 @@ func maybeConfigureOpenClaw() {
 }
 
 // resolveVaultForAgentMode picks the vault when the token is supplied via env
-// (agent / containerized run). No project-file or interactive-picker fallback
-// — neither makes sense in an unattended container, and silently defaulting
-// to "default" would mask misconfig. Priority: --vault > AGENT_VAULT_VAULT > error.
+// (agent / containerized run). A resolved run profile takes priority, followed
+// by --vault and AGENT_VAULT_VAULT. There is no interactive-picker fallback,
+// because silently defaulting to "default" would mask unattended misconfig.
 func resolveVaultForAgentMode(cmd *cobra.Command) (string, error) {
+	if profileVault := getResolvedRunProfileVault(cmd); profileVault != "" {
+		return profileVault, nil
+	}
 	if name, _ := cmd.Flags().GetString("vault"); name != "" {
 		return name, nil
 	}
@@ -370,6 +409,9 @@ func resolveVaultForCommand(cmd *cobra.Command, tokenSource string) (string, err
 // resolveVaultForRun picks the vault for a run session. Priority:
 // --vault flag > project file > vault context > interactive select (if multiple) > "default".
 func resolveVaultForRun(cmd *cobra.Command, addr, token string) (string, error) {
+	if profileVault := getResolvedRunProfileVault(cmd); profileVault != "" {
+		return profileVault, nil
+	}
 	// Explicit --vault flag takes priority.
 	if name, _ := cmd.Flags().GetString("vault"); name != "" {
 		return name, nil
@@ -580,7 +622,6 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 	if err := os.WriteFile(caPath, pem, 0o600); err != nil { //nolint:gosec
 		return env, 0, false, fmt.Errorf("write CA: %w", err)
 	}
-
 
 	env = stripEnvKeys(env, mitmInjectedKeys)
 	env = append(env, isolation.BuildProxyEnv(isolation.ProxyEnvParams{

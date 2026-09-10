@@ -34,9 +34,49 @@ Run `vault init` inside your project directory to create an `agent-vault.json` f
 agent-vault vault init
 ```
 
-This file is meant to be committed to version control. When present, all team members and agents running in that directory will automatically target the bound vault without needing `--vault` flags or per-user context.
+This file is meant to be committed to version control. Agent Vault discovers it from the current directory upward, stopping at the repository root. When present, all team members and agents running anywhere in that repository automatically target the bound vault without needing `--vault` flags or per-user context.
 
 Vault resolution priority: `--vault` flag > `AGENT_VAULT_VAULT` env var > `agent-vault.json` > user context > `"default"`.
+
+## Define project profiles
+
+Projects that use more than one vault can define named profiles in the same committed file. A profile selects a vault and supplies child-only environment values for credential placeholders and public configuration:
+
+```json
+{
+  "version": 1,
+  "address": "https://agent-vault.example.com",
+  "profiles": {
+    "development": {
+      "vault": "my-app-dev",
+      "env": {
+        "ANTHROPIC_API_KEY": "__anthropic_api_key__",
+        "APP_API_URL": "https://api.dev.example.com"
+      }
+    },
+    "production": {
+      "vault": "my-app-prod",
+      "env": {
+        "ANTHROPIC_API_KEY": "__anthropic_api_key__",
+        "APP_API_URL": "https://api.example.com"
+      }
+    }
+  }
+}
+```
+
+Select a profile when launching a child process:
+
+```bash
+agent-vault run --profile development -- your-agent
+agent-vault run --profile production -- your-command
+```
+
+`--profile` and `--vault` are mutually exclusive. The profile environment overrides inherited values only in the child process. Generated Agent Vault token, address, vault, proxy, and CA variables always win. Host and container isolation modes behave the same way.
+
+Never commit real credentials in `env`. Store them in Agent Vault and put only substitution placeholders or non-secret configuration in this file. Agent Vault rejects profile entries that could replace its own variables, proxy and CA variables, `PATH`, `HOME`, or dynamic-loader variables.
+
+When `address` is present, address resolution for `run` is `--address` > `AGENT_VAULT_ADDR` > profile config > logged-in session. This also lets unattended agent mode provide only `AGENT_VAULT_TOKEN` plus a selected profile. Treat changes to `address` as security-sensitive: the selected broker receives the Agent Vault token used by the run.
 
 ## Add an agent to a vault
 
