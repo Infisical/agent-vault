@@ -7,7 +7,7 @@
     "build": "tsc && vite build"
   },
   "dependencies": {
-    "@tanstack/react-router": "^1.170.18",
+    "@tanstack/react-router": "^1.170.32",
     "react": "^19.2.7",
     "react-dom": "^19.2.8"
   },
