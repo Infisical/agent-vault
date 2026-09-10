@@ -170,8 +170,8 @@ export default function CreatableSelect({ values, onChange, options = [], placeh
         createPortal(
           <div
             ref={listRef}
-            className="fixed z-50 bg-surface border border-border rounded-lg shadow-[0_4px_16px_rgba(0,0,0,0.12)] py-1 max-h-64 overflow-y-auto"
-            style={{ top: pos.top, left: pos.left, width: pos.width, scrollbarWidth: "thin", scrollbarColor: "var(--color-border) var(--color-surface)" }}
+            className="fixed z-50 bg-surface border border-border rounded-lg shadow-[0_4px_16px_rgba(0,0,0,0.12)] py-1 max-h-64 overflow-y-auto thin-scrollbar"
+            style={{ top: pos.top, left: pos.left, width: pos.width }}
           >
             {items.map((item, i) => {
               if (item.type === "create") {
