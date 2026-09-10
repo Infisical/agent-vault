@@ -14,40 +14,25 @@ import (
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
-// A skill is a named markdown instruction document scoped to one vault.
-// Reads are open to any vault grant (including `proxy`, so an agent's own
-// token can pull the skills it should be following); mutations are vault
-// admin only. Skills are deliberately outside the proposal system: agents
-// cannot propose skill changes, so nothing here touches internal/proposal.
-//
+// A skill is a named markdown instruction document scoped to one vault. Reads
+// are open to any vault grant (including `proxy`); mutations are vault admin
+// only. Skills sit outside the proposal system — agents cannot propose changes.
 // Bodies are stored in plaintext, unlike credentials.
 //
-// Delivery is not built yet. This package stores and serves skills; nothing
-// writes them to an agent's filesystem, and `vault run` still installs only
-// the two embedded skills (see cmd/run.go). A follow-up change adds the
-// writer and documents these endpoints in cmd/skill_cli.md. The validation
-// rules below are already shaped for that writer — they are what keeps a
-// skill authored today valid when it is later emitted as SKILL.md — so the
-// comments describe the format they target, not behavior that exists now.
+// Delivery is not built yet: nothing writes skills to an agent's filesystem,
+// and `vault run` still installs only the two embedded skills. A follow-up
+// adds the writer and documents these endpoints in cmd/skill_cli.md. Rules
+// below target the SKILL.md format that writer will emit.
 
 const (
-	// maxSkillDescriptionChars matches the Agent Skills frontmatter limit for
-	// a skill's `description` field, so a skill authored here will stay valid
-	// when it is written out as SKILL.md. Mirrored as
-	// MAX_DESCRIPTION_CHARS in web/src/pages/vault/SkillsTab.tsx.
-	//
-	// The companion `name` limit from that spec (64 characters) is already
-	// enforced by broker.ValidateSlug, which is also stricter about the
-	// charset because the name will become a directory name on disk.
+	// Matches the Agent Skills frontmatter limit for `description`. Mirrored
+	// as MAX_DESCRIPTION_CHARS in web/src/pages/vault/SkillsTab.tsx. That
+	// spec's 64-char `name` limit is already covered by broker.ValidateSlug.
 	maxSkillDescriptionChars = 1024
-	// maxSkillContentChars caps the markdown body, counted in characters
-	// (runes) rather than bytes so the limit means the same thing to the
-	// author as it does here — the dashboard shows this exact number. Also
-	// bounds the payload: at UTF-8's worst case of 4 bytes per rune this is
-	// 400 KB, comfortably under limitBody's 1 MB ceiling, so an oversized
-	// paste gets a precise error instead of a generic decode failure.
-	// Mirrored as MAX_CONTENT_CHARS in web/src/pages/vault/SkillsTab.tsx —
-	// update both together.
+	// Counted in runes, not bytes, so the number the dashboard shows is the
+	// one enforced. Worst case 400 KB, under limitBody's 1 MB, so oversized
+	// pastes get a precise error. Mirrored as MAX_CONTENT_CHARS in
+	// web/src/pages/vault/SkillsTab.tsx — update both together.
 	maxSkillContentChars = 100_000
 )
 
@@ -71,26 +56,22 @@ func skillToResponse(sk *store.Skill) skillResponse {
 	}
 }
 
-// normalizeSkillContent makes bodies stable across platforms: skills are
-// destined to be written to disk verbatim, so CRLF would leak into files.
+// normalizeSkillContent keeps bodies stable across platforms: skills will be
+// written to disk verbatim, so CRLF would leak into files.
 func normalizeSkillContent(content string) string {
 	return strings.ReplaceAll(content, "\r\n", "\n")
 }
 
-// normalizeSkillDescription flattens the description to a single line.
-// It is destined to be emitted as one YAML scalar in SKILL.md frontmatter,
-// where an embedded newline would either break the document or silently
-// truncate the value, so line breaks are folded to spaces rather than
-// rejected — pasting a wrapped sentence should just work. strings.Fields
-// also collapses runs of whitespace and trims, making this idempotent.
-// SkillsTab.tsx mirrors this folding when it counts characters.
+// normalizeSkillDescription flattens the description to a single line: it
+// becomes one YAML scalar in SKILL.md frontmatter, where a newline would break
+// or truncate the document. Folding beats rejecting so pasting a wrapped
+// sentence works. SkillsTab.tsx mirrors this when counting characters.
 func normalizeSkillDescription(description string) string {
 	return strings.Join(strings.Fields(description), " ")
 }
 
 // validateSkillPayload enforces the skill field rules. Names reuse
-// broker.ValidateSlug because a skill name will become a directory name once
-// skills are written to an agent's filesystem.
+// broker.ValidateSlug because a skill name will become a directory name.
 func validateSkillPayload(name, description, content string) error {
 	if err := broker.ValidateSlug(name); err != nil {
 		return err

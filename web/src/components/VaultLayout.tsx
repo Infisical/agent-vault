@@ -3,10 +3,9 @@ import { Link, Outlet, useLocation, useNavigate, useRouteContext } from "@tansta
 import type { AuthContext, VaultContext } from "../router";
 import Navbar from "./Navbar";
 
-// The single source of truth for vault tab ids: the union is derived from it,
-// and it drives the active-tab lookup below. A tab id must equal its route
-// path segment (see SidebarItem). Adding a tab means adding it here plus a
-// NavItem entry.
+// Source of truth for vault tab ids: the union and active-tab lookup derive
+// from it. An id must equal its route path segment. New tab = entry here plus
+// a NavItem.
 const VAULT_TABS = [
   "services",
   "credentials",

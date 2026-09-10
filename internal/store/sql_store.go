@@ -161,46 +161,24 @@ func (s *SQLStore) DialectName() string {
 	return s.dialect.Name()
 }
 
-// Postgres advisory-lock polling schedule. See LockVault for why the lock is
-// polled rather than waited on.
-//
-// lockPollMax is deliberately modest. Exponential backoff inverts fairness —
-// the longer a caller has waited, the less often it looks — so a high ceiling
-// would let newcomers polling at lockPollMin repeatedly beat a waiter that has
-// backed off. Capping the interval bounds that penalty; the probe traffic it
-// costs (~30 probes/sec per waiter, worst case) only occurs while a vault is
-// actually contended, which for admin-only mutations is rare.
-//
-// lockMaxWait bounds total wait so pathological contention surfaces as a clear
-// error instead of hanging until the request context expires.
+// Postgres advisory-lock polling schedule (see LockVault). lockPollMax stays
+// low because exponential backoff inverts fairness — the longer a caller has
+// waited, the less often it looks — so a high ceiling would let newcomers beat
+// a backed-off waiter. lockMaxWait bounds total wait.
 const (
 	lockPollMin = 2 * time.Millisecond
 	lockPollMax = 50 * time.Millisecond
 	lockMaxWait = 15 * time.Second
 )
 
-// LockVault acquires an exclusive advisory lock scoped to vaultID.
+// LockVault acquires an exclusive advisory lock scoped to vaultID. SQLite uses
+// a per-vault in-memory mutex; Postgres pins a *sql.Conn so the lock spans the
+// caller's whole critical section.
 //
-// SQLite path: per-vault in-memory mutex (single-process, same as the old
-// server-level vaultServiceMu). Postgres path: pg_try_advisory_lock on a
-// pinned *sql.Conn so the lock survives for the caller's critical section,
-// not just a single statement.
-//
-// The Postgres path polls with pg_try_advisory_lock instead of blocking in
-// pg_advisory_lock, because a blocking wait holds its pooled connection for
-// the entire wait. Callers run further queries inside the critical section
-// (see handleSkillPatch and the handle_services mutators), so enough
-// concurrent waiters on one vault deadlock the pool: waiters occupy every
-// connection queued on the lock, while the holder blocks forever trying to
-// borrow a connection to finish the work that would release it. Polling
-// returns the connection between attempts, so waiting costs no connection
-// and contention degrades to latency instead of deadlock.
-//
-// The tradeoff is that polling gives up Postgres's FIFO lock queue: waiters
-// race rather than queue, so acquisition order is not guaranteed. That is
-// acceptable here because every caller is an admin-only mutation on a single
-// vault, where sustained contention is rare — and the alternative was not a
-// fair queue but a deadlocked pool.
+// Postgres polls rather than blocking in pg_advisory_lock: a blocking wait
+// holds its pooled connection, and callers query again inside the critical
+// section, so enough waiters on one vault deadlock the pool against the holder.
+// Polling gives up FIFO ordering, acceptable for admin-only mutations.
 func (s *SQLStore) LockVault(ctx context.Context, vaultID string) (func(), error) {
 	if s.dialect.Name() == "sqlite" {
 		v, _ := s.vaultMu.LoadOrStore(vaultID, &sync.Mutex{})
@@ -246,15 +224,13 @@ func (s *SQLStore) LockVault(ctx context.Context, vaultID string) (func(), error
 	}
 }
 
-// releaseAdvisoryLock unlocks key and returns conn to the pool. Advisory
-// locks are session-scoped and closing a pooled *sql.Conn recycles the
-// session rather than ending it, so a failed unlock would strand the lock on
-// a live connection and wedge the vault permanently. On that path the
-// connection is poisoned instead, forcing the pool to discard the session
-// (and with it the lock) rather than hand it to another caller.
+// releaseAdvisoryLock unlocks key and returns conn to the pool. Closing a
+// pooled *sql.Conn recycles the session rather than ending it, so a failed
+// unlock would strand the session-scoped lock and wedge the vault; poison the
+// connection there so the pool discards it instead.
 func releaseAdvisoryLock(conn *sql.Conn, key int64) {
-	// context.Background: the caller's request context is typically already
-	// cancelled by the time an unlock runs from a deferred call.
+	// Background: the request context is usually already cancelled by the
+	// time a deferred unlock runs.
 	_, err := conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key)
 	if err != nil {
 		_ = conn.Raw(func(any) error { return driver.ErrBadConn })

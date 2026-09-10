@@ -13,19 +13,12 @@ import { apiFetch, apiRequest } from "../../lib/api";
 /** Mirrors maxSkillContentChars in internal/server/handle_skills.go. */
 const MAX_CONTENT_CHARS = 100_000;
 
-/**
- * Mirrors maxSkillDescriptionChars — the Agent Skills frontmatter limit for a
- * skill's `description`. The `name` limit from that spec (64 characters) is
- * stated in the field tooltip and enforced server-side by broker.ValidateSlug.
- */
+/** Mirrors maxSkillDescriptionChars. That spec's 64-char `name` limit lives in
+ *  the field tooltip and is enforced by broker.ValidateSlug. */
 const MAX_DESCRIPTION_CHARS = 1024;
 
-/**
- * Character count matching Go's utf8.RuneCountInString, so the number shown
- * against MAX_CONTENT_CHARS is the one the server enforces. String.length
- * would count an astral character such as an emoji as two, so surrogate
- * pairs are collapsed here.
- */
+/** Matches Go's utf8.RuneCountInString, so the count shown is the one
+ *  enforced. String.length would count an emoji as two. */
 function countChars(text: string): number {
   let chars = 0;
   for (let i = 0; i < text.length; i++) {
@@ -310,14 +303,10 @@ function SkillSheet({
   // Memoized so typing in Name or Description does not re-count the body.
   const contentChars = useMemo(() => countChars(content), [content]);
   const contentTooLarge = contentChars > MAX_CONTENT_CHARS;
-  // Short enough to count on every render. Counted against the same folded
-  // form the server validates — normalizeSkillDescription runs strings.Fields,
-  // which collapses interior whitespace runs as well as trimming — so a
-  // description with double spaces or line breaks cannot be blocked here while
-  // the API would accept it.
-  const descriptionChars = countChars(
-    description.trim().split(/\s+/).join(" "),
-  );
+  // Counted against the folded form the server validates
+  // (normalizeSkillDescription collapses interior whitespace too), so the form
+  // never blocks a description the API would accept.
+  const descriptionChars = countChars(description.trim().split(/\s+/).join(" "));
   const descriptionTooLong = descriptionChars > MAX_DESCRIPTION_CHARS;
   // Only presence is gated here, matching ServicesTab: the slug rule lives in
   // the field tooltip and is enforced server-side, so a half-typed name is

@@ -12,12 +12,9 @@ import (
 	"time"
 )
 
-// The Postgres LockVault path cannot run against a real server here (CI has
-// no Postgres service), so these tests drive it through a fake driver that
-// implements just the advisory-lock surface LockVault touches. That is enough
-// to cover the property that matters: waiting for a contended lock must not
-// hold a pooled connection, because callers borrow a second connection inside
-// their critical section.
+// CI has no Postgres, so these drive LockVault through a fake driver
+// implementing just the advisory-lock surface. Enough to cover the property
+// that matters: waiting must not hold a pooled connection.
 
 type fakePGDriver struct {
 	mu   sync.Mutex
@@ -82,8 +79,7 @@ func (r *boolRow) Next(dest []driver.Value) error {
 
 var fakePGSeq int
 
-// newFakePGStore returns a SQLStore on the fake Postgres driver with the
-// connection pool capped at maxConns.
+// newFakePGStore returns a store on the fake driver, pool capped at maxConns.
 func newFakePGStore(t *testing.T, maxConns int) *SQLStore {
 	t.Helper()
 	fakePGSeq++
@@ -99,13 +95,9 @@ func newFakePGStore(t *testing.T, maxConns int) *SQLStore {
 	return &SQLStore{db: db, dialect: PostgresDialect{}}
 }
 
-// TestLockVaultPostgresContentionDoesNotExhaustPool is the regression guard
-// for the deadlock that blocking on pg_advisory_lock used to cause: waiters
-// queued inside the lock statement pinned every connection in the pool, so
-// the holder could never borrow the connection it needed to finish the work
-// that would release the lock. Every worker here contends on one vault and
-// then queries inside its critical section, with far more workers than
-// connections.
+// Regression guard for the old deadlock: waiters blocked in pg_advisory_lock
+// pinned the whole pool, so the holder could never borrow the connection it
+// needed to release the lock. More workers here than connections.
 func TestLockVaultPostgresContentionDoesNotExhaustPool(t *testing.T) {
 	const maxConns = 4
 	s := newFakePGStore(t, maxConns)
@@ -146,8 +138,7 @@ func TestLockVaultPostgresContentionDoesNotExhaustPool(t *testing.T) {
 	}
 }
 
-// TestLockVaultPostgresMutualExclusion checks the lock still excludes, since
-// polling with pg_try_advisory_lock would be useless if it let two callers in.
+// Polling would be useless if it let two callers in.
 func TestLockVaultPostgresMutualExclusion(t *testing.T) {
 	s := newFakePGStore(t, 8)
 	ctx := context.Background()
@@ -188,8 +179,7 @@ func TestLockVaultPostgresMutualExclusion(t *testing.T) {
 	}
 }
 
-// TestLockVaultPostgresDistinctVaultsDoNotBlock confirms the lock stays
-// scoped per vault rather than serializing the whole instance.
+// The lock is per vault, not per instance.
 func TestLockVaultPostgresDistinctVaultsDoNotBlock(t *testing.T) {
 	s := newFakePGStore(t, 8)
 	ctx := context.Background()
@@ -209,8 +199,7 @@ func TestLockVaultPostgresDistinctVaultsDoNotBlock(t *testing.T) {
 	second()
 }
 
-// TestLockVaultPostgresUnlockReleases guards the release path: an advisory
-// lock is session-scoped and the connection goes back to the pool, so a lock
+// Advisory locks are session-scoped and the connection is recycled, so a lock
 // left behind would wedge the vault for every later caller.
 func TestLockVaultPostgresUnlockReleases(t *testing.T) {
 	s := newFakePGStore(t, 4)
@@ -231,8 +220,7 @@ func TestLockVaultPostgresUnlockReleases(t *testing.T) {
 	again()
 }
 
-// TestLockVaultPostgresRespectsContextCancellation checks a caller waiting on
-// a contended lock gives up with the context instead of hanging.
+// A waiter gives up with its context instead of hanging.
 func TestLockVaultPostgresRespectsContextCancellation(t *testing.T) {
 	s := newFakePGStore(t, 4)
 	ctx := context.Background()
@@ -255,9 +243,7 @@ func TestLockVaultPostgresRespectsContextCancellation(t *testing.T) {
 	}
 }
 
-// TestLockVaultPostgresBoundsTotalWait checks the lockMaxWait cap gives up
-// with a descriptive error rather than polling until the request context
-// expires. It uses a context with no deadline so only the cap can end it.
+// Context has no deadline, so only lockMaxWait can end this.
 func TestLockVaultPostgresBoundsTotalWait(t *testing.T) {
 	if testing.Short() {
 		t.Skip("waits out lockMaxWait")
@@ -284,8 +270,7 @@ func TestLockVaultPostgresBoundsTotalWait(t *testing.T) {
 	}
 }
 
-// TestLockVaultSQLiteMutualExclusion covers the other dialect, whose
-// per-vault mutex has no pool involved and is unchanged.
+// The SQLite path is a plain mutex, no pool involved.
 func TestLockVaultSQLiteMutualExclusion(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
