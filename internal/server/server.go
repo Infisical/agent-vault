@@ -897,6 +897,8 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/vaults/{name}/services/credential-usage", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServicesCredentialUsage))))
 	mux.HandleFunc("GET /v1/vaults/{name}/logs", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultLogsList))))
 	mux.HandleFunc("GET /v1/vaults/{name}/discovered-hosts", s.requireInitialized(s.requireAuth(actorAuthed(s.handleDiscoveredHosts))))
+	mux.HandleFunc("DELETE /v1/vaults/{name}/discovered-hosts/{host}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleDismissDiscoveredHost))))
+	mux.HandleFunc("DELETE /v1/vaults/{name}/discovered-hosts", s.requireInitialized(s.requireAuth(actorAuthed(s.handleDismissAllDiscoveredHosts))))
 	// Public static reads — immutable payloads with no credentials on
 	// the wire. TierGlobal is the only useful backstop; TierAuth would
 	// punish `vault run` (CA fetch per invocation) and the dashboard
