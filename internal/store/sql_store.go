@@ -163,9 +163,20 @@ func (s *SQLStore) DialectName() string {
 
 // Postgres advisory-lock polling schedule. See LockVault for why the lock is
 // polled rather than waited on.
+//
+// lockPollMax is deliberately modest. Exponential backoff inverts fairness —
+// the longer a caller has waited, the less often it looks — so a high ceiling
+// would let newcomers polling at lockPollMin repeatedly beat a waiter that has
+// backed off. Capping the interval bounds that penalty; the probe traffic it
+// costs (~30 probes/sec per waiter, worst case) only occurs while a vault is
+// actually contended, which for admin-only mutations is rare.
+//
+// lockMaxWait bounds total wait so pathological contention surfaces as a clear
+// error instead of hanging until the request context expires.
 const (
 	lockPollMin = 2 * time.Millisecond
-	lockPollMax = 64 * time.Millisecond
+	lockPollMax = 50 * time.Millisecond
+	lockMaxWait = 15 * time.Second
 )
 
 // LockVault acquires an exclusive advisory lock scoped to vaultID.
@@ -184,6 +195,12 @@ const (
 // borrow a connection to finish the work that would release it. Polling
 // returns the connection between attempts, so waiting costs no connection
 // and contention degrades to latency instead of deadlock.
+//
+// The tradeoff is that polling gives up Postgres's FIFO lock queue: waiters
+// race rather than queue, so acquisition order is not guaranteed. That is
+// acceptable here because every caller is an admin-only mutation on a single
+// vault, where sustained contention is rare — and the alternative was not a
+// fair queue but a deadlocked pool.
 func (s *SQLStore) LockVault(ctx context.Context, vaultID string) (func(), error) {
 	if s.dialect.Name() == "sqlite" {
 		v, _ := s.vaultMu.LoadOrStore(vaultID, &sync.Mutex{})
@@ -196,6 +213,7 @@ func (s *SQLStore) LockVault(ctx context.Context, vaultID string) (func(), error
 	_, _ = h.Write([]byte(vaultID))
 	key := int64(h.Sum64())
 
+	deadline := time.Now().Add(lockMaxWait)
 	backoff := lockPollMin
 	for {
 		conn, err := s.db.Conn(ctx)
@@ -211,6 +229,10 @@ func (s *SQLStore) LockVault(ctx context.Context, vaultID string) (func(), error
 			return func() { releaseAdvisoryLock(conn, key) }, nil
 		}
 		_ = conn.Close()
+
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("LockVault: vault %s still locked after %v", vaultID, lockMaxWait)
+		}
 
 		// Jitter spreads a thundering herd across the poll window rather
 		// than re-colliding on every tick.

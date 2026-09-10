@@ -310,10 +310,14 @@ function SkillSheet({
   // Memoized so typing in Name or Description does not re-count the body.
   const contentChars = useMemo(() => countChars(content), [content]);
   const contentTooLarge = contentChars > MAX_CONTENT_CHARS;
-  // Short enough to count on every render. Counted trimmed because the
-  // handler trims before validating, so trailing whitespace must not make the
-  // form stricter than the server.
-  const descriptionChars = countChars(description.trim());
+  // Short enough to count on every render. Counted against the same folded
+  // form the server validates — normalizeSkillDescription runs strings.Fields,
+  // which collapses interior whitespace runs as well as trimming — so a
+  // description with double spaces or line breaks cannot be blocked here while
+  // the API would accept it.
+  const descriptionChars = countChars(
+    description.trim().split(/\s+/).join(" "),
+  );
   const descriptionTooLong = descriptionChars > MAX_DESCRIPTION_CHARS;
   // Only presence is gated here, matching ServicesTab: the slug rule lives in
   // the field tooltip and is enforced server-side, so a half-typed name is

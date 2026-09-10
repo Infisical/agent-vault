@@ -255,6 +255,35 @@ func TestLockVaultPostgresRespectsContextCancellation(t *testing.T) {
 	}
 }
 
+// TestLockVaultPostgresBoundsTotalWait checks the lockMaxWait cap gives up
+// with a descriptive error rather than polling until the request context
+// expires. It uses a context with no deadline so only the cap can end it.
+func TestLockVaultPostgresBoundsTotalWait(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out lockMaxWait")
+	}
+	s := newFakePGStore(t, 4)
+	ctx := context.Background()
+
+	unlock, err := s.LockVault(ctx, "vault-held")
+	if err != nil {
+		t.Fatalf("LockVault: %v", err)
+	}
+	defer unlock()
+
+	start := time.Now()
+	_, err = s.LockVault(ctx, "vault-held")
+	if err == nil {
+		t.Fatal("LockVault acquired a lock that was already held")
+	}
+	if !strings.Contains(err.Error(), "still locked after") {
+		t.Fatalf("error did not name the wait cap: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < lockMaxWait {
+		t.Fatalf("gave up after %v, before the %v cap", elapsed, lockMaxWait)
+	}
+}
+
 // TestLockVaultSQLiteMutualExclusion covers the other dialect, whose
 // per-vault mutex has no pool involved and is unchanged.
 func TestLockVaultSQLiteMutualExclusion(t *testing.T) {
