@@ -5,12 +5,14 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
+	mrand "math/rand/v2"
 	"os"
 	"strings"
 	"sync"
@@ -159,12 +161,29 @@ func (s *SQLStore) DialectName() string {
 	return s.dialect.Name()
 }
 
+// Postgres advisory-lock polling schedule. See LockVault for why the lock is
+// polled rather than waited on.
+const (
+	lockPollMin = 2 * time.Millisecond
+	lockPollMax = 64 * time.Millisecond
+)
+
 // LockVault acquires an exclusive advisory lock scoped to vaultID.
 //
 // SQLite path: per-vault in-memory mutex (single-process, same as the old
-// server-level vaultServiceMu). Postgres path: pg_advisory_lock on a pinned
-// *sql.Conn so the lock survives for the caller's critical section, not just
-// a single statement.
+// server-level vaultServiceMu). Postgres path: pg_try_advisory_lock on a
+// pinned *sql.Conn so the lock survives for the caller's critical section,
+// not just a single statement.
+//
+// The Postgres path polls with pg_try_advisory_lock instead of blocking in
+// pg_advisory_lock, because a blocking wait holds its pooled connection for
+// the entire wait. Callers run further queries inside the critical section
+// (see handleSkillPatch and the handle_services mutators), so enough
+// concurrent waiters on one vault deadlock the pool: waiters occupy every
+// connection queued on the lock, while the holder blocks forever trying to
+// borrow a connection to finish the work that would release it. Polling
+// returns the connection between attempts, so waiting costs no connection
+// and contention degrades to latency instead of deadlock.
 func (s *SQLStore) LockVault(ctx context.Context, vaultID string) (func(), error) {
 	if s.dialect.Name() == "sqlite" {
 		v, _ := s.vaultMu.LoadOrStore(vaultID, &sync.Mutex{})
@@ -173,26 +192,52 @@ func (s *SQLStore) LockVault(ctx context.Context, vaultID string) (func(), error
 		return mu.Unlock, nil
 	}
 
-	// Postgres: advisory lock on a pinned connection.
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("LockVault: acquiring connection: %w", err)
-	}
-
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(vaultID))
 	key := int64(h.Sum64())
 
-	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", key); err != nil {
+	backoff := lockPollMin
+	for {
+		conn, err := s.db.Conn(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("LockVault: acquiring connection: %w", err)
+		}
+		var acquired bool
+		if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("LockVault: pg_try_advisory_lock: %w", err)
+		}
+		if acquired {
+			return func() { releaseAdvisoryLock(conn, key) }, nil
+		}
 		_ = conn.Close()
-		return nil, fmt.Errorf("LockVault: pg_advisory_lock: %w", err)
-	}
 
-	return func() {
-		// Best-effort unlock; the lock is released on conn close anyway.
-		_, _ = conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key)
-		_ = conn.Close()
-	}, nil
+		// Jitter spreads a thundering herd across the poll window rather
+		// than re-colliding on every tick.
+		wait := backoff/2 + time.Duration(mrand.Int64N(int64(backoff/2)+1)) // #nosec G404 -- retry jitter only; nothing here is a secret or a token
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("LockVault: %w", ctx.Err())
+		case <-time.After(wait):
+		}
+		backoff = min(backoff*2, lockPollMax)
+	}
+}
+
+// releaseAdvisoryLock unlocks key and returns conn to the pool. Advisory
+// locks are session-scoped and closing a pooled *sql.Conn recycles the
+// session rather than ending it, so a failed unlock would strand the lock on
+// a live connection and wedge the vault permanently. On that path the
+// connection is poisoned instead, forcing the pool to discard the session
+// (and with it the lock) rather than hand it to another caller.
+func releaseAdvisoryLock(conn *sql.Conn, key int64) {
+	// context.Background: the caller's request context is typically already
+	// cancelled by the time an unlock runs from a deferred call.
+	_, err := conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key)
+	if err != nil {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
+	_ = conn.Close()
 }
 
 // now returns the current UTC time formatted for the active dialect.
