@@ -1,5 +1,5 @@
 import { useRouteContext } from "@tanstack/react-router";
-import type { AuthContext, VaultContext } from "../../router";
+import type { AuthContext, InstanceStatus, VaultContext } from "../../router";
 
 // Re-export shared UI components so existing vault imports don't break
 export {
@@ -12,7 +12,7 @@ export {
 } from "../../components/shared";
 
 export function useVaultParams() {
-  const { auth } = useRouteContext({ from: "/_auth" }) as { auth: AuthContext };
+  const { auth, status } = useRouteContext({ from: "/_auth" }) as { auth: AuthContext; status: InstanceStatus };
   const vaultContext = useRouteContext({ from: "/_auth/vaults/$name" }) as VaultContext;
   return {
     vaultName: vaultContext.vault_name,
@@ -20,5 +20,6 @@ export function useVaultParams() {
     credentialStore: vaultContext.credential_store,
     email: auth.email,
     isOwner: auth.is_owner,
+    managedOAuthProviders: status.managed_oauth_providers ?? [],
   };
 }

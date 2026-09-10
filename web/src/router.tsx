@@ -44,6 +44,7 @@ export interface InstanceStatus {
   allowed_email_domains?: string[];
   invite_only?: boolean;
   base_url?: string;
+  managed_oauth_providers?: string[];
 }
 
 export interface CredentialStoreInfo {

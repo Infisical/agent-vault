@@ -23,6 +23,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/mitm"
 	"github.com/Infisical/agent-vault/internal/notify"
+	"github.com/Infisical/agent-vault/internal/oauth"
 	"github.com/Infisical/agent-vault/internal/pidfile"
 	"github.com/Infisical/agent-vault/internal/requestlog"
 	"github.com/Infisical/agent-vault/internal/server"
@@ -71,6 +72,15 @@ func resolveBaseURL(addr string) string {
 // stderr keeps it readable in a terminal without a dependency bump.
 func buildLogger(level slog.Level) *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+}
+
+func configureManagedOAuthProviders(srv *server.Server) error {
+	providers, err := oauth.LoadManagedProvidersFromEnv()
+	if err != nil {
+		return fmt.Errorf("loading managed OAuth providers: %w", err)
+	}
+	srv.SetManagedOAuthProviders(providers)
+	return nil
 }
 
 var serverCmd = &cobra.Command{
@@ -178,6 +188,9 @@ var serverCmd = &cobra.Command{
 		_ = os.Unsetenv("AGENT_VAULT_SMTP_PASSWORD")
 		notifier := notify.New(smtpCfg)
 		srv := server.New(addr, db, masterKey.Key(), notifier, initialized, baseURL, logger)
+		if err := configureManagedOAuthProviders(srv); err != nil {
+			return err
+		}
 		srv.SetSkills(skillCLI)
 		srv.AttachTelemetry(tel)
 		shutdownLogs := attachLogSink(srv, db, logger)
@@ -599,6 +612,9 @@ func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger, maxR
 	_ = os.Unsetenv("AGENT_VAULT_SMTP_PASSWORD")
 	notifier := notify.New(smtpCfg)
 	srv := server.New(addr, db, key, notifier, initialized, baseURL, logger)
+	if err := configureManagedOAuthProviders(srv); err != nil {
+		return err
+	}
 	srv.SetSkills(skillCLI)
 	srv.AttachTelemetry(tel)
 	shutdownLogs := attachLogSink(srv, db, logger)

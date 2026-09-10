@@ -17,7 +17,7 @@ import { OAUTH_PROVIDERS } from "../../lib/oauthProviders";
 
 export default function CredentialsTab() {
   const router = useRouter();
-  const { vaultName, vaultRole, credentialStore } = useVaultParams();
+  const { vaultName, vaultRole, credentialStore, managedOAuthProviders } = useVaultParams();
   const externalKind = credentialStore?.kind;
   const isExternal = !!externalKind;
   const pollSecs = credentialStore?.poll_interval_seconds;
@@ -33,6 +33,7 @@ export default function CredentialsTab() {
     scopes?: string;
     client_secret?: string;
     token_auth_method?: string;
+    managed_provider?: string;
     access_token?: string;
     refresh_token?: string;
     unavailable?: boolean;
@@ -488,6 +489,7 @@ export default function CredentialsTab() {
       {modalOpen && (
         <CredentialModal
           vaultName={vaultName}
+          managedOAuthProviders={managedOAuthProviders}
           editingKey={editingKey}
           editingCred={editingKey ? credentials.find((c) => c.key === editingKey) : undefined}
           onClose={() => {
@@ -512,8 +514,8 @@ interface Entry {
   value: string;
 }
 
-function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved }: {
-  vaultName: string; editingKey: string | null; editingCred?: { type?: string; authorization_url?: string; token_url?: string; client_id?: string; scopes?: string; client_secret?: string; token_auth_method?: string; access_token?: string; refresh_token?: string }; onClose: () => void; onSaved: () => void;
+function CredentialModal({ vaultName, managedOAuthProviders, editingKey, editingCred, onClose, onSaved }: {
+  vaultName: string; managedOAuthProviders: string[]; editingKey: string | null; editingCred?: { type?: string; authorization_url?: string; token_url?: string; client_id?: string; scopes?: string; client_secret?: string; token_auth_method?: string; managed_provider?: string; access_token?: string; refresh_token?: string }; onClose: () => void; onSaved: () => void;
 }) {
   const isEdit = editingKey !== null;
   const editType = editingCred?.type;
@@ -530,6 +532,7 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
   const [oauthClientId, setOauthClientId] = useState(editingCred?.client_id ?? "");
   const [oauthClientSecret, setOauthClientSecret] = useState(editingCred?.client_secret ?? "");
   const [oauthTokenAuthMethod, setOauthTokenAuthMethod] = useState(editingCred?.token_auth_method ?? (editingCred?.client_secret ? "client_secret_post" : "none"));
+  const [oauthProviderId, setOauthProviderId] = useState(editingCred?.managed_provider ?? "");
   const [oauthScopes, setOauthScopes] = useState<string[]>(editingCred?.scopes ? editingCred.scopes.split(" ").filter(Boolean) : []);
   const [oauthAccessToken, setOauthAccessToken] = useState(editingCred?.access_token ?? "");
   const [oauthRefreshToken, setOauthRefreshToken] = useState(editingCred?.refresh_token ?? "");
@@ -545,8 +548,11 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
 
   const [oauthMode, setOauthMode] = useState<"connect" | "upload">(!isEdit || editingCred?.authorization_url ? "connect" : "upload");
   const isTokenUpload = oauthMode === "upload";
+  const currentProvider = OAUTH_PROVIDERS.find((p) => p.authorizationUrl === oauthAuthUrl || p.tokenUrl === oauthTokenUrl);
+  const isManagedProvider = !!oauthProviderId && managedOAuthProviders.includes(oauthProviderId);
+  const scopeOptions = (currentProvider?.scopes ?? []).map((s) => ({ value: s.value, description: s.description }));
   const canSubmitStatic = entries.every((e) => e.key.trim() && e.value.trim());
-  const canSubmitOAuthConnect = !!(oauthKey.trim() && oauthTokenUrl.trim() && oauthClientId.trim() && oauthAuthUrl.trim());
+  const canSubmitOAuthConnect = !!(oauthKey.trim() && oauthTokenUrl.trim() && (isManagedProvider || oauthClientId.trim()) && oauthAuthUrl.trim());
   const canSubmitOAuthTokens = !!(oauthKey.trim() && (oauthAccessToken.trim() || oauthRefreshToken.trim()));
   const canSubmit = credType === "static" ? canSubmitStatic : isTokenUpload ? canSubmitOAuthTokens : oauthConnected;
 
@@ -573,19 +579,25 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
     } catch (err: unknown) { setError(err instanceof Error ? err.message : "An error occurred."); } finally { setSaving(false); }
   }
 
-  // The "custom" pinned option intentionally falls through the guard below:
-  // selecting it just closes the list and leaves all fields free-form.
+  // Selecting the pinned custom option leaves endpoint fields free-form and
+  // disables any instance-managed provider.
   const customOption = { id: "custom", label: "Custom Provider", sublabel: "Enter provider manually", pinned: true };
 
-  const currentProvider = OAUTH_PROVIDERS.find((p) => p.authorizationUrl === oauthAuthUrl || p.tokenUrl === oauthTokenUrl);
-  const scopeOptions = (currentProvider?.scopes ?? []).map((s) => ({ value: s.value, description: s.description }));
-
   function applyProvider(id: string) {
+    if (id === "custom") {
+      setOauthProviderId("");
+      return;
+    }
     const p = OAUTH_PROVIDERS.find((p) => p.id === id);
     if (!p) return;
+    setOauthProviderId(p.id);
     setOauthAuthUrl(p.authorizationUrl);
     setOauthTokenUrl(p.tokenUrl);
     setOauthTokenAuthMethod(p.tokenAuthMethod);
+    if (managedOAuthProviders.includes(p.id)) {
+      setOauthClientId("");
+      setOauthClientSecret("");
+    }
     if (!isEdit) setOauthKey(p.suggestedKey);
     setOauthScopes([]);
   }
@@ -595,7 +607,7 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
     try {
       const resp = await apiFetch("/v1/credentials/oauth/connect", {
         method: "POST",
-        body: JSON.stringify({ vault: vaultName, key: oauthKey.trim(), authorization_url: oauthAuthUrl.trim(), token_url: oauthTokenUrl.trim(), client_id: oauthClientId.trim(), client_secret: oauthClientSecret.trim() || undefined, scopes: oauthScopes.join(" ") || undefined, token_auth_method: oauthTokenAuthMethod === "none" ? undefined : oauthTokenAuthMethod }),
+        body: JSON.stringify({ vault: vaultName, key: oauthKey.trim(), provider: isManagedProvider ? oauthProviderId : undefined, authorization_url: oauthAuthUrl.trim(), token_url: oauthTokenUrl.trim(), client_id: isManagedProvider ? undefined : oauthClientId.trim(), client_secret: isManagedProvider ? undefined : oauthClientSecret.trim() || undefined, scopes: oauthScopes.join(" ") || undefined, token_auth_method: isManagedProvider || oauthTokenAuthMethod === "none" ? undefined : oauthTokenAuthMethod }),
       });
       if (!resp.ok) { const d = await resp.json(); throw new Error(d.error || "Failed to start OAuth."); }
       const data = await resp.json();
@@ -706,22 +718,26 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
                   placeholder="e.g. https://accounts.google.com/o/oauth2/v2/auth"
                   value={oauthAuthUrl}
                   onChange={setOauthAuthUrl}
-                  options={[...OAUTH_PROVIDERS.map((p) => ({ id: p.id, label: p.name, sublabel: p.authorizationUrl })), customOption]}
+                  options={[...OAUTH_PROVIDERS.map((p) => ({ id: p.id, label: managedOAuthProviders.includes(p.id) ? `${p.name} (managed)` : p.name, sublabel: managedOAuthProviders.includes(p.id) ? "OAuth app configured by instance operator" : p.authorizationUrl })), customOption]}
                   onSelect={applyProvider}
                 />
               </FormField>
               <FormField label="Token URL"><Input placeholder="e.g. https://oauth2.googleapis.com/token" value={oauthTokenUrl} onChange={(e) => setOauthTokenUrl(e.target.value)} /></FormField>
-              <div className="flex gap-3">
-                <div className="flex-1"><FormField label="Client ID"><Input placeholder="OAuth app client ID" value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} /></FormField></div>
-                <div className="flex-1"><FormField label="Client Secret" helperText="Optional for public clients"><Input placeholder="OAuth app client secret" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} type="password" /></FormField></div>
-                <div className="w-36"><FormField label="Auth Method">
-                  <Select value={oauthTokenAuthMethod} onChange={(e) => setOauthTokenAuthMethod(e.target.value)}>
-                    <option value="none">None</option>
-                    <option value="client_secret_post">POST body</option>
-                    <option value="client_secret_basic">Basic auth</option>
-                  </Select>
-                </FormField></div>
-              </div>
+              {isManagedProvider ? (
+                <InfoBanner>OAuth application managed by this Agent Vault instance. Choose scopes, then connect your account.</InfoBanner>
+              ) : (
+                <div className="flex gap-3">
+                  <div className="flex-1"><FormField label="Client ID"><Input placeholder="OAuth app client ID" value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} /></FormField></div>
+                  <div className="flex-1"><FormField label="Client Secret" helperText="Optional for public clients"><Input placeholder="OAuth app client secret" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} type="password" /></FormField></div>
+                  <div className="w-36"><FormField label="Auth Method">
+                    <Select value={oauthTokenAuthMethod} onChange={(e) => setOauthTokenAuthMethod(e.target.value)}>
+                      <option value="none">None</option>
+                      <option value="client_secret_post">POST body</option>
+                      <option value="client_secret_basic">Basic auth</option>
+                    </Select>
+                  </FormField></div>
+                </div>
+              )}
               <FormField label="Scopes">
                 <CreatableSelect
                   values={oauthScopes}
