@@ -662,10 +662,10 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
           {entries.map((entry, i) => (
             <div key={i} className="flex gap-3 items-start">
               <div className="flex-1 min-w-0">
-                <FormField label="Key"><Input placeholder="e.g. STRIPE_KEY" value={entry.key} onChange={(e) => updateEntry(i, "key", e.target.value)} readOnly={isEdit} autoFocus={!isEdit && i === 0} /></FormField>
+                <FormField label="Key"><Input placeholder="e.g. STRIPE_KEY" value={entry.key} onChange={(e) => updateEntry(i, "key", e.target.value)} readOnly={isEdit} autoFocus={!isEdit && i === 0} autoComplete="off" data-1p-ignore data-lpignore="true" /></FormField>
               </div>
               <div className="flex-1 min-w-0">
-                <FormField label="Value"><Input placeholder="Credential value" value={entry.value} onChange={(e) => updateEntry(i, "value", e.target.value)} type="password" autoFocus={isEdit && i === 0} onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(); }} /></FormField>
+                <FormField label="Value"><Input placeholder="Credential value" value={entry.value} onChange={(e) => updateEntry(i, "value", e.target.value)} type="password" autoFocus={isEdit && i === 0} onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(); }} autoComplete="off" data-1p-ignore data-lpignore="true" /></FormField>
               </div>
               {!isEdit && entries.length > 1 && (
                 <button onClick={() => removeEntry(i)} className="mt-7 w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-lg text-text-dim hover:text-danger hover:bg-danger-bg transition-colors">
@@ -713,7 +713,7 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
               <FormField label="Token URL"><Input placeholder="e.g. https://oauth2.googleapis.com/token" value={oauthTokenUrl} onChange={(e) => setOauthTokenUrl(e.target.value)} /></FormField>
               <div className="flex gap-3">
                 <div className="flex-1"><FormField label="Client ID"><Input placeholder="OAuth app client ID" value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} /></FormField></div>
-                <div className="flex-1"><FormField label="Client Secret" helperText="Optional for public clients"><Input placeholder="OAuth app client secret" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} type="password" /></FormField></div>
+                <div className="flex-1"><FormField label="Client Secret" helperText="Optional for public clients"><Input placeholder="OAuth app client secret" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} type="password" autoComplete="off" data-1p-ignore data-lpignore="true" /></FormField></div>
                 <div className="w-36"><FormField label="Auth Method">
                   <Select value={oauthTokenAuthMethod} onChange={(e) => setOauthTokenAuthMethod(e.target.value)}>
                     <option value="none">None</option>
@@ -734,8 +734,8 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
           ) : (
             <>
               <div className="flex gap-3">
-                <div className="flex-1"><FormField label="Access Token" helperText="Optional when refresh token is provided"><Input placeholder="Access token" value={oauthAccessToken} onChange={(e) => setOauthAccessToken(e.target.value)} type="password" /></FormField></div>
-                <div className="flex-1"><FormField label="Refresh Token" helperText="Validated immediately on save"><Input placeholder="Refresh token" value={oauthRefreshToken} onChange={(e) => setOauthRefreshToken(e.target.value)} type="password" /></FormField></div>
+                <div className="flex-1"><FormField label="Access Token" helperText="Optional when refresh token is provided"><Input placeholder="Access token" value={oauthAccessToken} onChange={(e) => setOauthAccessToken(e.target.value)} type="password" autoComplete="off" data-1p-ignore data-lpignore="true" /></FormField></div>
+                <div className="flex-1"><FormField label="Refresh Token" helperText="Validated immediately on save"><Input placeholder="Refresh token" value={oauthRefreshToken} onChange={(e) => setOauthRefreshToken(e.target.value)} type="password" autoComplete="off" data-1p-ignore data-lpignore="true" /></FormField></div>
               </div>
               <FormField label="Token URL" helperText="Required for refresh. Pick a provider or paste any URL.">
                 <Combobox
@@ -748,7 +748,7 @@ function CredentialModal({ vaultName, editingKey, editingCred, onClose, onSaved 
               </FormField>
               <div className="flex gap-3">
                 <div className="flex-1"><FormField label="Client ID" helperText="Required for refresh"><Input placeholder="OAuth app client ID" value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} /></FormField></div>
-                <div className="flex-1"><FormField label="Client Secret" helperText="Optional"><Input placeholder="OAuth app client secret" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} type="password" /></FormField></div>
+                <div className="flex-1"><FormField label="Client Secret" helperText="Optional"><Input placeholder="OAuth app client secret" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} type="password" autoComplete="off" data-1p-ignore data-lpignore="true" /></FormField></div>
                 <div className="w-36"><FormField label="Auth Method">
                   <Select value={oauthTokenAuthMethod} onChange={(e) => setOauthTokenAuthMethod(e.target.value)}>
                     <option value="none">None</option>
