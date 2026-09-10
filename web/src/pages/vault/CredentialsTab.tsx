@@ -215,10 +215,37 @@ export default function CredentialsTab() {
   // Reveal state: tracks which credential values have been fetched and are visible.
   const [revealedValues, setRevealedValues] = useState<Record<string, string>>({});
   const [revealing, setRevealing] = useState<Record<string, boolean>>({});
+  const revealTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  // Auto-hide revealed values after 30 seconds.
+  const REVEAL_TIMEOUT_MS = 30_000;
+
+  function scheduleAutoHide(key: string) {
+    if (revealTimers.current[key]) clearTimeout(revealTimers.current[key]);
+    revealTimers.current[key] = setTimeout(() => {
+      setRevealedValues((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      delete revealTimers.current[key];
+    }, REVEAL_TIMEOUT_MS);
+  }
+
+  // Clean up all timers on unmount.
+  useEffect(() => {
+    return () => {
+      for (const t of Object.values(revealTimers.current)) clearTimeout(t);
+    };
+  }, []);
 
   async function toggleReveal(key: string) {
     if (revealedValues[key] !== undefined) {
-      // Already revealed -> hide it.
+      // Already revealed -> hide it and cancel the auto-hide timer.
+      if (revealTimers.current[key]) {
+        clearTimeout(revealTimers.current[key]);
+        delete revealTimers.current[key];
+      }
       setRevealedValues((prev) => {
         const next = { ...prev };
         delete next[key];
@@ -235,6 +262,7 @@ export default function CredentialsTab() {
         const data = await resp.json();
         const val = data.credentials?.[0]?.value ?? "";
         setRevealedValues((prev) => ({ ...prev, [key]: val }));
+        scheduleAutoHide(key);
       }
     } catch {
       // Silently fail — user can retry.
@@ -495,6 +523,15 @@ export default function CredentialsTab() {
             setEditingKey(null);
           }}
           onSaved={() => {
+            // Clear revealed value for the edited credential so stale plaintext
+            // is never shown after a value change.
+            if (editingKey) {
+              setRevealedValues((prev) => {
+                const next = { ...prev };
+                delete next[editingKey];
+                return next;
+              });
+            }
             setModalOpen(false);
             setEditingKey(null);
             fetchKeys();
