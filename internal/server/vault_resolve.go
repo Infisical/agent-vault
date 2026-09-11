@@ -7,6 +7,21 @@ import (
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
+// resolveVaultByPath resolves the vault named by the {name} path value,
+// responding 404 and returning nil when it does not exist. Callers read the
+// vault name back off the returned row. This is the preamble every
+// vault-scoped handler opens with; it carries no authorization, so callers
+// still apply requireVaultAccess/requireVaultMember/requireVaultAdmin.
+func (s *Server) resolveVaultByPath(w http.ResponseWriter, r *http.Request) *store.Vault {
+	name := r.PathValue("name")
+	ns, err := s.store.GetVault(r.Context(), name)
+	if err != nil || ns == nil {
+		jsonError(w, http.StatusNotFound, fmt.Sprintf("Vault %q not found", name))
+		return nil
+	}
+	return ns
+}
+
 // resolveVaultForSession resolves the vault and vault role for the current
 // session. User-scoped sessions carry the vault directly; instance-level
 // agent tokens select a vault via the X-Vault request header and the
