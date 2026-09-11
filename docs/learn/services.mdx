@@ -290,7 +290,28 @@ Worked example — Slack with two credentials at the same host:
 
 - To override a wildcard-host rule for a specific subdomain, **add the exact-host rule** — it takes priority no matter what its path portion looks like.
 - To layer two credentials on the same host, give them **different path portions**; the more specific path will win.
-- The matcher does not run regex, does not match on method/headers/query/body, and does not bound `*` at path segments. Patterns that tie under rule 2 (e.g. `slack.com/api/*/v2` and `slack.com/api/*/v3`) fall to declaration order.
+- The matcher does not run regex, does not match on method/headers/query/body, and does not bound `*` at path segments. Patterns that tie under rule 2 (e.g. `slack.com/api/*/v2` and `slack.com/api/*/v3`) fall to declaration order. (A service's optional `methods` list is not a matcher dimension — it is checked after selection; see [Restricting HTTP methods](#restricting-http-methods).)
+
+## Restricting HTTP methods
+
+A service may declare an optional `methods` list. When present, the credential is attached only to requests using one of the listed HTTP methods; any other method is denied with a 403 (`method_not_allowed`) and the credential is not attached in any form — neither as auth headers nor through substitutions.
+
+```yaml
+services:
+  - name: github-readonly
+    host: api.github.com
+    methods: [GET, HEAD]
+    auth:
+      type: bearer
+      token: GITHUB_TOKEN
+```
+
+- Omitting `methods` allows all methods. An explicitly empty list (`methods: []`) is rejected by validation.
+- Supported values: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`. Values are uppercased on ingest.
+- `methods` is **not** part of matching. The matcher selects the single most-specific host/port/path winner exactly as described above, and the method check then runs on that winner — like a disabled service, a method-excluded winner is denied outright with no fall-through to a broader sibling. Making a whole host read-only therefore requires `methods` on every service whose pattern can win requests for that host.
+- On a method-restricted service, Agent Vault also strips the well-known method-override surfaces before forwarding: the `X-HTTP-Method-Override`, `X-Method-Override`, and `X-HTTP-Method` headers and the `_method` query parameter. The `_method` form carried in a POST body is not inspected.
+
+Method restriction constrains plain HTTP request semantics only. A WebSocket handshake is a `GET`, so a `methods: [GET]` service still matches it, and `websocket`-scope substitutions write into frames that carry no method.
 
 ## Example
 
