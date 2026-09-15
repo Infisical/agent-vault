@@ -28,13 +28,20 @@ type Config struct {
 // existed stay live after upgrade — use IsEnabled() rather than
 // dereferencing the pointer.
 type Service struct {
-	Name          string         `yaml:"name" json:"name"`
-	Host          string         `yaml:"host" json:"host"`
-	Path          string         `yaml:"path,omitempty" json:"path,omitempty"`
-	Port          *int           `yaml:"port,omitempty" json:"-"`
-	Enabled       *bool          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	Auth          Auth           `yaml:"auth" json:"auth"`
-	Substitutions []Substitution `yaml:"substitutions,omitempty" json:"substitutions,omitempty"`
+	Name              string                   `yaml:"name" json:"name"`
+	Host              string                   `yaml:"host" json:"host"`
+	Path              string                   `yaml:"path,omitempty" json:"path,omitempty"`
+	Port              *int                     `yaml:"port,omitempty" json:"-"`
+	Enabled           *bool                    `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Auth              Auth                     `yaml:"auth" json:"auth"`
+	Substitutions     []Substitution           `yaml:"substitutions,omitempty" json:"substitutions,omitempty"`
+	ResponseRedaction *ResponseRedactionConfig `yaml:"response_redaction,omitempty" json:"response_redaction,omitempty"`
+}
+
+// ResponseRedactionConfig controls whether injected credential values should
+// also be considered secret on upstream response bodies.
+type ResponseRedactionConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
 }
 
 // MatcherPattern returns the joined inline form (`slack.com/api/*`),
@@ -73,6 +80,10 @@ type Substitution struct {
 // so services persisted before this field existed stay live after upgrade.
 func (s *Service) IsEnabled() bool {
 	return s.Enabled == nil || *s.Enabled
+}
+
+func (s *Service) ResponseRedactionEnabled() bool {
+	return s.ResponseRedaction != nil && s.ResponseRedaction.Enabled
 }
 
 // Auth describes how credentials are attached for a broker service.

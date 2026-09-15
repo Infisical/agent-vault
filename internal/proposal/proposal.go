@@ -42,14 +42,15 @@ const (
 // flow); Substitutions require Auth since merge only carries them on
 // full replacements.
 type Service struct {
-	Action        Action                `json:"action"`
-	Name          string                `json:"name,omitempty"`
-	Host          string                `json:"host"`
-	Path          string                `json:"path,omitempty"`
-	Port          *int                  `json:"-"`
-	Enabled       *bool                 `json:"enabled,omitempty"`
-	Auth          *broker.Auth          `json:"auth,omitempty"`
-	Substitutions []broker.Substitution `json:"substitutions,omitempty"`
+	Action            Action                          `json:"action"`
+	Name              string                          `json:"name,omitempty"`
+	Host              string                          `json:"host"`
+	Path              string                          `json:"path,omitempty"`
+	Port              *int                            `json:"-"`
+	Enabled           *bool                           `json:"enabled,omitempty"`
+	Auth              *broker.Auth                    `json:"auth,omitempty"`
+	Substitutions     []broker.Substitution           `json:"substitutions,omitempty"`
+	ResponseRedaction *broker.ResponseRedactionConfig `json:"response_redaction,omitempty"`
 }
 
 // MatcherPattern returns the joined inline form (`slack.com/api/*`),

@@ -95,6 +95,20 @@ Some APIs put credentials in the URL path, query string, or request body instead
 
 The proxy finds the placeholder string and replaces it with the real credential. Supported surfaces: `path`, `query`, `header`, `body`, `websocket`. Defaults to `["path", "query"]` if omitted.
 
+## Response redaction
+
+For services that may echo a brokered secret back in an API response, JSON mode
+can request response-body redaction:
+
+```json
+"response_redaction": {"enabled": true}
+```
+
+When enabled, the proxy removes exact credential values it injected for that
+request from text-like upstream response bodies before returning them to the
+agent. If a response cannot be safely inspected, such as compressed, streaming,
+or oversized bodies, the proxy fails closed with `502`.
+
 ## OAuth credentials
 
 Some services use OAuth 2.0 instead of static API keys. Use `type: "oauth"` when the service requires OAuth authorization (e.g., Google APIs, services without long-lived API keys). Use the default (static) when the service provides API keys or personal access tokens.

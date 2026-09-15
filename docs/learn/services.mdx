@@ -10,6 +10,7 @@ Each service contains:
 - **Name**: A canonical per-vault identifier (slug, 3–64 lowercase alphanumeric/hyphen chars, no leading/trailing hyphen, no consecutive hyphens). **Required on write** for new services — pick a deliberate name like `stripe`, `slack-bot`, or `internal-billing`. `name` may be omitted only when `host` + `path` uniquely matches an existing service (the server adopts that service's name, the same pattern as host-based delete). Legacy services persisted without a name before this contract are auto-slugified from `host` + `path` on read so they remain addressable; the slug becomes durable on the next write.
 - **Host**: The single matcher field. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), an inline path-scoped form (`slack.com/api/*`), or a port-scoped form (`internal.corp.com:3000` or `internal.corp.com:3000/api/*`). When a port is included, the service matches only traffic to that port; without a port, the service matches any port. Reads and writes use the same shape: writes accept any of those forms; reads return the joined inline form so you see exactly what you wrote.
 - **Auth config**: How Agent Vault authenticates. Five types are supported: `bearer`, `basic`, `api-key`, `custom`, and `passthrough` (opt out of injection).
+- **Response redaction**: Optional defense-in-depth for services that may echo brokered credential values in upstream response bodies.
 
 <Tip>
   The `/discover` endpoint returns each service's `name` and `host` (joined
@@ -255,6 +256,35 @@ Substitutions and auth are independent. A service can use either, both, or neith
   Auth-only or enable/disable-only `set` proposals preserve existing
   substitutions; to clear them, delete and recreate the service.
 </Warning>
+
+## Response redaction
+
+Some upstream APIs can return a credential value in a response body, even when
+the agent never had that credential in its own environment. Enable response
+redaction on a service when that upstream has routes that may echo tokens,
+API keys, account secrets, or credential-bearing substitution values.
+
+```yaml
+services:
+  - name: internal-api
+    host: api.internal.example
+    auth:
+      type: bearer
+      token: INTERNAL_API_TOKEN
+    response_redaction:
+      enabled: true
+```
+
+When enabled, Agent Vault removes exact credential values that it injected for
+that request from eligible upstream response bodies before returning them to
+the agent. This includes raw credential values, rendered auth header values
+such as `Bearer <token>`, and resolved substitution values.
+
+Response redaction is off by default. It only applies to text-like response
+bodies such as JSON, XML, form-encoded, and `text/*` content. If redaction is
+enabled but the response cannot be safely materialized or inspected, such as a
+compressed, streaming, or oversized body, Agent Vault fails the proxied request
+with `502` instead of passing a potentially secret-bearing body through.
 
 ## Matching rules
 
