@@ -281,6 +281,30 @@ type DynamicSecretLease struct {
 	CreatedAt         time.Time
 }
 
+// Skill is a per-vault markdown instruction document. Content is the SKILL.md
+// body; it is stored in plaintext because skills are instructions, not secrets
+// (unlike Credential, which is DEK-encrypted at rest).
+type Skill struct {
+	VaultID     string
+	Name        string
+	Description string
+	Content     string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// SkillMeta is a skill row without its markdown body, so list reads stay small
+// regardless of how large the bodies grow.
+type SkillMeta struct {
+	Name        string
+	Description string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// ErrSkillExists is returned when a skill name is already taken in the vault.
+var ErrSkillExists = errors.New("skill already exists")
+
 // CreateExternalVaultParams carries inputs to CreateExternalVault. The
 // creator is persisted as an admin vault_grants row in the same transaction.
 type CreateExternalVaultParams struct {
@@ -580,6 +604,14 @@ type Store interface {
 	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
 	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
 	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
+
+	// Vault skills (markdown instruction documents, one row per skill).
+	// ListSkills omits the markdown body; GetSkill returns it.
+	ListSkills(ctx context.Context, vaultID string) ([]SkillMeta, error)
+	GetSkill(ctx context.Context, vaultID, name string) (*Skill, error)
+	InsertSkill(ctx context.Context, sk Skill) (*Skill, error)
+	UpdateSkill(ctx context.Context, vaultID, oldName string, sk Skill) (*Skill, error)
+	DeleteSkill(ctx context.Context, vaultID, name string) error
 
 	// External credential stores (per vault)
 	CreateExternalVault(ctx context.Context, p CreateExternalVaultParams) (*Vault, error)
