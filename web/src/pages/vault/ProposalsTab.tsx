@@ -463,7 +463,7 @@ function ProposalModal({
                 }
               >
                 <Input
-                  type="password"
+                  type="text"
                   placeholder={`Paste your ${cred.description || cred.key}`}
                   autoComplete="off"
                   value={credentialValues[cred.key] ?? ""}
