@@ -129,3 +129,116 @@ func TestPostgresContextBindingRetirementWaitsForProposalLock(t *testing.T) {
 		t.Fatal("retirement remained blocked after proposal transaction committed")
 	}
 }
+
+func TestPostgresContextBindingRetirementWaitsForProposalApply(t *testing.T) {
+	databaseURL := os.Getenv("AGENT_VAULT_TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("set AGENT_VAULT_TEST_POSTGRES_URL to run PostgreSQL locking tests")
+	}
+
+	s, err := openPostgres(databaseURL)
+	if err != nil {
+		t.Fatalf("open Postgres: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	machineID := uuid.NewString()
+	binding, err := s.CreateContextBinding(ctx, contextbinding.Tuple{
+		OriginType:                          contextbinding.OriginCodex,
+		OriginCodexThreadID:                 uuid.NewString(),
+		OriginCodexSessionID:                uuid.NewString(),
+		PerplexityProjectID:                 uuid.NewString(),
+		RegisteredPersonalComputerMachineID: machineID,
+		RuntimeDeviceID:                     "macos:" + machineID,
+		WorkspaceRoot:                       "/tmp/agent-vault-postgres-apply-" + uuid.NewString(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault, err := s.CreateVault(ctx, "pg-apply-"+uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := s.CreateProposalWithContext(ctx, vault.ID, "pg-apply-session", binding.ID, "[]", "[]", "apply race", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.ExecContext(context.Background(), s.dialect.Rebind("DELETE FROM proposals WHERE vault_id = ?"), vault.ID)
+		_, _ = s.db.ExecContext(context.Background(), s.dialect.Rebind("DELETE FROM context_bindings WHERE id = ?"), binding.ID)
+		_ = s.DeleteVault(context.Background(), vault.Name)
+	})
+
+	brokerBlocker, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = brokerBlocker.Rollback() }()
+	var present int
+	if err := brokerBlocker.QueryRowContext(ctx,
+		s.dialect.Rebind("SELECT 1 FROM broker_configs WHERE vault_id = ? FOR UPDATE"), vault.ID,
+	).Scan(&present); err != nil {
+		t.Fatalf("lock broker config: %v", err)
+	}
+
+	applyDone := make(chan error, 1)
+	go func() {
+		applyDone <- s.ApplyProposal(ctx, vault.ID, proposal.ID, `[{"host":"apply.example"}]`, nil, nil, nil)
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		probe, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = probe.QueryRowContext(ctx,
+			s.dialect.Rebind("SELECT 1 FROM context_bindings WHERE id = ? FOR UPDATE NOWAIT"), binding.ID,
+		).Scan(&present)
+		_ = probe.Rollback()
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+			break
+		}
+		if err != nil {
+			t.Fatalf("probe apply binding lock: %v", err)
+		}
+		select {
+		case err := <-applyDone:
+			t.Fatalf("apply returned before reaching blocked broker update: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("apply never acquired the context-binding lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	retired := make(chan error, 1)
+	go func() { retired <- s.RetireContextBinding(ctx, binding.ID) }()
+	select {
+	case err := <-retired:
+		t.Fatalf("retirement completed while apply held the binding lock: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	if err := brokerBlocker.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-applyDone:
+		if err != nil {
+			t.Fatalf("ApplyProposal: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("apply remained blocked after broker lock release")
+	}
+	select {
+	case err := <-retired:
+		if err != nil {
+			t.Fatalf("retirement after apply commit: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("retirement remained blocked after apply committed")
+	}
+}

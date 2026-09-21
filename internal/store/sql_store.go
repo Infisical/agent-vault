@@ -2099,16 +2099,16 @@ func (s *SQLStore) CreateProposalWithContext(ctx context.Context, vaultID, sessi
 // the active check in the same statement that acquires the database write lock.
 func (s *SQLStore) lockActiveContextBinding(ctx context.Context, tx *sql.Tx, id string) error {
 	forUpdate := s.dialect.ForUpdateClause()
-	if forUpdate == "" {
-		return nil
+	if forUpdate != "" {
+		forUpdate = " " + forUpdate
 	}
 	var present int
 	err := tx.QueryRowContext(ctx,
-		s.dialect.Rebind("SELECT 1 FROM context_bindings WHERE id = ? AND retired_at IS NULL "+forUpdate),
+		s.dialect.Rebind("SELECT 1 FROM context_bindings WHERE id = ? AND retired_at IS NULL"+forUpdate),
 		id,
 	).Scan(&present)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("context binding %q not found or retired", id)
+		return fmt.Errorf("%w: %q", ErrContextBindingInactive, id)
 	}
 	if err != nil {
 		return fmt.Errorf("locking context binding %q: %w", id, err)
@@ -2178,7 +2178,7 @@ func (s *SQLStore) createProposal(ctx context.Context, vaultID, sessionID string
 	}
 	if contextBindingID != nil {
 		if affected, _ := insertResult.RowsAffected(); affected == 0 {
-			return nil, fmt.Errorf("context binding %q not found or retired", *contextBindingID)
+			return nil, fmt.Errorf("%w: %q", ErrContextBindingInactive, *contextBindingID)
 		}
 	}
 
@@ -2321,6 +2321,10 @@ func (s *SQLStore) GetProposalCredentials(ctx context.Context, vaultID string, p
 }
 
 func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []OAuthCredentialConfig) error {
+	return s.applyProposalWithHook(ctx, vaultID, proposalID, mergedServicesJSON, credentials, deleteCredentialKeys, oauthConfigs, nil)
+}
+
+func (s *SQLStore) applyProposalWithHook(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []OAuthCredentialConfig, afterBindingCheck func()) error {
 	nowStr := s.now()
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -2328,6 +2332,35 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// Re-verify a bound proposal at apply time. PostgreSQL locks both the
+	// proposal and active binding rows until commit; SQLite rechecks the binding
+	// in the final guarded status update, after this transaction has acquired
+	// its writer lock through the mutations below.
+	var contextBindingID sql.NullString
+	forUpdate := s.dialect.ForUpdateClause()
+	if forUpdate != "" {
+		forUpdate = " " + forUpdate
+	}
+	err = tx.QueryRowContext(ctx,
+		s.dialect.Rebind(`SELECT context_binding_id FROM proposals
+			WHERE vault_id = ? AND id = ? AND status = 'pending'`+forUpdate),
+		vaultID, proposalID,
+	).Scan(&contextBindingID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: proposal is not pending", ErrProposalStateConflict)
+	}
+	if err != nil {
+		return fmt.Errorf("loading proposal context binding: %w", err)
+	}
+	if contextBindingID.Valid {
+		if err := s.lockActiveContextBinding(ctx, tx, contextBindingID.String); err != nil {
+			return err
+		}
+	}
+	if afterBindingCheck != nil {
+		afterBindingCheck()
+	}
 
 	// 1. Update broker config with merged services.
 	_, err = tx.ExecContext(ctx,
@@ -2430,7 +2463,12 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 	// 4. Mark proposal as applied (status guard prevents double-apply race).
 	res, err := tx.ExecContext(ctx,
 		s.dialect.Rebind(`UPDATE proposals SET status = 'applied', reviewed_at = ?, updated_at = ?
-		 WHERE vault_id = ? AND id = ? AND status = 'pending'`),
+		 WHERE vault_id = ? AND id = ? AND status = 'pending'
+		   AND (context_binding_id IS NULL OR EXISTS (
+		     SELECT 1 FROM context_bindings
+		     WHERE context_bindings.id = proposals.context_binding_id
+		       AND context_bindings.retired_at IS NULL
+		   ))`),
 		nowStr, nowStr, vaultID, proposalID,
 	)
 	if err != nil {
@@ -2438,7 +2476,7 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("proposal already processed (not pending)")
+		return fmt.Errorf("%w: proposal was processed or its context binding retired", ErrProposalStateConflict)
 	}
 
 	return tx.Commit()

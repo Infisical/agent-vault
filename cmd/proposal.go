@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/huh"
 	"github.com/Infisical/agent-vault/internal/proposal"
 	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/Infisical/agent-vault/internal/store"
+	"github.com/charmbracelet/huh"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -29,6 +29,9 @@ func displayProposal(w io.Writer, cs *store.Proposal) {
 	fmt.Fprintf(w, "%s\n", boldText(fmt.Sprintf("Proposal #%d", cs.ID)))
 	fmt.Fprintf(w, "%s %s\n", fieldLabel("Status:"), statusBadge(cs.Status))
 	fmt.Fprintf(w, "%s %s\n", fieldLabel("Created:"), cs.CreatedAt.Format(time.RFC3339))
+	if cs.ContextBindingID != nil {
+		fmt.Fprintf(w, "%s %s\n", fieldLabel("Context:"), *cs.ContextBindingID)
+	}
 	if cs.ReviewedAt != nil {
 		fmt.Fprintf(w, "%s %s\n", fieldLabel("Reviewed:"), *cs.ReviewedAt)
 	}
@@ -173,8 +176,8 @@ func sendApproveRequest(sess *session.ClientSession, vault string, id int, crede
 // sendRejectRequest sends a proposal rejection to the running server via HTTP.
 func sendRejectRequest(sess *session.ClientSession, vault string, id int, reason string) error {
 	body, err := json.Marshal(map[string]interface{}{
-		"vault": vault,
-		"reason":    reason,
+		"vault":  vault,
+		"reason": reason,
 	})
 	if err != nil {
 		return fmt.Errorf("marshalling request: %w", err)
@@ -209,15 +212,16 @@ func fetchProposal(sess *session.ClientSession, vault string, id int) (*store.Pr
 // parseProposalJSON parses the admin proposal API response into a store.Proposal.
 func parseProposalJSON(data []byte) (*store.Proposal, error) {
 	var resp struct {
-		ID          int     `json:"id"`
-		Status      string  `json:"status"`
-		Message     string  `json:"message"`
-		UserMessage string  `json:"user_message"`
-		ServicesJSON string  `json:"services_json"`
-		CredentialsJSON string  `json:"credentials_json"`
-		ReviewNote  string  `json:"review_note"`
-		ReviewedAt  *string `json:"reviewed_at"`
-		CreatedAt   string  `json:"created_at"`
+		ID               int     `json:"id"`
+		Status           string  `json:"status"`
+		Message          string  `json:"message"`
+		UserMessage      string  `json:"user_message"`
+		ServicesJSON     string  `json:"services_json"`
+		CredentialsJSON  string  `json:"credentials_json"`
+		ReviewNote       string  `json:"review_note"`
+		ReviewedAt       *string `json:"reviewed_at"`
+		ContextBindingID *string `json:"context_binding_id"`
+		CreatedAt        string  `json:"created_at"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("parsing proposal: %w", err)
@@ -226,18 +230,18 @@ func parseProposalJSON(data []byte) (*store.Proposal, error) {
 	createdAt, _ := time.Parse(time.RFC3339, resp.CreatedAt)
 
 	return &store.Proposal{
-		ID:          resp.ID,
-		Status:      resp.Status,
-		Message:     resp.Message,
-		UserMessage: resp.UserMessage,
-		ServicesJSON: resp.ServicesJSON,
-		CredentialsJSON: resp.CredentialsJSON,
-		ReviewNote:  resp.ReviewNote,
-		ReviewedAt:  resp.ReviewedAt,
-		CreatedAt:   createdAt,
+		ID:               resp.ID,
+		Status:           resp.Status,
+		Message:          resp.Message,
+		UserMessage:      resp.UserMessage,
+		ServicesJSON:     resp.ServicesJSON,
+		CredentialsJSON:  resp.CredentialsJSON,
+		ReviewNote:       resp.ReviewNote,
+		ReviewedAt:       resp.ReviewedAt,
+		ContextBindingID: resp.ContextBindingID,
+		CreatedAt:        createdAt,
 	}, nil
 }
-
 
 // ---------------------------------------------------------------------------
 // Commands
@@ -272,10 +276,11 @@ var proposalListCmd = &cobra.Command{
 
 		var resp struct {
 			Proposals []struct {
-				ID        int    `json:"id"`
-				Status    string `json:"status"`
-				Message   string `json:"message"`
-				CreatedAt string `json:"created_at"`
+				ID               int     `json:"id"`
+				Status           string  `json:"status"`
+				Message          string  `json:"message"`
+				ContextBindingID *string `json:"context_binding_id"`
+				CreatedAt        string  `json:"created_at"`
 			} `json:"proposals"`
 		}
 		if err := json.Unmarshal(respBody, &resp); err != nil {
@@ -288,14 +293,18 @@ var proposalListCmd = &cobra.Command{
 		}
 
 		t := newTable(cmd.OutOrStdout())
-		t.AppendHeader(table.Row{"#", "STATUS", "CREATED", "MESSAGE"})
+		t.AppendHeader(table.Row{"#", "STATUS", "CREATED", "CONTEXT", "MESSAGE"})
 		for _, cs := range resp.Proposals {
 			created := cs.CreatedAt
 			if parsed, err := time.Parse(time.RFC3339, cs.CreatedAt); err == nil {
 				created = parsed.Format("2006-01-02 15:04")
 			}
+			contextID := "-"
+			if cs.ContextBindingID != nil {
+				contextID = *cs.ContextBindingID
+			}
 			msg := truncateText(cs.Message, 60)
-			t.AppendRow(table.Row{cs.ID, statusBadge(cs.Status), created, msg})
+			t.AppendRow(table.Row{cs.ID, statusBadge(cs.Status), created, contextID, msg})
 		}
 		t.Render()
 		return nil

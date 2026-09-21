@@ -13,6 +13,13 @@ import (
 // ErrNotFirstUser is returned by RegisterFirstUser when users already exist.
 var ErrNotFirstUser = errors.New("users already exist; not first user")
 
+// ErrContextBindingInactive marks an expected state conflict where an opaque
+// binding no longer exists or was retired before a bound operation committed.
+var ErrContextBindingInactive = errors.New("context binding not found or retired")
+
+// ErrProposalStateConflict marks an expected proposal status/context race.
+var ErrProposalStateConflict = errors.New("proposal state conflict")
+
 // DefaultVault is the name of the automatically-seeded vault.
 const DefaultVault = "default"
 

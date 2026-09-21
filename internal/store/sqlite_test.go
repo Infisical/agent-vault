@@ -1629,6 +1629,151 @@ func TestApplyProposal(t *testing.T) {
 	}
 }
 
+func TestApplyProposalRevalidatesContextBindingAtomically(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		retire     bool
+		wantErr    bool
+		wantStatus string
+	}{
+		{name: "active", wantStatus: "applied"},
+		{name: "retired", retire: true, wantErr: true, wantStatus: "pending"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openTestDB(t)
+			ctx := context.Background()
+			vault, err := s.CreateVault(ctx, "apply-bound-"+tc.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tuple := testContextBindingTuple()
+			tuple.OriginCodexThreadID = "01a026f1-a339-7b84-8bc1-a0071b64171c"
+			binding, err := s.CreateContextBinding(ctx, tuple)
+			if err != nil {
+				t.Fatal(err)
+			}
+			proposal, err := s.CreateProposalWithContext(ctx, vault.ID, "s1", binding.ID, "[]", "[]", "bound", "", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.retire {
+				if err := s.RetireContextBinding(ctx, binding.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			before, err := s.GetBrokerConfig(ctx, vault.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = s.ApplyProposal(ctx, vault.ID, proposal.ID, `[{"host":"bound.example"}]`, map[string]EncryptedCredential{
+				"BOUND_TOKEN": {Ciphertext: []byte("ciphertext"), Nonce: []byte("nonce")},
+			}, nil, nil)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected retired context binding to block apply")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("active context binding apply: %v", err)
+			}
+
+			loaded, err := s.GetProposal(ctx, vault.ID, proposal.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if loaded.Status != tc.wantStatus {
+				t.Fatalf("status=%q want %q", loaded.Status, tc.wantStatus)
+			}
+			if tc.wantErr {
+				after, err := s.GetBrokerConfig(ctx, vault.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if after.ServicesJSON != before.ServicesJSON {
+					t.Fatalf("blocked apply changed broker config: before=%q after=%q", before.ServicesJSON, after.ServicesJSON)
+				}
+				if _, err := s.GetCredential(ctx, vault.ID, "BOUND_TOKEN"); err == nil {
+					t.Fatal("blocked apply persisted credential")
+				}
+			}
+		})
+	}
+}
+
+func TestSQLiteContextBindingRetirementSerializesWithProposalApply(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	vault, err := s.CreateVault(ctx, "sqlite-apply-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tuple := testContextBindingTuple()
+	tuple.OriginCodexThreadID = "01a026f1-a339-7b84-8bc1-a0071b64171c"
+	binding, err := s.CreateContextBinding(ctx, tuple)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.CreateProposalWithContext(ctx, vault.ID, "s1", binding.ID, "[]", "[]", "race", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reached := make(chan struct{})
+	resume := make(chan struct{})
+	applyDone := make(chan error, 1)
+	go func() {
+		applyDone <- s.applyProposalWithHook(ctx, vault.ID, created.ID, `[{"host":"sqlite.example"}]`, nil, nil, nil, func() {
+			close(reached)
+			<-resume
+		})
+	}()
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("apply never reached post-binding-check hook")
+	}
+
+	retireDone := make(chan error, 1)
+	go func() { retireDone <- s.RetireContextBinding(ctx, binding.ID) }()
+	select {
+	case err := <-retireDone:
+		t.Fatalf("retirement bypassed SQLite apply transaction: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(resume)
+	select {
+	case err := <-applyDone:
+		if err != nil {
+			t.Fatalf("apply failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("apply remained blocked")
+	}
+	select {
+	case err := <-retireDone:
+		if err != nil {
+			t.Fatalf("retirement after apply: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("retirement remained blocked after apply")
+	}
+
+	proposal, err := s.GetProposal(ctx, vault.ID, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.Status != "applied" {
+		t.Fatalf("status=%q", proposal.Status)
+	}
+	retired, err := s.GetContextBinding(ctx, binding.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retired.RetiredAt == nil {
+		t.Fatal("binding was not retired after apply committed")
+	}
+}
+
 func TestApplyProposalWithCredentialDeletion(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()

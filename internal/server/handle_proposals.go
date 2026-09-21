@@ -1,8 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -12,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Infisical/agent-vault/internal/contextbinding"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/proposal"
 	"github.com/Infisical/agent-vault/internal/store"
@@ -86,7 +90,7 @@ func (s *Server) handleProposalApproveDetails(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	jsonOK(w, map[string]interface{}{
+	response := map[string]interface{}{
 		"proposal_id":   cs.ID,
 		"vault":         ns.Name,
 		"status":        cs.Status,
@@ -99,16 +103,119 @@ func (s *Server) handleProposalApproveDetails(w http.ResponseWriter, r *http.Req
 		"authenticated": authenticated,
 		"can_approve":   canApprove,
 		"user_email":    userEmail,
-	})
+	}
+	if cs.ContextBindingID != nil {
+		response["context_binding_id"] = *cs.ContextBindingID
+	}
+	jsonOK(w, response)
 }
 
 const maxPendingProposals = 20
 
 type proposalCreateRequest struct {
-	Services    []proposal.Service        `json:"services"`
-	Credentials []proposal.CredentialSlot `json:"credentials"`
-	Message     string                    `json:"message"`
-	UserMessage string                    `json:"user_message"`
+	Services       []proposal.Service        `json:"services"`
+	Credentials    []proposal.CredentialSlot `json:"credentials"`
+	Message        string                    `json:"message"`
+	UserMessage    string                    `json:"user_message"`
+	ContextBinding *contextbinding.Reference `json:"context_binding,omitempty"`
+}
+
+// UnmarshalJSON preserves the historical tolerance for unknown proposal
+// extensions while making context binding strict: callers may reference one
+// opaque identifier but cannot alias it or add tuple members to reconcile.
+func (r *proposalCreateRequest) UnmarshalJSON(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	opening, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if opening != json.Delim('{') {
+		return fmt.Errorf("proposal request must be a JSON object")
+	}
+
+	var decoded proposalCreateRequest
+	seenContextBinding := false
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := token.(string)
+		if !ok {
+			return fmt.Errorf("proposal request contains a non-string key")
+		}
+		switch {
+		case strings.EqualFold(key, "services"):
+			err = decoder.Decode(&decoded.Services)
+		case strings.EqualFold(key, "credentials"):
+			err = decoder.Decode(&decoded.Credentials)
+		case strings.EqualFold(key, "message"):
+			err = decoder.Decode(&decoded.Message)
+		case strings.EqualFold(key, "user_message"):
+			err = decoder.Decode(&decoded.UserMessage)
+		case strings.EqualFold(key, "context_binding"):
+			if key != "context_binding" {
+				return fmt.Errorf("context_binding must use its canonical field name")
+			}
+			if seenContextBinding {
+				return fmt.Errorf("duplicate proposal field %q", key)
+			}
+			seenContextBinding = true
+			err = decoder.Decode(&decoded.ContextBinding)
+		default:
+			if isContextTupleField(key) {
+				return fmt.Errorf("proposal cannot author context tuple field %q", key)
+			}
+			var discarded json.RawMessage
+			err = decoder.Decode(&discarded)
+		}
+		if err != nil {
+			return fmt.Errorf("decode proposal field %q: %w", key, err)
+		}
+	}
+	closing, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if closing != json.Delim('}') {
+		return fmt.Errorf("proposal request has an invalid object terminator")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("proposal request contains a trailing JSON value")
+		}
+		return err
+	}
+	*r = decoded
+	return nil
+}
+
+func isContextTupleField(key string) bool {
+	for _, forbidden := range []string{
+		"origin_type",
+		"origin_codex_thread_id",
+		"origin_codex_session_id",
+		"perplexity_project_id",
+		"registered_personal_computer_machine_id",
+		"runtime_device_id",
+		"workspace_root",
+	} {
+		if strings.EqualFold(key, forbidden) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) credentialAcquisitionEnabled(ctx context.Context) (bool, error) {
+	value, err := s.store.GetSetting(ctx, settingCredentialAcquisitionEnabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return value == "true", nil
 }
 
 func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
@@ -167,10 +274,40 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Services = normalized
 
-	// Validate the proposal.
-	if err := proposal.Validate(req.Services, req.Credentials); err != nil {
+	acquisitionEnabled, err := s.credentialAcquisitionEnabled(ctx)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to read acquisition settings")
+		return
+	}
+	hasAcquisition := false
+	for i := range req.Credentials {
+		if req.Credentials[i].Acquisition != nil {
+			hasAcquisition = true
+			break
+		}
+	}
+
+	// Validate the proposal under the server-owned feature gate.
+	if err := proposal.ValidateWithOptions(req.Services, req.Credentials, proposal.ValidationOptions{
+		CredentialAcquisitionEnabled: acquisitionEnabled,
+	}); err != nil {
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if hasAcquisition && req.ContextBinding == nil {
+		jsonError(w, http.StatusBadRequest, "context_binding is required for credential acquisition")
+		return
+	}
+	if req.ContextBinding != nil {
+		binding, err := s.store.GetContextBinding(ctx, req.ContextBinding.ContextBindingID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			jsonError(w, http.StatusInternalServerError, "Failed to verify context binding")
+			return
+		}
+		if err != nil || binding == nil || binding.RetiredAt != nil || binding.Tuple.Validate() != nil {
+			jsonError(w, http.StatusBadRequest, "Invalid or retired context binding")
+			return
+		}
 	}
 
 	// Validate that all credential references resolve to existing or proposed credentials.
@@ -213,8 +350,17 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	servicesJSON, _ := json.Marshal(req.Services)
 	credentialsJSON, _ := json.Marshal(req.Credentials)
 
-	cs, err := s.store.CreateProposal(ctx, vaultID, sess.ID, string(servicesJSON), string(credentialsJSON), req.Message, req.UserMessage, encCredentials)
+	var cs *store.Proposal
+	if req.ContextBinding == nil {
+		cs, err = s.store.CreateProposal(ctx, vaultID, sess.ID, string(servicesJSON), string(credentialsJSON), req.Message, req.UserMessage, encCredentials)
+	} else {
+		cs, err = s.store.CreateProposalWithContext(ctx, vaultID, sess.ID, req.ContextBinding.ContextBindingID, string(servicesJSON), string(credentialsJSON), req.Message, req.UserMessage, encCredentials)
+	}
 	if err != nil {
+		if errors.Is(err, store.ErrContextBindingInactive) {
+			jsonCodedError(w, http.StatusConflict, "context_binding_inactive", "Context binding was retired before proposal creation completed")
+			return
+		}
 		jsonError(w, http.StatusInternalServerError, "Failed to create proposal")
 		return
 	}
@@ -239,13 +385,17 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 
 	actor, _ := s.actorFromSession(ctx, sess)
 	s.captureEvent(r, "av.proposal-create", actor, map[string]string{"vault": nsName})
-	jsonCreated(w, map[string]interface{}{
+	response := map[string]interface{}{
 		"id":           cs.ID,
 		"status":       cs.Status,
 		"vault":        nsName,
 		"approval_url": approvalURL,
 		"message":      fmt.Sprintf("Proposal created. Approve here: %s", approvalURL),
-	})
+	}
+	if cs.ContextBindingID != nil {
+		response["context_binding_id"] = *cs.ContextBindingID
+	}
+	jsonCreated(w, response)
 }
 
 // notifyProposalCreated sends an email notification to all vault members
@@ -314,7 +464,7 @@ func (s *Server) handleProposalGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonOK(w, map[string]interface{}{
+	response := map[string]interface{}{
 		"id":          cs.ID,
 		"status":      cs.Status,
 		"services":    json.RawMessage(cs.ServicesJSON),
@@ -323,7 +473,11 @@ func (s *Server) handleProposalGet(w http.ResponseWriter, r *http.Request) {
 		"review_note": cs.ReviewNote,
 		"reviewed_at": cs.ReviewedAt,
 		"created_at":  cs.CreatedAt.Format(time.RFC3339),
-	})
+	}
+	if cs.ContextBindingID != nil {
+		response["context_binding_id"] = *cs.ContextBindingID
+	}
+	jsonOK(w, response)
 }
 
 func (s *Server) handleProposalList(w http.ResponseWriter, r *http.Request) {
@@ -348,18 +502,20 @@ func (s *Server) handleProposalList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type item struct {
-		ID        int    `json:"id"`
-		Status    string `json:"status"`
-		Message   string `json:"message"`
-		CreatedAt string `json:"created_at"`
+		ID               int     `json:"id"`
+		Status           string  `json:"status"`
+		Message          string  `json:"message"`
+		ContextBindingID *string `json:"context_binding_id,omitempty"`
+		CreatedAt        string  `json:"created_at"`
 	}
 	items := make([]item, len(list))
 	for i, cs := range list {
 		items[i] = item{
-			ID:        cs.ID,
-			Status:    cs.Status,
-			Message:   cs.Message,
-			CreatedAt: cs.CreatedAt.Format(time.RFC3339),
+			ID:               cs.ID,
+			Status:           cs.Status,
+			Message:          cs.Message,
+			ContextBindingID: cs.ContextBindingID,
+			CreatedAt:        cs.CreatedAt.Format(time.RFC3339),
 		}
 	}
 
@@ -539,7 +695,14 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 
 	// Apply atomically.
 	if err := s.store.ApplyProposal(ctx, ns.ID, cs.ID, string(mergedJSON), finalCredentials, deleteCredentialKeys, oauthConfigs); err != nil {
-		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to apply proposal: %v", err))
+		switch {
+		case errors.Is(err, store.ErrContextBindingInactive):
+			jsonCodedError(w, http.StatusConflict, "context_binding_inactive", "Context binding is no longer active")
+		case errors.Is(err, store.ErrProposalStateConflict):
+			jsonCodedError(w, http.StatusConflict, "proposal_state_conflict", "Proposal state changed before it could be applied")
+		default:
+			jsonError(w, http.StatusInternalServerError, "Failed to apply proposal")
+		}
 		return
 	}
 
@@ -650,26 +813,28 @@ func (s *Server) handleAdminProposalList(w http.ResponseWriter, r *http.Request)
 	}
 
 	type csItem struct {
-		ID              int     `json:"id"`
-		Status          string  `json:"status"`
-		Message         string  `json:"message"`
-		ServicesJSON    string  `json:"services_json"`
-		CredentialsJSON string  `json:"credentials_json"`
-		ReviewNote      string  `json:"review_note,omitempty"`
-		ReviewedAt      *string `json:"reviewed_at,omitempty"`
-		CreatedAt       string  `json:"created_at"`
+		ID               int     `json:"id"`
+		Status           string  `json:"status"`
+		Message          string  `json:"message"`
+		ServicesJSON     string  `json:"services_json"`
+		CredentialsJSON  string  `json:"credentials_json"`
+		ContextBindingID *string `json:"context_binding_id,omitempty"`
+		ReviewNote       string  `json:"review_note,omitempty"`
+		ReviewedAt       *string `json:"reviewed_at,omitempty"`
+		CreatedAt        string  `json:"created_at"`
 	}
 
 	items := make([]csItem, len(list))
 	for i, cs := range list {
 		item := csItem{
-			ID:              cs.ID,
-			Status:          cs.Status,
-			Message:         cs.Message,
-			ServicesJSON:    cs.ServicesJSON,
-			CredentialsJSON: cs.CredentialsJSON,
-			ReviewNote:      cs.ReviewNote,
-			CreatedAt:       cs.CreatedAt.Format(time.RFC3339),
+			ID:               cs.ID,
+			Status:           cs.Status,
+			Message:          cs.Message,
+			ServicesJSON:     cs.ServicesJSON,
+			CredentialsJSON:  cs.CredentialsJSON,
+			ContextBindingID: cs.ContextBindingID,
+			ReviewNote:       cs.ReviewNote,
+			CreatedAt:        cs.CreatedAt.Format(time.RFC3339),
 		}
 		if cs.ReviewedAt != nil {
 			t := *cs.ReviewedAt
@@ -731,6 +896,9 @@ func (s *Server) handleAdminProposalGet(w http.ResponseWriter, r *http.Request) 
 	}
 	if cs.ReviewedAt != nil {
 		resp["reviewed_at"] = *cs.ReviewedAt
+	}
+	if cs.ContextBindingID != nil {
+		resp["context_binding_id"] = *cs.ContextBindingID
 	}
 
 	jsonOK(w, resp)
