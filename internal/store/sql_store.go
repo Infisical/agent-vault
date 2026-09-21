@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/Infisical/agent-vault/internal/contextbinding"
 
 	_ "modernc.org/sqlite"
 )
@@ -1974,6 +1977,100 @@ func (s *SQLStore) GetBrokerConfig(ctx context.Context, vaultID string) (*Broker
 
 const approvalTokenTTL = 24 * time.Hour
 
+func newContextBindingID() string {
+	var b [24]byte
+	if _, err := io.ReadFull(rand.Reader, b[:]); err != nil {
+		panic("crypto/rand: " + err.Error())
+	}
+	return "av_ctx_" + base64.RawURLEncoding.EncodeToString(b[:])
+}
+
+func (s *SQLStore) CreateContextBinding(ctx context.Context, tuple contextbinding.Tuple) (*ContextBinding, error) {
+	if err := tuple.Validate(); err != nil {
+		return nil, fmt.Errorf("validating context binding: %w", err)
+	}
+
+	now := time.Now().UTC()
+	id := newContextBindingID()
+	_, err := s.db.ExecContext(ctx, s.dialect.Rebind(`INSERT INTO context_bindings (
+		id, origin_type, origin_codex_thread_id, origin_codex_session_id,
+		perplexity_project_id, registered_personal_computer_machine_id,
+		runtime_device_id, workspace_root, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		id,
+		tuple.OriginType,
+		tuple.OriginCodexThreadID,
+		tuple.OriginCodexSessionID,
+		tuple.PerplexityProjectID,
+		tuple.RegisteredPersonalComputerMachineID,
+		tuple.RuntimeDeviceID,
+		tuple.WorkspaceRoot,
+		s.dialect.FormatTime(now),
+		s.dialect.FormatTime(now),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating context binding: %w", err)
+	}
+
+	return &ContextBinding{ID: id, Tuple: tuple, CreatedAt: now, UpdatedAt: now}, nil
+}
+
+func (s *SQLStore) GetContextBinding(ctx context.Context, id string) (*ContextBinding, error) {
+	if err := contextbinding.ValidateBindingID(id); err != nil {
+		return nil, err
+	}
+	row := s.db.QueryRowContext(ctx, s.dialect.Rebind(`SELECT
+		id, origin_type, origin_codex_thread_id, origin_codex_session_id,
+		perplexity_project_id, registered_personal_computer_machine_id,
+		runtime_device_id, workspace_root, retired_at, created_at, updated_at
+		FROM context_bindings WHERE id = ?`), id)
+
+	var binding ContextBinding
+	var retiredAt, createdAt, updatedAt interface{}
+	if err := row.Scan(
+		&binding.ID,
+		&binding.Tuple.OriginType,
+		&binding.Tuple.OriginCodexThreadID,
+		&binding.Tuple.OriginCodexSessionID,
+		&binding.Tuple.PerplexityProjectID,
+		&binding.Tuple.RegisteredPersonalComputerMachineID,
+		&binding.Tuple.RuntimeDeviceID,
+		&binding.Tuple.WorkspaceRoot,
+		&retiredAt,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return nil, err
+	}
+	var err error
+	if binding.RetiredAt, err = s.dialect.ScanNullableTime(retiredAt); err != nil {
+		return nil, fmt.Errorf("scanning context binding retired_at: %w", err)
+	}
+	if binding.CreatedAt, err = s.dialect.ScanTime(createdAt); err != nil {
+		return nil, fmt.Errorf("scanning context binding created_at: %w", err)
+	}
+	if binding.UpdatedAt, err = s.dialect.ScanTime(updatedAt); err != nil {
+		return nil, fmt.Errorf("scanning context binding updated_at: %w", err)
+	}
+	return &binding, nil
+}
+
+func (s *SQLStore) RetireContextBinding(ctx context.Context, id string) error {
+	if err := contextbinding.ValidateBindingID(id); err != nil {
+		return err
+	}
+	now := s.dialect.FormatTime(time.Now().UTC())
+	result, err := s.db.ExecContext(ctx, s.dialect.Rebind(`UPDATE context_bindings
+		SET retired_at = ?, updated_at = ? WHERE id = ? AND retired_at IS NULL`), now, now, id)
+	if err != nil {
+		return fmt.Errorf("retiring context binding: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return fmt.Errorf("context binding %q not found or already retired", id)
+	}
+	return nil
+}
+
 // newPrefixedToken generates a 256-bit cryptographically random token
 // with the given prefix followed by 64 hex characters.
 func newPrefixedToken(prefix string) string {
@@ -1987,6 +2084,39 @@ func newPrefixedToken(prefix string) string {
 func newApprovalToken() string { return newPrefixedToken("av_appr_") }
 
 func (s *SQLStore) CreateProposal(ctx context.Context, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error) {
+	return s.createProposal(ctx, vaultID, sessionID, nil, servicesJSON, credentialsJSON, message, userMessage, credentials)
+}
+
+func (s *SQLStore) CreateProposalWithContext(ctx context.Context, vaultID, sessionID, contextBindingID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error) {
+	if err := contextbinding.ValidateBindingID(contextBindingID); err != nil {
+		return nil, err
+	}
+	return s.createProposal(ctx, vaultID, sessionID, &contextBindingID, servicesJSON, credentialsJSON, message, userMessage, credentials)
+}
+
+// lockActiveContextBinding serializes PostgreSQL proposal creation with
+// retirement. SQLite has no SELECT FOR UPDATE; its bound INSERT below performs
+// the active check in the same statement that acquires the database write lock.
+func (s *SQLStore) lockActiveContextBinding(ctx context.Context, tx *sql.Tx, id string) error {
+	forUpdate := s.dialect.ForUpdateClause()
+	if forUpdate == "" {
+		return nil
+	}
+	var present int
+	err := tx.QueryRowContext(ctx,
+		s.dialect.Rebind("SELECT 1 FROM context_bindings WHERE id = ? AND retired_at IS NULL "+forUpdate),
+		id,
+	).Scan(&present)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("context binding %q not found or retired", id)
+	}
+	if err != nil {
+		return fmt.Errorf("locking context binding %q: %w", id, err)
+	}
+	return nil
+}
+
+func (s *SQLStore) createProposal(ctx context.Context, vaultID, sessionID string, contextBindingID *string, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error) {
 	now := time.Now().UTC()
 	nowStr := s.dialect.FormatTime(now)
 	approvalToken := newApprovalToken()
@@ -1998,6 +2128,11 @@ func (s *SQLStore) CreateProposal(ctx context.Context, vaultID, sessionID, servi
 		return nil, fmt.Errorf("beginning transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if contextBindingID != nil {
+		if err := s.lockActiveContextBinding(ctx, tx, *contextBindingID); err != nil {
+			return nil, err
+		}
+	}
 
 	// For Postgres, lock the vault row so concurrent proposal creations
 	// are serialized and cannot compute the same next ID.
@@ -2019,13 +2154,32 @@ func (s *SQLStore) CreateProposal(ctx context.Context, vaultID, sessionID, servi
 		return nil, fmt.Errorf("computing next proposal id: %w", err)
 	}
 
-	_, err = tx.ExecContext(ctx,
-		s.dialect.Rebind(`INSERT INTO proposals (id, vault_id, session_id, status, services_json, credentials_json, message, user_message, approval_token_hash, approval_token_expires_at, created_at, updated_at)
-		 VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`),
-		nextID, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage, hashToken(approvalToken), tokenExpiresAtStr, nowStr, nowStr,
-	)
+	var insertResult sql.Result
+	if contextBindingID == nil {
+		insertResult, err = tx.ExecContext(ctx,
+			s.dialect.Rebind(`INSERT INTO proposals (id, vault_id, session_id, status, services_json, credentials_json, message, user_message, approval_token_hash, approval_token_expires_at, context_binding_id, created_at, updated_at)
+			 VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, NULL, ?, ?)`),
+			nextID, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage, hashToken(approvalToken), tokenExpiresAtStr, nowStr, nowStr,
+		)
+	} else {
+		// The active-binding predicate and proposal insert are one SQL
+		// statement, so a concurrent retirement cannot slip between a check
+		// and the write on SQLite. PostgreSQL additionally holds the row lock
+		// acquired above until this transaction commits.
+		insertResult, err = tx.ExecContext(ctx,
+			s.dialect.Rebind(`INSERT INTO proposals (id, vault_id, session_id, status, services_json, credentials_json, message, user_message, approval_token_hash, approval_token_expires_at, context_binding_id, created_at, updated_at)
+			 SELECT ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?
+			 WHERE EXISTS (SELECT 1 FROM context_bindings WHERE id = ? AND retired_at IS NULL)`),
+			nextID, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage, hashToken(approvalToken), tokenExpiresAtStr, *contextBindingID, nowStr, nowStr, *contextBindingID,
+		)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("inserting proposal: %w", err)
+	}
+	if contextBindingID != nil {
+		if affected, _ := insertResult.RowsAffected(); affected == 0 {
+			return nil, fmt.Errorf("context binding %q not found or retired", *contextBindingID)
+		}
 	}
 
 	// Store agent-provided encrypted credential values.
@@ -2048,7 +2202,7 @@ func (s *SQLStore) CreateProposal(ctx context.Context, vaultID, sessionID, servi
 		ID: nextID, VaultID: vaultID, SessionID: sessionID,
 		Status: "pending", ServicesJSON: servicesJSON, CredentialsJSON: credentialsJSON,
 		Message: message, UserMessage: userMessage,
-		ApprovalToken: approvalToken, ApprovalTokenExpiresAt: &tokenExpiresAt,
+		ApprovalToken: approvalToken, ApprovalTokenExpiresAt: &tokenExpiresAt, ContextBindingID: contextBindingID,
 		CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
@@ -2295,15 +2449,16 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 // proposalColumns is the column list used by all proposal SELECT queries.
 const proposalColumns = `id, vault_id, session_id, status, services_json, credentials_json,
 		message, user_message, review_note, reviewed_at,
-		approval_token_expires_at, created_at, updated_at`
+		approval_token_expires_at, context_binding_id, created_at, updated_at`
 
 func (s *SQLStore) scanProposalFields(cs *Proposal, scan func(dest ...interface{}) error) error {
 	var reviewedAtRaw interface{}
 	var approvalTokenExpiresAt interface{}
+	var contextBindingID sql.NullString
 	var createdAt, updatedAt interface{}
 	if err := scan(&cs.ID, &cs.VaultID, &cs.SessionID, &cs.Status,
 		&cs.ServicesJSON, &cs.CredentialsJSON, &cs.Message, &cs.UserMessage, &cs.ReviewNote,
-		&reviewedAtRaw, &approvalTokenExpiresAt,
+		&reviewedAtRaw, &approvalTokenExpiresAt, &contextBindingID,
 		&createdAt, &updatedAt); err != nil {
 		return err
 	}
@@ -2312,6 +2467,9 @@ func (s *SQLStore) scanProposalFields(cs *Proposal, scan func(dest ...interface{
 		cs.ReviewedAt = &s
 	}
 	cs.ApprovalTokenExpiresAt, _ = s.dialect.ScanNullableTime(approvalTokenExpiresAt)
+	if contextBindingID.Valid {
+		cs.ContextBindingID = &contextBindingID.String
+	}
 	cs.CreatedAt, _ = s.dialect.ScanTime(createdAt)
 	cs.UpdatedAt, _ = s.dialect.ScanTime(updatedAt)
 	return nil

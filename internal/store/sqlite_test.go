@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Infisical/agent-vault/internal/contextbinding"
 )
 
 func tp(t time.Time) *time.Time { return &t }
@@ -60,6 +62,249 @@ func TestMigrationIdempotency(t *testing.T) {
 		t.Fatalf("second Open: %v", err)
 	}
 	_ = s2.Close()
+}
+
+func testContextBindingTuple() contextbinding.Tuple {
+	return contextbinding.Tuple{
+		OriginType:                          contextbinding.OriginCodex,
+		OriginCodexThreadID:                 "01a026f1-a339-77c3-bbc1-a0071b64171c",
+		OriginCodexSessionID:                "01a026f1-a339-77c3-bbc1-a0071b64171c",
+		PerplexityProjectID:                 "9ee48ba0-ff1c-4792-aa10-cb95748ae537",
+		RegisteredPersonalComputerMachineID: "7807737D-53A7-5792-BFCB-AC25AD2441F8",
+		RuntimeDeviceID:                     "macos:7807737D-53A7-5792-BFCB-AC25AD2441F8",
+		WorkspaceRoot:                       "/Users/pv/zbst-tech",
+	}
+}
+
+func TestContextBindingMigrationSchema(t *testing.T) {
+	s := openTestDB(t)
+
+	var table string
+	if err := s.db.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'context_bindings'").Scan(&table); err != nil {
+		t.Fatalf("context_bindings table missing: %v", err)
+	}
+
+	rows, err := s.db.Query("PRAGMA table_info(proposals)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, kind string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &kind, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		if name == "context_binding_id" {
+			found = true
+			if notNull != 0 {
+				t.Fatal("proposals.context_binding_id must remain nullable for backward compatibility")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("proposals.context_binding_id column missing")
+	}
+
+	fkRows, err := s.db.Query("PRAGMA foreign_key_list(proposals)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fkRows.Close()
+	foundBindingFK := false
+	for fkRows.Next() {
+		var id, seq int
+		var table, from, to, onUpdate, onDelete, match string
+		if err := fkRows.Scan(&id, &seq, &table, &from, &to, &onUpdate, &onDelete, &match); err != nil {
+			t.Fatal(err)
+		}
+		if table == "context_bindings" && from == "context_binding_id" && to == "id" && onDelete == "RESTRICT" {
+			foundBindingFK = true
+		}
+	}
+	if !foundBindingFK {
+		t.Fatal("proposals.context_binding_id foreign key missing")
+	}
+}
+
+func TestContextBindingLifecycleAndExactTupleUniqueness(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	tuple := testContextBindingTuple()
+
+	created, err := s.CreateContextBinding(ctx, tuple)
+	if err != nil {
+		t.Fatalf("CreateContextBinding: %v", err)
+	}
+	if err := contextbinding.ValidateBindingID(created.ID); err != nil {
+		t.Fatalf("generated binding ID: %v", err)
+	}
+	if created.Tuple != tuple || created.RetiredAt != nil {
+		t.Fatalf("unexpected created binding: %+v", created)
+	}
+
+	got, err := s.GetContextBinding(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetContextBinding: %v", err)
+	}
+	if got.Tuple != tuple {
+		t.Fatalf("tuple changed during persistence: got %+v want %+v", got.Tuple, tuple)
+	}
+
+	if _, err := s.CreateContextBinding(ctx, tuple); err == nil {
+		t.Fatal("expected exact duplicate tuple to be rejected")
+	}
+	diagnosticVariant := tuple
+	diagnosticVariant.OriginCodexSessionID = "01a026f1-a339-7b84-8bc1-a0071b64171c"
+	diagnosticVariant.RuntimeDeviceID = "macos:11111111-1111-4111-8111-111111111111"
+	diagnosticVariant.WorkspaceRoot = "/Users/pv/other-workspace"
+	if _, err := s.CreateContextBinding(ctx, diagnosticVariant); err == nil {
+		t.Fatal("expected the same authoritative thread/project/machine triple to remain unique despite diagnostic metadata changes")
+	}
+
+	if err := s.RetireContextBinding(ctx, created.ID); err != nil {
+		t.Fatalf("RetireContextBinding: %v", err)
+	}
+	retired, err := s.GetContextBinding(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetContextBinding retired: %v", err)
+	}
+	if retired.RetiredAt == nil {
+		t.Fatal("expected retired_at to be set")
+	}
+	if err := s.RetireContextBinding(ctx, created.ID); err == nil {
+		t.Fatal("expected a second retirement to be rejected")
+	}
+}
+
+func TestCreateContextBindingRejectsInvalidTupleWithoutWriting(t *testing.T) {
+	s := openTestDB(t)
+	tuple := testContextBindingTuple()
+	tuple.RegisteredPersonalComputerMachineID = tuple.RuntimeDeviceID
+	if _, err := s.CreateContextBinding(context.Background(), tuple); err == nil {
+		t.Fatal("expected malformed registered machine ID to be rejected")
+	}
+	var count int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM context_bindings").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("invalid tuple wrote %d rows", count)
+	}
+}
+
+func TestProposalContextBindingIsAtomicOptionalAndActive(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	vault, err := s.CreateVault(ctx, "context-bound")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := s.CreateContextBinding(ctx, testContextBindingTuple())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bound, err := s.CreateProposalWithContext(ctx, vault.ID, "session-1", binding.ID, "[]", "[]", "bound", "", nil)
+	if err != nil {
+		t.Fatalf("CreateProposalWithContext: %v", err)
+	}
+	if bound.ContextBindingID == nil || *bound.ContextBindingID != binding.ID {
+		t.Fatalf("proposal missing context binding: %+v", bound)
+	}
+	loaded, err := s.GetProposal(ctx, vault.ID, bound.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ContextBindingID == nil || *loaded.ContextBindingID != binding.ID {
+		t.Fatalf("loaded proposal missing context binding: %+v", loaded)
+	}
+	if _, err := s.db.Exec("DELETE FROM context_bindings WHERE id = ?", binding.ID); err == nil {
+		t.Fatal("expected proposal foreign key to prevent deleting a referenced binding")
+	}
+
+	unbound, err := s.CreateProposal(ctx, vault.ID, "session-2", "[]", "[]", "legacy", "", nil)
+	if err != nil {
+		t.Fatalf("legacy CreateProposal: %v", err)
+	}
+	if unbound.ContextBindingID != nil {
+		t.Fatalf("legacy proposal must remain unbound, got %q", *unbound.ContextBindingID)
+	}
+
+	if _, err := s.CreateProposalWithContext(ctx, vault.ID, "session-3", "av_ctx_00000000000000000000000000000000", "[]", "[]", "missing", "", nil); err == nil {
+		t.Fatal("expected unknown context binding to be rejected")
+	}
+	if err := s.RetireContextBinding(ctx, binding.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateProposalWithContext(ctx, vault.ID, "session-4", binding.ID, "[]", "[]", "retired", "", nil); err == nil {
+		t.Fatal("expected retired context binding to be rejected")
+	}
+}
+
+func TestContextBindingsAndProposalLinksAreIncludedInDataCopy(t *testing.T) {
+	src := openTestDB(t)
+	dst := openTestDB(t)
+	ctx := context.Background()
+
+	binding, err := src.CreateContextBinding(ctx, testContextBindingTuple())
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault, err := src.GetVault(ctx, DefaultVault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := src.CreateProposalWithContext(ctx, vault.ID, "copy-session", binding.ID, "[]", "[]", "copy", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	counts, err := CountSourceTables(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundContextCount := false
+	for _, count := range counts {
+		if count.Table == "context_bindings" {
+			foundContextCount = count.Count == 1
+		}
+	}
+	if !foundContextCount {
+		t.Fatalf("context_bindings missing from source counts: %+v", counts)
+	}
+
+	tx, err := dst.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if copied, err := copyContextBindings(ctx, src, tx, dst.dialect); err != nil || copied != 1 {
+		t.Fatalf("copyContextBindings copied=%d err=%v", copied, err)
+	}
+	if copied, err := copyProposals(ctx, src, tx, dst.dialect); err != nil || copied != 1 {
+		t.Fatalf("copyProposals copied=%d err=%v", copied, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	gotBinding, err := dst.GetContextBinding(ctx, binding.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotBinding.Tuple != testContextBindingTuple() {
+		t.Fatalf("copied tuple mismatch: %+v", gotBinding.Tuple)
+	}
+	gotProposal, err := dst.GetProposal(ctx, vault.ID, proposal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotProposal.ContextBindingID == nil || *gotProposal.ContextBindingID != binding.ID {
+		t.Fatalf("copied proposal lost context binding: %+v", gotProposal)
+	}
 }
 
 // --- Vault CRUD ---
@@ -1449,7 +1694,6 @@ func TestCascadeDeleteVaultRemovesProposals(t *testing.T) {
 	}
 }
 
-
 // --- UUID ---
 
 func TestNewUUIDUniqueness(t *testing.T) {
@@ -1676,7 +1920,6 @@ func TestDeleteUserSessions(t *testing.T) {
 		t.Fatalf("expected sql.ErrNoRows after deleting user sessions, got %v", err)
 	}
 }
-
 
 func TestDeleteUserCascadesGrants(t *testing.T) {
 	s := openTestDB(t)
@@ -1954,7 +2197,6 @@ func TestGetSessionBackwardCompat(t *testing.T) {
 		t.Fatalf("expected empty agent_id for old session, got %q", fetched.AgentID)
 	}
 }
-
 
 func TestDeleteAgentTokens(t *testing.T) {
 	s := openTestDB(t)

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/Infisical/agent-vault/internal/contextbinding"
 )
 
 // ErrNotFirstUser is returned by RegisterFirstUser when users already exist.
@@ -224,8 +226,20 @@ type Proposal struct {
 	ReviewedAt             *string
 	ApprovalToken          string     // random token for browser-based approval URL
 	ApprovalTokenExpiresAt *time.Time // expiry for the approval token (default 24h)
+	ContextBindingID       *string    // immutable origin/project/workstation binding; nil for legacy proposals
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
+}
+
+// ContextBinding persists the exact, immutable origin/project/workstation
+// tuple used for anti-replay and anti-misrouting checks. Retirement is the
+// only supported state transition.
+type ContextBinding struct {
+	ID        string
+	Tuple     contextbinding.Tuple
+	RetiredAt *time.Time
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // EncryptedCredential holds an encrypted credential value (ciphertext + nonce).
@@ -537,7 +551,11 @@ type Store interface {
 	UpdateMasterKeyRecord(ctx context.Context, record *MasterKeyRecord) error
 
 	// Proposals
+	CreateContextBinding(ctx context.Context, tuple contextbinding.Tuple) (*ContextBinding, error)
+	GetContextBinding(ctx context.Context, id string) (*ContextBinding, error)
+	RetireContextBinding(ctx context.Context, id string) error
 	CreateProposal(ctx context.Context, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error)
+	CreateProposalWithContext(ctx context.Context, vaultID, sessionID, contextBindingID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error)
 	GetProposal(ctx context.Context, vaultID string, id int) (*Proposal, error)
 	GetProposalByApprovalToken(ctx context.Context, token string) (*Proposal, error)
 	ListProposals(ctx context.Context, vaultID, status string) ([]Proposal, error)
