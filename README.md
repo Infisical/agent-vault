@@ -45,7 +45,7 @@ Read the full backstory behind Agent Vault [here](https://infisical.com/blog/age
 [Infisical](https://infisical.com) offers two ways to broker credentials to agents.
 
 - **Agent Vault** (this project) is the simpler, self-contained option: a single open-source binary that stores credentials itself and runs entirely on infrastructure you control, with no dependency on any other system.
-- **[Infisical Agent Vault](https://infisical.com/docs/documentation/platform/agent-vault/overview)** is the commercial-grade option, built into the Infisical platform. Services, credentials, and agent access are managed in Infisical, with commercial support behind them.
+- **[Infisical Agent Vault](https://infisical.com/docs/documentation/platform/agent-vault/overview)** is the commercial-grade option, built into the Infisical platform. Services are grouped into access bundles, agents reach them through time-bound sessions, and permissions are governed by Infisical's access controls.
 
 For production and enterprise use cases we recommend Infisical Agent Vault.
 
