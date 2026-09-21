@@ -34,8 +34,31 @@ Use `--vault` to target a specific vault:
 agent-vault vault run --vault my-vault -- claude
 ```
 
+For stable agent roles, put launch policy in `~/.agent-vault/profiles.yaml`:
+
+```yaml
+profiles:
+  planner:
+    vault: planning
+    ttl: 1800
+    isolation: container
+    mounts:
+      - ./specs:/workspace/specs:ro
+```
+
+Then launch by role:
+
+```bash
+agent-vault vault run --profile planner -- claude
+```
+
+Explicit command-line flags override profile values. Agent Vault rejects unknown
+profile fields and incompatible isolation settings before login or network I/O.
+
 <Note>
-`vault run` is a convenience wrapper, not a sandbox. A child process can unset `HTTPS_PROXY`/`HTTP_PROXY` or bypass the injected CA and reach the network directly — local credentials and network access are still fully available to the agent. Stronger isolation for local development is on the roadmap.
+Host isolation is cooperative: a child can bypass the injected proxy. Use
+`isolation: container` (or `--isolation=container`) when the agent must have no
+network path except the Agent Vault proxy.
 </Note>
 
 ## Option 2: Create a named agent

@@ -61,11 +61,9 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 		return errors.New("--isolation=container: `docker` not found in PATH")
 	}
 
-	// Validate flag combos + set up host-side state for --share-agent-dir
-	// before any expensive ops (MITM fetch, network create, image build).
-	if err := validateContainerFlagCombos(cmd); err != nil {
-		return err
-	}
+	// Set up host-side state for --share-agent-dir before any expensive ops
+	// (MITM fetch, network create, image build). Flag combinations were already
+	// validated by runCmdRunE before session minting.
 	homeShared, _ := cmd.Flags().GetBool("home-volume-shared")
 	shareAgentDir, _ := cmd.Flags().GetBool("share-agent-dir")
 
