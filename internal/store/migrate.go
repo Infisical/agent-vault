@@ -22,6 +22,7 @@ type TableCount struct {
 func CountSourceTables(src *SQLStore) ([]TableCount, error) {
 	tables := []string{
 		"instance_settings",
+		"acquisition_handlers",
 		"master_key",
 		"vaults",
 		"vault_settings",
@@ -74,6 +75,7 @@ func CountDestinationData(dst *SQLStore) (string, error) {
 		{"users", "SELECT COUNT(*) FROM users", nil},
 		{"agents", "SELECT COUNT(*) FROM agents", nil},
 		{"master_key", "SELECT COUNT(*) FROM master_key", nil},
+		{"acquisition_handlers", "SELECT COUNT(*) FROM acquisition_handlers", nil},
 		{"sessions", "SELECT COUNT(*) FROM sessions", nil},
 		{"credentials", "SELECT COUNT(*) FROM credentials", nil},
 		{"context_bindings", "SELECT COUNT(*) FROM context_bindings", nil},
@@ -121,6 +123,7 @@ func MigrateData(ctx context.Context, src, dst *SQLStore, progressFn func(table 
 		fn   copyFunc
 	}{
 		{"instance_settings", copyInstanceSettings},
+		{"acquisition_handlers", copyAcquisitionHandlers},
 		{"master_key", copyMasterKey},
 		{"vaults", copyVaults},
 		{"vault_settings", copyVaultSettings},
@@ -242,6 +245,59 @@ func copyInstanceSettings(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDia
 		_, err = tx.ExecContext(ctx,
 			dstDialect.Rebind("INSERT INTO instance_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at"),
 			key, value, ts,
+		)
+		if err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, rows.Err()
+}
+
+func copyAcquisitionHandlers(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialect Dialect) (int, error) {
+	rows, err := src.db.QueryContext(ctx, `SELECT
+		id, generation, kind, executable_path, sha256, signing_identity,
+		allowed_keys_json, allowed_vaults_json, allowed_profiles_json,
+		timeout_seconds, output_limit_bytes, enabled, created_at, updated_at
+		FROM acquisition_handlers`)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	n := 0
+	for rows.Next() {
+		var id, generation, kind, executablePath, sha256, signingIdentity string
+		var allowedKeysJSON, allowedVaultsJSON, allowedProfilesJSON string
+		var timeoutSeconds, outputLimitBytes int
+		var enabled, createdAt, updatedAt interface{}
+		if err := rows.Scan(
+			&id, &generation, &kind, &executablePath, &sha256, &signingIdentity,
+			&allowedKeysJSON, &allowedVaultsJSON, &allowedProfilesJSON,
+			&timeoutSeconds, &outputLimitBytes, &enabled, &createdAt, &updatedAt,
+		); err != nil {
+			return n, err
+		}
+		enabledValue, err := convertBool(enabled, src.dialect, dstDialect)
+		if err != nil {
+			return n, fmt.Errorf("converting acquisition handler enabled: %w", err)
+		}
+		ca, err := convertTime(createdAt, src.dialect, dstDialect)
+		if err != nil {
+			return n, fmt.Errorf("converting acquisition handler created_at: %w", err)
+		}
+		ua, err := convertTime(updatedAt, src.dialect, dstDialect)
+		if err != nil {
+			return n, fmt.Errorf("converting acquisition handler updated_at: %w", err)
+		}
+		_, err = tx.ExecContext(ctx, dstDialect.Rebind(`INSERT INTO acquisition_handlers (
+			id, generation, kind, executable_path, sha256, signing_identity,
+			allowed_keys_json, allowed_vaults_json, allowed_profiles_json,
+			timeout_seconds, output_limit_bytes, enabled, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			id, generation, kind, executablePath, sha256, signingIdentity,
+			allowedKeysJSON, allowedVaultsJSON, allowedProfilesJSON,
+			timeoutSeconds, outputLimitBytes, enabledValue, ca, ua,
 		)
 		if err != nil {
 			return n, err

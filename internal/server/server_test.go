@@ -3,7 +3,9 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -38,6 +42,7 @@ type mockStore struct {
 	brokerConfigs                map[string]*store.BrokerConfig // keyed by vaultID
 	proposals                    map[string][]store.Proposal    // keyed by vaultID
 	contextBindings              map[string]*store.ContextBinding
+	acquisitionHandlers          map[string]*store.AcquisitionHandler
 	users                        map[string]*store.User       // keyed by email
 	grants                       map[string]map[string]string // keyed by userID -> vaultID -> role
 	userInvites                  map[string]*store.UserInvite // keyed by token
@@ -54,22 +59,25 @@ type mockStore struct {
 	getContextBindingErr         error
 	applyProposalErr             error
 	sessionCounter               int
+	handlerGenerationCounter     int
+	setHandlerGenerationHook     func()
 }
 
 func newMockStore() *mockStore {
 	ms := &mockStore{
-		sessions:        make(map[string]*store.Session),
-		vaults:          make(map[string]*store.Vault),
-		credentials:     make(map[string]*store.Credential),
-		brokerConfigs:   make(map[string]*store.BrokerConfig),
-		contextBindings: make(map[string]*store.ContextBinding),
-		users:           make(map[string]*store.User),
-		userInvites:     make(map[string]*store.UserInvite),
-		agents:          make(map[string]*store.Agent),
-		settings:        make(map[string]string),
-		vaultSettings:   make(map[string]map[string]string),
-		skills:          make(map[string]map[string]store.Skill),
-		credStores:      make(map[string]*store.VaultCredentialStore),
+		sessions:            make(map[string]*store.Session),
+		vaults:              make(map[string]*store.Vault),
+		credentials:         make(map[string]*store.Credential),
+		brokerConfigs:       make(map[string]*store.BrokerConfig),
+		contextBindings:     make(map[string]*store.ContextBinding),
+		acquisitionHandlers: make(map[string]*store.AcquisitionHandler),
+		users:               make(map[string]*store.User),
+		userInvites:         make(map[string]*store.UserInvite),
+		agents:              make(map[string]*store.Agent),
+		settings:            make(map[string]string),
+		vaultSettings:       make(map[string]map[string]string),
+		skills:              make(map[string]map[string]store.Skill),
+		credStores:          make(map[string]*store.VaultCredentialStore),
 	}
 	// Seed root vault
 	ms.vaults["default"] = &store.Vault{ID: "root-ns-id", Name: "default"}
@@ -355,6 +363,71 @@ func (m *mockStore) RetireContextBinding(_ context.Context, id string) error {
 	}
 	now := time.Now()
 	binding.RetiredAt = &now
+	return nil
+}
+
+func (m *mockStore) CreateAcquisitionHandler(_ context.Context, handler store.AcquisitionHandler) (*store.AcquisitionHandler, error) {
+	if _, ok := m.acquisitionHandlers[handler.ID]; ok {
+		return nil, store.ErrAcquisitionHandlerExists
+	}
+	handler.Enabled = false
+	m.handlerGenerationCounter++
+	handler.Generation = fmt.Sprintf("test-generation-%d", m.handlerGenerationCounter)
+	handler.CreatedAt = time.Now().UTC()
+	handler.UpdatedAt = handler.CreatedAt
+	copy := handler
+	m.acquisitionHandlers[handler.ID] = &copy
+	return &copy, nil
+}
+
+func (m *mockStore) GetAcquisitionHandler(_ context.Context, id string) (*store.AcquisitionHandler, error) {
+	handler, ok := m.acquisitionHandlers[id]
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	copy := *handler
+	return &copy, nil
+}
+
+func (m *mockStore) ListAcquisitionHandlers(_ context.Context) ([]store.AcquisitionHandler, error) {
+	result := make([]store.AcquisitionHandler, 0, len(m.acquisitionHandlers))
+	for _, handler := range m.acquisitionHandlers {
+		result = append(result, *handler)
+	}
+	slices.SortFunc(result, func(a, b store.AcquisitionHandler) int { return strings.Compare(a.ID, b.ID) })
+	return result, nil
+}
+
+func (m *mockStore) SetAcquisitionHandlerEnabled(_ context.Context, id string, enabled bool) error {
+	handler, ok := m.acquisitionHandlers[id]
+	if !ok {
+		return sql.ErrNoRows
+	}
+	handler.Enabled = enabled
+	handler.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func (m *mockStore) SetAcquisitionHandlerEnabledIfGeneration(_ context.Context, id, generation string, enabled bool) (bool, error) {
+	if m.setHandlerGenerationHook != nil {
+		hook := m.setHandlerGenerationHook
+		m.setHandlerGenerationHook = nil
+		hook()
+	}
+	handler, ok := m.acquisitionHandlers[id]
+	if !ok || handler.Generation != generation {
+		return false, nil
+	}
+	handler.Enabled = enabled
+	handler.UpdatedAt = time.Now().UTC()
+	return true, nil
+}
+
+func (m *mockStore) DeleteAcquisitionHandler(_ context.Context, id string) error {
+	if _, ok := m.acquisitionHandlers[id]; !ok {
+		return sql.ErrNoRows
+	}
+	delete(m.acquisitionHandlers, id)
 	return nil
 }
 
@@ -1885,6 +1958,203 @@ func setupMockStoreWithSession(t *testing.T) (*mockStore, string) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	return ms, sess.ID
+}
+
+func testHandlerRegistrationBody(t *testing.T, executablePath, digest string, extras map[string]any) string {
+	t.Helper()
+	body := map[string]any{
+		"id":                 "github-cli",
+		"kind":               "executable",
+		"executable_path":    executablePath,
+		"sha256":             digest,
+		"signing_identity":   "",
+		"allowed_keys":       []string{"GITHUB_TOKEN"},
+		"allowed_vaults":     []string{"root-ns-id"},
+		"allowed_profiles":   []string{"github.com"},
+		"timeout_seconds":    10,
+		"output_limit_bytes": 65536,
+	}
+	for key, value := range extras {
+		body[key] = value
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func testExecutableAndSHA256(t *testing.T) (string, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "provider")
+	content := []byte("test-provider-binary")
+	if err := os.WriteFile(path, content, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(content)
+	return path, hex.EncodeToString(digest[:])
+}
+
+func TestAcquisitionHandlerOwnerLifecycle(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+	path, digest := testExecutableAndSHA256(t)
+
+	register := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers", strings.NewReader(testHandlerRegistrationBody(t, path, digest, nil)))
+	register.Header.Set("Authorization", "Bearer "+ownerToken)
+	registerRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(registerRec, register)
+	if registerRec.Code != http.StatusCreated {
+		t.Fatalf("register status=%d body=%s", registerRec.Code, registerRec.Body.String())
+	}
+	if ms.acquisitionHandlers["github-cli"] == nil || ms.acquisitionHandlers["github-cli"].Enabled {
+		t.Fatalf("registered handler must exist disabled: %+v", ms.acquisitionHandlers["github-cli"])
+	}
+
+	list := httptest.NewRequest(http.MethodGet, "/v1/admin/handlers", nil)
+	list.Header.Set("Authorization", "Bearer "+ownerToken)
+	listRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(listRec, list)
+	if listRec.Code != http.StatusOK || !strings.Contains(listRec.Body.String(), `"id":"github-cli"`) {
+		t.Fatalf("list status=%d body=%s", listRec.Code, listRec.Body.String())
+	}
+
+	show := httptest.NewRequest(http.MethodGet, "/v1/admin/handlers/github-cli", nil)
+	show.Header.Set("Authorization", "Bearer "+ownerToken)
+	showRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(showRec, show)
+	if showRec.Code != http.StatusOK || !strings.Contains(showRec.Body.String(), `"enabled":false`) {
+		t.Fatalf("show status=%d body=%s", showRec.Code, showRec.Body.String())
+	}
+
+	verify := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers/github-cli/verify", strings.NewReader(`{}`))
+	verify.Header.Set("Authorization", "Bearer "+ownerToken)
+	verifyRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(verifyRec, verify)
+	if verifyRec.Code != http.StatusOK || !ms.acquisitionHandlers["github-cli"].Enabled {
+		t.Fatalf("verify status=%d body=%s handler=%+v", verifyRec.Code, verifyRec.Body.String(), ms.acquisitionHandlers["github-cli"])
+	}
+
+	disable := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers/github-cli/disable", strings.NewReader(`{}`))
+	disable.Header.Set("Authorization", "Bearer "+ownerToken)
+	disableRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(disableRec, disable)
+	if disableRec.Code != http.StatusOK || ms.acquisitionHandlers["github-cli"].Enabled {
+		t.Fatalf("disable status=%d body=%s handler=%+v", disableRec.Code, disableRec.Body.String(), ms.acquisitionHandlers["github-cli"])
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/v1/admin/handlers/github-cli", nil)
+	deleteReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	deleteRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK || ms.acquisitionHandlers["github-cli"] != nil {
+		t.Fatalf("delete status=%d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+}
+
+func TestAcquisitionHandlerRegistryIsOwnerOnlyAndStrict(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+	path, digest := testExecutableAndSHA256(t)
+
+	memberReq := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers", strings.NewReader(testHandlerRegistrationBody(t, path, digest, nil)))
+	memberReq.Header.Set("Authorization", "Bearer "+memberToken)
+	memberRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(memberRec, memberReq)
+	if memberRec.Code != http.StatusForbidden {
+		t.Fatalf("member register status=%d body=%s", memberRec.Code, memberRec.Body.String())
+	}
+
+	ownerMS, ownerToken := setupMockStoreWithSession(t)
+	ownerSrv := newTestServer(withStore(ownerMS))
+	strictReq := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers", strings.NewReader(testHandlerRegistrationBody(t, path, digest, map[string]any{"enabled": true})))
+	strictReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	strictRec := httptest.NewRecorder()
+	ownerSrv.httpServer.Handler.ServeHTTP(strictRec, strictReq)
+	if strictRec.Code != http.StatusBadRequest || len(ownerMS.acquisitionHandlers) != 0 {
+		t.Fatalf("unknown enabled field status=%d body=%s", strictRec.Code, strictRec.Body.String())
+	}
+}
+
+func TestAcquisitionHandlerVerifyHashMismatchFailsClosed(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+	path, _ := testExecutableAndSHA256(t)
+	body := testHandlerRegistrationBody(t, path, strings.Repeat("0", 64), nil)
+	register := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers", strings.NewReader(body))
+	register.Header.Set("Authorization", "Bearer "+ownerToken)
+	registerRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(registerRec, register)
+	if registerRec.Code != http.StatusCreated {
+		t.Fatalf("register status=%d body=%s", registerRec.Code, registerRec.Body.String())
+	}
+
+	verify := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers/github-cli/verify", strings.NewReader(`{}`))
+	verify.Header.Set("Authorization", "Bearer "+ownerToken)
+	verifyRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(verifyRec, verify)
+	if verifyRec.Code != http.StatusConflict || ms.acquisitionHandlers["github-cli"].Enabled {
+		t.Fatalf("verify mismatch status=%d body=%s handler=%+v", verifyRec.Code, verifyRec.Body.String(), ms.acquisitionHandlers["github-cli"])
+	}
+	if strings.Contains(verifyRec.Body.String(), path) {
+		t.Fatalf("verification response leaked executable path: %s", verifyRec.Body.String())
+	}
+}
+
+func TestAcquisitionHandlerActionsRejectJSONNull(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	handler := store.AcquisitionHandler{
+		ID: "github-cli", Kind: "executable", ExecutablePath: "/opt/homebrew/bin/gh",
+		SHA256: strings.Repeat("a", 64), AllowedKeys: []string{"GITHUB_TOKEN"},
+		AllowedVaults: []string{"root-ns-id"}, AllowedProfiles: []string{"github.com"},
+		TimeoutSeconds: 10, OutputLimitBytes: 65536,
+	}
+	if _, err := ms.CreateAcquisitionHandler(context.Background(), handler); err != nil {
+		t.Fatal(err)
+	}
+	srv := newTestServer(withStore(ms))
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers/github-cli/disable", strings.NewReader(`null`))
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want=400 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAcquisitionHandlerVerifyCannotEnableReplacementGeneration(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	path, digest := testExecutableAndSHA256(t)
+	handler := store.AcquisitionHandler{
+		ID: "github-cli", Kind: "executable", ExecutablePath: path, SHA256: digest,
+		AllowedKeys: []string{"GITHUB_TOKEN"}, AllowedVaults: []string{"root-ns-id"},
+		AllowedProfiles: []string{"github.com"}, TimeoutSeconds: 10, OutputLimitBytes: 65536,
+	}
+	first, err := ms.CreateAcquisitionHandler(context.Background(), handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms.setHandlerGenerationHook = func() {
+		delete(ms.acquisitionHandlers, handler.ID)
+		replacement := handler
+		replacement.SHA256 = strings.Repeat("b", 64)
+		if _, err := ms.CreateAcquisitionHandler(context.Background(), replacement); err != nil {
+			t.Errorf("create replacement: %v", err)
+		}
+	}
+	srv := newTestServer(withStore(ms))
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers/github-cli/verify", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"handler_changed"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	replacement := ms.acquisitionHandlers[handler.ID]
+	if replacement == nil || replacement.Generation == first.Generation || replacement.Enabled {
+		t.Fatalf("replacement was enabled or generation not replaced: first=%+v replacement=%+v", first, replacement)
+	}
 }
 
 func TestCredentialsSetSuccess(t *testing.T) {

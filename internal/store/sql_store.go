@@ -2071,6 +2071,151 @@ func (s *SQLStore) RetireContextBinding(ctx context.Context, id string) error {
 	return nil
 }
 
+func (s *SQLStore) CreateAcquisitionHandler(ctx context.Context, handler AcquisitionHandler) (*AcquisitionHandler, error) {
+	if err := handler.ValidateRegistration(); err != nil {
+		return nil, err
+	}
+	// Registration and verification are intentionally separate. A caller can
+	// never smuggle an enabled handler into the registry through this method.
+	handler.Enabled = false
+	handler.Generation = newPrefixedToken("av_hgen_")
+	allowedKeys, err := json.Marshal(handler.AllowedKeys)
+	if err != nil {
+		return nil, fmt.Errorf("encoding handler allowed keys: %w", err)
+	}
+	allowedVaults, err := json.Marshal(handler.AllowedVaults)
+	if err != nil {
+		return nil, fmt.Errorf("encoding handler allowed vaults: %w", err)
+	}
+	allowedProfiles, err := json.Marshal(handler.AllowedProfiles)
+	if err != nil {
+		return nil, fmt.Errorf("encoding handler allowed profiles: %w", err)
+	}
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, s.dialect.Rebind(`INSERT INTO acquisition_handlers (
+		id, generation, kind, executable_path, sha256, signing_identity,
+		allowed_keys_json, allowed_vaults_json, allowed_profiles_json,
+		timeout_seconds, output_limit_bytes, enabled, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING`),
+		handler.ID, handler.Generation, handler.Kind, handler.ExecutablePath, handler.SHA256, handler.SigningIdentity,
+		string(allowedKeys), string(allowedVaults), string(allowedProfiles),
+		handler.TimeoutSeconds, handler.OutputLimitBytes, s.dialect.BoolVal(handler.Enabled),
+		s.dialect.FormatTime(now), s.dialect.FormatTime(now),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating acquisition handler: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return nil, ErrAcquisitionHandlerExists
+	}
+	handler.CreatedAt = now
+	handler.UpdatedAt = now
+	return &handler, nil
+}
+
+const acquisitionHandlerColumns = `id, generation, kind, executable_path, sha256, signing_identity,
+	allowed_keys_json, allowed_vaults_json, allowed_profiles_json,
+	timeout_seconds, output_limit_bytes, enabled, created_at, updated_at`
+
+func (s *SQLStore) scanAcquisitionHandler(scan func(dest ...interface{}) error) (*AcquisitionHandler, error) {
+	var handler AcquisitionHandler
+	var allowedKeys, allowedVaults, allowedProfiles string
+	var enabledRaw, createdAt, updatedAt interface{}
+	if err := scan(
+		&handler.ID, &handler.Generation, &handler.Kind, &handler.ExecutablePath, &handler.SHA256, &handler.SigningIdentity,
+		&allowedKeys, &allowedVaults, &allowedProfiles,
+		&handler.TimeoutSeconds, &handler.OutputLimitBytes, &enabledRaw, &createdAt, &updatedAt,
+	); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(allowedKeys), &handler.AllowedKeys); err != nil {
+		return nil, fmt.Errorf("decoding handler allowed keys: %w", err)
+	}
+	if err := json.Unmarshal([]byte(allowedVaults), &handler.AllowedVaults); err != nil {
+		return nil, fmt.Errorf("decoding handler allowed vaults: %w", err)
+	}
+	if err := json.Unmarshal([]byte(allowedProfiles), &handler.AllowedProfiles); err != nil {
+		return nil, fmt.Errorf("decoding handler allowed profiles: %w", err)
+	}
+	var err error
+	if handler.Enabled, err = s.dialect.ScanBool(enabledRaw); err != nil {
+		return nil, fmt.Errorf("scanning handler enabled: %w", err)
+	}
+	if handler.CreatedAt, err = s.dialect.ScanTime(createdAt); err != nil {
+		return nil, fmt.Errorf("scanning handler created_at: %w", err)
+	}
+	if handler.UpdatedAt, err = s.dialect.ScanTime(updatedAt); err != nil {
+		return nil, fmt.Errorf("scanning handler updated_at: %w", err)
+	}
+	return &handler, nil
+}
+
+func (s *SQLStore) GetAcquisitionHandler(ctx context.Context, id string) (*AcquisitionHandler, error) {
+	row := s.db.QueryRowContext(ctx,
+		s.dialect.Rebind(`SELECT `+acquisitionHandlerColumns+` FROM acquisition_handlers WHERE id = ?`), id,
+	)
+	return s.scanAcquisitionHandler(row.Scan)
+}
+
+func (s *SQLStore) ListAcquisitionHandlers(ctx context.Context) ([]AcquisitionHandler, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+acquisitionHandlerColumns+` FROM acquisition_handlers ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing acquisition handlers: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var handlers []AcquisitionHandler
+	for rows.Next() {
+		handler, err := s.scanAcquisitionHandler(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		handlers = append(handlers, *handler)
+	}
+	return handlers, rows.Err()
+}
+
+func (s *SQLStore) SetAcquisitionHandlerEnabled(ctx context.Context, id string, enabled bool) error {
+	result, err := s.db.ExecContext(ctx,
+		s.dialect.Rebind(`UPDATE acquisition_handlers SET enabled = ?, updated_at = ? WHERE id = ?`),
+		s.dialect.BoolVal(enabled), s.now(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("updating acquisition handler: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *SQLStore) SetAcquisitionHandlerEnabledIfGeneration(ctx context.Context, id, generation string, enabled bool) (bool, error) {
+	result, err := s.db.ExecContext(ctx,
+		s.dialect.Rebind(`UPDATE acquisition_handlers SET enabled = ?, updated_at = ? WHERE id = ? AND generation = ?`),
+		s.dialect.BoolVal(enabled), s.now(), id, generation,
+	)
+	if err != nil {
+		return false, fmt.Errorf("updating acquisition handler generation: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("checking acquisition handler generation update: %w", err)
+	}
+	return affected == 1, nil
+}
+
+func (s *SQLStore) DeleteAcquisitionHandler(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx,
+		s.dialect.Rebind(`DELETE FROM acquisition_handlers WHERE id = ?`), id,
+	)
+	if err != nil {
+		return fmt.Errorf("deleting acquisition handler: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // newPrefixedToken generates a 256-bit cryptographically random token
 // with the given prefix followed by 64 hex characters.
 func newPrefixedToken(prefix string) string {

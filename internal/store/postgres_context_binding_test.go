@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,52 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func TestPostgresAcquisitionHandlerMigrationAndSQLiteCopy(t *testing.T) {
+	databaseURL := os.Getenv("AGENT_VAULT_TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("set AGENT_VAULT_TEST_POSTGRES_URL to run PostgreSQL handler tests")
+	}
+
+	dst, err := openPostgres(databaseURL)
+	if err != nil {
+		t.Fatalf("open Postgres: %v", err)
+	}
+	defer dst.Close()
+
+	src := openTestDB(t)
+	handler := testAcquisitionHandler()
+	handler.ID = "pg-handler-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+	if _, err := src.CreateAcquisitionHandler(context.Background(), handler); err != nil {
+		t.Fatalf("create source handler: %v", err)
+	}
+	if err := src.SetAcquisitionHandlerEnabled(context.Background(), handler.ID, true); err != nil {
+		t.Fatalf("enable source handler: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = dst.DeleteAcquisitionHandler(context.Background(), handler.ID)
+	})
+
+	tx, err := dst.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if copied, err := copyAcquisitionHandlers(context.Background(), src, tx, dst.dialect); err != nil || copied != 1 {
+		t.Fatalf("copyAcquisitionHandlers copied=%d err=%v", copied, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := dst.GetAcquisitionHandler(context.Background(), handler.ID)
+	if err != nil {
+		t.Fatalf("get copied handler: %v", err)
+	}
+	if !got.Enabled || got.ExecutablePath != handler.ExecutablePath || got.SHA256 != handler.SHA256 {
+		t.Fatalf("PostgreSQL handler mismatch: %+v", got)
+	}
+}
 
 func TestPostgresContextBindingRetirementWaitsForProposalLock(t *testing.T) {
 	databaseURL := os.Getenv("AGENT_VAULT_TEST_POSTGRES_URL")

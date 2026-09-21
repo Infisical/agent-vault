@@ -320,6 +320,12 @@ type Store interface {
 
 	// Proposals
 	GetContextBinding(ctx context.Context, id string) (*store.ContextBinding, error)
+	CreateAcquisitionHandler(ctx context.Context, handler store.AcquisitionHandler) (*store.AcquisitionHandler, error)
+	GetAcquisitionHandler(ctx context.Context, id string) (*store.AcquisitionHandler, error)
+	ListAcquisitionHandlers(ctx context.Context) ([]store.AcquisitionHandler, error)
+	SetAcquisitionHandlerEnabled(ctx context.Context, id string, enabled bool) error
+	SetAcquisitionHandlerEnabledIfGeneration(ctx context.Context, id, generation string, enabled bool) (bool, error)
+	DeleteAcquisitionHandler(ctx context.Context, id string) error
 	CreateProposal(ctx context.Context, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]store.EncryptedCredential) (*store.Proposal, error)
 	CreateProposalWithContext(ctx context.Context, vaultID, sessionID, contextBindingID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]store.EncryptedCredential) (*store.Proposal, error)
 	GetProposal(ctx context.Context, vaultID string, id int) (*store.Proposal, error)
@@ -869,6 +875,12 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("POST /v1/vaults/{name}/agents/{agentName}/role", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultAgentSetRole)))))
 
 	// Instance settings (owner-only)
+	mux.HandleFunc("GET /v1/admin/handlers", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAcquisitionHandlerList))))
+	mux.HandleFunc("POST /v1/admin/handlers", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAcquisitionHandlerRegister)))))
+	mux.HandleFunc("GET /v1/admin/handlers/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAcquisitionHandlerShow))))
+	mux.HandleFunc("POST /v1/admin/handlers/{id}/verify", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAcquisitionHandlerVerify)))))
+	mux.HandleFunc("POST /v1/admin/handlers/{id}/disable", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAcquisitionHandlerDisable)))))
+	mux.HandleFunc("DELETE /v1/admin/handlers/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAcquisitionHandlerDelete))))
 	mux.HandleFunc("GET /v1/admin/settings", s.requireInitialized(s.requireAuth(actorAuthed(s.handleGetSettings))))
 	mux.HandleFunc("PUT /v1/admin/settings", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleUpdateSettings)))))
 	mux.HandleFunc("POST /v1/admin/settings/rate-limit/preview", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleRateLimitPreview)))))

@@ -3,9 +3,13 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Infisical/agent-vault/internal/contextbinding"
 )
@@ -19,6 +23,9 @@ var ErrContextBindingInactive = errors.New("context binding not found or retired
 
 // ErrProposalStateConflict marks an expected proposal status/context race.
 var ErrProposalStateConflict = errors.New("proposal state conflict")
+
+// ErrAcquisitionHandlerExists is returned when a registry ID is already in use.
+var ErrAcquisitionHandlerExists = errors.New("acquisition handler already exists")
 
 // DefaultVault is the name of the automatically-seeded vault.
 const DefaultVault = "default"
@@ -247,6 +254,113 @@ type ContextBinding struct {
 	RetiredAt *time.Time
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// AcquisitionHandler is an instance-owner registered executable allowlist.
+// Proposal input may reference ID/profile only; every execution resolves the
+// executable and policy fields from this row.
+type AcquisitionHandler struct {
+	ID               string
+	Generation       string
+	Kind             string
+	ExecutablePath   string
+	SHA256           string
+	SigningIdentity  string
+	AllowedKeys      []string
+	AllowedVaults    []string
+	AllowedProfiles  []string
+	TimeoutSeconds   int
+	OutputLimitBytes int
+	Enabled          bool
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+const (
+	acquisitionHandlerMinOutputBytes = 1024
+	acquisitionHandlerMaxOutputBytes = 1024 * 1024
+	acquisitionHandlerMaxTimeout     = 300
+)
+
+var (
+	acquisitionHandlerIDPattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	acquisitionHandlerSHA256Pattern  = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	acquisitionHandlerKeyPattern     = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`)
+	acquisitionHandlerVaultPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	acquisitionHandlerProfilePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+)
+
+func ValidateAcquisitionHandlerID(id string) error {
+	if !acquisitionHandlerIDPattern.MatchString(id) {
+		return fmt.Errorf("handler id must match %s", acquisitionHandlerIDPattern)
+	}
+	return nil
+}
+
+// ValidateRegistration validates the server-owned handler registry shape.
+// It deliberately does not verify that ExecutablePath exists or that SHA256
+// matches the file: registration is persisted disabled and the explicit
+// verify operation performs those live checks before enabling it.
+func (h AcquisitionHandler) ValidateRegistration() error {
+	if err := ValidateAcquisitionHandlerID(h.ID); err != nil {
+		return err
+	}
+	if h.Kind != "executable" {
+		return fmt.Errorf("handler kind must be executable")
+	}
+	if !filepath.IsAbs(h.ExecutablePath) {
+		return fmt.Errorf("handler executable_path must be absolute")
+	}
+	if filepath.Clean(h.ExecutablePath) != h.ExecutablePath {
+		return fmt.Errorf("handler executable_path must be clean")
+	}
+	if len(h.ExecutablePath) > 4096 || strings.ContainsRune(h.ExecutablePath, '\x00') {
+		return fmt.Errorf("handler executable_path is invalid")
+	}
+	if !acquisitionHandlerSHA256Pattern.MatchString(h.SHA256) {
+		return fmt.Errorf("handler sha256 must be 64 lowercase hexadecimal characters")
+	}
+	if len(h.SigningIdentity) > 512 || strings.TrimSpace(h.SigningIdentity) != h.SigningIdentity {
+		return fmt.Errorf("handler signing_identity is invalid")
+	}
+	for _, r := range h.SigningIdentity {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("handler signing_identity contains control characters")
+		}
+	}
+	if err := validateAcquisitionAllowlist("allowed_keys", h.AllowedKeys, acquisitionHandlerKeyPattern); err != nil {
+		return err
+	}
+	if err := validateAcquisitionAllowlist("allowed_vaults", h.AllowedVaults, acquisitionHandlerVaultPattern); err != nil {
+		return err
+	}
+	if err := validateAcquisitionAllowlist("allowed_profiles", h.AllowedProfiles, acquisitionHandlerProfilePattern); err != nil {
+		return err
+	}
+	if h.TimeoutSeconds < 1 || h.TimeoutSeconds > acquisitionHandlerMaxTimeout {
+		return fmt.Errorf("handler timeout_seconds must be between 1 and %d", acquisitionHandlerMaxTimeout)
+	}
+	if h.OutputLimitBytes < acquisitionHandlerMinOutputBytes || h.OutputLimitBytes > acquisitionHandlerMaxOutputBytes {
+		return fmt.Errorf("handler output_limit_bytes must be between %d and %d", acquisitionHandlerMinOutputBytes, acquisitionHandlerMaxOutputBytes)
+	}
+	return nil
+}
+
+func validateAcquisitionAllowlist(name string, values []string, pattern *regexp.Regexp) error {
+	if len(values) == 0 {
+		return fmt.Errorf("handler %s must not be empty", name)
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if !pattern.MatchString(value) {
+			return fmt.Errorf("handler %s contains invalid value %q", name, value)
+		}
+		if _, ok := seen[value]; ok {
+			return fmt.Errorf("handler %s contains duplicate value %q", name, value)
+		}
+		seen[value] = struct{}{}
+	}
+	return nil
 }
 
 // EncryptedCredential holds an encrypted credential value (ciphertext + nonce).
@@ -561,6 +675,12 @@ type Store interface {
 	CreateContextBinding(ctx context.Context, tuple contextbinding.Tuple) (*ContextBinding, error)
 	GetContextBinding(ctx context.Context, id string) (*ContextBinding, error)
 	RetireContextBinding(ctx context.Context, id string) error
+	CreateAcquisitionHandler(ctx context.Context, handler AcquisitionHandler) (*AcquisitionHandler, error)
+	GetAcquisitionHandler(ctx context.Context, id string) (*AcquisitionHandler, error)
+	ListAcquisitionHandlers(ctx context.Context) ([]AcquisitionHandler, error)
+	SetAcquisitionHandlerEnabled(ctx context.Context, id string, enabled bool) error
+	SetAcquisitionHandlerEnabledIfGeneration(ctx context.Context, id, generation string, enabled bool) (bool, error)
+	DeleteAcquisitionHandler(ctx context.Context, id string) error
 	CreateProposal(ctx context.Context, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error)
 	CreateProposalWithContext(ctx context.Context, vaultID, sessionID, contextBindingID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error)
 	GetProposal(ctx context.Context, vaultID string, id int) (*Proposal, error)
