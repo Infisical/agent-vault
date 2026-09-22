@@ -642,15 +642,7 @@ func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bo
 		return fmt.Errorf("opening log file: %w", err)
 	}
 
-	childArgs := []string{"server", "--port", strconv.Itoa(port), "--host", host, "--mitm-port", strconv.Itoa(mitmPort)}
-	if explicitLogLevel != nil {
-		childArgs = append(childArgs, "--log-level", *explicitLogLevel)
-	}
-	childArgs = append(childArgs, "--max-response-bytes", strconv.FormatInt(maxRespBytes, 10))
-	childArgs = append(childArgs, "--max-request-bytes", strconv.FormatInt(maxReqBytes, 10))
-	if uiBasePath != "" {
-		childArgs = append(childArgs, "--ui-base-path", uiBasePath)
-	}
+	childArgs := detachedServerArgs(host, port, mitmPort, uiBasePath, explicitLogLevel, maxRespBytes, maxReqBytes)
 	child := exec.Command(exe, childArgs...)
 	child.Stdin = pr
 	child.Stdout = logFile
@@ -724,6 +716,17 @@ func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bo
 	return fmt.Errorf("server did not respond within 3 seconds")
 }
 
+func detachedServerArgs(host string, port, mitmPort int, uiBasePath string, explicitLogLevel *string, maxRespBytes, maxReqBytes int64) []string {
+	childArgs := []string{"server", "--port", strconv.Itoa(port), "--host", host, "--mitm-port", strconv.Itoa(mitmPort)}
+	if explicitLogLevel != nil {
+		childArgs = append(childArgs, "--log-level", *explicitLogLevel)
+	}
+	childArgs = append(childArgs, "--max-response-bytes", strconv.FormatInt(maxRespBytes, 10))
+	childArgs = append(childArgs, "--max-request-bytes", strconv.FormatInt(maxReqBytes, 10))
+	childArgs = append(childArgs, "--ui-base-path", uiBasePath)
+	return childArgs
+}
+
 func serverLogPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -787,7 +790,7 @@ func init() {
 	serverCmd.Flags().String("log-level", "info", "log level: info (default) or debug (per-request proxy logs)")
 	serverCmd.Flags().Int64("max-response-bytes", defaultMaxResponseBytes(), "max response body bytes streamed to agents (default: unlimited; also respects AGENT_VAULT_MAX_RESPONSE_BYTES)")
 	serverCmd.Flags().Int64("max-request-bytes", defaultMaxRequestBytes(), "max request body bytes forwarded to upstreams (default: 1 GiB; also respects AGENT_VAULT_MAX_REQUEST_BYTES)")
-	serverCmd.Flags().String("ui-base-path", defaultUIBasePath(), "URL path prefix to serve the UI and API under, e.g. /vault (default: domain root; also respects AGENT_VAULT_UI_BASE_PATH)")
+	serverCmd.Flags().String("ui-base-path", defaultUIBasePath(), "URL path prefix for the browser UI, e.g. /vault (root control APIs remain available; also respects AGENT_VAULT_UI_BASE_PATH)")
 	serverCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(serverCmd)
 }

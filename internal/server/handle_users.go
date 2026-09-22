@@ -408,7 +408,7 @@ func (s *Server) handleUserInviteCreate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	inviteLink := s.baseURL + "/invite/" + inv.Token
+	inviteLink := s.UIURL("/invite/" + inv.Token)
 
 	emailSent := s.sendUserInviteEmail(w, req.Email, actor.DisplayLabel(), inviteLink, "You've been invited to Agent Vault", vaults, inv.ExpiresAt)
 	if !emailSent && s.notifier.Enabled() {
@@ -689,7 +689,7 @@ func (s *Server) handleUserInviteReinvite(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	inviteLink := s.baseURL + "/invite/" + inv.Token
+	inviteLink := s.UIURL("/invite/" + inv.Token)
 
 	emailSent := s.sendUserInviteEmail(w, existing.Email, actor.DisplayLabel(), inviteLink, "You've been re-invited to Agent Vault", existing.Vaults, inv.ExpiresAt)
 	if !emailSent && s.notifier.Enabled() {

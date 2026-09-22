@@ -118,17 +118,17 @@ func (s *Server) handleOAuthConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.SetCredentialOAuth(ctx, &store.CredentialOAuth{
-		VaultID:          ns.ID,
-		CredentialKey:    req.Key,
-		AuthorizationURL: req.AuthorizationURL,
-		TokenURL:         req.TokenURL,
-		ClientID:         req.ClientID,
-		ClientSecretCT:   clientSecretCT,
+		VaultID:           ns.ID,
+		CredentialKey:     req.Key,
+		AuthorizationURL:  req.AuthorizationURL,
+		TokenURL:          req.TokenURL,
+		ClientID:          req.ClientID,
+		ClientSecretCT:    clientSecretCT,
 		ClientSecretNonce: clientSecretNonce,
-		Scopes:           req.Scopes,
-		ScopeSeparator:   scopeSep,
-		DisablePKCE:      req.DisablePKCE,
-		TokenAuthMethod:  tokenAuthMethod,
+		Scopes:            req.Scopes,
+		ScopeSeparator:    scopeSep,
+		DisablePKCE:       req.DisablePKCE,
+		TokenAuthMethod:   tokenAuthMethod,
 	}); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to save OAuth configuration")
 		return
@@ -160,7 +160,7 @@ func (s *Server) handleOAuthConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	redirectURI := s.baseURL + "/v1/oauth/callback"
+	redirectURI := s.UIURL("/v1/oauth/callback")
 	authURL := oauth.BuildAuthorizationURL(
 		req.AuthorizationURL, req.ClientID, redirectURI,
 		stateRaw, codeChallenge, req.Scopes, scopeSep, req.DisablePKCE,
@@ -219,7 +219,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		clientSecret = string(cs)
 	}
 
-	redirectURI := s.baseURL + "/v1/oauth/callback"
+	redirectURI := s.UIURL("/v1/oauth/callback")
 	tok, err := oauth.Exchange(ctx, oauth.ExchangeConfig{
 		TokenURL:        oauthCfg.TokenURL,
 		ClientID:        oauthCfg.ClientID,
@@ -540,7 +540,7 @@ func (s *Server) handleOAuthTokenUpload(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) redirectOAuthComplete(w http.ResponseWriter, r *http.Request, vault, key, status, message string) {
-	u := s.baseURL + "/oauth/complete?status=" + url.QueryEscape(status)
+	u := s.UIURL("/oauth/complete") + "?status=" + url.QueryEscape(status)
 	if vault != "" {
 		u += "&vault=" + url.QueryEscape(vault)
 	}
@@ -552,7 +552,6 @@ func (s *Server) redirectOAuthComplete(w http.ResponseWriter, r *http.Request, v
 	}
 	http.Redirect(w, r, u, http.StatusFound)
 }
-
 
 func isValidHTTPURL(raw string) bool {
 	u, err := url.Parse(raw)

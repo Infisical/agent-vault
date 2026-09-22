@@ -66,7 +66,7 @@ type Server struct {
 	notifier      *notify.Notifier
 	initialized   bool                // true when at least one owner account exists
 	lastInitCheck atomic.Int64        // unix-millis of last DB check for initialization (throttle)
-	baseURL       string              // externally-reachable base URL (e.g. "https://sb.example.com"), includes uiBasePath
+	baseURL       string              // externally-reachable control API base URL (e.g. "https://sb.example.com")
 	uiBasePath    string              // URL path prefix the server is mounted under ("" = root, else e.g. "/vault")
 	indexHTML     []byte              // SPA index.html with the UI base path injected; nil when the frontend is not built
 	skillCLI      []byte              // embedded CLI skill content (served at GET /v1/skills/cli)
@@ -253,6 +253,17 @@ func (s *Server) Logger() *slog.Logger { return s.logger }
 // BaseURL returns the externally-reachable base URL of the server
 // (e.g. "http://127.0.0.1:14321").
 func (s *Server) BaseURL() string { return s.baseURL }
+
+// UIURL returns an externally reachable URL for a browser-facing path.
+func (s *Server) UIURL(path string) string {
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	if s.uiBasePath != "" && strings.HasSuffix(s.baseURL, s.uiBasePath) {
+		return s.baseURL + path
+	}
+	return s.baseURL + s.uiBasePath + path
+}
 
 // Store is the persistence interface used by the server.
 type Store interface {
@@ -766,8 +777,7 @@ func limitBody(next http.HandlerFunc) http.HandlerFunc {
 // The initialized parameter indicates whether at least one owner account exists.
 // When false, all endpoints except /health and POST /v1/init return 503.
 // uiBasePath must be "" (root) or a NormalizeBasePath-canonical prefix
-// (e.g. "/vault"); when set, the entire surface (UI + API) is served under
-// it and baseURL gets the prefix appended unless already present.
+// (e.g. "/vault"); root control routes remain available when it is set.
 // logger must be non-nil; tests can pass slog.New(slog.DiscardHandler).
 func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string, uiBasePath string, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
@@ -775,14 +785,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	rlCfg, _ := ratelimit.LoadFromEnv()
 	rl := ratelimit.New(rlCfg)
 
-	// Append the prefix to the externally-reachable base URL unless the
-	// operator already included it in AGENT_VAULT_ADDR. uiBasePath starts
-	// with "/" (NormalizeBasePath), so the suffix check can only match at
-	// a path-segment boundary of the trimmed URL.
 	baseURL = strings.TrimRight(baseURL, "/")
-	if uiBasePath != "" && !strings.HasSuffix(baseURL, uiBasePath) {
-		baseURL += uiBasePath
-	}
 
 	s := &Server{
 		httpServer: &http.Server{
@@ -984,21 +987,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /account/{path...}", s.handleSPA)
 	mux.HandleFunc("GET /{$}", s.handleSPA)
 
-	// Mount the entire surface (UI + API) under the UI base path. The
-	// reverse proxy must pass the path through unmodified — the prefix is
-	// part of the real request path, so X-Forwarded-Prefix is not needed.
-	if uiBasePath != "" {
-		outer := http.NewServeMux()
-		outer.Handle(uiBasePath+"/", http.StripPrefix(uiBasePath, mux))
-		outer.Handle(uiBasePath, http.RedirectHandler(uiBasePath+"/", http.StatusMovedPermanently))
-		// Platform health checks probe the root path regardless of where
-		// the app is mounted (spawnDetached's readiness poll relies on
-		// this too).
-		outer.HandleFunc("GET /health", s.handleHealth)
-		// Convenience redirect for humans landing on the bare domain.
-		outer.Handle("/{$}", http.RedirectHandler(uiBasePath+"/", http.StatusFound))
-		s.httpServer.Handler = securityHeaders(rl.GlobalMiddleware(logger)(outer))
-	}
+	s.httpServer.Handler = securityHeaders(rl.GlobalMiddleware(logger)(mountUIBasePath(mux, uiBasePath)))
 
 	return s
 }
@@ -1088,7 +1077,7 @@ func (s *Server) Start() error {
 	go func() {
 		fmt.Printf("Agent Vault server listening on %s\n", s.baseURL)
 		if !s.initialized {
-			fmt.Printf("Run `agent-vault auth register` or visit %s to create the owner account\n", s.baseURL)
+			fmt.Printf("Run `agent-vault auth register` or visit %s to create the owner account\n", s.UIURL("/"))
 		}
 		if err := s.httpServer.Serve(httpLn); err != nil && err != http.ErrServerClosed {
 			errCh <- err

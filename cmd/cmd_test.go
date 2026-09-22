@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/Infisical/agent-vault/internal/pidfile"
+	"github.com/Infisical/agent-vault/internal/server"
 	"github.com/Infisical/agent-vault/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -404,6 +406,31 @@ func TestServerUIBasePathFlag(t *testing.T) {
 	}
 	if f.DefValue != "" {
 		t.Errorf("expected --ui-base-path default to be empty (root), got %q", f.DefValue)
+	}
+}
+
+func TestDetachedServerArgsKeepExplicitRootMount(t *testing.T) {
+	t.Setenv("AGENT_VAULT_UI_BASE_PATH", "/vault")
+	for _, flagValue := range []string{"/", ""} {
+		effective, err := server.NormalizeBasePath(flagValue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := detachedServerArgs("127.0.0.1", 14321, 14322, effective, nil, 0, 1024)
+		flags := flag.NewFlagSet("server", flag.ContinueOnError)
+		flags.Int("port", 0, "")
+		flags.String("host", "", "")
+		flags.Int("mitm-port", 0, "")
+		flags.Int64("max-response-bytes", 0, "")
+		flags.Int64("max-request-bytes", 0, "")
+		childPath := flags.String("ui-base-path", defaultUIBasePath(), "")
+		if err := flags.Parse(args[1:]); err != nil {
+			t.Fatal(err)
+		}
+		got, err := server.NormalizeBasePath(*childPath)
+		if err != nil || got != "" {
+			t.Errorf("explicit %q with inherited /vault gives child path %q, error %v", flagValue, got, err)
+		}
 	}
 }
 
