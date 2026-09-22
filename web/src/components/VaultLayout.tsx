@@ -2,6 +2,8 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate, useRouteContext } from "@tanstack/react-router";
 import type { AuthContext, VaultContext } from "../router";
 import Navbar from "./Navbar";
+import { apiFetch } from "../lib/api";
+import { basePath } from "../lib/basePath";
 
 // Source of truth for vault tab ids: the union and active-tab lookup derive
 // from it. An id must equal its route path segment. New tab = entry here plus
@@ -47,7 +49,7 @@ export default function VaultLayout() {
   useEffect(() => {
     async function fetchPendingCount() {
       try {
-        const resp = await fetch(
+        const resp = await apiFetch(
           `/v1/admin/proposals?vault=${encodeURIComponent(vaultContext.vault_name)}&status=pending`
         );
         if (resp.ok) {
@@ -67,7 +69,7 @@ export default function VaultLayout() {
     if (vaultContext.vault_role === "proxy") return;
     async function fetchDiscoveredCount() {
       try {
-        const resp = await fetch(
+        const resp = await apiFetch(
           `/v1/vaults/${encodeURIComponent(vaultContext.vault_name)}/discovered-hosts?limit=0`
         );
         if (resp.ok) {
@@ -200,7 +202,7 @@ export default function VaultLayout() {
         >
           <div className="px-4 pt-5 pb-3">
             <a
-              href="/"
+              href={basePath || "/"}
               onClick={(e) => {
                 e.preventDefault();
                 if (isExiting) return;

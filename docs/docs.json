@@ -68,6 +68,7 @@
               "self-hosting/fly-io",
               "self-hosting/postgres",
               "self-hosting/environment-variables",
+              "self-hosting/path-prefix",
               "self-hosting/maintenance",
               "guides/instance-settings",
               "guides/smtp"

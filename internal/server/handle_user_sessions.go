@@ -82,7 +82,10 @@ func (s *Server) handleRevokeUserSession(w http.ResponseWriter, r *http.Request)
 	// on-disk session.json without a follow-up sniffing call.
 	selfRevoke := caller.PublicID == publicID
 	if selfRevoke {
-		http.SetCookie(w, sessionCookie(r, s.baseURL, "", -1))
+		if _, bearerAuth := bearerSessionToken(r); !bearerAuth {
+			s.deleteBrowserSessions(r.Context(), r, caller.UserID)
+		}
+		s.clearBrowserSessionCookies(w, r)
 	}
 	jsonOK(w, revokeSessionResponse{Status: "revoked", Current: selfRevoke})
 }
@@ -95,4 +98,3 @@ type revokeSessionResponse struct {
 	Status  string `json:"status"`
 	Current bool   `json:"current"`
 }
-

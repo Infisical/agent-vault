@@ -16,7 +16,14 @@ type testServerOption func(*Server)
 //
 // Use option functions (withStore, withEncKey, etc.) to override defaults.
 func newTestServer(opts ...testServerOption) *Server {
-	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321", slog.New(slog.DiscardHandler))
+	return newTestServerWithBasePath("", opts...)
+}
+
+// newTestServerWithBasePath creates a Server mounted under the given UI
+// base path ("" = root). A separate constructor rather than an option
+// because route registration happens inside New.
+func newTestServerWithBasePath(basePath string, opts ...testServerOption) *Server {
+	srv := New("127.0.0.1:0", newMockStore(), make([]byte, 32), nil, true, "http://127.0.0.1:14321", basePath, slog.New(slog.DiscardHandler))
 	for _, opt := range opts {
 		opt(srv)
 	}

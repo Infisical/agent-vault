@@ -1,0 +1,85 @@
+---
+title: "Serving under a path prefix"
+description: "Run the Agent Vault browser UI under a URL path prefix (e.g. https://example.com/vault/) behind a reverse proxy."
+---
+
+By default Agent Vault assumes it is mounted at the domain root. To share a
+domain with other services, start the server with `--ui-base-path` (or
+`AGENT_VAULT_UI_BASE_PATH`) and it serves the browser UI under that prefix:
+
+```bash
+agent-vault server --ui-base-path /vault
+```
+
+The server templates only the unhashed `index.html` entrypoint (a
+`<base href="/vault/">` tag) at startup; the SPA derives its router base
+path and browser API prefix from it at runtime. Content-hashed assets are served
+byte-for-byte, so immutable caching stays valid and no proxy-side content
+rewriting (`sub_filter` etc.) is ever needed. Unset, behavior is identical
+to previous releases.
+
+## The proxy contract
+
+**The reverse proxy must pass the path through unmodified.** Agent Vault
+mounts itself under the prefix, so there is nothing to strip or rewrite —
+`X-Forwarded-Prefix` is neither needed nor honored. With a prefix set:
+
+- The UI, its API calls, and static assets work at `/vault/`,
+  `/vault/v1/...`, and `/vault/assets/...`.
+- Root `/v1/...`, `/discover`, and `/health` control routes remain available
+  on the server. Existing control clients keep their root URLs.
+- `GET /` redirects to `/vault/` when it reaches the server.
+- New browser session cookies use `Path=/vault/`. Logout and self-revocation
+  clear both that path and the root cookie path after a mount migration.
+- Generated browser links and OAuth callbacks include the prefix. The
+  `av_addr` handed to agents uses `AGENT_VAULT_ADDR` unchanged apart from a
+  trailing slash. Set it to an address that agents can reach for API calls.
+
+## nginx
+
+No `sub_filter`, no rewriting, no trailing slash on `proxy_pass`:
+
+```nginx
+location /vault/ {
+    proxy_pass http://127.0.0.1:14321;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+This fronts the management UI (port `14321`) only; the MITM proxy
+(`14322`) is a forward proxy on its own port, unaffected by the base path —
+keep it private as described in
+[examples/nginx-public-ui-proxy/](https://github.com/Infisical/agent-vault/tree/main/examples/nginx-public-ui-proxy).
+
+With Caddy: `handle /vault/* { reverse_proxy 127.0.0.1:14321 }`.
+
+If the proxy also forwards root `/v1/` and `/discover`, set
+`AGENT_VAULT_ADDR=https://example.com`. If another service owns those root
+paths, expose only `/vault/` and set
+`AGENT_VAULT_ADDR=https://example.com/vault`; generated browser links will
+not double the prefix. The server still accepts root control routes on its
+own listener.
+
+## CLI and agents
+
+CLI clients join paths onto the address they are given. Use the origin when
+the proxy forwards root control routes, or the prefixed address when it only
+forwards the UI mount. For example:
+
+```bash
+agent-vault auth login --address https://example.com/vault
+```
+
+Agents use the same address selected in `AGENT_VAULT_ADDR`; scoped session
+responses return it as `av_addr`.
+
+## Verifying a deployment
+
+1. `https://example.com/vault/` loads the login page and the response
+   contains `<base href="/vault/">`
+2. Logging in sets the `av_session` cookie with `Path=/vault/`
+3. Vault list, credential add/remove, and token minting work from the UI
+4. `curl https://example.com/vault/v1/status` returns JSON; root
+   `/v1/status` also responds when forwarded through the proxy
