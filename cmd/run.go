@@ -6,7 +6,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
-	"time"
 	"fmt"
 	"net"
 	"net/http"
@@ -17,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Infisical/agent-vault/internal/isolation"
 	"github.com/Infisical/agent-vault/internal/session"
@@ -90,6 +90,7 @@ Example:
 	c.Flags().Bool("no-firewall", false, "Skip iptables egress rules inside the container (requires --isolation=container; debug only)")
 	c.Flags().Bool("home-volume-shared", false, "Share /home/claude/.claude across invocations (requires --isolation=container); default is a per-invocation volume, losing auth state but avoiding concurrency corruption")
 	c.Flags().Bool("share-agent-dir", false, "Bind-mount the host's agent state dir (~/.claude) into the container so it reuses your host login (requires --isolation=container; mutually exclusive with --home-volume-shared)")
+	c.Flags().Bool("no-skills", false, "Skip installing or updating Agent Vault skill files for recognized agents")
 
 	return c
 }
@@ -207,10 +208,14 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	env = newEnv
 	fmt.Fprintf(os.Stderr, "%s routing HTTP/HTTPS through MITM proxy (%s)\n", successText("agent-vault:"), net.JoinHostPort(resolveMITMHost(addr), strconv.Itoa(mitmPort)))
 
-	// 7. If the target command is a supported agent, offer to install the
-	//    Agent Vault skill (only when not already present).
+	// 7. If the target command is a supported agent, install or update the
+	//    Agent Vault skill unless installation was disabled.
+	noSkills, err := cmd.Flags().GetBool("no-skills")
+	if err != nil {
+		return err
+	}
 	if name, dir, ok := agentSkillDir(args[0]); ok {
-		maybeInstallSkills(name, dir)
+		maybeInstallSkillsIfEnabled(noSkills, name, dir)
 		if name == "OpenClaw" {
 			maybeConfigureOpenClaw()
 		}
@@ -260,9 +265,9 @@ func agentSkillDir(cmd string) (agentName, baseDir string, ok bool) {
 	return "", "", false
 }
 
-// maybeInstallSkills installs both Agent Vault skills (CLI and HTTP) under
-// ~/{baseDir}/skills/ if either is missing, prompting the user once for
-// confirmation. agentName is used in user-facing messages (e.g. "Claude Code").
+// maybeInstallSkills installs or updates the embedded Agent Vault skill under
+// ~/{baseDir}/skills/ when its on-disk content is missing or stale.
+// agentName is used in user-facing messages (e.g. "Claude Code").
 func maybeInstallSkills(agentName, baseDir string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -305,6 +310,12 @@ func maybeInstallSkills(agentName, baseDir string) {
 		}
 	}
 	fmt.Fprintf(os.Stderr, "%s Installed Agent Vault skills for %s.\n", successText("agent-vault:"), agentName)
+}
+
+func maybeInstallSkillsIfEnabled(noSkills bool, agentName, baseDir string) {
+	if !noSkills {
+		maybeInstallSkills(agentName, baseDir)
+	}
 }
 
 // maybeConfigureOpenClaw ensures OpenClaw's managed proxy and trusted env
@@ -580,7 +591,6 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 	if err := os.WriteFile(caPath, pem, 0o600); err != nil { //nolint:gosec
 		return env, 0, false, fmt.Errorf("write CA: %w", err)
 	}
-
 
 	env = stripEnvKeys(env, mitmInjectedKeys)
 	env = append(env, isolation.BuildProxyEnv(isolation.ProxyEnvParams{
