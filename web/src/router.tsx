@@ -19,6 +19,7 @@ import ProposalApprove from "./pages/ProposalApprove";
 import OAuthComplete from "./pages/OAuthComplete";
 import VaultLayout from "./components/VaultLayout";
 import ProposalsTab from "./pages/vault/ProposalsTab";
+import SkillsTab from "./pages/vault/SkillsTab";
 import LogsTab from "./pages/vault/LogsTab";
 import ServicesTab from "./pages/vault/ServicesTab";
 import CredentialsTab from "./pages/vault/CredentialsTab";
@@ -309,6 +310,12 @@ const proposalsTabRoute = createRoute({
   component: ProposalsTab,
 });
 
+const skillsTabRoute = createRoute({
+  getParentRoute: () => vaultLayoutRoute,
+  path: "/skills",
+  component: SkillsTab,
+});
+
 const logsTabRoute = createRoute({
   getParentRoute: () => vaultLayoutRoute,
   path: "/logs",
@@ -382,6 +389,7 @@ const routeTree = rootRoute.addChildren([
     vaultLayoutRoute.addChildren([
       vaultIndexRoute,
       proposalsTabRoute,
+      skillsTabRoute,
       logsTabRoute,
       servicesTabRoute,
       credentialsTabRoute,

@@ -137,6 +137,20 @@ func TestUIBasePathRouting(t *testing.T) {
 	}
 }
 
+func TestMountedSkillsRoutes(t *testing.T) {
+	srv := newTestServerWithBasePath("/vault")
+	srv.indexHTML = injectBasePath([]byte(testIndexHTML), "/vault")
+	for _, path := range []string{"/v1/vaults/default/skills", "/vault/v1/vaults/default/skills"} {
+		if rec := serveBasePath(srv, http.MethodGet, path); rec.Code != http.StatusUnauthorized {
+			t.Errorf("GET %s = %d, want 401 from Skills API authentication", path, rec.Code)
+		}
+	}
+	page := serveBasePath(srv, http.MethodGet, "/vault/vaults/default/skills")
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `<base href="/vault/" />`) {
+		t.Errorf("mounted Skills page = %d, missing UI base tag", page.Code)
+	}
+}
+
 func TestUIBasePathCanonicalRedirects(t *testing.T) {
 	for _, tc := range []struct{ base, target, want string }{
 		{"/vault", "/vault/manage?next=%2Fone", "/vault/manage/?next=%2Fone"},
@@ -349,6 +363,13 @@ func TestBuiltAssetsAtRootAndNestedMount(t *testing.T) {
 		got := serveBasePath(srv, http.MethodGet, tc.path)
 		if got.Code != http.StatusOK || !bytes.Equal(got.Body.Bytes(), want) {
 			t.Errorf("asset at %q = %d, content differs from embedded build", tc.path, got.Code)
+		}
+		if cache := got.Header().Get("Cache-Control"); cache != cacheImmutable {
+			t.Errorf("asset at %q cache = %q, want %q", tc.path, cache, cacheImmutable)
+		}
+		icon := serveBasePath(srv, http.MethodGet, tc.prefix+"/favicon.svg")
+		if icon.Code != http.StatusOK || icon.Header().Get("Cache-Control") != cacheDay {
+			t.Errorf("favicon at %q = %d with cache %q", tc.prefix, icon.Code, icon.Header().Get("Cache-Control"))
 		}
 	}
 }

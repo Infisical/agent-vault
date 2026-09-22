@@ -94,9 +94,9 @@ type Server struct {
 	telemetry        *telemetry.Telemetry
 }
 
-// lockVaultServices acquires the per-vault mutation lock via the store's
+// lockVault acquires the per-vault mutation lock via the store's
 // LockVault. Callers MUST defer the returned unlock func.
-func (s *Server) lockVaultServices(ctx context.Context, vaultID string) (func(), error) {
+func (s *Server) lockVault(ctx context.Context, vaultID string) (func(), error) {
 	return s.store.LockVault(ctx, vaultID)
 }
 
@@ -376,6 +376,13 @@ type Store interface {
 	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
 	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
 	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
+
+	// Vault skills (markdown instruction documents)
+	ListSkills(ctx context.Context, vaultID string) ([]store.SkillMeta, error)
+	GetSkill(ctx context.Context, vaultID, name string) (*store.Skill, error)
+	InsertSkill(ctx context.Context, sk store.Skill) (*store.Skill, error)
+	UpdateSkill(ctx context.Context, vaultID, oldName string, sk store.Skill) (*store.Skill, error)
+	DeleteSkill(ctx context.Context, vaultID, name string) error
 
 	// External credential stores
 	CreateExternalVault(ctx context.Context, p store.CreateExternalVaultParams) (*store.Vault, error)
@@ -923,6 +930,13 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("DELETE /v1/vaults/{name}/services/{host}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServiceRemove))))
 	mux.HandleFunc("DELETE /v1/vaults/{name}/services", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServicesClear))))
 	mux.HandleFunc("GET /v1/vaults/{name}/services/credential-usage", s.requireInitialized(s.requireAuth(actorAuthed(s.handleServicesCredentialUsage))))
+	// Per-vault skills. Reads are open to any vault grant; mutations are
+	// vault admin only (enforced in the handlers).
+	mux.HandleFunc("GET /v1/vaults/{name}/skills", s.requireInitialized(s.requireAuth(actorAuthed(s.handleSkillsList))))
+	mux.HandleFunc("POST /v1/vaults/{name}/skills", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleSkillCreate)))))
+	mux.HandleFunc("GET /v1/vaults/{name}/skills/{skill}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleSkillGet))))
+	mux.HandleFunc("PATCH /v1/vaults/{name}/skills/{skill}", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleSkillPatch)))))
+	mux.HandleFunc("DELETE /v1/vaults/{name}/skills/{skill}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleSkillDelete))))
 	mux.HandleFunc("GET /v1/vaults/{name}/logs", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultLogsList))))
 	mux.HandleFunc("GET /v1/vaults/{name}/discovered-hosts", s.requireInitialized(s.requireAuth(actorAuthed(s.handleDiscoveredHosts))))
 	// Public static reads — immutable payloads with no credentials on
@@ -964,12 +978,16 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	// React app static assets (Vite output plus web/public/ files copied
 	// to the webdist root).
 	webFS, _ := fs.Sub(webDistFS, "webdist")
-	staticFiles := http.FileServer(http.FS(webFS))
-	mux.Handle("GET /assets/", staticFiles)
-	mux.Handle("GET /fonts/", staticFiles)
-	mux.Handle("GET /favicon.svg", staticFiles)
-	mux.Handle("GET /favicon.png", staticFiles)
-	mux.Handle("GET /vite.svg", staticFiles)
+	static := http.FileServer(http.FS(webFS))
+	mux.Handle("GET /assets/", cacheStatic(cacheImmutable, static))
+	// Files Vite copies verbatim out of web/public/. index.html links the
+	// favicons and the built CSS references /fonts/, so without these routes
+	// they 404 despite being embedded, and the UI silently falls back to
+	// system fonts. Their names carry no content hash, so they get a modest
+	// lifetime instead of immutable.
+	mux.Handle("GET /fonts/", cacheStatic(cacheDay, static))
+	mux.Handle("GET /favicon.svg", cacheStatic(cacheDay, static))
+	mux.Handle("GET /favicon.png", cacheStatic(cacheDay, static))
 
 	// SPA catch-all: serve index.html for all frontend routes
 	mux.HandleFunc("GET /login", s.handleSPA)
@@ -990,6 +1008,56 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	s.httpServer.Handler = securityHeaders(rl.GlobalMiddleware(logger)(mountUIBasePath(mux, uiBasePath)))
 
 	return s
+}
+
+// Cache lifetimes for the embedded frontend build output. /assets/ filenames
+// carry a Vite content hash, so those bytes never change and a rebuild emits
+// new names. Files copied verbatim from web/public/ (favicons, fonts) keep
+// stable names across builds, so they get a modest lifetime instead.
+const (
+	cacheImmutable = "public, max-age=31536000, immutable"
+	cacheDay       = "public, max-age=86400"
+)
+
+// cacheStatic sets Cache-Control on responses from the embedded build output.
+// Without it browsers refetch every asset on each load: embed.FS reports a zero
+// ModTime, so http.FileServer sends neither Last-Modified nor ETag and there is
+// nothing to revalidate against. index.html is served separately by handleSPA
+// with no-store, so new builds are still picked up immediately.
+//
+// Only successful responses are marked. During a rolling upgrade a browser can
+// load index.html from an already-updated instance and request its chunks from
+// one still serving the previous build; caching that 404 for a year would wedge
+// the UI for that browser until it cleared its cache.
+func cacheStatic(cacheControl string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(&staticCacheWriter{ResponseWriter: w, cacheControl: cacheControl}, r)
+	})
+}
+
+// staticCacheWriter sets the Cache-Control header on 200 and 206 responses,
+// just before the status line is written.
+type staticCacheWriter struct {
+	http.ResponseWriter
+	cacheControl string
+	wroteHeader  bool
+}
+
+func (w *staticCacheWriter) WriteHeader(code int) {
+	if !w.wroteHeader {
+		w.wroteHeader = true
+		if code == http.StatusOK || code == http.StatusPartialContent {
+			w.Header().Set("Cache-Control", w.cacheControl)
+		}
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *staticCacheWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(b)
 }
 
 // requireInitialized returns 503 when no owner account exists yet.
