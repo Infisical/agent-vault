@@ -240,9 +240,10 @@ func (s *Syncer) recordFailure(ctx context.Context, vaultID string, err error) {
 	s.logger.Warn("infisical sync failed",
 		slog.String("vault_id", vaultID),
 		slog.String("err", err.Error()))
-	// ErrInvalidKey is caller-supplied topology; surface verbatim.
+	// ErrInvalidKey and ErrDuplicateKey are caller-supplied topology;
+	// surface verbatim.
 	publicMsg := syncFailedPublicMessage
-	if errors.Is(err, ErrInvalidKey) {
+	if errors.Is(err, ErrInvalidKey) || errors.Is(err, ErrDuplicateKey) {
 		publicMsg = err.Error()
 	}
 	// Bumping last_synced_at on failure makes dueAt act as retry backoff.

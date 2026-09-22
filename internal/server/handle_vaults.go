@@ -170,6 +170,18 @@ func (s *Server) handleVaultSyncNow(w http.ResponseWriter, r *http.Request) {
 				jsonCodedError(w, http.StatusBadRequest, "external_store_invalid_key",
 					"Upstream secret key does not match the required UPPER_SNAKE_CASE pattern. See server logs for the offending key.")
 			}
+		case errors.Is(err, infisical.ErrDuplicateKey):
+			// Colliding key names and folder paths are topology; redact for
+			// non-admin/non-owner viewers, mirroring the ErrInvalidKey gate.
+			if s.callerCanSeeVaultUpstream(ctx, actor, vault.ID) {
+				jsonCodedError(w, http.StatusBadRequest, "external_store_duplicate_key", err.Error())
+			} else {
+				s.logger.Warn("manual infisical sync rejected duplicate upstream key",
+					slog.String("vault_id", vault.ID),
+					slog.String("err", err.Error()))
+				jsonCodedError(w, http.StatusBadRequest, "external_store_duplicate_key",
+					"Two folders in the recursive Infisical sync contain a secret with the same name. See server logs for the offending key.")
+			}
 		case errors.Is(err, context.Canceled):
 			return // caller went away
 		default:
@@ -585,6 +597,12 @@ func (s *Server) prepareInfisicalSnapshot(w http.ResponseWriter, ctx context.Con
 
 	secs, err := s.infisicalClient.FetchSecrets(ctx, cfg)
 	if err != nil {
+		// Create/connect are owner-only, so duplicate-key topology may be
+		// surfaced verbatim here (unlike the redaction gate in sync-now).
+		if errors.Is(err, infisical.ErrDuplicateKey) {
+			jsonCodedError(w, http.StatusBadRequest, "external_store_duplicate_key", err.Error())
+			return infisicalSnapshot{}, false
+		}
 		// SDK error embeds INFISICAL_URL + upstream rejection body; scrub it.
 		s.logger.Warn("infisical fetch failed",
 			slog.String("vault", logName),
