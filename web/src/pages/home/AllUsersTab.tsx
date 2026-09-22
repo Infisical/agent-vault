@@ -19,7 +19,7 @@ interface PublicUser {
   status: "active" | "pending";
   vaults?: { vault_name: string; vault_role: string }[];
   created_at: string;
-  invite_token?: string;
+  invite_id?: number;
 }
 
 interface VaultOption {
@@ -108,13 +108,13 @@ export default function AllUsersTab() {
       if (invResp.ok) {
         const invData = await invResp.json();
         pendingUsers = (invData.invites ?? []).map(
-          (inv: { email: string; role?: string; token: string; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
+          (inv: { email: string; role?: string; id: number; created_at: string; vaults?: { vault_name: string; vault_role: string }[] }) => ({
             email: inv.email,
             role: inv.role || "member",
             status: "pending" as const,
             vaults: inv.vaults ?? [],
             created_at: inv.created_at,
-            invite_token: inv.token,
+            invite_id: inv.id,
           })
         );
       }
@@ -134,9 +134,11 @@ export default function AllUsersTab() {
   async function handleDeleteUser() {
     if (!deleteTarget) return;
     if (deleteTarget.status === "pending") {
-      if (!deleteTarget.invite_token) return;
+      if (!deleteTarget.invite_id) {
+        throw new Error("Missing invite ID - cannot revoke invite");
+      }
       const resp = await apiFetch(
-        `/v1/users/invites/${encodeURIComponent(deleteTarget.invite_token)}`,
+        `/v1/users/invites/by-id/${deleteTarget.invite_id}`,
         { method: "DELETE" }
       );
       if (!resp.ok) {
@@ -263,6 +265,19 @@ export default function AllUsersTab() {
           rowKey={(u) => u.email + u.status}
           emptyTitle="No users"
           emptyDescription="No users have registered yet."
+        />
+      )}
+
+      {auth.is_owner && deleteTarget?.status === "pending" && (
+        <ConfirmDeleteModal
+          open={deleteTarget !== null}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={handleDeleteUser}
+          title="Revoke invite"
+          description={`This will revoke the pending invitation for "${deleteTarget?.email}". They will no longer be able to accept it. Type the email to confirm.`}
+          confirmLabel="Revoke invite"
+          confirmValue={deleteTarget?.email ?? ""}
+          inputLabel="Email address"
         />
       )}
 
