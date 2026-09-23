@@ -159,6 +159,7 @@ See [Proposals](/learn/proposals) for the full proposal lifecycle, including sto
 | 403 `service_disabled` | Host is configured but disabled | Surface to the user — don't create a duplicate proposal. |
 | 409 `multiple services match host …` | Service mutation (`PATCH`/`DELETE`) used a bare host that matches several path-scoped services | Retry with the canonical service `name` from `/discover`. The response body includes a `candidates` array. |
 | 429 | Rate limited | Respect the `Retry-After` header. |
+| 502 `network_policy_blocked` | The target resolved to an address denied by Agent Vault's outbound network policy | For an intentional private destination, add its IP or CIDR to `AGENT_VAULT_NETWORK_ALLOWLIST`, or enable `AGENT_VAULT_ALLOW_PRIVATE_RANGES` for a trusted local deployment. Cloud metadata endpoints cannot be allowed. |
 | 502 | Missing credential or upstream unreachable | Tell the user a credential may need to be added. |
 
 <Note>

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
+	"github.com/Infisical/agent-vault/internal/netguard"
 	"github.com/Infisical/agent-vault/internal/ratelimit"
 	"github.com/Infisical/agent-vault/internal/requestlog"
 )
@@ -168,6 +169,35 @@ func hostHeaderForScheme(scheme, target string) string {
 		return "[" + host + "]"
 	}
 	return host
+}
+
+// networkPolicyBlockedMessage translates the internal policy reason into safe,
+// actionable client guidance. The resolved IP is intentionally omitted: it is
+// retained in the server-side error for diagnostics but is not needed by an
+// untrusted proxy client.
+func networkPolicyBlockedMessage(reason netguard.BlockReason) string {
+	message := "The target resolved to an address blocked by Agent Vault's network policy."
+	switch reason {
+	case netguard.BlockReasonMetadata:
+		return message + " Cloud metadata endpoints are always blocked."
+	case netguard.BlockReasonPrivateRange:
+		return message + " If access to this private or reserved address is intentional, add it to AGENT_VAULT_NETWORK_ALLOWLIST or set AGENT_VAULT_ALLOW_PRIVATE_RANGES=true."
+	default:
+		return message
+	}
+}
+
+// writeNetworkPolicyProxyError converts a typed netguard rejection into the
+// standard broker error shape. It returns false for ordinary dial, TLS, and
+// upstream failures so callers can preserve their existing error handling.
+func writeNetworkPolicyProxyError(w http.ResponseWriter, err error) bool {
+	var blockedErr *netguard.BlockedAddressError
+	if !errors.As(err, &blockedErr) {
+		return false
+	}
+	brokercore.WriteProxyError(w, http.StatusBadGateway, "network_policy_blocked",
+		networkPolicyBlockedMessage(blockedErr.Reason))
+	return true
 }
 
 // forwardHandler returns an http.Handler that forwards each request to
@@ -342,6 +372,10 @@ func (p *Proxy) forwardRequest(
 			slog.String("target_host", target),
 			slog.String("error", err.Error()),
 		)
+		if writeNetworkPolicyProxyError(w, err) {
+			emit(http.StatusBadGateway, "network_policy_blocked")
+			return
+		}
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		emit(http.StatusBadGateway, "upstream_error")
 		return

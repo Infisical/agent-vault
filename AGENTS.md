@@ -104,6 +104,7 @@ Content-Type: application/json
 | 401 | Invalid or expired token | Check `AGENT_VAULT_TOKEN` |
 | 403 | Host not allowed | Propose a proposal |
 | 429 | Too many pending proposals | Wait for review |
+| 502 `network_policy_blocked` | Target address denied by outbound network policy | Ask the operator to allowlist an intentional private destination; cloud metadata endpoints cannot be allowed |
 | 502 | Missing credential or upstream unreachable | Tell user a credential may need to be added |
 
 ## Rules
