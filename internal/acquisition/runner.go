@@ -19,7 +19,11 @@ type ProviderInvocation struct {
 	ResourceID       string
 	Profile          string
 	ContextBindingID string
-	Params           map[string]string
+	// HandlerGeneration pins the exact registry row selected when the job was
+	// created. A delete/re-register under the same ID must never substitute a
+	// different executable for an already-authorized acquisition.
+	HandlerGeneration string
+	Params            map[string]string
 
 	// ProgressSink receives only redacted protocol state. Delivery is
 	// non-blocking; a nil sink discards progress and a full sink fails closed.
@@ -81,6 +85,9 @@ func RunProvider(ctx context.Context, resolver HandlerResolver, handlerID string
 	resolved, err := resolver.GetAcquisitionHandler(ctx, handlerID)
 	if err != nil || resolved == nil || resolved.ID != handlerID {
 		return nil, newProviderError("handler_unavailable", err)
+	}
+	if invocation.HandlerGeneration == "" || resolved.Generation != invocation.HandlerGeneration {
+		return nil, newProviderError("handler_generation_mismatch", nil)
 	}
 	handler := cloneHandler(*resolved)
 	invocation.Params = cloneParams(invocation.Params)

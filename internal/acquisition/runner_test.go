@@ -245,7 +245,7 @@ func TestRunProviderRequiresStoreResolution(t *testing.T) {
 	handler := runnerTestHandler(t)
 	invocation := ProviderInvocation{
 		VaultID: "test-vault", ResourceID: runnerFixtureResource, Profile: "default",
-		ContextBindingID: runnerFixtureContext,
+		ContextBindingID: runnerFixtureContext, HandlerGeneration: handler.Generation,
 	}
 	_, err := RunProvider(context.Background(), nil, handler.ID, invocation)
 	if got := ProviderErrorCode(err); got != "handler_unavailable" {
@@ -257,6 +257,29 @@ func TestRunProviderRequiresStoreResolution(t *testing.T) {
 	_, err = RunProvider(context.Background(), resolver, handler.ID, invocation)
 	if got := ProviderErrorCode(err); got != "handler_unavailable" {
 		t.Fatalf("mismatched store row code=%q error=%v", got, err)
+	}
+
+	resolver.handler = handler
+	for _, generation := range []string{"", "stale-generation"} {
+		invocation.HandlerGeneration = generation
+		_, err = RunProvider(context.Background(), resolver, handler.ID, invocation)
+		if got := ProviderErrorCode(err); got != "handler_generation_mismatch" {
+			t.Fatalf("generation %q code=%q error=%v", generation, got, err)
+		}
+	}
+
+	// Simulate delete/re-register under the same ID. The replacement path is
+	// deliberately absent: receiving generation_mismatch instead of an
+	// executable verification error proves the rejection happens before
+	// preparation or spawn can touch the replacement executable.
+	replacement := handler
+	replacement.Generation = "replacement-generation"
+	replacement.ExecutablePath = "/definitely/not/a/provider-replacement"
+	resolver.handler = replacement
+	invocation.HandlerGeneration = handler.Generation
+	_, err = RunProvider(context.Background(), resolver, handler.ID, invocation)
+	if got := ProviderErrorCode(err); got != "handler_generation_mismatch" {
+		t.Fatalf("same-ID replacement code=%q error=%v", got, err)
 	}
 }
 
@@ -340,6 +363,9 @@ func (r *runnerHandlerResolver) GetAcquisitionHandler(context.Context, string) (
 }
 
 func runTestProvider(ctx context.Context, handler store.AcquisitionHandler, invocation ProviderInvocation) (*ProviderResult, error) {
+	if invocation.HandlerGeneration == "" {
+		invocation.HandlerGeneration = handler.Generation
+	}
 	return RunProvider(ctx, &runnerHandlerResolver{handler: handler}, handler.ID, invocation)
 }
 
