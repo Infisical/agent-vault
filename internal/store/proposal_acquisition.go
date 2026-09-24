@@ -124,7 +124,7 @@ func (s *SQLStore) StartProposalAcquisition(ctx context.Context, start ProposalA
 		return nil, err
 	}
 
-	var generation, allowedKeysJSON, allowedVaultsJSON, allowedProfilesJSON string
+	var generation, handlerKind, allowedKeysJSON, allowedVaultsJSON, allowedProfilesJSON string
 	var enabledRaw interface{}
 	if forUpdate == "" {
 		// SQLite has no SELECT FOR UPDATE. Acquire its write lock before
@@ -141,9 +141,9 @@ func (s *SQLStore) StartProposalAcquisition(ctx context.Context, start ProposalA
 			return nil, ErrAcquisitionHandlerUnavailable
 		}
 	}
-	if err := tx.QueryRowContext(ctx, s.dialect.Rebind(`SELECT generation, allowed_keys_json,
+	if err := tx.QueryRowContext(ctx, s.dialect.Rebind(`SELECT generation, kind, allowed_keys_json,
 		allowed_vaults_json, allowed_profiles_json, enabled FROM acquisition_handlers WHERE id = ?`+forUpdate), start.HandlerID).
-		Scan(&generation, &allowedKeysJSON, &allowedVaultsJSON, &allowedProfilesJSON, &enabledRaw); err != nil {
+		Scan(&generation, &handlerKind, &allowedKeysJSON, &allowedVaultsJSON, &allowedProfilesJSON, &enabledRaw); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrAcquisitionHandlerUnavailable
 		}
@@ -161,6 +161,12 @@ func (s *SQLStore) StartProposalAcquisition(ctx context.Context, start ProposalA
 		!containsExactString(allowedVaults, start.VaultID) ||
 		!containsExactString(allowedProfiles, start.Profile) {
 		return nil, ErrAcquisitionHandlerUnavailable
+	}
+	// Browser DOM capture remains fail-closed until a provider path enforces
+	// signed recipes, origin/path restrictions, and capture suppression. The
+	// stored vault opt-in is intentionally not sufficient to execute it.
+	if handlerKind == AcquisitionHandlerKindBrowserDOM {
+		return nil, ErrBrowserDOMAcquisitionUnavailable
 	}
 	if err := s.requireVaultAcquisitionPolicyHandler(ctx, tx, start.VaultID, start.HandlerID, forUpdate); err != nil {
 		return nil, err
@@ -249,7 +255,12 @@ func (s *SQLStore) requireCredentialAcquisitionEnabled(ctx context.Context, tx *
 	return nil
 }
 
-func (s *SQLStore) requireVaultAcquisitionPolicyHandler(ctx context.Context, tx *sql.Tx, vaultID, handlerID, forUpdate string) error {
+func (s *SQLStore) requireVaultAcquisitionPolicyHandler(
+	ctx context.Context,
+	tx *sql.Tx,
+	vaultID, handlerID string,
+	forUpdate string,
+) error {
 	if forUpdate == "" {
 		result, err := tx.ExecContext(ctx, `UPDATE vault_settings SET updated_at = updated_at
 			WHERE vault_id = ? AND key = ?`, vaultID, VaultSettingCredentialAcquisitionPolicy)

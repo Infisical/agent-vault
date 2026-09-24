@@ -143,6 +143,28 @@ func TestProposalAcquisitionStartRequiresVaultPolicyHandler(t *testing.T) {
 	}
 }
 
+func TestProposalAcquisitionBrowserDOMHandlerRequiresVaultOptIn(t *testing.T) {
+	s, proposal, handler := setupProposalAcquisition(t)
+	ctx := context.Background()
+	if _, err := s.db.ExecContext(ctx, `UPDATE acquisition_handlers SET kind = ? WHERE id = ?`, "browser_dom", handler.ID); err != nil {
+		t.Fatal(err)
+	}
+	start := ProposalAcquisitionStart{
+		VaultID: proposal.VaultID, ProposalID: proposal.ID, CredentialKey: "GITHUB_TOKEN",
+		HandlerID: handler.ID, Profile: "github.com", Mode: "native",
+	}
+	if _, err := s.StartProposalAcquisition(ctx, start); !errors.Is(err, ErrBrowserDOMAcquisitionUnavailable) {
+		t.Fatalf("browser DOM start without opt-in error=%v", err)
+	}
+	if err := s.SetVaultSetting(ctx, proposal.VaultID, VaultSettingCredentialAcquisitionPolicy,
+		`{"enabled_handlers":["github-cli"],"browser_dom_enabled":true}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.StartProposalAcquisition(ctx, start); !errors.Is(err, ErrBrowserDOMAcquisitionUnavailable) {
+		t.Fatalf("browser DOM start with opt-in error=%v", err)
+	}
+}
+
 func TestProposalAcquisitionStartRequiresEnabledInstanceGate(t *testing.T) {
 	s, proposal, handler := setupProposalAcquisition(t)
 	ctx := context.Background()

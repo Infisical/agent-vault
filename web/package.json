@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build"
+    "build": "tsc && vite build",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "@tanstack/react-router": "^1.170.32",

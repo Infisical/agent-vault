@@ -57,13 +57,14 @@ func (s *SQLStore) SetVaultAcquisitionPolicy(ctx context.Context, vaultID string
 			}
 		}
 
-		query := `SELECT enabled, allowed_vaults_json FROM acquisition_handlers WHERE id = ?`
+		query := `SELECT kind, enabled, allowed_vaults_json FROM acquisition_handlers WHERE id = ?`
 		if forUpdate != "" {
 			query += " " + forUpdate
 		}
+		var kind string
 		var enabledRaw interface{}
 		var allowedVaultsJSON string
-		if err := tx.QueryRowContext(ctx, s.dialect.Rebind(query), id).Scan(&enabledRaw, &allowedVaultsJSON); err != nil {
+		if err := tx.QueryRowContext(ctx, s.dialect.Rebind(query), id).Scan(&kind, &enabledRaw, &allowedVaultsJSON); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrAcquisitionPolicyHandlerUnavailable
 			}
@@ -74,6 +75,9 @@ func (s *SQLStore) SetVaultAcquisitionPolicy(ctx context.Context, vaultID string
 			return err
 		}
 		var allowedVaults []string
+		if kind == AcquisitionHandlerKindBrowserDOM {
+			return ErrBrowserDOMAcquisitionUnavailable
+		}
 		if !enabled || json.Unmarshal([]byte(allowedVaultsJSON), &allowedVaults) != nil || !containsExactString(allowedVaults, vaultID) {
 			return ErrAcquisitionPolicyHandlerUnavailable
 		}

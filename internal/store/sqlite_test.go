@@ -369,6 +369,10 @@ func TestAcquisitionHandlerValidateRegistration(t *testing.T) {
 	if err := handler.ValidateRegistration(); err != nil {
 		t.Fatalf("valid handler rejected: %v", err)
 	}
+	handler.Kind = "browser_dom"
+	if err := handler.ValidateRegistration(); err != nil {
+		t.Fatalf("valid browser DOM handler rejected: %v", err)
+	}
 }
 
 func TestAcquisitionHandlerMigrationAndLifecycle(t *testing.T) {

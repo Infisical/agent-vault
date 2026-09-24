@@ -936,6 +936,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("PATCH /v1/vaults/{name}/settings", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultSettingsPatch)))))
 	mux.HandleFunc("GET /v1/vaults/{name}/acquisition-policy", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultAcquisitionPolicyGet))))
 	mux.HandleFunc("PATCH /v1/vaults/{name}/acquisition-policy", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultAcquisitionPolicyPatch)))))
+	mux.HandleFunc("GET /v1/vaults/{name}/acquisition-handlers", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultAcquisitionHandlerCatalog))))
 	mux.HandleFunc("PATCH /v1/vaults/{name}/credential-store", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultCredentialStorePatch)))))
 
 	// Vault admin (owner-only)

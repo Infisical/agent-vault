@@ -187,6 +187,8 @@ func writeProposalAcquisitionStartError(w http.ResponseWriter, err error) {
 		jsonCodedError(w, http.StatusConflict, "credential_acquisition_disabled", "Credential acquisition is disabled")
 	case errors.Is(err, store.ErrAcquisitionHandlerUnavailable), errors.Is(err, store.ErrAcquisitionPolicyHandlerUnavailable):
 		jsonCodedError(w, http.StatusConflict, "handler_unavailable", "Acquisition handler is unavailable")
+	case errors.Is(err, store.ErrBrowserDOMAcquisitionUnavailable):
+		jsonCodedError(w, http.StatusConflict, "browser_dom_unavailable", "Browser DOM acquisition is not available in this build")
 	case errors.Is(err, store.ErrProposalAcquisitionActive):
 		jsonCodedError(w, http.StatusConflict, "proposal_acquisition_active", "Credential already has an active acquisition")
 	case errors.Is(err, store.ErrProposalStateConflict), errors.Is(err, store.ErrContextBindingInactive),

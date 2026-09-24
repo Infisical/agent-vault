@@ -15,6 +15,13 @@ const settingCredentialAcquisitionPolicy = store.VaultSettingCredentialAcquisiti
 
 type vaultAcquisitionPolicy = store.VaultAcquisitionPolicy
 
+type vaultAcquisitionHandlerSummary struct {
+	ID              string   `json:"id"`
+	Kind            string   `json:"kind"`
+	AllowedKeys     []string `json:"allowed_keys"`
+	AllowedProfiles []string `json:"allowed_profiles"`
+}
+
 func defaultVaultAcquisitionPolicy() vaultAcquisitionPolicy {
 	return vaultAcquisitionPolicy{EnabledHandlers: []string{}}
 }
@@ -49,6 +56,9 @@ func validateVaultAcquisitionPolicy(ctx context.Context, st interface {
 			return store.ErrAcquisitionPolicyHandlerUnavailable
 		}
 		handler, err := st.GetAcquisitionHandler(ctx, id)
+		if handler != nil && handler.Kind == store.AcquisitionHandlerKindBrowserDOM {
+			return store.ErrBrowserDOMAcquisitionUnavailable
+		}
 		if err != nil || handler == nil || !handler.Enabled || !containsExact(handler.AllowedVaults, vaultID) {
 			return store.ErrAcquisitionPolicyHandlerUnavailable
 		}
@@ -72,10 +82,40 @@ func (s *Server) handleVaultAcquisitionPolicyGet(w http.ResponseWriter, r *http.
 		return
 	}
 	if err := validateVaultAcquisitionPolicy(ctx, s.store, vault.ID, policy); err != nil {
-		jsonCodedError(w, http.StatusConflict, "policy_stale", "Acquisition policy references an unavailable handler")
-		return
+		// Reads remain recoverable so a vault administrator can remove a
+		// disabled/deleted handler. Start and PATCH admission still fail closed.
+		w.Header().Set("X-Agent-Vault-Policy-Stale", "true")
 	}
 	jsonOK(w, policy)
+}
+
+// handleVaultAcquisitionHandlerCatalog returns only the non-sensitive fields a
+// vault administrator needs to configure policy. The instance registry remains
+// owner-only because it also contains executable paths, hashes, signing
+// identities, and cross-vault allowlists.
+func (s *Server) handleVaultAcquisitionHandlerCatalog(w http.ResponseWriter, r *http.Request) {
+	vault := s.resolveVaultForAdminOrOwner(w, r, r.PathValue("name"))
+	if vault == nil {
+		return
+	}
+	handlers, err := s.store.ListAcquisitionHandlers(r.Context())
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to list acquisition handlers")
+		return
+	}
+	result := make([]vaultAcquisitionHandlerSummary, 0, len(handlers))
+	for _, handler := range handlers {
+		if !handler.Enabled || handler.Kind == store.AcquisitionHandlerKindBrowserDOM || !containsExact(handler.AllowedVaults, vault.ID) {
+			continue
+		}
+		result = append(result, vaultAcquisitionHandlerSummary{
+			ID:              handler.ID,
+			Kind:            handler.Kind,
+			AllowedKeys:     append([]string(nil), handler.AllowedKeys...),
+			AllowedProfiles: append([]string(nil), handler.AllowedProfiles...),
+		})
+	}
+	jsonOK(w, map[string]any{"handlers": result})
 }
 
 func (s *Server) handleVaultAcquisitionPolicyPatch(w http.ResponseWriter, r *http.Request) {
@@ -108,12 +148,19 @@ func (s *Server) handleVaultAcquisitionPolicyPatch(w http.ResponseWriter, r *htt
 	}
 	for _, id := range policy.EnabledHandlers {
 		handler, err := s.store.GetAcquisitionHandler(r.Context(), id)
+		if handler != nil && handler.Kind == store.AcquisitionHandlerKindBrowserDOM {
+			jsonCodedError(w, http.StatusConflict, "browser_dom_unavailable", "Browser DOM acquisition is not available in this build")
+			return
+		}
 		if err != nil || handler == nil || !handler.Enabled || !containsExact(handler.AllowedVaults, vault.ID) {
 			jsonCodedError(w, http.StatusConflict, "handler_unavailable", "Handler is unavailable for this vault")
 			return
 		}
 	}
-	if err := s.store.SetVaultAcquisitionPolicy(r.Context(), vault.ID, *policy); errors.Is(err, store.ErrAcquisitionPolicyHandlerUnavailable) {
+	if err := s.store.SetVaultAcquisitionPolicy(r.Context(), vault.ID, *policy); errors.Is(err, store.ErrBrowserDOMAcquisitionUnavailable) {
+		jsonCodedError(w, http.StatusConflict, "browser_dom_unavailable", "Browser DOM acquisition is not available in this build")
+		return
+	} else if errors.Is(err, store.ErrAcquisitionPolicyHandlerUnavailable) {
 		jsonCodedError(w, http.StatusConflict, "handler_unavailable", "Handler is unavailable for this vault")
 		return
 	} else if err != nil {

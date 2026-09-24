@@ -36,6 +36,7 @@ var (
 	ErrProposalAcquisitionContinuationUnavailable = errors.New("proposal acquisition continuation unavailable")
 	ErrProposalAcquisitionContextBindingRequired  = errors.New("proposal acquisition requires a context binding")
 	ErrProposalAcquisitionDeclarationMismatch     = errors.New("proposal acquisition does not match persisted declaration")
+	ErrBrowserDOMAcquisitionUnavailable           = errors.New("browser DOM acquisition is unavailable")
 )
 
 // DefaultVault is the name of the automatically-seeded vault.
@@ -287,6 +288,11 @@ type AcquisitionHandler struct {
 	UpdatedAt        time.Time
 }
 
+const (
+	AcquisitionHandlerKindExecutable = "executable"
+	AcquisitionHandlerKindBrowserDOM = "browser_dom"
+)
+
 // VaultSettingCredentialAcquisitionPolicy is the per-vault settings key used
 // for the non-secret acquisition allowlist.
 const VaultSettingCredentialAcquisitionPolicy = "credential_acquisition_policy"
@@ -381,8 +387,8 @@ func (h AcquisitionHandler) ValidateRegistration() error {
 	if err := ValidateAcquisitionHandlerID(h.ID); err != nil {
 		return err
 	}
-	if h.Kind != "executable" {
-		return fmt.Errorf("handler kind must be executable")
+	if h.Kind != AcquisitionHandlerKindExecutable && h.Kind != AcquisitionHandlerKindBrowserDOM {
+		return fmt.Errorf("handler kind must be executable or browser_dom")
 	}
 	if !filepath.IsAbs(h.ExecutablePath) {
 		return fmt.Errorf("handler executable_path must be absolute")

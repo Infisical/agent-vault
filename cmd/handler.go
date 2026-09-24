@@ -205,7 +205,7 @@ func writeHandler(cmd *cobra.Command, handler handlerRecord) {
 
 func init() {
 	handlerCmd.PersistentFlags().String("address", "", "server address override")
-	handlerRegisterCmd.Flags().String("kind", "executable", "handler kind (V1: executable)")
+	handlerRegisterCmd.Flags().String("kind", "executable", "handler kind: executable or browser_dom")
 	handlerRegisterCmd.Flags().String("executable", "", "absolute provider executable path")
 	handlerRegisterCmd.Flags().String("sha256", "", "expected lowercase SHA-256 digest")
 	handlerRegisterCmd.Flags().String("signing-identity", "", "optional exact macOS code-signing identity")
