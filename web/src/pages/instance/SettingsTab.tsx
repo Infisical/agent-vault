@@ -3,6 +3,8 @@ import { useRouteContext } from "@tanstack/react-router";
 import { apiFetch } from "../../lib/api";
 import Button from "../../components/Button";
 import Input from "../../components/Input";
+import Toggle from "../../components/Toggle";
+import { serializeInstanceAcquisitionSetting } from "../../lib/acquisition";
 import type { AuthContext } from "../../router";
 
 type RateLimitTier = {
@@ -88,6 +90,11 @@ export default function InstanceSettingsTab() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [credentialAcquisitionEnabled, setCredentialAcquisitionEnabled] = useState(false);
+  const [acquisitionSettingsLoaded, setAcquisitionSettingsLoaded] = useState(false);
+  const [acquisitionSaving, setAcquisitionSaving] = useState(false);
+  const [acquisitionError, setAcquisitionError] = useState("");
+  const [acquisitionSuccess, setAcquisitionSuccess] = useState("");
 
   const [smtpConfigured, setSmtpConfigured] = useState(false);
   const [testEmailTo, setTestEmailTo] = useState("");
@@ -108,18 +115,26 @@ export default function InstanceSettingsTab() {
 
   useEffect(() => {
     apiFetch("/v1/admin/settings")
-      .then((r) => r.json())
+      .then(async (r) => {
+        if (!r.ok) throw new Error("Failed to load credential acquisition setting.");
+        return r.json();
+      })
       .then((data) => {
         setInviteOnly(data.invite_only ?? false);
         setDomains(data.allowed_email_domains || []);
         setSmtpConfigured(data.smtp_configured ?? false);
+        setCredentialAcquisitionEnabled(data.credential_acquisition_enabled ?? false);
+        setAcquisitionSettingsLoaded(true);
         if (data.rate_limit) {
           setRateLimit(data.rate_limit as RateLimitState);
           setRlProfile(data.rate_limit.profile || "default");
         }
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch(() => {
+        setAcquisitionError("Failed to load credential acquisition setting.");
+        setLoading(false);
+      });
   }, []);
 
   // Live preview: whenever profile or overrides change, ask the server
@@ -224,6 +239,29 @@ export default function InstanceSettingsTab() {
       setError("Network error.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleSaveCredentialAcquisition() {
+    if (!acquisitionSettingsLoaded || acquisitionSaving) return;
+    setAcquisitionSaving(true);
+    setAcquisitionError("");
+    setAcquisitionSuccess("");
+    try {
+      const resp = await apiFetch("/v1/admin/settings", {
+        method: "PUT",
+        body: serializeInstanceAcquisitionSetting(credentialAcquisitionEnabled),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data.error || "Failed to save credential acquisition setting.");
+      }
+      setCredentialAcquisitionEnabled(data.credential_acquisition_enabled === true);
+      setAcquisitionSuccess("Credential acquisition rollout gate saved.");
+    } catch (err) {
+      setAcquisitionError(err instanceof Error ? err.message : "Network error.");
+    } finally {
+      setAcquisitionSaving(false);
     }
   }
 
@@ -347,6 +385,44 @@ export default function InstanceSettingsTab() {
               />
             </button>
           </div>
+        </div>
+      </section>
+
+      <section className="mb-8">
+        <div className="border border-border rounded-xl bg-surface p-5">
+          <div className="flex items-start justify-between gap-6">
+            <div>
+              <h3 className="text-sm font-semibold text-text mb-1">
+                Delegated credential acquisition
+              </h3>
+              <p className="text-sm text-text-muted max-w-[680px]">
+                Global rollout gate for starting registered credential providers. Enabling it does not register a handler or enable one for any vault; both controls remain separately required.
+              </p>
+            </div>
+            <Toggle
+              checked={credentialAcquisitionEnabled}
+              onChange={(enabled) => {
+                setCredentialAcquisitionEnabled(enabled);
+                setAcquisitionError("");
+                setAcquisitionSuccess("");
+              }}
+              disabled={!acquisitionSettingsLoaded || acquisitionSaving}
+              ariaLabel="Enable delegated credential acquisition"
+            />
+          </div>
+          {acquisitionError && (
+            <div className="bg-danger-bg border border-danger/20 rounded-lg p-3 text-sm text-danger mt-4">
+              {acquisitionError}
+            </div>
+          )}
+          {acquisitionSuccess && (
+            <div className="bg-success-bg border border-success/20 rounded-lg p-3 text-sm text-success mt-4">
+              {acquisitionSuccess}
+            </div>
+          )}
+          <Button onClick={handleSaveCredentialAcquisition} loading={acquisitionSaving} disabled={!acquisitionSettingsLoaded || acquisitionSaving} className="mt-4">
+            Save rollout gate
+          </Button>
         </div>
       </section>
 

@@ -15,6 +15,7 @@ import {
   nextAcquisitionPollDelay,
   pollAcquisitionStatuses,
   serializeAcquisitionPolicy,
+  serializeInstanceAcquisitionSetting,
   shouldPollAcquisitions,
 } from "../src/lib/acquisition.ts";
 
@@ -48,6 +49,17 @@ test("policy serialization keeps browser DOM explicit and default-off", () => {
     enabled_handlers: [], browser_dom_enabled: false,
   });
   assert.equal(normalizeVaultAcquisitionPolicy({ enabled_handlers: null, browser_dom_enabled: false }), null);
+});
+
+test("instance rollout gate serialization is explicit", () => {
+  assert.equal(
+    serializeInstanceAcquisitionSetting(true),
+    JSON.stringify({ credential_acquisition_enabled: true }),
+  );
+  assert.equal(
+    serializeInstanceAcquisitionSetting(false),
+    JSON.stringify({ credential_acquisition_enabled: false }),
+  );
 });
 
 test("handler catalog discards registry-only metadata", () => {

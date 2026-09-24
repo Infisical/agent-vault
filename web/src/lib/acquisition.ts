@@ -233,6 +233,10 @@ export function serializeAcquisitionPolicy(policy: VaultAcquisitionPolicy): stri
   });
 }
 
+export function serializeInstanceAcquisitionSetting(enabled: boolean): string {
+  return JSON.stringify({ credential_acquisition_enabled: enabled });
+}
+
 export function canEditAcquisitionPolicy({
   canManage,
   loading,
