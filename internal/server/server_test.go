@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -57,28 +58,35 @@ type mockStore struct {
 	unmatchedHosts               map[string][]store.UnmatchedHost       // keyed by vaultID
 	createProposalWithContextErr error
 	getContextBindingErr         error
+	getProposalErr               error
 	applyProposalErr             error
 	sessionCounter               int
 	handlerGenerationCounter     int
 	setHandlerGenerationHook     func()
 	setAcquisitionPolicyHook     func()
+	acquisitionMu                sync.Mutex
+	proposalAcquisitions         map[string]*store.ProposalAcquisition
+	proposalAcquisitionSecrets   map[string]store.EncryptedCredential
+	proposalAcquisitionCounter   int
 }
 
 func newMockStore() *mockStore {
 	ms := &mockStore{
-		sessions:            make(map[string]*store.Session),
-		vaults:              make(map[string]*store.Vault),
-		credentials:         make(map[string]*store.Credential),
-		brokerConfigs:       make(map[string]*store.BrokerConfig),
-		contextBindings:     make(map[string]*store.ContextBinding),
-		acquisitionHandlers: make(map[string]*store.AcquisitionHandler),
-		users:               make(map[string]*store.User),
-		userInvites:         make(map[string]*store.UserInvite),
-		agents:              make(map[string]*store.Agent),
-		settings:            make(map[string]string),
-		vaultSettings:       make(map[string]map[string]string),
-		skills:              make(map[string]map[string]store.Skill),
-		credStores:          make(map[string]*store.VaultCredentialStore),
+		sessions:                   make(map[string]*store.Session),
+		vaults:                     make(map[string]*store.Vault),
+		credentials:                make(map[string]*store.Credential),
+		brokerConfigs:              make(map[string]*store.BrokerConfig),
+		contextBindings:            make(map[string]*store.ContextBinding),
+		acquisitionHandlers:        make(map[string]*store.AcquisitionHandler),
+		proposalAcquisitions:       make(map[string]*store.ProposalAcquisition),
+		proposalAcquisitionSecrets: make(map[string]store.EncryptedCredential),
+		users:                      make(map[string]*store.User),
+		userInvites:                make(map[string]*store.UserInvite),
+		agents:                     make(map[string]*store.Agent),
+		settings:                   make(map[string]string),
+		vaultSettings:              make(map[string]map[string]string),
+		skills:                     make(map[string]map[string]store.Skill),
+		credStores:                 make(map[string]*store.VaultCredentialStore),
 	}
 	// Seed root vault
 	ms.vaults["default"] = &store.Vault{ID: "root-ns-id", Name: "default"}
@@ -432,6 +440,210 @@ func (m *mockStore) DeleteAcquisitionHandler(_ context.Context, id string) error
 	return nil
 }
 
+func (m *mockStore) StartProposalAcquisition(_ context.Context, start store.ProposalAcquisitionStart) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	if m.settings[store.InstanceSettingCredentialAcquisitionEnabled] != "true" {
+		return nil, store.ErrCredentialAcquisitionDisabled
+	}
+	proposalRow, err := m.GetProposal(context.Background(), start.VaultID, start.ProposalID)
+	if err != nil {
+		return nil, err
+	}
+	if proposalRow.Status != "pending" {
+		return nil, store.ErrProposalStateConflict
+	}
+	if proposalRow.ContextBindingID == nil {
+		return nil, store.ErrProposalAcquisitionContextBindingRequired
+	}
+	binding := m.contextBindings[*proposalRow.ContextBindingID]
+	if binding == nil || binding.RetiredAt != nil {
+		return nil, store.ErrContextBindingInactive
+	}
+	handler := m.acquisitionHandlers[start.HandlerID]
+	if handler == nil || !handler.Enabled || !containsExact(handler.AllowedKeys, start.CredentialKey) ||
+		!containsExact(handler.AllowedVaults, start.VaultID) || !containsExact(handler.AllowedProfiles, start.Profile) {
+		return nil, store.ErrAcquisitionHandlerUnavailable
+	}
+	raw := m.vaultSettings[start.VaultID][store.VaultSettingCredentialAcquisitionPolicy]
+	policy, err := store.ParseVaultAcquisitionPolicyJSON(raw)
+	if err != nil || !containsExact(policy.EnabledHandlers, start.HandlerID) {
+		return nil, store.ErrAcquisitionPolicyHandlerUnavailable
+	}
+	for _, existing := range m.proposalAcquisitions {
+		if existing.VaultID == start.VaultID && existing.ProposalID == start.ProposalID && existing.CredentialKey == start.CredentialKey &&
+			(existing.State == store.AcquisitionQueued || existing.State == store.AcquisitionRunning || existing.State == store.AcquisitionAwaitingUser) {
+			return nil, store.ErrProposalAcquisitionActive
+		}
+	}
+	m.proposalAcquisitionCounter++
+	now := time.Now().UTC()
+	job := &store.ProposalAcquisition{
+		ID: fmt.Sprintf("acquisition-%d", m.proposalAcquisitionCounter), VaultID: start.VaultID,
+		ProposalID: start.ProposalID, CredentialKey: start.CredentialKey, Attempt: m.proposalAcquisitionCounter,
+		HandlerID: start.HandlerID, HandlerGeneration: handler.Generation, Profile: start.Profile, Mode: start.Mode,
+		State: store.AcquisitionQueued, ContextBindingID: *proposalRow.ContextBindingID, CreatedAt: now, UpdatedAt: now,
+	}
+	m.proposalAcquisitions[job.ID] = job
+	copy := *job
+	return &copy, nil
+}
+
+func (m *mockStore) GetProposalAcquisition(_ context.Context, vaultID string, proposalID int, credentialKey string) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	var latest *store.ProposalAcquisition
+	for _, job := range m.proposalAcquisitions {
+		if job.VaultID == vaultID && job.ProposalID == proposalID && job.CredentialKey == credentialKey && (latest == nil || job.Attempt > latest.Attempt) {
+			copy := *job
+			latest = &copy
+		}
+	}
+	if latest == nil {
+		return nil, sql.ErrNoRows
+	}
+	return latest, nil
+}
+
+func (m *mockStore) GetProposalAcquisitionByID(_ context.Context, id string) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	job := m.proposalAcquisitions[id]
+	if job == nil {
+		return nil, sql.ErrNoRows
+	}
+	copy := *job
+	return &copy, nil
+}
+
+func (m *mockStore) ListProposalAcquisitions(_ context.Context, vaultID string, proposalID int) ([]store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	var jobs []store.ProposalAcquisition
+	for _, job := range m.proposalAcquisitions {
+		if job.VaultID == vaultID && job.ProposalID == proposalID {
+			jobs = append(jobs, *job)
+		}
+	}
+	slices.SortFunc(jobs, func(a, b store.ProposalAcquisition) int { return strings.Compare(a.ID, b.ID) })
+	return jobs, nil
+}
+
+func (m *mockStore) MarkProposalAcquisitionRunning(_ context.Context, id string) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	job := m.proposalAcquisitions[id]
+	if job == nil {
+		return nil, sql.ErrNoRows
+	}
+	handler := m.acquisitionHandlers[job.HandlerID]
+	if handler == nil || !handler.Enabled || handler.Generation != job.HandlerGeneration {
+		return nil, store.ErrAcquisitionHandlerUnavailable
+	}
+	if job.State != store.AcquisitionQueued {
+		return nil, store.ErrProposalAcquisitionStateConflict
+	}
+	now := time.Now().UTC()
+	job.State, job.StartedAt, job.UpdatedAt = store.AcquisitionRunning, &now, now
+	copy := *job
+	return &copy, nil
+}
+
+func (m *mockStore) MarkProposalAcquisitionAwaitingUser(_ context.Context, id string, ticketHash []byte, expiresAt time.Time) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	job := m.proposalAcquisitions[id]
+	if job == nil || job.State != store.AcquisitionRunning {
+		return nil, store.ErrProposalAcquisitionStateConflict
+	}
+	now := time.Now().UTC()
+	job.State, job.ContinuationTicketHash, job.ContinuationExpiresAt, job.UpdatedAt =
+		store.AcquisitionAwaitingUser, append([]byte(nil), ticketHash...), &expiresAt, now
+	copy := *job
+	return &copy, nil
+}
+
+func (m *mockStore) CompleteProposalAcquisition(_ context.Context, id string, credential store.EncryptedCredential, source string, expiresAt *time.Time) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	job := m.proposalAcquisitions[id]
+	if job == nil || job.State != store.AcquisitionRunning {
+		return nil, store.ErrProposalAcquisitionStateConflict
+	}
+	return m.completeProposalAcquisitionLocked(job, credential, source, expiresAt), nil
+}
+
+func (m *mockStore) CompleteProposalAcquisitionContinuation(_ context.Context, ticketHash []byte, credential store.EncryptedCredential, source string, expiresAt *time.Time) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	for _, job := range m.proposalAcquisitions {
+		if job.State == store.AcquisitionAwaitingUser && bytes.Equal(job.ContinuationTicketHash, ticketHash) &&
+			job.ContinuationUsedAt == nil && job.ContinuationExpiresAt != nil && job.ContinuationExpiresAt.After(time.Now()) {
+			now := time.Now().UTC()
+			job.ContinuationUsedAt = &now
+			return m.completeProposalAcquisitionLocked(job, credential, source, expiresAt), nil
+		}
+	}
+	return nil, store.ErrProposalAcquisitionContinuationUnavailable
+}
+
+func (m *mockStore) completeProposalAcquisitionLocked(job *store.ProposalAcquisition, credential store.EncryptedCredential, source string, expiresAt *time.Time) *store.ProposalAcquisition {
+	now := time.Now().UTC()
+	job.State, job.Source, job.CredentialExpiresAt, job.CompletedAt, job.UpdatedAt =
+		store.AcquisitionSucceeded, source, expiresAt, &now, now
+	m.proposalAcquisitionSecrets[fmt.Sprintf("%s:%d:%s", job.VaultID, job.ProposalID, job.CredentialKey)] = credential
+	copy := *job
+	return &copy
+}
+
+func (m *mockStore) CancelProposalAcquisition(_ context.Context, vaultID string, proposalID int, credentialKey string) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	var latest *store.ProposalAcquisition
+	for _, job := range m.proposalAcquisitions {
+		if job.VaultID == vaultID && job.ProposalID == proposalID && job.CredentialKey == credentialKey && (latest == nil || job.Attempt > latest.Attempt) {
+			latest = job
+		}
+	}
+	if latest == nil {
+		return nil, sql.ErrNoRows
+	}
+	return m.cancelProposalAcquisitionLocked(latest)
+}
+
+func (m *mockStore) CancelProposalAcquisitionByID(_ context.Context, id string) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	job := m.proposalAcquisitions[id]
+	if job == nil {
+		return nil, sql.ErrNoRows
+	}
+	return m.cancelProposalAcquisitionLocked(job)
+}
+
+func (m *mockStore) cancelProposalAcquisitionLocked(job *store.ProposalAcquisition) (*store.ProposalAcquisition, error) {
+	if job.State != store.AcquisitionQueued && job.State != store.AcquisitionRunning && job.State != store.AcquisitionAwaitingUser {
+		return nil, store.ErrProposalAcquisitionStateConflict
+	}
+	now := time.Now().UTC()
+	job.State, job.CompletedAt, job.UpdatedAt = store.AcquisitionCancelled, &now, now
+	copy := *job
+	return &copy, nil
+}
+
+func (m *mockStore) FailProposalAcquisition(_ context.Context, id, errorCode string) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	job := m.proposalAcquisitions[id]
+	if job == nil || (job.State != store.AcquisitionQueued && job.State != store.AcquisitionRunning && job.State != store.AcquisitionAwaitingUser) {
+		return nil, store.ErrProposalAcquisitionStateConflict
+	}
+	now := time.Now().UTC()
+	job.State, job.ErrorCode, job.CompletedAt, job.UpdatedAt = store.AcquisitionFailed, errorCode, &now, now
+	copy := *job
+	return &copy, nil
+}
+
 func (m *mockStore) CreateProposalWithContext(ctx context.Context, vaultID, sessionID, contextBindingID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]store.EncryptedCredential) (*store.Proposal, error) {
 	if m.createProposalWithContextErr != nil {
 		return nil, m.createProposalWithContextErr
@@ -456,12 +668,15 @@ func (m *mockStore) CreateProposalWithContext(ctx context.Context, vaultID, sess
 }
 
 func (m *mockStore) GetProposal(_ context.Context, vaultID string, id int) (*store.Proposal, error) {
+	if m.getProposalErr != nil {
+		return nil, m.getProposalErr
+	}
 	for _, cs := range m.proposals[vaultID] {
 		if cs.ID == id {
 			return &cs, nil
 		}
 	}
-	return nil, fmt.Errorf("not found")
+	return nil, sql.ErrNoRows
 }
 
 func (m *mockStore) ListProposals(_ context.Context, vaultID, status string) ([]store.Proposal, error) {
@@ -498,7 +713,16 @@ func (m *mockStore) UpdateProposalStatus(_ context.Context, vaultID string, id i
 }
 
 func (m *mockStore) GetProposalCredentials(_ context.Context, vaultID string, proposalID int) (map[string]store.EncryptedCredential, error) {
-	return map[string]store.EncryptedCredential{}, nil
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	result := make(map[string]store.EncryptedCredential)
+	prefix := fmt.Sprintf("%s:%d:", vaultID, proposalID)
+	for composite, credential := range m.proposalAcquisitionSecrets {
+		if strings.HasPrefix(composite, prefix) {
+			result[strings.TrimPrefix(composite, prefix)] = credential
+		}
+	}
+	return result, nil
 }
 
 func (m *mockStore) ApplyProposal(_ context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string, _ []store.OAuthCredentialConfig) error {

@@ -19,6 +19,7 @@ import (
 
 	"net"
 
+	"github.com/Infisical/agent-vault/internal/acquisition"
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/infisical"
@@ -89,6 +90,14 @@ type Server struct {
 	infisicalDynamic *infisical.DynamicResolver
 	oauthRefresher   *oauth.Refresher
 	telemetry        *telemetry.Telemetry
+
+	runAcquisitionProvider providerRunner
+	acquisitionRootCtx     context.Context
+	acquisitionRootCancel  context.CancelFunc
+	acquisitionWG          sync.WaitGroup
+	acquisitionJobsMu      sync.Mutex
+	acquisitionCancels     map[string]context.CancelFunc
+	acquisitionStopping    bool
 }
 
 // lockVault acquires the per-vault mutation lock via the store's
@@ -336,6 +345,17 @@ type Store interface {
 	GetProposalCredentials(ctx context.Context, vaultID string, proposalID int) (map[string]store.EncryptedCredential, error)
 	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []store.OAuthCredentialConfig) error
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
+	StartProposalAcquisition(ctx context.Context, start store.ProposalAcquisitionStart) (*store.ProposalAcquisition, error)
+	GetProposalAcquisition(ctx context.Context, vaultID string, proposalID int, credentialKey string) (*store.ProposalAcquisition, error)
+	GetProposalAcquisitionByID(ctx context.Context, id string) (*store.ProposalAcquisition, error)
+	ListProposalAcquisitions(ctx context.Context, vaultID string, proposalID int) ([]store.ProposalAcquisition, error)
+	MarkProposalAcquisitionRunning(ctx context.Context, id string) (*store.ProposalAcquisition, error)
+	MarkProposalAcquisitionAwaitingUser(ctx context.Context, id string, ticketHash []byte, expiresAt time.Time) (*store.ProposalAcquisition, error)
+	CompleteProposalAcquisition(ctx context.Context, id string, credential store.EncryptedCredential, source string, credentialExpiresAt *time.Time) (*store.ProposalAcquisition, error)
+	CompleteProposalAcquisitionContinuation(ctx context.Context, ticketHash []byte, credential store.EncryptedCredential, source string, credentialExpiresAt *time.Time) (*store.ProposalAcquisition, error)
+	CancelProposalAcquisition(ctx context.Context, vaultID string, proposalID int, credentialKey string) (*store.ProposalAcquisition, error)
+	CancelProposalAcquisitionByID(ctx context.Context, id string) (*store.ProposalAcquisition, error)
+	FailProposalAcquisition(ctx context.Context, id, errorCode string) (*store.ProposalAcquisition, error)
 
 	// User invites (instance-level)
 	CreateUserInvite(ctx context.Context, email, createdBy, role string, expiresAt time.Time, vaults []store.UserInviteVault) (*store.UserInvite, error)
@@ -781,6 +801,7 @@ func limitBody(next http.HandlerFunc) http.HandlerFunc {
 // logger must be non-nil; tests can pass slog.New(slog.DiscardHandler).
 func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
+	acquisitionRootCtx, acquisitionRootCancel := context.WithCancel(context.Background())
 
 	rlCfg, _ := ratelimit.LoadFromEnv()
 	rl := ratelimit.New(rlCfg)
@@ -794,15 +815,19 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 			WriteTimeout:      60 * time.Second,
 			IdleTimeout:       120 * time.Second,
 		},
-		store:          store,
-		encKey:         encKey,
-		notifier:       notifier,
-		initialized:    initialized,
-		baseURL:        strings.TrimRight(baseURL, "/"),
-		logger:         logger,
-		rateLimit:      rl,
-		logSink:        requestlog.Nop{},
-		oauthRefresher: oauth.NewRefresher(),
+		store:                  store,
+		encKey:                 encKey,
+		notifier:               notifier,
+		initialized:            initialized,
+		baseURL:                strings.TrimRight(baseURL, "/"),
+		logger:                 logger,
+		rateLimit:              rl,
+		logSink:                requestlog.Nop{},
+		oauthRefresher:         oauth.NewRefresher(),
+		runAcquisitionProvider: acquisition.RunProvider,
+		acquisitionRootCtx:     acquisitionRootCtx,
+		acquisitionRootCancel:  acquisitionRootCancel,
+		acquisitionCancels:     make(map[string]context.CancelFunc),
 	}
 
 	// Apply SSRF protection to OAuth token endpoint requests.
@@ -851,6 +876,9 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/proposals", s.requireInitialized(s.requireAuth(actorAuthed(s.handleProposalList))))
 	mux.HandleFunc("POST /v1/admin/proposals/{id}/approve", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAdminProposalApprove)))))
 	mux.HandleFunc("POST /v1/admin/proposals/{id}/reject", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAdminProposalReject)))))
+	mux.HandleFunc("POST /v1/admin/proposals/{id}/acquisitions/{key}/start", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleProposalAcquisitionStart)))))
+	mux.HandleFunc("GET /v1/admin/proposals/{id}/acquisitions", s.requireInitialized(s.requireAuth(actorAuthed(s.handleProposalAcquisitionStatus))))
+	mux.HandleFunc("POST /v1/admin/proposals/{id}/acquisitions/{key}/cancel", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleProposalAcquisitionCancel)))))
 
 	ipUserInviteToken := s.tier(ratelimit.TierAuth, ratelimit.IPTokenKey(clientIP, func(r *http.Request) string {
 		return r.PathValue("token")
@@ -1093,6 +1121,12 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", s.httpServer.Addr, err)
 	}
+	acquisitionDrainAttempted := false
+	defer func() {
+		if !acquisitionDrainAttempted {
+			s.drainAcquisitionJobsWithWarning()
+		}
+	}()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -1182,6 +1216,10 @@ func (s *Server) Start() error {
 	if err := s.httpServer.Shutdown(ctx); err != nil {
 		return fmt.Errorf("server shutdown: %w", err)
 	}
+	acquisitionDrainAttempted = true
+	if !s.drainAcquisitionJobsWithWarning() {
+		return nil
+	}
 
 	// Stop background workers (syncer + touch-cache pruner) and wait for the
 	// syncer's in-flight refreshes to drain before zeroing s.encKey.
@@ -1202,6 +1240,14 @@ func (s *Server) Start() error {
 	fmt.Println("server shut down gracefully")
 	crypto.WipeBytes(s.encKey)
 	return nil
+}
+
+func (s *Server) drainAcquisitionJobsWithWarning() bool {
+	if s.stopAcquisitionJobs(5 * time.Second) {
+		return true
+	}
+	fmt.Fprintln(os.Stderr, "warning: credential acquisition jobs did not stop within 5s; skipping key wipe to avoid racing in-flight encrypts")
+	return false
 }
 
 var errTooManyPendingCodes = errors.New("too many pending verification codes")
@@ -1450,7 +1496,7 @@ const settingAllowedDomains = "allowed_email_domains"
 
 const settingInviteOnly = "invite_only"
 
-const settingCredentialAcquisitionEnabled = "credential_acquisition_enabled"
+const settingCredentialAcquisitionEnabled = store.InstanceSettingCredentialAcquisitionEnabled
 
 const settingRateLimitConfig = "ratelimit_config"
 

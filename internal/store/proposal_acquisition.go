@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Infisical/agent-vault/internal/proposal"
 	"github.com/google/uuid"
 )
 
@@ -100,11 +101,14 @@ func (s *SQLStore) StartProposalAcquisition(ctx context.Context, start ProposalA
 	if forUpdate != "" {
 		forUpdate = " " + forUpdate
 	}
-	var proposalStatus string
+	if err := s.requireCredentialAcquisitionEnabled(ctx, tx, forUpdate); err != nil {
+		return nil, err
+	}
+	var proposalStatus, credentialsJSON string
 	var contextBindingID sql.NullString
-	if err := tx.QueryRowContext(ctx, s.dialect.Rebind(`SELECT status, context_binding_id
+	if err := tx.QueryRowContext(ctx, s.dialect.Rebind(`SELECT status, context_binding_id, credentials_json
 		FROM proposals WHERE vault_id = ? AND id = ?`+forUpdate), start.VaultID, start.ProposalID).
-		Scan(&proposalStatus, &contextBindingID); err != nil {
+		Scan(&proposalStatus, &contextBindingID, &credentialsJSON); err != nil {
 		return nil, err
 	}
 	if proposalStatus != "pending" {
@@ -112,6 +116,9 @@ func (s *SQLStore) StartProposalAcquisition(ctx context.Context, start ProposalA
 	}
 	if !contextBindingID.Valid || contextBindingID.String == "" {
 		return nil, ErrProposalAcquisitionContextBindingRequired
+	}
+	if !proposalAcquisitionDeclarationMatches(credentialsJSON, start) {
+		return nil, ErrProposalAcquisitionDeclarationMismatch
 	}
 	if err := s.lockActiveContextBinding(ctx, tx, contextBindingID.String); err != nil {
 		return nil, err
@@ -191,6 +198,55 @@ func (s *SQLStore) StartProposalAcquisition(ctx context.Context, start ProposalA
 		return nil, err
 	}
 	return job, nil
+}
+
+func proposalAcquisitionDeclarationMatches(credentialsJSON string, start ProposalAcquisitionStart) bool {
+	var slots []proposal.CredentialSlot
+	if err := json.Unmarshal([]byte(credentialsJSON), &slots); err != nil {
+		return false
+	}
+	matches := 0
+	for _, slot := range slots {
+		if slot.Action != proposal.ActionSet || slot.Key != start.CredentialKey || slot.Acquisition == nil {
+			continue
+		}
+		if slot.Acquisition.Handler != start.HandlerID || slot.Acquisition.Profile != start.Profile || string(slot.Acquisition.Mode) != start.Mode {
+			return false
+		}
+		matches++
+	}
+	return matches == 1
+}
+
+func (s *SQLStore) requireCredentialAcquisitionEnabled(ctx context.Context, tx *sql.Tx, forUpdate string) error {
+	if forUpdate == "" {
+		result, err := tx.ExecContext(ctx, `UPDATE instance_settings SET updated_at = updated_at WHERE key = ?`,
+			InstanceSettingCredentialAcquisitionEnabled)
+		if err != nil {
+			return err
+		}
+		if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+			if err != nil {
+				return err
+			}
+			return ErrCredentialAcquisitionDisabled
+		}
+	}
+	query := `SELECT value FROM instance_settings WHERE key = ?`
+	if forUpdate != "" {
+		query += forUpdate
+	}
+	var value string
+	if err := tx.QueryRowContext(ctx, s.dialect.Rebind(query), InstanceSettingCredentialAcquisitionEnabled).Scan(&value); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrCredentialAcquisitionDisabled
+		}
+		return err
+	}
+	if value != "true" {
+		return ErrCredentialAcquisitionDisabled
+	}
+	return nil
 }
 
 func (s *SQLStore) requireVaultAcquisitionPolicyHandler(ctx context.Context, tx *sql.Tx, vaultID, handlerID, forUpdate string) error {
@@ -566,6 +622,14 @@ func (s *SQLStore) CompleteProposalAcquisition(ctx context.Context, id string, c
 
 func (s *SQLStore) CancelProposalAcquisition(ctx context.Context, vaultID string, proposalID int, credentialKey string) (*ProposalAcquisition, error) {
 	job, err := s.GetProposalAcquisition(ctx, vaultID, proposalID, credentialKey)
+	if err != nil {
+		return nil, err
+	}
+	return s.CancelProposalAcquisitionByID(ctx, job.ID)
+}
+
+func (s *SQLStore) CancelProposalAcquisitionByID(ctx context.Context, id string) (*ProposalAcquisition, error) {
+	job, err := s.GetProposalAcquisitionByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}

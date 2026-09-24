@@ -143,6 +143,45 @@ func TestProposalAcquisitionStartRequiresVaultPolicyHandler(t *testing.T) {
 	}
 }
 
+func TestProposalAcquisitionStartRequiresEnabledInstanceGate(t *testing.T) {
+	s, proposal, handler := setupProposalAcquisition(t)
+	ctx := context.Background()
+	if err := s.SetSetting(ctx, InstanceSettingCredentialAcquisitionEnabled, "false"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.StartProposalAcquisition(ctx, ProposalAcquisitionStart{
+		VaultID: proposal.VaultID, ProposalID: proposal.ID, CredentialKey: "GITHUB_TOKEN",
+		HandlerID: handler.ID, Profile: "github.com", Mode: "native",
+	})
+	if !errors.Is(err, ErrCredentialAcquisitionDisabled) {
+		t.Fatalf("start with disabled instance gate error=%v", err)
+	}
+}
+
+func TestProposalAcquisitionStartMatchesPersistedProposalDeclaration(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(*ProposalAcquisitionStart)
+	}{
+		{"credential key", func(start *ProposalAcquisitionStart) { start.CredentialKey = "OTHER_TOKEN" }},
+		{"handler", func(start *ProposalAcquisitionStart) { start.HandlerID = "other-handler" }},
+		{"profile", func(start *ProposalAcquisitionStart) { start.Profile = "other.example" }},
+		{"mode", func(start *ProposalAcquisitionStart) { start.Mode = "guided" }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, proposal, handler := setupProposalAcquisition(t)
+			start := ProposalAcquisitionStart{
+				VaultID: proposal.VaultID, ProposalID: proposal.ID, CredentialKey: "GITHUB_TOKEN",
+				HandlerID: handler.ID, Profile: "github.com", Mode: "native",
+			}
+			tt.mutate(&start)
+			if _, err := s.StartProposalAcquisition(context.Background(), start); !errors.Is(err, ErrProposalAcquisitionDeclarationMismatch) {
+				t.Fatalf("StartProposalAcquisition mismatch error=%v", err)
+			}
+		})
+	}
+}
+
 func TestProposalAcquisitionStartRejectsMalformedOrMismatchedVaultPolicy(t *testing.T) {
 	for _, tt := range []struct {
 		name string
@@ -182,7 +221,7 @@ func TestProposalAcquisitionGuardsAndAtomicCompletion(t *testing.T) {
 	}
 
 	start.Profile = "wrong-host"
-	if _, err := s.StartProposalAcquisition(ctx, start); !errors.Is(err, ErrAcquisitionHandlerUnavailable) {
+	if _, err := s.StartProposalAcquisition(ctx, start); !errors.Is(err, ErrProposalAcquisitionDeclarationMismatch) {
 		t.Fatalf("wrong profile error=%v", err)
 	}
 	start.Profile = "github.com"
@@ -256,6 +295,33 @@ func TestProposalAcquisitionCancellationReleasesActiveSlot(t *testing.T) {
 	}
 	if _, err := s.StartProposalAcquisition(ctx, start); err != nil {
 		t.Fatalf("restart after cancellation: %v", err)
+	}
+}
+
+func TestProposalAcquisitionCancelByIDCannotCancelNewerRetry(t *testing.T) {
+	s, proposal, handler := setupProposalAcquisition(t)
+	ctx := context.Background()
+	start := ProposalAcquisitionStart{
+		VaultID: proposal.VaultID, ProposalID: proposal.ID, CredentialKey: "GITHUB_TOKEN",
+		HandlerID: handler.ID, Profile: "github.com", Mode: "native",
+	}
+	first, err := s.StartProposalAcquisition(ctx, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CancelProposalAcquisitionByID(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.StartProposalAcquisition(ctx, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CancelProposalAcquisitionByID(ctx, first.ID); !errors.Is(err, ErrProposalAcquisitionStateConflict) {
+		t.Fatalf("stale cancel error=%v", err)
+	}
+	latest, err := s.GetProposalAcquisitionByID(ctx, second.ID)
+	if err != nil || latest.State != AcquisitionQueued {
+		t.Fatalf("new retry=%+v err=%v", latest, err)
 	}
 }
 
@@ -351,7 +417,9 @@ func setupProposalAcquisition(t *testing.T) (*SQLStore, *Proposal, AcquisitionHa
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, err := s.CreateProposalWithContext(ctx, vault.ID, "acquisition-test-session", binding.ID, "[]", "[]", "test", "", nil)
+	proposal, err := s.CreateProposalWithContext(ctx, vault.ID, "acquisition-test-session", binding.ID, "[]",
+		`[{"action":"set","key":"GITHUB_TOKEN","type":"static","acquisition":{"handler":"github-cli","profile":"github.com","mode":"native"}}]`,
+		"test", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,6 +435,9 @@ func setupProposalAcquisition(t *testing.T) (*SQLStore, *Proposal, AcquisitionHa
 	if err := s.SetVaultAcquisitionPolicy(ctx, vault.ID, VaultAcquisitionPolicy{
 		EnabledHandlers: []string{created.ID},
 	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSetting(ctx, InstanceSettingCredentialAcquisitionEnabled, "true"); err != nil {
 		t.Fatal(err)
 	}
 	handler, err = func() (AcquisitionHandler, error) {

@@ -30,10 +30,12 @@ var ErrAcquisitionHandlerExists = errors.New("acquisition handler already exists
 var (
 	ErrAcquisitionHandlerUnavailable              = errors.New("acquisition handler unavailable")
 	ErrAcquisitionPolicyHandlerUnavailable        = errors.New("acquisition policy handler unavailable")
+	ErrCredentialAcquisitionDisabled              = errors.New("credential acquisition is disabled")
 	ErrProposalAcquisitionActive                  = errors.New("proposal credential already has an active acquisition")
 	ErrProposalAcquisitionStateConflict           = errors.New("proposal acquisition state conflict")
 	ErrProposalAcquisitionContinuationUnavailable = errors.New("proposal acquisition continuation unavailable")
 	ErrProposalAcquisitionContextBindingRequired  = errors.New("proposal acquisition requires a context binding")
+	ErrProposalAcquisitionDeclarationMismatch     = errors.New("proposal acquisition does not match persisted declaration")
 )
 
 // DefaultVault is the name of the automatically-seeded vault.
@@ -288,6 +290,10 @@ type AcquisitionHandler struct {
 // VaultSettingCredentialAcquisitionPolicy is the per-vault settings key used
 // for the non-secret acquisition allowlist.
 const VaultSettingCredentialAcquisitionPolicy = "credential_acquisition_policy"
+
+// InstanceSettingCredentialAcquisitionEnabled is the default-off global gate
+// for all new credential-acquisition jobs.
+const InstanceSettingCredentialAcquisitionEnabled = "credential_acquisition_enabled"
 
 // VaultAcquisitionPolicy is the complete persisted acquisition policy. Handler
 // IDs are resolved only through the instance registry; no executable or
@@ -761,6 +767,17 @@ type Store interface {
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
 	GetProposalCredentials(ctx context.Context, vaultID string, proposalID int) (map[string]EncryptedCredential, error)
 	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []OAuthCredentialConfig) error
+	StartProposalAcquisition(ctx context.Context, start ProposalAcquisitionStart) (*ProposalAcquisition, error)
+	GetProposalAcquisition(ctx context.Context, vaultID string, proposalID int, credentialKey string) (*ProposalAcquisition, error)
+	GetProposalAcquisitionByID(ctx context.Context, id string) (*ProposalAcquisition, error)
+	ListProposalAcquisitions(ctx context.Context, vaultID string, proposalID int) ([]ProposalAcquisition, error)
+	MarkProposalAcquisitionRunning(ctx context.Context, id string) (*ProposalAcquisition, error)
+	MarkProposalAcquisitionAwaitingUser(ctx context.Context, id string, ticketHash []byte, expiresAt time.Time) (*ProposalAcquisition, error)
+	CompleteProposalAcquisition(ctx context.Context, id string, credential EncryptedCredential, source string, credentialExpiresAt *time.Time) (*ProposalAcquisition, error)
+	CompleteProposalAcquisitionContinuation(ctx context.Context, ticketHash []byte, credential EncryptedCredential, source string, credentialExpiresAt *time.Time) (*ProposalAcquisition, error)
+	CancelProposalAcquisition(ctx context.Context, vaultID string, proposalID int, credentialKey string) (*ProposalAcquisition, error)
+	CancelProposalAcquisitionByID(ctx context.Context, id string) (*ProposalAcquisition, error)
+	FailProposalAcquisition(ctx context.Context, id, errorCode string) (*ProposalAcquisition, error)
 
 	// User invites (instance-level)
 	CreateUserInvite(ctx context.Context, email, createdBy, role string, expiresAt time.Time, vaults []UserInviteVault) (*UserInvite, error)
