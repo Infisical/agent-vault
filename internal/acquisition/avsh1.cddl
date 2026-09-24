@@ -1,6 +1,8 @@
 ; Agent Vault Secret Handoff protocol, version 1.
-; One canonical-CBOR object per SOCK_SEQPACKET message, preceded by a
-; 4-byte little-endian body length outside this CDDL value.
+; One canonical-CBOR object per AF_UNIX transport record, preceded by a
+; 4-byte little-endian body length outside this CDDL value. Linux uses
+; SOCK_SEQPACKET. Darwin lacks AF_UNIX SOCK_SEQPACKET and therefore uses one
+; strictly length-delimited object at a time over a private SOCK_STREAM pair.
 
 message = request / progress / reply
 
