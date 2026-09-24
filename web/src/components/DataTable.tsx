@@ -21,6 +21,11 @@ interface DataTableProps<T> {
    * it; overflow is summarized in a truthful counter below the table.
    */
   maxRenderRows?: number;
+  /**
+   * Index of the first rendered row (0 = the newest rows). Indices passed
+   * to rowKey/onRowClick/render refer to the rendered slice.
+   */
+  renderOffset?: number;
 }
 
 export default function DataTable<T>({
@@ -31,9 +36,15 @@ export default function DataTable<T>({
   emptyTitle = "No data",
   emptyDescription,
   maxRenderRows,
+  renderOffset = 0,
 }: DataTableProps<T>) {
-  const visibleRows = maxRenderRows !== undefined ? data.slice(0, maxRenderRows) : data;
+  const visibleRows =
+    maxRenderRows !== undefined
+      ? data.slice(renderOffset, renderOffset + maxRenderRows)
+      : data.slice(renderOffset);
   const hiddenCount = data.length - visibleRows.length;
+  const rangeStart = data.length > 0 ? renderOffset + 1 : 0;
+  const rangeEnd = renderOffset + visibleRows.length;
   return (
     <div className="border border-border rounded-xl overflow-hidden bg-surface">
       <table className="w-full">
@@ -89,7 +100,7 @@ export default function DataTable<T>({
           <tfoot>
             <tr className="border-t border-border">
               <td colSpan={columns.length} className="px-5 py-3 text-center text-xs text-text-muted">
-                Showing {visibleRows.length} of {data.length} rows
+                Showing rows {rangeStart}–{rangeEnd} of {data.length}
               </td>
             </tr>
           </tfoot>
