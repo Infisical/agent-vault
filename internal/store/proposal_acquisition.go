@@ -119,6 +119,21 @@ func (s *SQLStore) StartProposalAcquisition(ctx context.Context, start ProposalA
 
 	var generation, allowedKeysJSON, allowedVaultsJSON, allowedProfilesJSON string
 	var enabledRaw interface{}
+	if forUpdate == "" {
+		// SQLite has no SELECT FOR UPDATE. Acquire its write lock before
+		// resolving the handler and policy so a concurrent policy update or
+		// handler disable cannot interleave with admission.
+		result, err := tx.ExecContext(ctx, `UPDATE acquisition_handlers SET updated_at = updated_at WHERE id = ?`, start.HandlerID)
+		if err != nil {
+			return nil, err
+		}
+		if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+			if err != nil {
+				return nil, err
+			}
+			return nil, ErrAcquisitionHandlerUnavailable
+		}
+	}
 	if err := tx.QueryRowContext(ctx, s.dialect.Rebind(`SELECT generation, allowed_keys_json,
 		allowed_vaults_json, allowed_profiles_json, enabled FROM acquisition_handlers WHERE id = ?`+forUpdate), start.HandlerID).
 		Scan(&generation, &allowedKeysJSON, &allowedVaultsJSON, &allowedProfilesJSON, &enabledRaw); err != nil {
@@ -139,6 +154,9 @@ func (s *SQLStore) StartProposalAcquisition(ctx context.Context, start ProposalA
 		!containsExactString(allowedVaults, start.VaultID) ||
 		!containsExactString(allowedProfiles, start.Profile) {
 		return nil, ErrAcquisitionHandlerUnavailable
+	}
+	if err := s.requireVaultAcquisitionPolicyHandler(ctx, tx, start.VaultID, start.HandlerID, forUpdate); err != nil {
+		return nil, err
 	}
 
 	var attempt int
@@ -173,6 +191,38 @@ func (s *SQLStore) StartProposalAcquisition(ctx context.Context, start ProposalA
 		return nil, err
 	}
 	return job, nil
+}
+
+func (s *SQLStore) requireVaultAcquisitionPolicyHandler(ctx context.Context, tx *sql.Tx, vaultID, handlerID, forUpdate string) error {
+	if forUpdate == "" {
+		result, err := tx.ExecContext(ctx, `UPDATE vault_settings SET updated_at = updated_at
+			WHERE vault_id = ? AND key = ?`, vaultID, VaultSettingCredentialAcquisitionPolicy)
+		if err != nil {
+			return err
+		}
+		if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+			if err != nil {
+				return err
+			}
+			return ErrAcquisitionPolicyHandlerUnavailable
+		}
+	}
+	query := `SELECT value FROM vault_settings WHERE vault_id = ? AND key = ?`
+	if forUpdate != "" {
+		query += " " + forUpdate
+	}
+	var raw string
+	if err := tx.QueryRowContext(ctx, s.dialect.Rebind(query), vaultID, VaultSettingCredentialAcquisitionPolicy).Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrAcquisitionPolicyHandlerUnavailable
+		}
+		return err
+	}
+	policy, err := ParseVaultAcquisitionPolicyJSON(raw)
+	if err != nil || !containsExactString(policy.EnabledHandlers, handlerID) {
+		return ErrAcquisitionPolicyHandlerUnavailable
+	}
+	return nil
 }
 
 func containsExactString(values []string, candidate string) bool {

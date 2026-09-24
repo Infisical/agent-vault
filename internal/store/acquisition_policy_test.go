@@ -81,3 +81,26 @@ func TestSetVaultAcquisitionPolicyValidatesHandlersAndPersistsAtomically(t *test
 		t.Fatalf("wrong-vault handler error=%v", err)
 	}
 }
+
+func TestSetVaultAcquisitionPolicyPersistsCanonicalEmptyHandlerList(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	vault, err := s.GetVault(ctx, DefaultVault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetVaultAcquisitionPolicy(ctx, vault.ID, VaultAcquisitionPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := s.GetVaultSetting(ctx, vault.ID, VaultSettingCredentialAcquisitionPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw != `{"enabled_handlers":[],"browser_dom_enabled":false}` {
+		t.Fatalf("stored policy=%q", raw)
+	}
+	policy, err := ParseVaultAcquisitionPolicyJSON(raw)
+	if err != nil || policy.EnabledHandlers == nil || len(policy.EnabledHandlers) != 0 {
+		t.Fatalf("parsed policy=%+v err=%v", policy, err)
+	}
+}

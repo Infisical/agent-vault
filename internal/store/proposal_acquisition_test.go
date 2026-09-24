@@ -127,6 +127,52 @@ func TestProposalAcquisitionConcurrentStartAllowsOneActiveJob(t *testing.T) {
 	}
 }
 
+func TestProposalAcquisitionStartRequiresVaultPolicyHandler(t *testing.T) {
+	s, proposal, handler := setupProposalAcquisition(t)
+	ctx := context.Background()
+	if err := s.DeleteVaultSetting(ctx, proposal.VaultID, VaultSettingCredentialAcquisitionPolicy); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := s.StartProposalAcquisition(ctx, ProposalAcquisitionStart{
+		VaultID: proposal.VaultID, ProposalID: proposal.ID, CredentialKey: "GITHUB_TOKEN",
+		HandlerID: handler.ID, Profile: "github.com", Mode: "native",
+	})
+	if !errors.Is(err, ErrAcquisitionPolicyHandlerUnavailable) {
+		t.Fatalf("start without vault policy error=%v", err)
+	}
+}
+
+func TestProposalAcquisitionStartRejectsMalformedOrMismatchedVaultPolicy(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		raw  string
+	}{
+		{"null", `null`},
+		{"null handlers", `{"enabled_handlers":null,"browser_dom_enabled":false}`},
+		{"duplicate handler", `{"enabled_handlers":["github-cli","github-cli"],"browser_dom_enabled":false}`},
+		{"different handler", `{"enabled_handlers":["other-handler"],"browser_dom_enabled":false}`},
+		{"null browser flag", `{"enabled_handlers":["github-cli"],"browser_dom_enabled":null}`},
+		{"unknown field", `{"enabled_handlers":["github-cli"],"browser_dom_enabled":false,"executable":"/tmp/provider"}`},
+		{"duplicate field", `{"enabled_handlers":[],"enabled_handlers":["github-cli"],"browser_dom_enabled":false}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, proposal, handler := setupProposalAcquisition(t)
+			ctx := context.Background()
+			if err := s.SetVaultSetting(ctx, proposal.VaultID, VaultSettingCredentialAcquisitionPolicy, tt.raw); err != nil {
+				t.Fatal(err)
+			}
+			_, err := s.StartProposalAcquisition(ctx, ProposalAcquisitionStart{
+				VaultID: proposal.VaultID, ProposalID: proposal.ID, CredentialKey: "GITHUB_TOKEN",
+				HandlerID: handler.ID, Profile: "github.com", Mode: "native",
+			})
+			if !errors.Is(err, ErrAcquisitionPolicyHandlerUnavailable) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestProposalAcquisitionGuardsAndAtomicCompletion(t *testing.T) {
 	s, proposal, handler := setupProposalAcquisition(t)
 	ctx := context.Background()
@@ -316,6 +362,11 @@ func setupProposalAcquisition(t *testing.T) (*SQLStore, *Proposal, AcquisitionHa
 		t.Fatal(err)
 	}
 	if err := s.SetAcquisitionHandlerEnabled(ctx, created.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetVaultAcquisitionPolicy(ctx, vault.ID, VaultAcquisitionPolicy{
+		EnabledHandlers: []string{created.ID},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	handler, err = func() (AcquisitionHandler, error) {

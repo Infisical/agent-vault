@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -30,14 +29,11 @@ func readVaultAcquisitionPolicy(ctx context.Context, st interface {
 	if err != nil {
 		return vaultAcquisitionPolicy{}, err
 	}
-	var policy *vaultAcquisitionPolicy
-	if err := json.Unmarshal([]byte(raw), &policy); err != nil {
+	policy, err := store.ParseVaultAcquisitionPolicyJSON(raw)
+	if err != nil {
 		return vaultAcquisitionPolicy{}, err
 	}
-	if policy == nil || policy.EnabledHandlers == nil {
-		return vaultAcquisitionPolicy{}, errors.New("malformed stored acquisition policy")
-	}
-	return *policy, nil
+	return policy, nil
 }
 
 func validateVaultAcquisitionPolicy(ctx context.Context, st interface {
