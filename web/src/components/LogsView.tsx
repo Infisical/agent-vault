@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch, isAbortError } from "../lib/api";
+import { applyHistoryPage, applyLiveBatch, type ViewWindowPolicy } from "../lib/logsWindow";
 import { ErrorBanner, LoadingSpinner, timeAgo } from "./shared";
 import DataTable, { type Column } from "./DataTable";
 import Button from "./Button";
@@ -37,6 +38,19 @@ interface LogsViewProps {
   limit?: number;
   /** How often to poll for new rows. Defaults to 3000 ms; set to 0 to disable. */
   pollMs?: number;
+  /**
+   * Live tail window: the newest rows kept while polling appends; older
+   * rows fall off. Without a bound the page grows DOM and heap for as
+   * long as it stays open. Defaults to 1000.
+   */
+  tailRows?: number;
+  /**
+   * Rows explicitly loaded via "Load more" that live traffic will not
+   * evict; loading even older rows trims beyond this. Defaults to 1000.
+   */
+  historyRows?: number;
+  /** Max rows rendered at once; overflow is summarized in a counter. Defaults to 300. */
+  maxRenderRows?: number;
   title?: string;
   description?: string;
 }
@@ -45,14 +59,28 @@ export default function LogsView({
   endpoint,
   limit = 50,
   pollMs = 3000,
+  tailRows = 1000,
+  historyRows = 1000,
+  maxRenderRows = 300,
   title = "Request Logs",
   description = "Recent proxied requests. Bodies and query strings are never recorded.",
 }: LogsViewProps) {
-  const [rows, setRows] = useState<LogEntry[]>([]);
+  // Bounded view window: rows (newest-first) plus the count of rows in the
+  // trailing loaded-history segment. Kept in ONE state atom so every
+  // updater is pure and StrictMode-safe.
+  const [view, setView] = useState<{ rows: LogEntry[]; historyCount: number }>({
+    rows: [],
+    historyCount: 0,
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [nextCursor, setNextCursor] = useState<number | null>(null);
+  // False once a "Load more" page comes back short: the server has no
+  // rows older than what the window already holds.
+  const [hasMoreHistory, setHasMoreHistory] = useState(false);
+  // While true the table shows the oldest retained rows (the pages the
+  // user loaded) instead of the live tail; "Back to latest" returns.
+  const [browsingHistory, setBrowsingHistory] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [paused, setPaused] = useState(false);
   const [selected, setSelected] = useState<LogEntry | null>(null);
@@ -60,6 +88,17 @@ export default function LogsView({
   const latestIdRef = useRef<number>(0);
   const initializedRef = useRef<boolean>(false);
   const abortRef = useRef<AbortController | null>(null);
+  // Bumped on every endpoint/filter reset so in-flight responses (polls
+  // and Load-more fetches alike) from the previous view are discarded
+  // instead of polluting the new one.
+  const epochRef = useRef<number>(0);
+  // One poll at a time: a slow response must not stack overlapping polls.
+  const pollInFlightRef = useRef<boolean>(false);
+
+  const policy: ViewWindowPolicy = useMemo(
+    () => ({ tailRows, historyRows }),
+    [tailRows, historyRows],
+  );
 
   const filterQS = useMemo(() => {
     const parts: string[] = [`limit=${limit}`];
@@ -71,8 +110,14 @@ export default function LogsView({
   useEffect(() => {
     latestIdRef.current = 0;
     initializedRef.current = false;
-    setRows([]);
-    setNextCursor(null);
+    epochRef.current += 1;
+    // The new view owns the single-flight flag: an in-flight poll from the
+    // previous view must not block live updates here (its response is
+    // epoch-discarded on arrival anyway).
+    pollInFlightRef.current = false;
+    setView({ rows: [], historyCount: 0 });
+    setHasMoreHistory(false);
+    setBrowsingHistory(false);
     setError("");
     setLoading(true);
     loadInitial();
@@ -101,8 +146,8 @@ export default function LogsView({
         return;
       }
       const data: LogsResponse = await resp.json();
-      setRows(data.logs ?? []);
-      setNextCursor(data.next_cursor);
+      setView({ rows: (data.logs ?? []).slice(0, tailRows), historyCount: 0 });
+      setHasMoreHistory((data.logs ?? []).length >= limit);
       latestIdRef.current = data.latest_id || 0;
       initializedRef.current = true;
     } catch (err) {
@@ -117,14 +162,26 @@ export default function LogsView({
     // Gate on the initial load completing, not on cursor > 0 — an empty
     // vault legitimately reports latest_id=0 and still needs polls so
     // the first row shows up without a reload.
-    if (!initializedRef.current) return;
+    if (!initializedRef.current || pollInFlightRef.current) return;
+    const epoch = epochRef.current;
+    // Single-flight: a hung connection would otherwise stall tailing for
+    // as long as the browser holds the socket. Accepted trade-off — the
+    // pre-fix behavior stacked overlapping polls instead.
+    pollInFlightRef.current = true;
     try {
-      const resp = await apiFetch(`${endpoint}?${filterQS}&after=${latestIdRef.current}`);
+      // Timeout so a hung connection cannot hold the single-flight flag
+      // (and stall tailing) for as long as the browser keeps the socket.
+      const resp = await apiFetch(`${endpoint}?${filterQS}&after=${latestIdRef.current}`, {
+        signal: AbortSignal.timeout(Math.max(pollMs * 5, 15_000)),
+      });
       if (!resp.ok) return;
       const data: LogsResponse = await resp.json();
+      // The view may have been reset (endpoint/filter change) while this
+      // poll was in flight; its rows and cursor belong to the old view.
+      if (epoch !== epochRef.current) return;
       const fresh = data.logs ?? [];
       if (fresh.length > 0) {
-        setRows((prev) => [...fresh, ...prev]);
+        setView((w) => applyLiveBatch(w.rows, fresh, policy, w.historyCount));
       }
       // Guard against out-of-order poll responses rolling the cursor back.
       if (data.latest_id > latestIdRef.current) {
@@ -132,25 +189,49 @@ export default function LogsView({
       }
     } catch {
       // ignore; poll errors are silent
+    } finally {
+      // Only this view's own poll may release the flag; a stale response
+      // from before a reset must not unlock a newer poll's flight.
+      if (epoch === epochRef.current) pollInFlightRef.current = false;
     }
   }
 
   async function loadMore() {
-    if (nextCursor === null) return;
+    // Continue paging from the OLDEST row the window currently retains —
+    // never from a stale server cursor — so the loaded page always lands
+    // directly below the retained window and live eviction cannot open a
+    // gap between them.
+    const oldestRetained = view.rows[view.rows.length - 1];
+    if (!hasMoreHistory || !oldestRetained) return;
+    const epoch = epochRef.current;
     setLoadingMore(true);
     try {
-      const resp = await apiFetch(`${endpoint}?${filterQS}&before=${nextCursor}`);
+      const resp = await apiFetch(`${endpoint}?${filterQS}&before=${oldestRetained.id}`, {
+        signal: AbortSignal.timeout(30_000),
+      });
       if (!resp.ok) return;
       const data: LogsResponse = await resp.json();
+      // Same stale-view discipline as pollNew: rows fetched for the old
+      // endpoint/filter must not leak into the new view.
+      if (epoch !== epochRef.current) return;
       const older = data.logs ?? [];
       if (older.length > 0) {
-        setRows((prev) => [...prev, ...older]);
+        setView((w) => applyHistoryPage(w.rows, older, policy, w.historyCount));
+        // Show the user what they just loaded.
+        setBrowsingHistory(true);
       }
-      setNextCursor(data.next_cursor);
+      // A short page means the server has no rows older than the window.
+      setHasMoreHistory(older.length >= limit);
     } finally {
       setLoadingMore(false);
     }
   }
+
+  // Which slice of the bounded window is on screen: the newest rows while
+  // tailing, or the oldest rows (the loaded history pages) while browsing.
+  const renderOffset = browsingHistory
+    ? Math.max(0, view.rows.length - maxRenderRows)
+    : 0;
 
   const columns: Column<LogEntry>[] = [
     {
@@ -215,6 +296,15 @@ export default function LogsView({
           </FilterPill>
         </FilterGroup>
 
+        {browsingHistory && (
+          <button
+            onClick={() => setBrowsingHistory(false)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text border border-border rounded-md hover:bg-bg transition-colors"
+            title="Return to the live tail"
+          >
+            ← Back to latest
+          </button>
+        )}
         {pollMs > 0 && (
           <button
             onClick={() => setPaused((p) => !p)}
@@ -239,13 +329,15 @@ export default function LogsView({
         <>
           <DataTable
             columns={columns}
-            data={rows}
+            data={view.rows}
             rowKey={(r) => r.id}
+            maxRenderRows={maxRenderRows}
+            renderOffset={renderOffset}
             onRowClick={(r) => setSelected(r)}
             emptyTitle="No requests yet"
             emptyDescription="Requests proxied through this vault will appear here in real time."
           />
-          {nextCursor !== null && (
+          {hasMoreHistory && (
             <div className="flex justify-center mt-4">
               <Button
                 variant="secondary"
