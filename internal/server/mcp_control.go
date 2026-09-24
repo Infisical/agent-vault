@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -72,6 +73,15 @@ func (s *Server) handleMCPControl(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
+	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(contentType, "application/json") {
+		jsonError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
+		return
+	}
+	if !acceptsMCPStreamableHTTP(r.Header.Get("Accept")) {
+		jsonError(w, http.StatusNotAcceptable, "Accept must include application/json and text/event-stream")
+		return
+	}
 	var request mcpRequest
 	if err := decodeStrictJSON(r, &request); err != nil || request.JSONRPC != "2.0" || request.Method == "" {
 		jsonError(w, http.StatusBadRequest, "Invalid JSON-RPC request")
@@ -136,6 +146,31 @@ func (s *Server) handleMCPControl(w http.ResponseWriter, r *http.Request) {
 		response.Error = &mcpRPCError{Code: -32601, Message: "Method not found"}
 	}
 	jsonStatus(w, http.StatusOK, response)
+}
+
+func acceptsMCPStreamableHTTP(header string) bool {
+	var acceptsJSON, acceptsEvents bool
+	for _, part := range strings.Split(header, ",") {
+		mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(part))
+		if err != nil || !mcpMediaRangeEnabled(params["q"]) {
+			continue
+		}
+		switch strings.ToLower(mediaType) {
+		case "application/json":
+			acceptsJSON = true
+		case "text/event-stream":
+			acceptsEvents = true
+		}
+	}
+	return acceptsJSON && acceptsEvents
+}
+
+func mcpMediaRangeEnabled(quality string) bool {
+	if quality == "" {
+		return true
+	}
+	value, err := strconv.ParseFloat(quality, 64)
+	return err == nil && value > 0 && value <= 1
 }
 
 func validMCPID(id json.RawMessage) bool {

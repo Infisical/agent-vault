@@ -226,6 +226,22 @@ func TestRunProviderBlockedProgressSinkFailsWithoutBlocking(t *testing.T) {
 	}
 }
 
+func TestRunProviderClosedProgressSinkFailsWithoutPanicking(t *testing.T) {
+	handler := runnerTestHandler(t)
+	progressCh := make(chan Progress, 1)
+	close(progressCh)
+
+	_, err := runTestProvider(context.Background(), handler, ProviderInvocation{
+		VaultID: "test-vault", ResourceID: runnerFixtureResource, Profile: "default",
+		ContextBindingID: runnerFixtureContext,
+		Params:           map[string]string{"fixture_mode": "progress_then_reply"},
+		ProgressSink:     progressCh,
+	})
+	if got := ProviderErrorCode(err); got != "progress_delivery_failed" {
+		t.Fatalf("code=%q error=%v", got, err)
+	}
+}
+
 func TestRunProviderRejectsZeroLengthTrailingSequencePacket(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux SOCK_SEQPACKET behavior")
@@ -461,6 +477,9 @@ func runProviderFixture(fd int) int {
 		}
 	case "stderr_overflow":
 		_, _ = os.Stderr.Write([]byte(strings.Repeat("x", 8192)))
+		// Keep the fixture alive until the parent drain has a deterministic
+		// opportunity to observe the overflow before process-exit handling wins.
+		time.Sleep(100 * time.Millisecond)
 		return 0
 	case "stderr_secret":
 		_, _ = fmt.Fprintln(os.Stderr, runnerFixtureSecret)

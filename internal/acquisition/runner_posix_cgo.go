@@ -344,9 +344,7 @@ func receiveProviderMessages(fd, providerPID int, ticket []byte, contextBindingI
 				// audit records, MCP payloads, or agent-visible state. Expose only
 				// the protocol state transition and its context binding.
 				value.Message = ""
-				select {
-				case progressSink <- value:
-				default:
+				if !deliverProgress(progressSink, value) {
 					return providerReceiveResult{code: "progress_delivery_failed", providerOutput: true}
 				}
 			}
@@ -372,6 +370,23 @@ func receiveProviderMessages(fd, providerPID int, ticket []byte, contextBindingI
 			destroyProviderResult(result)
 			return providerReceiveResult{code: "protocol_violation", providerOutput: true}
 		}
+	}
+}
+
+// deliverProgress treats a caller-closed channel exactly like a full channel:
+// delivery fails closed without allowing an asynchronous provider message to
+// panic the Agent Vault process. The runner never owns or closes the sink.
+func deliverProgress(progressSink chan<- Progress, value Progress) (delivered bool) {
+	defer func() {
+		if recover() != nil {
+			delivered = false
+		}
+	}()
+	select {
+	case progressSink <- value:
+		return true
+	default:
+		return false
 	}
 }
 

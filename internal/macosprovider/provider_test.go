@@ -44,8 +44,8 @@ func TestServeGitHubCLIValidatesHostBeforeTokenAndRedacts(t *testing.T) {
 	callLog := filepath.Join(t.TempDir(), "gh-calls.log")
 	fakeGH := "#!/bin/sh\n" +
 		"if [ \"${GH_TOKEN+x}\" = x ]; then echo GH_TOKEN_PRESENT >&2; fi\n" +
-		"printf '%s %s %s\\n' \"$1\" \"$2\" \"$4\" >> " + callLog + "\n" +
-		"if [ \"$2\" = status ]; then printf status-output-sentinel; printf status-diagnostic-sentinel >&2; exit 0; fi\n" +
+		"printf '%s\\n' \"$*\" >> " + callLog + "\n" +
+		"if [ \"$2\" = status ]; then printf '{\"hosts\":{\"github.com\":[{\"active\":true,\"host\":\"github.com\",\"login\":\"octocat\",\"state\":\"success\"}]}}'; printf status-diagnostic-sentinel >&2; exit 0; fi\n" +
 		"if [ \"$2\" = token ]; then printf 'ghs_provider_sentinel\\n'; printf token-diagnostic-sentinel >&2; exit 0; fi\n" +
 		"exit 9\n"
 	if err := os.WriteFile(ghPath, []byte(fakeGH), 0o700); err != nil {
@@ -74,8 +74,8 @@ func TestServeGitHubCLIValidatesHostBeforeTokenAndRedacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(calls) != 2 || calls[0].path != ghPath || calls[1].path != ghPath ||
-		!reflect.DeepEqual(calls[0].args, []string{"auth", "status", "--hostname", "github.com"}) ||
-		!reflect.DeepEqual(calls[1].args, []string{"auth", "token", "--hostname", "github.com"}) {
+		!reflect.DeepEqual(calls[0].args, []string{"auth", "status", "--active", "--hostname", "github.com", "--json", "hosts"}) ||
+		!reflect.DeepEqual(calls[1].args, []string{"auth", "token", "--hostname", "github.com", "--user", "octocat"}) {
 		t.Fatalf("gh call order/args = %#v", calls)
 	}
 	wantEnv := []string{"GH_NO_UPDATE_NOTIFIER=1", "HOME=/Users/test", "LANG=C", "PATH=/usr/bin:/bin", "USER=test"}
@@ -94,7 +94,7 @@ func TestServeGitHubCLIValidatesHostBeforeTokenAndRedacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(callText) != "auth status github.com\nauth token github.com\n" {
+	if string(callText) != "auth status --active --hostname github.com --json hosts\nauth token --hostname github.com --user octocat\n" {
 		t.Fatalf("fake gh invocation log = %q", callText)
 	}
 	reply, err := acquisition.ReadProviderMessage(&response)
@@ -117,11 +117,35 @@ func TestServeGitHubHostMismatchNeverRequestsToken(t *testing.T) {
 	})
 	var response bytes.Buffer
 	err := provider.Serve(context.Background(), bytes.NewReader(requestWire(t, "github.com", "native")), &response)
-	if err == nil || len(argsSeen) != 1 || !reflect.DeepEqual(argsSeen[0], []string{"auth", "status", "--hostname", "github.com"}) {
+	if err == nil || len(argsSeen) != 1 || !reflect.DeepEqual(argsSeen[0], []string{"auth", "status", "--active", "--hostname", "github.com", "--json", "hosts"}) {
 		t.Fatalf("Serve err=%v args=%v", err, argsSeen)
 	}
 	if strings.Contains(err.Error(), "private") || response.Len() != 0 {
 		t.Fatalf("error/output leaked provider text: %v %q", err, response.String())
+	}
+}
+
+func TestServeGitHubRejectsUnhealthyOrAmbiguousActiveAccount(t *testing.T) {
+	statuses := []string{
+		`{"hosts":{"github.com":[{"active":true,"host":"github.com","login":"octocat","state":"error"}]}}`,
+		`{"hosts":{"github.com":[{"active":true,"host":"github.com","login":"one","state":"success"},{"active":true,"host":"github.com","login":"two","state":"success"}]}}`,
+		`{"hosts":{"github.example":[{"active":true,"host":"github.example","login":"octocat","state":"success"}]}}`,
+		`not-json`,
+	}
+	for _, status := range statuses {
+		provider := testProvider()
+		calls := 0
+		provider.commands = commandRunnerFunc(func(context.Context, string, []string, []string) ([]byte, []byte, error) {
+			calls++
+			return []byte(status), nil, nil
+		})
+		var response bytes.Buffer
+		if err := provider.Serve(context.Background(), bytes.NewReader(requestWire(t, "github.com", "native")), &response); err == nil {
+			t.Fatalf("status %q was accepted", status)
+		}
+		if calls != 1 || response.Len() != 0 {
+			t.Fatalf("status %q reached token command or emitted output", status)
+		}
 	}
 }
 
@@ -132,7 +156,7 @@ func TestServeRejectsMalformedGitHubTokenAndWipesCapture(t *testing.T) {
 	provider.commands = commandRunnerFunc(func(context.Context, string, []string, []string) ([]byte, []byte, error) {
 		calls++
 		if calls == 1 {
-			return nil, nil, nil
+			return []byte(`{"hosts":{"github.com":[{"active":true,"host":"github.com","login":"octocat","state":"success"}]}}`), nil, nil
 		}
 		captured = []byte("token-sentinel\nextra\n")
 		return captured, nil, nil

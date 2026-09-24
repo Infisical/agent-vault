@@ -2,6 +2,7 @@ package macosprovider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -160,14 +161,18 @@ func (p *Provider) acquireGitHub(ctx context.Context, profileID string) ([]byte,
 	// The host comes only from the compiled profile. Validate the host session
 	// before asking gh to emit the token.
 	statusOut, statusErrOut, statusErr := p.commands.Run(ctx, p.ghPath,
-		[]string{"auth", "status", "--hostname", "github.com"}, env)
+		[]string{"auth", "status", "--active", "--hostname", "github.com", "--json", "hosts"}, env)
+	account, accountErr := activeGitHubAccount(statusOut)
 	wipe(statusOut)
 	wipe(statusErrOut)
 	if statusErr != nil || ctx.Err() != nil {
 		return nil, errProviderRejected
 	}
+	if accountErr != nil {
+		return nil, errProviderRejected
+	}
 	tokenOut, tokenErrOut, tokenErr := p.commands.Run(ctx, p.ghPath,
-		[]string{"auth", "token", "--hostname", "github.com"}, env)
+		[]string{"auth", "token", "--hostname", "github.com", "--user", account}, env)
 	wipe(tokenErrOut)
 	if tokenErr != nil || ctx.Err() != nil {
 		wipe(tokenOut)
@@ -178,6 +183,41 @@ func (p *Provider) acquireGitHub(ctx context.Context, profileID string) ([]byte,
 		return nil, errProviderRejected
 	}
 	return tokenOut, nil
+}
+
+func activeGitHubAccount(status []byte) (string, error) {
+	var payload struct {
+		Hosts map[string][]struct {
+			Active bool   `json:"active"`
+			Host   string `json:"host"`
+			Login  string `json:"login"`
+			State  string `json:"state"`
+		} `json:"hosts"`
+	}
+	if len(status) == 0 || json.Unmarshal(status, &payload) != nil || len(payload.Hosts) != 1 {
+		return "", errProviderRejected
+	}
+	accounts, ok := payload.Hosts[ProfileGitHubCom]
+	if !ok || len(accounts) != 1 {
+		return "", errProviderRejected
+	}
+	account := accounts[0]
+	if !account.Active || account.Host != ProfileGitHubCom || account.State != "success" || !validGitHubLogin(account.Login) {
+		return "", errProviderRejected
+	}
+	return account.Login, nil
+}
+
+func validGitHubLogin(login string) bool {
+	if len(login) == 0 || len(login) > 39 || login[0] == '-' || login[len(login)-1] == '-' {
+		return false
+	}
+	for _, char := range login {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *Provider) sanitizedEnvironment() ([]string, error) {

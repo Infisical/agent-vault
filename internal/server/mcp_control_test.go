@@ -20,9 +20,41 @@ func postMCP(t *testing.T, srv *Server, token, body string) *httptest.ResponseRe
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-Vault", "default")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 	return rec
+}
+
+func TestMCPEnforcesStreamableHTTPMediaTypes(t *testing.T) {
+	srv, ms, token := setupProposalTest(t)
+	ms.sessions[token].VaultRole = "admin"
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`
+
+	wrongContent := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	wrongContent.Header.Set("Authorization", "Bearer "+token)
+	wrongContent.Header.Set("X-Vault", "default")
+	wrongContent.Header.Set("Content-Type", "text/plain")
+	wrongContent.Header.Set("Accept", "application/json, text/event-stream")
+	contentRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(contentRec, wrongContent)
+	if contentRec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("unsupported Content-Type status=%d body=%s", contentRec.Code, contentRec.Body.String())
+	}
+
+	for _, accept := range []string{"application/json", "application/json, text/event-stream;q=0.0"} {
+		wrongAccept := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+		wrongAccept.Header.Set("Authorization", "Bearer "+token)
+		wrongAccept.Header.Set("X-Vault", "default")
+		wrongAccept.Header.Set("Content-Type", "application/json; charset=utf-8")
+		wrongAccept.Header.Set("Accept", accept)
+		acceptRec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(acceptRec, wrongAccept)
+		if acceptRec.Code != http.StatusNotAcceptable {
+			t.Fatalf("Accept %q status=%d body=%s", accept, acceptRec.Code, acceptRec.Body.String())
+		}
+	}
 }
 
 func TestMCPInitializeAndExactlySixTools(t *testing.T) {
