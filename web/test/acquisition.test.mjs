@@ -9,6 +9,7 @@ import {
   canEditAcquisitionPolicy,
   isAcquisitionActive,
   isAcquisitionTerminal,
+  instanceAcquisitionSettingRequest,
   normalizeAcquisitionList,
   normalizeHandlerCatalog,
   normalizeVaultAcquisitionPolicy,
@@ -60,6 +61,13 @@ test("instance rollout gate serialization is explicit", () => {
     serializeInstanceAcquisitionSetting(false),
     JSON.stringify({ credential_acquisition_enabled: false }),
   );
+  assert.deepEqual(instanceAcquisitionSettingRequest(true), {
+    path: "/v1/admin/settings",
+    init: {
+      method: "PUT",
+      body: JSON.stringify({ credential_acquisition_enabled: true }),
+    },
+  });
 });
 
 test("handler catalog discards registry-only metadata", () => {

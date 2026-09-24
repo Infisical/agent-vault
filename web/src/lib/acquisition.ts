@@ -237,6 +237,16 @@ export function serializeInstanceAcquisitionSetting(enabled: boolean): string {
   return JSON.stringify({ credential_acquisition_enabled: enabled });
 }
 
+export function instanceAcquisitionSettingRequest(enabled: boolean): AcquisitionRequest {
+  return {
+    path: "/v1/admin/settings",
+    init: {
+      method: "PUT",
+      body: serializeInstanceAcquisitionSetting(enabled),
+    },
+  };
+}
+
 export function canEditAcquisitionPolicy({
   canManage,
   loading,

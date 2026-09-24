@@ -4,7 +4,7 @@ import { apiFetch } from "../../lib/api";
 import Button from "../../components/Button";
 import Input from "../../components/Input";
 import Toggle from "../../components/Toggle";
-import { serializeInstanceAcquisitionSetting } from "../../lib/acquisition";
+import { instanceAcquisitionSettingRequest } from "../../lib/acquisition";
 import type { AuthContext } from "../../router";
 
 type RateLimitTier = {
@@ -248,10 +248,8 @@ export default function InstanceSettingsTab() {
     setAcquisitionError("");
     setAcquisitionSuccess("");
     try {
-      const resp = await apiFetch("/v1/admin/settings", {
-        method: "PUT",
-        body: serializeInstanceAcquisitionSetting(credentialAcquisitionEnabled),
-      });
+      const request = instanceAcquisitionSettingRequest(credentialAcquisitionEnabled);
+      const resp = await apiFetch(request.path, request.init);
       const data = await resp.json();
       if (!resp.ok) {
         throw new Error(data.error || "Failed to save credential acquisition setting.");
