@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -50,7 +51,7 @@ type profileRecipe struct {
 }
 
 var profileRecipes = map[string]profileRecipe{
-	ProfileGitHubCom: {kind: profileGitHubCLI, source: "github-cli"},
+	ProfileGitHubCom: {kind: profileGitHubCLI, source: "untrusted_same_user_readable"},
 	ProfileAgentVaultLocal: {
 		kind:   profileKeychain,
 		item:   KeychainItem{Service: "agent-vault", Account: "credential", AllowUserInteraction: true},
@@ -102,7 +103,7 @@ func (p *Provider) Serve(ctx context.Context, input io.Reader, output io.Writer)
 	var secretBytes []byte
 	switch recipe.kind {
 	case profileGitHubCLI:
-		if profileID != ProfileGitHubCom || recipe.source != "github-cli" {
+		if profileID != ProfileGitHubCom || recipe.source != "untrusted_same_user_readable" {
 			return errProviderRejected
 		}
 		secretBytes, err = p.acquireGitHub(ctx, profileID)
@@ -158,6 +159,13 @@ func (p *Provider) acquireGitHub(ctx context.Context, profileID string) ([]byte,
 	if err != nil {
 		return nil, errProviderRejected
 	}
+	versionOut, versionErrOut, versionErr := p.commands.Run(ctx, p.ghPath, []string{"--version"}, env)
+	versionOK := supportedGitHubCLIVersion(versionOut)
+	wipe(versionOut)
+	wipe(versionErrOut)
+	if versionErr != nil || !versionOK || ctx.Err() != nil {
+		return nil, errProviderRejected
+	}
 	// The host comes only from the compiled profile. Validate the host session
 	// before asking gh to emit the token.
 	statusOut, statusErrOut, statusErr := p.commands.Run(ctx, p.ghPath,
@@ -172,7 +180,7 @@ func (p *Provider) acquireGitHub(ctx context.Context, profileID string) ([]byte,
 		return nil, errProviderRejected
 	}
 	tokenOut, tokenErrOut, tokenErr := p.commands.Run(ctx, p.ghPath,
-		[]string{"auth", "token", "--hostname", "github.com", "--user", account}, env)
+		[]string{"auth", "token", "--secure-storage", "--hostname", "github.com", "--user", account}, env)
 	wipe(tokenErrOut)
 	if tokenErr != nil || ctx.Err() != nil {
 		wipe(tokenOut)
@@ -183,6 +191,26 @@ func (p *Provider) acquireGitHub(ctx context.Context, profileID string) ([]byte,
 		return nil, errProviderRejected
 	}
 	return tokenOut, nil
+}
+
+func supportedGitHubCLIVersion(output []byte) bool {
+	line := strings.SplitN(string(output), "\n", 2)[0]
+	fields := strings.Fields(line)
+	if len(fields) < 3 || fields[0] != "gh" || fields[1] != "version" {
+		return false
+	}
+	version := strings.SplitN(strings.SplitN(fields[2], "-", 2)[0], "+", 2)[0]
+	parts := strings.Split(version, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	major, majorErr := strconv.Atoi(parts[0])
+	minor, minorErr := strconv.Atoi(parts[1])
+	patch, patchErr := strconv.Atoi(parts[2])
+	if majorErr != nil || minorErr != nil || patchErr != nil || major < 0 || minor < 0 || patch < 0 {
+		return false
+	}
+	return major > 2 || major == 2 && minor >= 81
 }
 
 func activeGitHubAccount(status []byte) (string, error) {

@@ -45,6 +45,7 @@ func TestServeGitHubCLIValidatesHostBeforeTokenAndRedacts(t *testing.T) {
 	fakeGH := "#!/bin/sh\n" +
 		"if [ \"${GH_TOKEN+x}\" = x ]; then echo GH_TOKEN_PRESENT >&2; fi\n" +
 		"printf '%s\\n' \"$*\" >> " + callLog + "\n" +
+		"if [ \"$1\" = --version ]; then printf 'gh version 2.97.0 (test)\\n'; exit 0; fi\n" +
 		"if [ \"$2\" = status ]; then printf '{\"hosts\":{\"github.com\":[{\"active\":true,\"host\":\"github.com\",\"login\":\"octocat\",\"state\":\"success\"}]}}'; printf status-diagnostic-sentinel >&2; exit 0; fi\n" +
 		"if [ \"$2\" = token ]; then printf 'ghs_provider_sentinel\\n'; printf token-diagnostic-sentinel >&2; exit 0; fi\n" +
 		"exit 9\n"
@@ -73,9 +74,10 @@ func TestServeGitHubCLIValidatesHostBeforeTokenAndRedacts(t *testing.T) {
 	if err := provider.Serve(context.Background(), bytes.NewReader(requestWire), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 2 || calls[0].path != ghPath || calls[1].path != ghPath ||
-		!reflect.DeepEqual(calls[0].args, []string{"auth", "status", "--active", "--hostname", "github.com", "--json", "hosts"}) ||
-		!reflect.DeepEqual(calls[1].args, []string{"auth", "token", "--hostname", "github.com", "--user", "octocat"}) {
+	if len(calls) != 3 || calls[0].path != ghPath || calls[1].path != ghPath || calls[2].path != ghPath ||
+		!reflect.DeepEqual(calls[0].args, []string{"--version"}) ||
+		!reflect.DeepEqual(calls[1].args, []string{"auth", "status", "--active", "--hostname", "github.com", "--json", "hosts"}) ||
+		!reflect.DeepEqual(calls[2].args, []string{"auth", "token", "--secure-storage", "--hostname", "github.com", "--user", "octocat"}) {
 		t.Fatalf("gh call order/args = %#v", calls)
 	}
 	wantEnv := []string{"GH_NO_UPDATE_NOTIFIER=1", "HOME=/Users/test", "LANG=C", "PATH=/usr/bin:/bin", "USER=test"}
@@ -94,7 +96,7 @@ func TestServeGitHubCLIValidatesHostBeforeTokenAndRedacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(callText) != "auth status --active --hostname github.com --json hosts\nauth token --hostname github.com --user octocat\n" {
+	if string(callText) != "--version\nauth status --active --hostname github.com --json hosts\nauth token --secure-storage --hostname github.com --user octocat\n" {
 		t.Fatalf("fake gh invocation log = %q", callText)
 	}
 	reply, err := acquisition.ReadProviderMessage(&response)
@@ -106,6 +108,9 @@ func TestServeGitHubCLIValidatesHostBeforeTokenAndRedacts(t *testing.T) {
 	if !got.Secret.Equal([]byte("ghs_provider_sentinel")) {
 		t.Fatal("unexpected secret in AVSH reply")
 	}
+	if got.Meta.Source != "untrusted_same_user_readable" {
+		t.Fatalf("GitHub bootstrap provenance=%q", got.Meta.Source)
+	}
 }
 
 func TestServeGitHubHostMismatchNeverRequestsToken(t *testing.T) {
@@ -113,15 +118,36 @@ func TestServeGitHubHostMismatchNeverRequestsToken(t *testing.T) {
 	var argsSeen [][]string
 	provider.commands = commandRunnerFunc(func(_ context.Context, _ string, args, _ []string) ([]byte, []byte, error) {
 		argsSeen = append(argsSeen, append([]string(nil), args...))
+		if len(args) == 1 && args[0] == "--version" {
+			return []byte("gh version 2.97.0 (test)\n"), nil, nil
+		}
 		return []byte("private status"), []byte("private diagnostic"), errCommandRejected
 	})
 	var response bytes.Buffer
 	err := provider.Serve(context.Background(), bytes.NewReader(requestWire(t, "github.com", "native")), &response)
-	if err == nil || len(argsSeen) != 1 || !reflect.DeepEqual(argsSeen[0], []string{"auth", "status", "--active", "--hostname", "github.com", "--json", "hosts"}) {
+	if err == nil || len(argsSeen) != 2 || !reflect.DeepEqual(argsSeen[1], []string{"auth", "status", "--active", "--hostname", "github.com", "--json", "hosts"}) {
 		t.Fatalf("Serve err=%v args=%v", err, argsSeen)
 	}
 	if strings.Contains(err.Error(), "private") || response.Len() != 0 {
 		t.Fatalf("error/output leaked provider text: %v %q", err, response.String())
+	}
+}
+
+func TestServeGitHubRejectsUnsupportedCLIWithoutReadingAuth(t *testing.T) {
+	for _, version := range []string{"gh version 2.80.9 (old)\n", "gh version dev\n", "not-gh 2.97.0\n"} {
+		provider := testProvider()
+		calls := 0
+		provider.commands = commandRunnerFunc(func(context.Context, string, []string, []string) ([]byte, []byte, error) {
+			calls++
+			return []byte(version), nil, nil
+		})
+		var response bytes.Buffer
+		if err := provider.Serve(context.Background(), bytes.NewReader(requestWire(t, "github.com", "native")), &response); err == nil {
+			t.Fatalf("version %q was accepted", version)
+		}
+		if calls != 1 || response.Len() != 0 {
+			t.Fatalf("version %q reached auth or emitted output", version)
+		}
 	}
 }
 
@@ -135,15 +161,18 @@ func TestServeGitHubRejectsUnhealthyOrAmbiguousActiveAccount(t *testing.T) {
 	for _, status := range statuses {
 		provider := testProvider()
 		calls := 0
-		provider.commands = commandRunnerFunc(func(context.Context, string, []string, []string) ([]byte, []byte, error) {
+		provider.commands = commandRunnerFunc(func(_ context.Context, _ string, args, _ []string) ([]byte, []byte, error) {
 			calls++
+			if len(args) == 1 && args[0] == "--version" {
+				return []byte("gh version 2.97.0 (test)\n"), nil, nil
+			}
 			return []byte(status), nil, nil
 		})
 		var response bytes.Buffer
 		if err := provider.Serve(context.Background(), bytes.NewReader(requestWire(t, "github.com", "native")), &response); err == nil {
 			t.Fatalf("status %q was accepted", status)
 		}
-		if calls != 1 || response.Len() != 0 {
+		if calls != 2 || response.Len() != 0 {
 			t.Fatalf("status %q reached token command or emitted output", status)
 		}
 	}
@@ -156,6 +185,9 @@ func TestServeRejectsMalformedGitHubTokenAndWipesCapture(t *testing.T) {
 	provider.commands = commandRunnerFunc(func(context.Context, string, []string, []string) ([]byte, []byte, error) {
 		calls++
 		if calls == 1 {
+			return []byte("gh version 2.97.0 (test)\n"), nil, nil
+		}
+		if calls == 2 {
 			return []byte(`{"hosts":{"github.com":[{"active":true,"host":"github.com","login":"octocat","state":"success"}]}}`), nil, nil
 		}
 		captured = []byte("token-sentinel\nextra\n")
@@ -163,7 +195,7 @@ func TestServeRejectsMalformedGitHubTokenAndWipesCapture(t *testing.T) {
 	})
 	var response bytes.Buffer
 	err := provider.Serve(context.Background(), bytes.NewReader(requestWire(t, "github.com", "native")), &response)
-	if err == nil || calls != 2 || response.Len() != 0 || !allZero(captured) {
+	if err == nil || calls != 3 || response.Len() != 0 || !allZero(captured) {
 		t.Fatalf("Serve err=%v calls=%d response=%q captured_wiped=%v", err, calls, response.String(), allZero(captured))
 	}
 }
