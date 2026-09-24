@@ -61,6 +61,7 @@ type mockStore struct {
 	sessionCounter               int
 	handlerGenerationCounter     int
 	setHandlerGenerationHook     func()
+	setAcquisitionPolicyHook     func()
 }
 
 func newMockStore() *mockStore {
@@ -1272,6 +1273,24 @@ func (m *mockStore) SetVaultSetting(_ context.Context, vaultID, key, value strin
 	}
 	m.vaultSettings[vaultID][key] = value
 	return nil
+}
+
+func (m *mockStore) SetVaultAcquisitionPolicy(ctx context.Context, vaultID string, policy store.VaultAcquisitionPolicy) error {
+	if hook := m.setAcquisitionPolicyHook; hook != nil {
+		m.setAcquisitionPolicyHook = nil
+		hook()
+	}
+	for _, id := range policy.EnabledHandlers {
+		handler, ok := m.acquisitionHandlers[id]
+		if !ok || !handler.Enabled || !containsExact(handler.AllowedVaults, vaultID) {
+			return store.ErrAcquisitionPolicyHandlerUnavailable
+		}
+	}
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		return err
+	}
+	return m.SetVaultSetting(ctx, vaultID, store.VaultSettingCredentialAcquisitionPolicy, string(raw))
 }
 
 func (m *mockStore) DeleteVaultSetting(_ context.Context, vaultID, key string) error {

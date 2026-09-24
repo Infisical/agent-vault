@@ -29,6 +29,7 @@ var ErrAcquisitionHandlerExists = errors.New("acquisition handler already exists
 
 var (
 	ErrAcquisitionHandlerUnavailable              = errors.New("acquisition handler unavailable")
+	ErrAcquisitionPolicyHandlerUnavailable        = errors.New("acquisition policy handler unavailable")
 	ErrProposalAcquisitionActive                  = errors.New("proposal credential already has an active acquisition")
 	ErrProposalAcquisitionStateConflict           = errors.New("proposal acquisition state conflict")
 	ErrProposalAcquisitionContinuationUnavailable = errors.New("proposal acquisition continuation unavailable")
@@ -282,6 +283,18 @@ type AcquisitionHandler struct {
 	Enabled          bool
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+}
+
+// VaultSettingCredentialAcquisitionPolicy is the per-vault settings key used
+// for the non-secret acquisition allowlist.
+const VaultSettingCredentialAcquisitionPolicy = "credential_acquisition_policy"
+
+// VaultAcquisitionPolicy is the complete persisted acquisition policy. Handler
+// IDs are resolved only through the instance registry; no executable or
+// provider-controlled fields are accepted here.
+type VaultAcquisitionPolicy struct {
+	EnabledHandlers   []string `json:"enabled_handlers"`
+	BrowserDOMEnabled bool     `json:"browser_dom_enabled"`
 }
 
 const (
@@ -805,6 +818,7 @@ type Store interface {
 	// Vault settings (per-vault key/value)
 	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
 	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
+	SetVaultAcquisitionPolicy(ctx context.Context, vaultID string, policy VaultAcquisitionPolicy) error
 	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
 
 	// Vault skills (markdown instruction documents, one row per skill).

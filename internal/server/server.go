@@ -369,6 +369,7 @@ type Store interface {
 	// Vault settings (per-vault key/value)
 	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
 	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
+	SetVaultAcquisitionPolicy(ctx context.Context, vaultID string, policy store.VaultAcquisitionPolicy) error
 	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
 
 	// Vault skills (markdown instruction documents)
@@ -905,6 +906,8 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("POST /v1/vaults/{name}/leave", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultLeave)))))
 	mux.HandleFunc("GET /v1/vaults/{name}/settings", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultSettingsGet))))
 	mux.HandleFunc("PATCH /v1/vaults/{name}/settings", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultSettingsPatch)))))
+	mux.HandleFunc("GET /v1/vaults/{name}/acquisition-policy", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultAcquisitionPolicyGet))))
+	mux.HandleFunc("PATCH /v1/vaults/{name}/acquisition-policy", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultAcquisitionPolicyPatch)))))
 	mux.HandleFunc("PATCH /v1/vaults/{name}/credential-store", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultCredentialStorePatch)))))
 
 	// Vault admin (owner-only)
