@@ -177,6 +177,7 @@ func (s *Server) handleProposalAcquisitionStart(w http.ResponseWriter, r *http.R
 	}
 	s.captureEvent(r, "av.proposal_acquisition_started", actor, map[string]string{
 		"acquisition_id": job.ID, "proposal_id": strconv.Itoa(proposalID), "credential_key": key, "state": job.State,
+		"context_binding_id": job.ContextBindingID,
 	})
 	jsonStatus(w, http.StatusAccepted, newProposalAcquisitionResponse(job))
 }
@@ -284,6 +285,7 @@ func (s *Server) handleProposalAcquisitionCancel(w http.ResponseWriter, r *http.
 	s.cancelProposalAcquisitionJob(job.ID)
 	s.captureEvent(r, "av.proposal_acquisition_cancelled", actor, map[string]string{
 		"acquisition_id": job.ID, "proposal_id": strconv.Itoa(proposalID), "credential_key": job.CredentialKey, "state": cancelled.State,
+		"context_binding_id": job.ContextBindingID,
 	})
 	jsonOK(w, newProposalAcquisitionResponse(cancelled))
 }

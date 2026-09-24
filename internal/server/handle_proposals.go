@@ -384,7 +384,11 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actor, _ := s.actorFromSession(ctx, sess)
-	s.captureEvent(r, "av.proposal-create", actor, map[string]string{"vault": nsName})
+	createEvent := map[string]string{"vault": nsName, "proposal_id": strconv.Itoa(cs.ID)}
+	if cs.ContextBindingID != nil {
+		createEvent["context_binding_id"] = *cs.ContextBindingID
+	}
+	s.captureEvent(r, "av.proposal-create", actor, createEvent)
 	response := map[string]interface{}{
 		"id":           cs.ID,
 		"status":       cs.Status,
@@ -555,7 +559,8 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Approving proposals requires member+ role (blocks proxy-role agents from self-approving).
-	if _, err := s.requireProposalReview(w, r, ns.ID); err != nil {
+	actor, err := s.requireProposalReview(w, r, ns.ID)
+	if err != nil {
 		return
 	}
 
@@ -705,6 +710,11 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		}
 		return
 	}
+	applyEvent := map[string]string{"vault": ns.Name, "proposal_id": strconv.Itoa(cs.ID), "status": "applied"}
+	if cs.ContextBindingID != nil {
+		applyEvent["context_binding_id"] = *cs.ContextBindingID
+	}
+	s.captureEvent(r, "av.proposal_applied", actor, applyEvent)
 
 	jsonOK(w, map[string]interface{}{
 		"id":     id,
