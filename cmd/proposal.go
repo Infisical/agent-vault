@@ -159,6 +159,19 @@ func collectCredentialValues(cmd *cobra.Command, cs *store.Proposal, credentialO
 	return credentials, nil
 }
 
+func proposalHasCredentialSlot(cs *store.Proposal, key string) bool {
+	var slots []proposal.CredentialSlot
+	if err := json.Unmarshal([]byte(cs.CredentialsJSON), &slots); err != nil {
+		return false
+	}
+	for _, slot := range slots {
+		if slot.Action == proposal.ActionSet && slot.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 // sendApproveRequest sends a proposal approval to the running server via HTTP.
 func sendApproveRequest(sess *session.ClientSession, vault string, id int, credentials map[string]string) error {
 	body, err := json.Marshal(map[string]interface{}{
@@ -341,10 +354,30 @@ var proposalShowCmd = &cobra.Command{
 var proposalApproveCmd = &cobra.Command{
 	Use:   "approve <number> [KEY=VALUE ...]",
 	Short: "Approve and apply a pending proposal",
-	Args:  cobra.MinimumNArgs(1),
+	Long: `Approve and apply a pending proposal.
+
+Credential values supplied as KEY=VALUE arguments may be visible in the process table.
+Prefer --credential-stdin KEY --yes to read exactly one credential from
+standard input without placing it in argv. Stdin mode is noninteractive: any
+other required credentials must already be agent-provided, OAuth-connected, or
+successfully acquired by a registered handler.`,
+	Args: func(cmd *cobra.Command, args []string) error {
+		if err := cobra.MinimumNArgs(1)(cmd, args); err != nil {
+			return err
+		}
+		stdinKey, _ := cmd.Flags().GetString("credential-stdin")
+		if stdinKey != "" && len(args) != 1 {
+			return fmt.Errorf("--credential-stdin cannot be combined with KEY=VALUE arguments")
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vault := resolveVault(cmd)
 		yes, _ := cmd.Flags().GetBool("yes")
+		stdinKey, _ := cmd.Flags().GetString("credential-stdin")
+		if stdinKey != "" && !yes {
+			return fmt.Errorf("--credential-stdin requires --yes because stdin is reserved for the credential value")
+		}
 
 		id, err := strconv.Atoi(args[0])
 		if err != nil {
@@ -373,6 +406,16 @@ var proposalApproveCmd = &cobra.Command{
 		if cs.Status != "pending" {
 			return fmt.Errorf("proposal #%d is already %s", id, cs.Status)
 		}
+		if stdinKey != "" {
+			if !proposalHasCredentialSlot(cs, stdinKey) {
+				return fmt.Errorf("proposal #%d has no set credential %q", id, stdinKey)
+			}
+			value, err := readCredentialStdin(cmd, stdinKey)
+			if err != nil {
+				return err
+			}
+			credentialOverrides[stdinKey] = value
+		}
 
 		// Show summary.
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\n\n", boldText(fmt.Sprintf("Proposal #%d: %s", id, cs.Message)))
@@ -394,10 +437,15 @@ var proposalApproveCmd = &cobra.Command{
 			}
 		}
 
-		// Collect credential values for slots that need human input.
-		credentials, err := collectCredentialValues(cmd, cs, credentialOverrides)
-		if err != nil {
-			return err
+		// Stdin mode is deliberately noninteractive: send only the named value
+		// and let the server atomically verify that every other slot is already
+		// satisfied by an agent value, OAuth flow, or acquisition result.
+		credentials := credentialOverrides
+		if stdinKey == "" {
+			credentials, err = collectCredentialValues(cmd, cs, credentialOverrides)
+			if err != nil {
+				return err
+			}
 		}
 
 		// Send approval to the running server.
@@ -576,6 +624,7 @@ var proposalReviewCmd = &cobra.Command{
 func init() {
 	proposalListCmd.Flags().String("status", "", "filter by status (pending, applied, rejected, expired)")
 	proposalApproveCmd.Flags().Bool("yes", false, "skip confirmation prompt")
+	proposalApproveCmd.Flags().String("credential-stdin", "", "read one proposal credential value from stdin for KEY")
 	proposalRejectCmd.Flags().String("reason", "", "reason for rejection")
 
 	proposalCmd.AddCommand(proposalListCmd)
