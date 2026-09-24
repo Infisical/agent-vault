@@ -17,7 +17,10 @@ import (
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
-const acquisitionContinuationTTL = 5 * time.Minute
+const (
+	acquisitionContinuationTTL   = 5 * time.Minute
+	acquisitionStatePollInterval = 250 * time.Millisecond
+)
 
 type providerRunner func(context.Context, acquisition.HandlerResolver, string, acquisition.ProviderInvocation) (*acquisition.ProviderResult, error)
 
@@ -346,6 +349,8 @@ func (s *Server) executeProposalAcquisition(ctx context.Context, cancel context.
 		result, runErr := s.runAcquisitionProvider(ctx, s.store, job.HandlerID, invocation)
 		done <- providerOutcome{result: result, err: runErr}
 	}()
+	stateTicker := time.NewTicker(acquisitionStatePollInterval)
+	defer stateTicker.Stop()
 
 	var outcome providerOutcome
 	var ticketHash []byte
@@ -365,6 +370,14 @@ func (s *Server) executeProposalAcquisition(ctx context.Context, cancel context.
 			}
 		case outcome = <-done:
 			providerDone = true
+		case <-stateTicker.C:
+			current, stateErr := s.store.GetProposalAcquisitionByID(ctx, job.ID)
+			if errors.Is(stateErr, sql.ErrNoRows) || stateErr == nil &&
+				(current == nil || current.State != store.AcquisitionRunning && current.State != store.AcquisitionAwaitingUser) {
+				cancelled = true
+				cancel()
+				ctxDone = nil
+			}
 		case <-ctxDone:
 			cancelled = true
 			cancel()

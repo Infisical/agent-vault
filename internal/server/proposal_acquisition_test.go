@@ -206,6 +206,85 @@ func TestProposalAcquisitionAwaitingUserAndCancellation(t *testing.T) {
 		}
 		waitProposalAcquisitionState(t, ms, store.AcquisitionCancelled)
 	})
+
+	t.Run("cancel from another server terminates active provider", func(t *testing.T) {
+		srv, ms, token := setupProposalAcquisitionEndpointTest(t)
+		peer := newTestServer(withStore(ms), withEncKey(srv.encKey))
+		started := make(chan struct{})
+		finished := make(chan struct{})
+		srv.runAcquisitionProvider = func(ctx context.Context, _ acquisition.HandlerResolver, _ string, _ acquisition.ProviderInvocation) (*acquisition.ProviderResult, error) {
+			close(started)
+			<-ctx.Done()
+			close(finished)
+			return nil, ctx.Err()
+		}
+		t.Cleanup(func() { srv.stopAcquisitionJobs(time.Second) })
+
+		rec := startProposalAcquisitionRequest(t, srv, token, `{"vault":"default","handler":"github-cli","profile":"github.com"}`)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		<-started
+
+		cancelReq := httptest.NewRequest(http.MethodPost, "/v1/admin/proposals/1/acquisitions/GITHUB_TOKEN/cancel", strings.NewReader(`{"vault":"default"}`))
+		cancelReq.Header.Set("Authorization", "Bearer "+token)
+		cancelRec := httptest.NewRecorder()
+		peer.httpServer.Handler.ServeHTTP(cancelRec, cancelReq)
+		if cancelRec.Code != http.StatusOK {
+			t.Fatalf("cancel status=%d body=%s", cancelRec.Code, cancelRec.Body.String())
+		}
+		select {
+		case <-finished:
+		case <-time.After(time.Second):
+			t.Fatal("provider was not cancelled after peer updated shared state")
+		}
+		waitProposalAcquisitionState(t, ms, store.AcquisitionCancelled)
+	})
+
+	t.Run("transient shared-state read failure does not cancel provider", func(t *testing.T) {
+		srv, ms, token := setupProposalAcquisitionEndpointTest(t)
+		observedFailure := make(chan struct{}, 1)
+		ms.proposalAcquisitionByIDFailures = 1
+		ms.proposalAcquisitionByIDFailure = observedFailure
+		release := make(chan struct{})
+		providerExit := make(chan error, 1)
+		srv.runAcquisitionProvider = func(ctx context.Context, _ acquisition.HandlerResolver, _ string, _ acquisition.ProviderInvocation) (*acquisition.ProviderResult, error) {
+			select {
+			case <-ctx.Done():
+				providerExit <- ctx.Err()
+				return nil, ctx.Err()
+			case <-release:
+			}
+			secret, err := acquisition.NewSecretBuffer([]byte(proposalAcquisitionSentinel))
+			if err != nil {
+				providerExit <- err
+				return nil, err
+			}
+			providerExit <- nil
+			return &acquisition.ProviderResult{Secret: secret, Meta: acquisition.ReplyMeta{Source: "transient-retry"}}, nil
+		}
+		t.Cleanup(func() { srv.stopAcquisitionJobs(time.Second) })
+
+		rec := startProposalAcquisitionRequest(t, srv, token, `{"vault":"default","handler":"github-cli","profile":"github.com"}`)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		select {
+		case <-observedFailure:
+		case <-time.After(time.Second):
+			t.Fatal("shared-state read failure was not exercised")
+		}
+		select {
+		case err := <-providerExit:
+			t.Fatalf("provider exited after transient state read failure: %v", err)
+		case <-time.After(100 * time.Millisecond):
+		}
+		close(release)
+		if err := <-providerExit; err != nil {
+			t.Fatalf("provider completion error: %v", err)
+		}
+		waitProposalAcquisitionState(t, ms, store.AcquisitionSucceeded)
+	})
 }
 
 func TestProposalAcquisitionEndpointsRequireProposalReviewer(t *testing.T) {

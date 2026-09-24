@@ -36,38 +36,40 @@ var tp = timePtr
 
 // mockStore implements Store for testing.
 type mockStore struct {
-	masterKeyRecord              *store.MasterKeyRecord
-	sessions                     map[string]*store.Session
-	vaults                       map[string]*store.Vault
-	credentials                  map[string]*store.Credential   // keyed by "vaultID:key"
-	brokerConfigs                map[string]*store.BrokerConfig // keyed by vaultID
-	proposals                    map[string][]store.Proposal    // keyed by vaultID
-	contextBindings              map[string]*store.ContextBinding
-	acquisitionHandlers          map[string]*store.AcquisitionHandler
-	users                        map[string]*store.User       // keyed by email
-	grants                       map[string]map[string]string // keyed by userID -> vaultID -> role
-	userInvites                  map[string]*store.UserInvite // keyed by token
-	emailVerifications           []*store.EmailVerification
-	passwordResets               []*store.PasswordReset
-	agents                       map[string]*store.Agent                // keyed by name
-	agentVaultGrants             []store.VaultGrant                     // agent vault grants
-	settings                     map[string]string                      // instance settings
-	vaultSettings                map[string]map[string]string           // per-vault: vaultID -> key -> value
-	skills                       map[string]map[string]store.Skill      // per-vault: vaultID -> name -> skill
-	credStores                   map[string]*store.VaultCredentialStore // per-vault external credential store config
-	unmatchedHosts               map[string][]store.UnmatchedHost       // keyed by vaultID
-	createProposalWithContextErr error
-	getContextBindingErr         error
-	getProposalErr               error
-	applyProposalErr             error
-	sessionCounter               int
-	handlerGenerationCounter     int
-	setHandlerGenerationHook     func()
-	setAcquisitionPolicyHook     func()
-	acquisitionMu                sync.Mutex
-	proposalAcquisitions         map[string]*store.ProposalAcquisition
-	proposalAcquisitionSecrets   map[string]store.EncryptedCredential
-	proposalAcquisitionCounter   int
+	masterKeyRecord                 *store.MasterKeyRecord
+	sessions                        map[string]*store.Session
+	vaults                          map[string]*store.Vault
+	credentials                     map[string]*store.Credential   // keyed by "vaultID:key"
+	brokerConfigs                   map[string]*store.BrokerConfig // keyed by vaultID
+	proposals                       map[string][]store.Proposal    // keyed by vaultID
+	contextBindings                 map[string]*store.ContextBinding
+	acquisitionHandlers             map[string]*store.AcquisitionHandler
+	users                           map[string]*store.User       // keyed by email
+	grants                          map[string]map[string]string // keyed by userID -> vaultID -> role
+	userInvites                     map[string]*store.UserInvite // keyed by token
+	emailVerifications              []*store.EmailVerification
+	passwordResets                  []*store.PasswordReset
+	agents                          map[string]*store.Agent                // keyed by name
+	agentVaultGrants                []store.VaultGrant                     // agent vault grants
+	settings                        map[string]string                      // instance settings
+	vaultSettings                   map[string]map[string]string           // per-vault: vaultID -> key -> value
+	skills                          map[string]map[string]store.Skill      // per-vault: vaultID -> name -> skill
+	credStores                      map[string]*store.VaultCredentialStore // per-vault external credential store config
+	unmatchedHosts                  map[string][]store.UnmatchedHost       // keyed by vaultID
+	createProposalWithContextErr    error
+	getContextBindingErr            error
+	getProposalErr                  error
+	applyProposalErr                error
+	sessionCounter                  int
+	handlerGenerationCounter        int
+	setHandlerGenerationHook        func()
+	setAcquisitionPolicyHook        func()
+	acquisitionMu                   sync.Mutex
+	proposalAcquisitions            map[string]*store.ProposalAcquisition
+	proposalAcquisitionSecrets      map[string]store.EncryptedCredential
+	proposalAcquisitionCounter      int
+	proposalAcquisitionByIDFailures int
+	proposalAcquisitionByIDFailure  chan struct{}
 }
 
 func newMockStore() *mockStore {
@@ -508,6 +510,16 @@ func (m *mockStore) GetProposalAcquisition(_ context.Context, vaultID string, pr
 func (m *mockStore) GetProposalAcquisitionByID(_ context.Context, id string) (*store.ProposalAcquisition, error) {
 	m.acquisitionMu.Lock()
 	defer m.acquisitionMu.Unlock()
+	if m.proposalAcquisitionByIDFailures > 0 {
+		m.proposalAcquisitionByIDFailures--
+		if m.proposalAcquisitionByIDFailure != nil {
+			select {
+			case m.proposalAcquisitionByIDFailure <- struct{}{}:
+			default:
+			}
+		}
+		return nil, errors.New("transient acquisition lookup failure")
+	}
 	job := m.proposalAcquisitions[id]
 	if job == nil {
 		return nil, sql.ErrNoRows

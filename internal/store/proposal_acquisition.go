@@ -18,7 +18,11 @@ const proposalAcquisitionColumns = `id, vault_id, proposal_id, credential_key, a
 	continuation_expires_at, continuation_used_at, started_at, completed_at,
 	created_at, updated_at`
 
-const continuationTicketTTL = 5 * time.Minute
+const (
+	continuationTicketTTL             = 5 * time.Minute
+	proposalAcquisitionStaleAfter     = 10 * time.Minute
+	proposalAcquisitionStaleErrorCode = "worker_lease_expired"
+)
 
 type acquisitionScanner interface {
 	Scan(dest ...interface{}) error
@@ -171,6 +175,17 @@ func (s *SQLStore) StartProposalAcquisition(ctx context.Context, start ProposalA
 	if err := s.requireVaultAcquisitionPolicyHandler(ctx, tx, start.VaultID, start.HandlerID, forUpdate); err != nil {
 		return nil, err
 	}
+	now := time.Now().UTC().Truncate(time.Second)
+	staleBefore := now.Add(-proposalAcquisitionStaleAfter)
+	if _, err := tx.ExecContext(ctx, s.dialect.Rebind(`UPDATE proposal_acquisitions
+		SET state = ?, error_code = ?, completed_at = ?, updated_at = ?
+		WHERE vault_id = ? AND proposal_id = ? AND credential_key = ?
+		  AND state IN (?, ?, ?) AND updated_at < ?`),
+		AcquisitionExpired, proposalAcquisitionStaleErrorCode, s.dialect.FormatTime(now), s.dialect.FormatTime(now),
+		start.VaultID, start.ProposalID, start.CredentialKey,
+		AcquisitionQueued, AcquisitionRunning, AcquisitionAwaitingUser, s.dialect.FormatTime(staleBefore)); err != nil {
+		return nil, err
+	}
 
 	var attempt int
 	if err := tx.QueryRowContext(ctx, s.dialect.Rebind(`SELECT COALESCE(MAX(attempt), 0) + 1
@@ -178,7 +193,6 @@ func (s *SQLStore) StartProposalAcquisition(ctx context.Context, start ProposalA
 		start.VaultID, start.ProposalID, start.CredentialKey).Scan(&attempt); err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC().Truncate(time.Second)
 	job := &ProposalAcquisition{
 		ID: uuid.NewString(), VaultID: start.VaultID, ProposalID: start.ProposalID,
 		CredentialKey: start.CredentialKey, Attempt: attempt, HandlerID: start.HandlerID,

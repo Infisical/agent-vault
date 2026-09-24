@@ -320,6 +320,39 @@ func TestProposalAcquisitionCancellationReleasesActiveSlot(t *testing.T) {
 	}
 }
 
+func TestProposalAcquisitionStartExpiresStaleActiveAttempt(t *testing.T) {
+	s, proposal, handler := setupProposalAcquisition(t)
+	ctx := context.Background()
+	start := ProposalAcquisitionStart{
+		VaultID: proposal.VaultID, ProposalID: proposal.ID, CredentialKey: "GITHUB_TOKEN",
+		HandlerID: handler.ID, Profile: "github.com", Mode: "native",
+	}
+	stale, err := s.StartProposalAcquisition(ctx, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleAt := time.Now().UTC().Add(-11 * time.Minute).Truncate(time.Second)
+	if _, err := s.db.ExecContext(ctx, s.dialect.Rebind(`UPDATE proposal_acquisitions SET updated_at = ? WHERE id = ?`),
+		s.dialect.FormatTime(staleAt), stale.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	retried, err := s.StartProposalAcquisition(ctx, start)
+	if err != nil {
+		t.Fatalf("retry after stale attempt: %v", err)
+	}
+	if retried.Attempt != 2 || retried.ID == stale.ID {
+		t.Fatalf("retried=%+v stale=%+v", retried, stale)
+	}
+	expired, err := s.GetProposalAcquisitionByID(ctx, stale.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expired.State != AcquisitionExpired || expired.ErrorCode != "worker_lease_expired" || expired.CompletedAt == nil {
+		t.Fatalf("stale attempt not expired: %+v", expired)
+	}
+}
+
 func TestProposalAcquisitionCancelByIDCannotCancelNewerRetry(t *testing.T) {
 	s, proposal, handler := setupProposalAcquisition(t)
 	ctx := context.Background()
