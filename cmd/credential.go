@@ -148,13 +148,25 @@ required — there is no project-file or interactive-picker fallback.`,
 }
 
 var credentialSetCmd = &cobra.Command{
-	Use:   "set <key=value> [key2=value2 ...]",
+	Use:   "set [key=value ...]",
 	Short: "Set one or more credentials",
 	Long: `Set one or more credentials in a vault.
 
+Credential values supplied as arguments may be visible in the process table.
+Prefer --stdin KEY to read exactly one value from standard input.
+
 In agent mode (AGENT_VAULT_TOKEN set), AGENT_VAULT_VAULT (or --vault) is
 required — there is no project-file or interactive-picker fallback.`,
-	Args: cobra.MinimumNArgs(1),
+	Args: func(cmd *cobra.Command, args []string) error {
+		stdinKey, _ := cmd.Flags().GetString("stdin")
+		if stdinKey != "" {
+			if len(args) != 0 {
+				return fmt.Errorf("--stdin cannot be combined with KEY=VALUE arguments")
+			}
+			return nil
+		}
+		return cobra.MinimumNArgs(1)(cmd, args)
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sess, tokenSource, err := resolveSession()
 		if err != nil {
@@ -166,13 +178,22 @@ required — there is no project-file or interactive-picker fallback.`,
 			return err
 		}
 
-		creds := make(map[string]string, len(args))
-		for _, arg := range args {
-			idx := strings.IndexByte(arg, '=')
-			if idx < 1 {
-				return fmt.Errorf("invalid format %q, expected KEY=VALUE", arg)
+		stdinKey, _ := cmd.Flags().GetString("stdin")
+		creds := make(map[string]string, len(args)+1)
+		if stdinKey != "" {
+			value, err := readCredentialStdin(cmd, stdinKey)
+			if err != nil {
+				return err
 			}
-			creds[arg[:idx]] = arg[idx+1:]
+			creds[stdinKey] = value
+		} else {
+			for _, arg := range args {
+				idx := strings.IndexByte(arg, '=')
+				if idx < 1 {
+					return fmt.Errorf("invalid format %q, expected KEY=VALUE", arg)
+				}
+				creds[arg[:idx]] = arg[idx+1:]
+			}
 		}
 
 		body, err := json.Marshal(map[string]interface{}{
@@ -252,6 +273,7 @@ required — there is no project-file or interactive-picker fallback.`,
 
 func init() {
 	credentialListCmd.Flags().Bool("reveal", false, "Show decrypted credential values (requires member+ role)")
+	credentialSetCmd.Flags().String("stdin", "", "read one credential value from stdin for KEY")
 	credentialCmd.AddCommand(credentialListCmd)
 	credentialCmd.AddCommand(credentialGetCmd)
 	credentialCmd.AddCommand(credentialSetCmd)

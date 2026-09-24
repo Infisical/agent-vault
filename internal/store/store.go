@@ -3,13 +3,41 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
+	"unicode"
+
+	"github.com/Infisical/agent-vault/internal/contextbinding"
 )
 
 // ErrNotFirstUser is returned by RegisterFirstUser when users already exist.
 var ErrNotFirstUser = errors.New("users already exist; not first user")
+
+// ErrContextBindingInactive marks an expected state conflict where an opaque
+// binding no longer exists or was retired before a bound operation committed.
+var ErrContextBindingInactive = errors.New("context binding not found or retired")
+
+// ErrProposalStateConflict marks an expected proposal status/context race.
+var ErrProposalStateConflict = errors.New("proposal state conflict")
+
+// ErrAcquisitionHandlerExists is returned when a registry ID is already in use.
+var ErrAcquisitionHandlerExists = errors.New("acquisition handler already exists")
+
+var (
+	ErrAcquisitionHandlerUnavailable              = errors.New("acquisition handler unavailable")
+	ErrAcquisitionPolicyHandlerUnavailable        = errors.New("acquisition policy handler unavailable")
+	ErrCredentialAcquisitionDisabled              = errors.New("credential acquisition is disabled")
+	ErrProposalAcquisitionActive                  = errors.New("proposal credential already has an active acquisition")
+	ErrProposalAcquisitionStateConflict           = errors.New("proposal acquisition state conflict")
+	ErrProposalAcquisitionContinuationUnavailable = errors.New("proposal acquisition continuation unavailable")
+	ErrProposalAcquisitionContextBindingRequired  = errors.New("proposal acquisition requires a context binding")
+	ErrProposalAcquisitionDeclarationMismatch     = errors.New("proposal acquisition does not match persisted declaration")
+	ErrBrowserDOMAcquisitionUnavailable           = errors.New("browser DOM acquisition is unavailable")
+)
 
 // DefaultVault is the name of the automatically-seeded vault.
 const DefaultVault = "default"
@@ -224,8 +252,197 @@ type Proposal struct {
 	ReviewedAt             *string
 	ApprovalToken          string     // random token for browser-based approval URL
 	ApprovalTokenExpiresAt *time.Time // expiry for the approval token (default 24h)
+	ContextBindingID       *string    // immutable origin/project/workstation binding; nil for legacy proposals
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
+}
+
+// ContextBinding persists the exact, immutable origin/project/workstation
+// tuple used for anti-replay and anti-misrouting checks. Retirement is the
+// only supported state transition.
+type ContextBinding struct {
+	ID        string
+	Tuple     contextbinding.Tuple
+	RetiredAt *time.Time
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// AcquisitionHandler is an instance-owner registered executable allowlist.
+// Proposal input may reference ID/profile only; every execution resolves the
+// executable and policy fields from this row.
+type AcquisitionHandler struct {
+	ID               string
+	Generation       string
+	Kind             string
+	ExecutablePath   string
+	SHA256           string
+	SigningIdentity  string
+	AllowedKeys      []string
+	AllowedVaults    []string
+	AllowedProfiles  []string
+	TimeoutSeconds   int
+	OutputLimitBytes int
+	Enabled          bool
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+const (
+	AcquisitionHandlerKindExecutable = "executable"
+	AcquisitionHandlerKindBrowserDOM = "browser_dom"
+)
+
+// VaultSettingCredentialAcquisitionPolicy is the per-vault settings key used
+// for the non-secret acquisition allowlist.
+const VaultSettingCredentialAcquisitionPolicy = "credential_acquisition_policy"
+
+// InstanceSettingCredentialAcquisitionEnabled is the default-off global gate
+// for all new credential-acquisition jobs.
+const InstanceSettingCredentialAcquisitionEnabled = "credential_acquisition_enabled"
+
+// VaultAcquisitionPolicy is the complete persisted acquisition policy. Handler
+// IDs are resolved only through the instance registry; no executable or
+// provider-controlled fields are accepted here.
+type VaultAcquisitionPolicy struct {
+	EnabledHandlers   []string `json:"enabled_handlers"`
+	BrowserDOMEnabled bool     `json:"browser_dom_enabled"`
+}
+
+const (
+	AcquisitionQueued       = "queued"
+	AcquisitionRunning      = "running"
+	AcquisitionAwaitingUser = "awaiting_user"
+	AcquisitionSucceeded    = "succeeded"
+	AcquisitionFailed       = "failed"
+	AcquisitionCancelled    = "cancelled"
+	AcquisitionExpired      = "expired"
+)
+
+// ProposalAcquisition is non-secret job metadata. Secret values are written
+// only to proposal_credentials as encrypted ciphertext in the same transaction
+// that marks a job succeeded.
+type ProposalAcquisition struct {
+	ID                     string
+	VaultID                string
+	ProposalID             int
+	CredentialKey          string
+	Attempt                int
+	HandlerID              string
+	HandlerGeneration      string
+	Profile                string
+	Mode                   string
+	State                  string
+	ContextBindingID       string
+	Source                 string
+	ErrorCode              string
+	CredentialExpiresAt    *time.Time
+	ContinuationTicketHash []byte
+	ContinuationExpiresAt  *time.Time
+	ContinuationUsedAt     *time.Time
+	StartedAt              *time.Time
+	CompletedAt            *time.Time
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
+// ProposalAcquisitionStart contains only proposal-controlled identifiers.
+// Handler executable, generation, allowlists, and context binding are resolved
+// from server-owned rows in the creation transaction.
+type ProposalAcquisitionStart struct {
+	VaultID       string
+	ProposalID    int
+	CredentialKey string
+	HandlerID     string
+	Profile       string
+	Mode          string
+}
+
+const (
+	acquisitionHandlerMinOutputBytes = 1024
+	acquisitionHandlerMaxOutputBytes = 1024 * 1024
+	acquisitionHandlerMaxTimeout     = 300
+)
+
+var (
+	acquisitionHandlerIDPattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	acquisitionHandlerSHA256Pattern  = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	acquisitionHandlerKeyPattern     = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`)
+	acquisitionHandlerVaultPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	acquisitionHandlerProfilePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+)
+
+func ValidateAcquisitionHandlerID(id string) error {
+	if !acquisitionHandlerIDPattern.MatchString(id) {
+		return fmt.Errorf("handler id must match %s", acquisitionHandlerIDPattern)
+	}
+	return nil
+}
+
+// ValidateRegistration validates the server-owned handler registry shape.
+// It deliberately does not verify that ExecutablePath exists or that SHA256
+// matches the file: registration is persisted disabled and the explicit
+// verify operation performs those live checks before enabling it.
+func (h AcquisitionHandler) ValidateRegistration() error {
+	if err := ValidateAcquisitionHandlerID(h.ID); err != nil {
+		return err
+	}
+	if h.Kind != AcquisitionHandlerKindExecutable && h.Kind != AcquisitionHandlerKindBrowserDOM {
+		return fmt.Errorf("handler kind must be executable or browser_dom")
+	}
+	if !filepath.IsAbs(h.ExecutablePath) {
+		return fmt.Errorf("handler executable_path must be absolute")
+	}
+	if filepath.Clean(h.ExecutablePath) != h.ExecutablePath {
+		return fmt.Errorf("handler executable_path must be clean")
+	}
+	if len(h.ExecutablePath) > 4096 || strings.ContainsRune(h.ExecutablePath, '\x00') {
+		return fmt.Errorf("handler executable_path is invalid")
+	}
+	if !acquisitionHandlerSHA256Pattern.MatchString(h.SHA256) {
+		return fmt.Errorf("handler sha256 must be 64 lowercase hexadecimal characters")
+	}
+	if len(h.SigningIdentity) > 512 || strings.TrimSpace(h.SigningIdentity) != h.SigningIdentity {
+		return fmt.Errorf("handler signing_identity is invalid")
+	}
+	for _, r := range h.SigningIdentity {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("handler signing_identity contains control characters")
+		}
+	}
+	if err := validateAcquisitionAllowlist("allowed_keys", h.AllowedKeys, acquisitionHandlerKeyPattern); err != nil {
+		return err
+	}
+	if err := validateAcquisitionAllowlist("allowed_vaults", h.AllowedVaults, acquisitionHandlerVaultPattern); err != nil {
+		return err
+	}
+	if err := validateAcquisitionAllowlist("allowed_profiles", h.AllowedProfiles, acquisitionHandlerProfilePattern); err != nil {
+		return err
+	}
+	if h.TimeoutSeconds < 1 || h.TimeoutSeconds > acquisitionHandlerMaxTimeout {
+		return fmt.Errorf("handler timeout_seconds must be between 1 and %d", acquisitionHandlerMaxTimeout)
+	}
+	if h.OutputLimitBytes < acquisitionHandlerMinOutputBytes || h.OutputLimitBytes > acquisitionHandlerMaxOutputBytes {
+		return fmt.Errorf("handler output_limit_bytes must be between %d and %d", acquisitionHandlerMinOutputBytes, acquisitionHandlerMaxOutputBytes)
+	}
+	return nil
+}
+
+func validateAcquisitionAllowlist(name string, values []string, pattern *regexp.Regexp) error {
+	if len(values) == 0 {
+		return fmt.Errorf("handler %s must not be empty", name)
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if !pattern.MatchString(value) {
+			return fmt.Errorf("handler %s contains invalid value %q", name, value)
+		}
+		if _, ok := seen[value]; ok {
+			return fmt.Errorf("handler %s contains duplicate value %q", name, value)
+		}
+		seen[value] = struct{}{}
+	}
+	return nil
 }
 
 // EncryptedCredential holds an encrypted credential value (ciphertext + nonce).
@@ -537,7 +754,17 @@ type Store interface {
 	UpdateMasterKeyRecord(ctx context.Context, record *MasterKeyRecord) error
 
 	// Proposals
+	CreateContextBinding(ctx context.Context, tuple contextbinding.Tuple) (*ContextBinding, error)
+	GetContextBinding(ctx context.Context, id string) (*ContextBinding, error)
+	RetireContextBinding(ctx context.Context, id string) error
+	CreateAcquisitionHandler(ctx context.Context, handler AcquisitionHandler) (*AcquisitionHandler, error)
+	GetAcquisitionHandler(ctx context.Context, id string) (*AcquisitionHandler, error)
+	ListAcquisitionHandlers(ctx context.Context) ([]AcquisitionHandler, error)
+	SetAcquisitionHandlerEnabled(ctx context.Context, id string, enabled bool) error
+	SetAcquisitionHandlerEnabledIfGeneration(ctx context.Context, id, generation string, enabled bool) (bool, error)
+	DeleteAcquisitionHandler(ctx context.Context, id string) error
 	CreateProposal(ctx context.Context, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error)
+	CreateProposalWithContext(ctx context.Context, vaultID, sessionID, contextBindingID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error)
 	GetProposal(ctx context.Context, vaultID string, id int) (*Proposal, error)
 	GetProposalByApprovalToken(ctx context.Context, token string) (*Proposal, error)
 	ListProposals(ctx context.Context, vaultID, status string) ([]Proposal, error)
@@ -546,6 +773,17 @@ type Store interface {
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
 	GetProposalCredentials(ctx context.Context, vaultID string, proposalID int) (map[string]EncryptedCredential, error)
 	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []OAuthCredentialConfig) error
+	StartProposalAcquisition(ctx context.Context, start ProposalAcquisitionStart) (*ProposalAcquisition, error)
+	GetProposalAcquisition(ctx context.Context, vaultID string, proposalID int, credentialKey string) (*ProposalAcquisition, error)
+	GetProposalAcquisitionByID(ctx context.Context, id string) (*ProposalAcquisition, error)
+	ListProposalAcquisitions(ctx context.Context, vaultID string, proposalID int) ([]ProposalAcquisition, error)
+	MarkProposalAcquisitionRunning(ctx context.Context, id string) (*ProposalAcquisition, error)
+	MarkProposalAcquisitionAwaitingUser(ctx context.Context, id string, ticketHash []byte, expiresAt time.Time) (*ProposalAcquisition, error)
+	CompleteProposalAcquisition(ctx context.Context, id string, credential EncryptedCredential, source string, credentialExpiresAt *time.Time) (*ProposalAcquisition, error)
+	CompleteProposalAcquisitionContinuation(ctx context.Context, ticketHash []byte, credential EncryptedCredential, source string, credentialExpiresAt *time.Time) (*ProposalAcquisition, error)
+	CancelProposalAcquisition(ctx context.Context, vaultID string, proposalID int, credentialKey string) (*ProposalAcquisition, error)
+	CancelProposalAcquisitionByID(ctx context.Context, id string) (*ProposalAcquisition, error)
+	FailProposalAcquisition(ctx context.Context, id, errorCode string) (*ProposalAcquisition, error)
 
 	// User invites (instance-level)
 	CreateUserInvite(ctx context.Context, email, createdBy, role string, expiresAt time.Time, vaults []UserInviteVault) (*UserInvite, error)
@@ -603,6 +841,7 @@ type Store interface {
 	// Vault settings (per-vault key/value)
 	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
 	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
+	SetVaultAcquisitionPolicy(ctx context.Context, vaultID string, policy VaultAcquisitionPolicy) error
 	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
 
 	// Vault skills (markdown instruction documents, one row per skill).

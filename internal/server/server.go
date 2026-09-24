@@ -19,6 +19,7 @@ import (
 
 	"net"
 
+	"github.com/Infisical/agent-vault/internal/acquisition"
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/infisical"
@@ -59,18 +60,18 @@ type agentVaultJSON struct {
 
 // Server is the Agent Vault HTTP server.
 type Server struct {
-	httpServer  *http.Server
-	store       Store
-	encKey      []byte // 32-byte encryption key, held in memory while running
-	notifier    *notify.Notifier
-	initialized    bool                // true when at least one owner account exists
-	lastInitCheck  atomic.Int64        // unix-millis of last DB check for initialization (throttle)
-	baseURL     string              // externally-reachable base URL (e.g. "https://sb.example.com")
-	skillCLI    []byte              // embedded CLI skill content (served at GET /v1/skills/cli)
-	mitm        *mitm.Proxy         // transparent MITM proxy; nil only when --mitm-port 0
-	logger      *slog.Logger        // structured logger for per-request observability
-	rateLimit   *ratelimit.Registry // tiered rate limiter; shared with the MITM ingress
-	logSink     requestlog.Sink     // per-request persistence sink; never nil (Nop default)
+	httpServer    *http.Server
+	store         Store
+	encKey        []byte // 32-byte encryption key, held in memory while running
+	notifier      *notify.Notifier
+	initialized   bool                // true when at least one owner account exists
+	lastInitCheck atomic.Int64        // unix-millis of last DB check for initialization (throttle)
+	baseURL       string              // externally-reachable base URL (e.g. "https://sb.example.com")
+	skillCLI      []byte              // embedded CLI skill content (served at GET /v1/skills/cli)
+	mitm          *mitm.Proxy         // transparent MITM proxy; nil only when --mitm-port 0
+	logger        *slog.Logger        // structured logger for per-request observability
+	rateLimit     *ratelimit.Registry // tiered rate limiter; shared with the MITM ingress
+	logSink       requestlog.Sink     // per-request persistence sink; never nil (Nop default)
 	// touchCache short-circuits per-request session-touch writes. With
 	// db.SetMaxOpenConns(1), every UPDATE — even a no-op — opens the
 	// single WAL writer slot. Caching the last-touch wall-clock per
@@ -89,6 +90,14 @@ type Server struct {
 	infisicalDynamic *infisical.DynamicResolver
 	oauthRefresher   *oauth.Refresher
 	telemetry        *telemetry.Telemetry
+
+	runAcquisitionProvider providerRunner
+	acquisitionRootCtx     context.Context
+	acquisitionRootCancel  context.CancelFunc
+	acquisitionWG          sync.WaitGroup
+	acquisitionJobsMu      sync.Mutex
+	acquisitionCancels     map[string]context.CancelFunc
+	acquisitionStopping    bool
 }
 
 // lockVault acquires the per-vault mutation lock via the store's
@@ -319,7 +328,15 @@ type Store interface {
 	SetBrokerConfig(ctx context.Context, vaultID, servicesJSON string) (*store.BrokerConfig, error)
 
 	// Proposals
+	GetContextBinding(ctx context.Context, id string) (*store.ContextBinding, error)
+	CreateAcquisitionHandler(ctx context.Context, handler store.AcquisitionHandler) (*store.AcquisitionHandler, error)
+	GetAcquisitionHandler(ctx context.Context, id string) (*store.AcquisitionHandler, error)
+	ListAcquisitionHandlers(ctx context.Context) ([]store.AcquisitionHandler, error)
+	SetAcquisitionHandlerEnabled(ctx context.Context, id string, enabled bool) error
+	SetAcquisitionHandlerEnabledIfGeneration(ctx context.Context, id, generation string, enabled bool) (bool, error)
+	DeleteAcquisitionHandler(ctx context.Context, id string) error
 	CreateProposal(ctx context.Context, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]store.EncryptedCredential) (*store.Proposal, error)
+	CreateProposalWithContext(ctx context.Context, vaultID, sessionID, contextBindingID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]store.EncryptedCredential) (*store.Proposal, error)
 	GetProposal(ctx context.Context, vaultID string, id int) (*store.Proposal, error)
 	GetProposalByApprovalToken(ctx context.Context, token string) (*store.Proposal, error)
 	ListProposals(ctx context.Context, vaultID, status string) ([]store.Proposal, error)
@@ -328,6 +345,17 @@ type Store interface {
 	GetProposalCredentials(ctx context.Context, vaultID string, proposalID int) (map[string]store.EncryptedCredential, error)
 	ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []store.OAuthCredentialConfig) error
 	ExpirePendingProposals(ctx context.Context, before time.Time) (int, error)
+	StartProposalAcquisition(ctx context.Context, start store.ProposalAcquisitionStart) (*store.ProposalAcquisition, error)
+	GetProposalAcquisition(ctx context.Context, vaultID string, proposalID int, credentialKey string) (*store.ProposalAcquisition, error)
+	GetProposalAcquisitionByID(ctx context.Context, id string) (*store.ProposalAcquisition, error)
+	ListProposalAcquisitions(ctx context.Context, vaultID string, proposalID int) ([]store.ProposalAcquisition, error)
+	MarkProposalAcquisitionRunning(ctx context.Context, id string) (*store.ProposalAcquisition, error)
+	MarkProposalAcquisitionAwaitingUser(ctx context.Context, id string, ticketHash []byte, expiresAt time.Time) (*store.ProposalAcquisition, error)
+	CompleteProposalAcquisition(ctx context.Context, id string, credential store.EncryptedCredential, source string, credentialExpiresAt *time.Time) (*store.ProposalAcquisition, error)
+	CompleteProposalAcquisitionContinuation(ctx context.Context, ticketHash []byte, credential store.EncryptedCredential, source string, credentialExpiresAt *time.Time) (*store.ProposalAcquisition, error)
+	CancelProposalAcquisition(ctx context.Context, vaultID string, proposalID int, credentialKey string) (*store.ProposalAcquisition, error)
+	CancelProposalAcquisitionByID(ctx context.Context, id string) (*store.ProposalAcquisition, error)
+	FailProposalAcquisition(ctx context.Context, id, errorCode string) (*store.ProposalAcquisition, error)
 
 	// User invites (instance-level)
 	CreateUserInvite(ctx context.Context, email, createdBy, role string, expiresAt time.Time, vaults []store.UserInviteVault) (*store.UserInvite, error)
@@ -361,6 +389,7 @@ type Store interface {
 	// Vault settings (per-vault key/value)
 	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
 	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
+	SetVaultAcquisitionPolicy(ctx context.Context, vaultID string, policy store.VaultAcquisitionPolicy) error
 	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
 
 	// Vault skills (markdown instruction documents)
@@ -772,6 +801,7 @@ func limitBody(next http.HandlerFunc) http.HandlerFunc {
 // logger must be non-nil; tests can pass slog.New(slog.DiscardHandler).
 func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, initialized bool, baseURL string, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
+	acquisitionRootCtx, acquisitionRootCancel := context.WithCancel(context.Background())
 
 	rlCfg, _ := ratelimit.LoadFromEnv()
 	rl := ratelimit.New(rlCfg)
@@ -785,15 +815,19 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 			WriteTimeout:      60 * time.Second,
 			IdleTimeout:       120 * time.Second,
 		},
-		store:          store,
-		encKey:         encKey,
-		notifier:       notifier,
-		initialized:    initialized,
-		baseURL:        strings.TrimRight(baseURL, "/"),
-		logger:         logger,
-		rateLimit:      rl,
-		logSink:        requestlog.Nop{},
-		oauthRefresher: oauth.NewRefresher(),
+		store:                  store,
+		encKey:                 encKey,
+		notifier:               notifier,
+		initialized:            initialized,
+		baseURL:                strings.TrimRight(baseURL, "/"),
+		logger:                 logger,
+		rateLimit:              rl,
+		logSink:                requestlog.Nop{},
+		oauthRefresher:         oauth.NewRefresher(),
+		runAcquisitionProvider: acquisition.RunProvider,
+		acquisitionRootCtx:     acquisitionRootCtx,
+		acquisitionRootCancel:  acquisitionRootCancel,
+		acquisitionCancels:     make(map[string]context.CancelFunc),
 	}
 
 	// Apply SSRF protection to OAuth token endpoint requests.
@@ -840,8 +874,12 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("POST /v1/proposals", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleProposalCreate)))))
 	mux.HandleFunc("GET /v1/proposals/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleProposalGet))))
 	mux.HandleFunc("GET /v1/proposals", s.requireInitialized(s.requireAuth(actorAuthed(s.handleProposalList))))
+	mux.HandleFunc("POST /mcp", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleMCPControl)))))
 	mux.HandleFunc("POST /v1/admin/proposals/{id}/approve", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAdminProposalApprove)))))
 	mux.HandleFunc("POST /v1/admin/proposals/{id}/reject", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAdminProposalReject)))))
+	mux.HandleFunc("POST /v1/admin/proposals/{id}/acquisitions/{key}/start", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleProposalAcquisitionStart)))))
+	mux.HandleFunc("GET /v1/admin/proposals/{id}/acquisitions", s.requireInitialized(s.requireAuth(actorAuthed(s.handleProposalAcquisitionStatus))))
+	mux.HandleFunc("POST /v1/admin/proposals/{id}/acquisitions/{key}/cancel", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleProposalAcquisitionCancel)))))
 
 	ipUserInviteToken := s.tier(ratelimit.TierAuth, ratelimit.IPTokenKey(clientIP, func(r *http.Request) string {
 		return r.PathValue("token")
@@ -867,6 +905,12 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("POST /v1/vaults/{name}/agents/{agentName}/role", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultAgentSetRole)))))
 
 	// Instance settings (owner-only)
+	mux.HandleFunc("GET /v1/admin/handlers", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAcquisitionHandlerList))))
+	mux.HandleFunc("POST /v1/admin/handlers", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAcquisitionHandlerRegister)))))
+	mux.HandleFunc("GET /v1/admin/handlers/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAcquisitionHandlerShow))))
+	mux.HandleFunc("POST /v1/admin/handlers/{id}/verify", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAcquisitionHandlerVerify)))))
+	mux.HandleFunc("POST /v1/admin/handlers/{id}/disable", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleAcquisitionHandlerDisable)))))
+	mux.HandleFunc("DELETE /v1/admin/handlers/{id}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleAcquisitionHandlerDelete))))
 	mux.HandleFunc("GET /v1/admin/settings", s.requireInitialized(s.requireAuth(actorAuthed(s.handleGetSettings))))
 	mux.HandleFunc("PUT /v1/admin/settings", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleUpdateSettings)))))
 	mux.HandleFunc("POST /v1/admin/settings/rate-limit/preview", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleRateLimitPreview)))))
@@ -891,6 +935,9 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("POST /v1/vaults/{name}/leave", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultLeave)))))
 	mux.HandleFunc("GET /v1/vaults/{name}/settings", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultSettingsGet))))
 	mux.HandleFunc("PATCH /v1/vaults/{name}/settings", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultSettingsPatch)))))
+	mux.HandleFunc("GET /v1/vaults/{name}/acquisition-policy", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultAcquisitionPolicyGet))))
+	mux.HandleFunc("PATCH /v1/vaults/{name}/acquisition-policy", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultAcquisitionPolicyPatch)))))
+	mux.HandleFunc("GET /v1/vaults/{name}/acquisition-handlers", s.requireInitialized(s.requireAuth(actorAuthed(s.handleVaultAcquisitionHandlerCatalog))))
 	mux.HandleFunc("PATCH /v1/vaults/{name}/credential-store", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleVaultCredentialStorePatch)))))
 
 	// Vault admin (owner-only)
@@ -1076,6 +1123,12 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", s.httpServer.Addr, err)
 	}
+	acquisitionDrainAttempted := false
+	defer func() {
+		if !acquisitionDrainAttempted {
+			s.drainAcquisitionJobsWithWarning()
+		}
+	}()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -1165,6 +1218,10 @@ func (s *Server) Start() error {
 	if err := s.httpServer.Shutdown(ctx); err != nil {
 		return fmt.Errorf("server shutdown: %w", err)
 	}
+	acquisitionDrainAttempted = true
+	if !s.drainAcquisitionJobsWithWarning() {
+		return nil
+	}
 
 	// Stop background workers (syncer + touch-cache pruner) and wait for the
 	// syncer's in-flight refreshes to drain before zeroing s.encKey.
@@ -1185,6 +1242,14 @@ func (s *Server) Start() error {
 	fmt.Println("server shut down gracefully")
 	crypto.WipeBytes(s.encKey)
 	return nil
+}
+
+func (s *Server) drainAcquisitionJobsWithWarning() bool {
+	if s.stopAcquisitionJobs(5 * time.Second) {
+		return true
+	}
+	fmt.Fprintln(os.Stderr, "warning: credential acquisition jobs did not stop within 5s; skipping key wipe to avoid racing in-flight encrypts")
+	return false
 }
 
 var errTooManyPendingCodes = errors.New("too many pending verification codes")
@@ -1432,6 +1497,8 @@ func formatExpiresAt(t *time.Time) string {
 const settingAllowedDomains = "allowed_email_domains"
 
 const settingInviteOnly = "invite_only"
+
+const settingCredentialAcquisitionEnabled = store.InstanceSettingCredentialAcquisitionEnabled
 
 const settingRateLimitConfig = "ratelimit_config"
 

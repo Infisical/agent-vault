@@ -7,16 +7,18 @@ import (
 	"strings"
 
 	"github.com/Infisical/agent-vault/internal/broker"
+	"github.com/Infisical/agent-vault/internal/contextbinding"
 	"github.com/Infisical/agent-vault/internal/proposal"
 	"github.com/spf13/cobra"
 )
 
 // proposalCreateRequest mirrors the server's request shape for POST /v1/proposals.
 type proposalCreateRequest struct {
-	Services    []proposal.Service        `json:"services,omitempty"`
-	Credentials []proposal.CredentialSlot `json:"credentials,omitempty"`
-	Message     string                    `json:"message,omitempty"`
-	UserMessage string                    `json:"user_message,omitempty"`
+	Services       []proposal.Service        `json:"services,omitempty"`
+	Credentials    []proposal.CredentialSlot `json:"credentials,omitempty"`
+	Message        string                    `json:"message,omitempty"`
+	UserMessage    string                    `json:"user_message,omitempty"`
+	ContextBinding *contextbinding.Reference `json:"context_binding,omitempty"`
 }
 
 var proposalCreateCmd = &cobra.Command{
@@ -139,9 +141,10 @@ func buildFromJSON(cmd *cobra.Command, filePath string) ([]byte, error) {
 
 	m, _ := cmd.Flags().GetString("message")
 	um, _ := cmd.Flags().GetString("user-message")
+	contextBindingID, _ := cmd.Flags().GetString("context-binding-id")
 
 	// Fast path: no overrides, send raw bytes directly (preserves unknown fields).
-	if m == "" && um == "" {
+	if m == "" && um == "" && contextBindingID == "" {
 		if !json.Valid(data) {
 			return nil, fmt.Errorf("invalid JSON")
 		}
@@ -157,6 +160,12 @@ func buildFromJSON(cmd *cobra.Command, filePath string) ([]byte, error) {
 	}
 	if um != "" {
 		req.UserMessage = um
+	}
+	if contextBindingID != "" {
+		if err := contextbinding.ValidateBindingID(contextBindingID); err != nil {
+			return nil, err
+		}
+		req.ContextBinding = &contextbinding.Reference{ContextBindingID: contextBindingID}
 	}
 
 	return json.Marshal(req)
@@ -218,6 +227,12 @@ func buildFromFlags(cmd *cobra.Command, host string, credentialFlags []string) (
 	}
 	if um, _ := cmd.Flags().GetString("user-message"); um != "" {
 		req.UserMessage = um
+	}
+	if contextBindingID, _ := cmd.Flags().GetString("context-binding-id"); contextBindingID != "" {
+		if err := contextbinding.ValidateBindingID(contextBindingID); err != nil {
+			return nil, err
+		}
+		req.ContextBinding = &contextbinding.Reference{ContextBindingID: contextBindingID}
 	}
 
 	return json.Marshal(req)
@@ -305,6 +320,7 @@ func init() {
 	// Shared flags.
 	proposalCreateCmd.Flags().StringP("message", "m", "", "proposal message/reason")
 	proposalCreateCmd.Flags().String("user-message", "", "human-facing explanation for approval page")
+	proposalCreateCmd.Flags().String("context-binding-id", "", "server-issued context binding for acquisition proposals")
 	proposalCreateCmd.Flags().Bool("json", false, "output response as JSON")
 
 	proposalCmd.AddCommand(proposalCreateCmd)
