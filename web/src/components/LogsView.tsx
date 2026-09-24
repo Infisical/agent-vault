@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch, isAbortError } from "../lib/api";
+import { applyHistoryPage, applyLiveBatch, type ViewWindowPolicy } from "../lib/logsWindow";
 import { ErrorBanner, LoadingSpinner, timeAgo } from "./shared";
 import DataTable, { type Column } from "./DataTable";
 import Button from "./Button";
@@ -37,6 +38,19 @@ interface LogsViewProps {
   limit?: number;
   /** How often to poll for new rows. Defaults to 3000 ms; set to 0 to disable. */
   pollMs?: number;
+  /**
+   * Live tail window: the newest rows kept while polling appends; older
+   * rows fall off. Without a bound the page grows DOM and heap for as
+   * long as it stays open. Defaults to 1000.
+   */
+  tailRows?: number;
+  /**
+   * Rows explicitly loaded via "Load more" that live traffic will not
+   * evict; loading even older rows trims beyond this. Defaults to 1000.
+   */
+  historyRows?: number;
+  /** Max rows rendered at once; overflow is summarized in a counter. Defaults to 300. */
+  maxRenderRows?: number;
   title?: string;
   description?: string;
 }
@@ -45,10 +59,19 @@ export default function LogsView({
   endpoint,
   limit = 50,
   pollMs = 3000,
+  tailRows = 1000,
+  historyRows = 1000,
+  maxRenderRows = 300,
   title = "Request Logs",
   description = "Recent proxied requests. Bodies and query strings are never recorded.",
 }: LogsViewProps) {
-  const [rows, setRows] = useState<LogEntry[]>([]);
+  // Bounded view window: rows (newest-first) plus the count of rows in the
+  // trailing loaded-history segment. Kept in ONE state atom so every
+  // updater is pure and StrictMode-safe.
+  const [view, setView] = useState<{ rows: LogEntry[]; historyCount: number }>({
+    rows: [],
+    historyCount: 0,
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -60,6 +83,17 @@ export default function LogsView({
   const latestIdRef = useRef<number>(0);
   const initializedRef = useRef<boolean>(false);
   const abortRef = useRef<AbortController | null>(null);
+  // Bumped on every endpoint/filter reset so in-flight responses (polls
+  // and Load-more fetches alike) from the previous view are discarded
+  // instead of polluting the new one.
+  const epochRef = useRef<number>(0);
+  // One poll at a time: a slow response must not stack overlapping polls.
+  const pollInFlightRef = useRef<boolean>(false);
+
+  const policy: ViewWindowPolicy = useMemo(
+    () => ({ tailRows, historyRows }),
+    [tailRows, historyRows],
+  );
 
   const filterQS = useMemo(() => {
     const parts: string[] = [`limit=${limit}`];
@@ -71,7 +105,8 @@ export default function LogsView({
   useEffect(() => {
     latestIdRef.current = 0;
     initializedRef.current = false;
-    setRows([]);
+    epochRef.current += 1;
+    setView({ rows: [], historyCount: 0 });
     setNextCursor(null);
     setError("");
     setLoading(true);
@@ -101,7 +136,7 @@ export default function LogsView({
         return;
       }
       const data: LogsResponse = await resp.json();
-      setRows(data.logs ?? []);
+      setView({ rows: (data.logs ?? []).slice(0, tailRows), historyCount: 0 });
       setNextCursor(data.next_cursor);
       latestIdRef.current = data.latest_id || 0;
       initializedRef.current = true;
@@ -117,14 +152,22 @@ export default function LogsView({
     // Gate on the initial load completing, not on cursor > 0 — an empty
     // vault legitimately reports latest_id=0 and still needs polls so
     // the first row shows up without a reload.
-    if (!initializedRef.current) return;
+    if (!initializedRef.current || pollInFlightRef.current) return;
+    const epoch = epochRef.current;
+    // Single-flight: a hung connection would otherwise stall tailing for
+    // as long as the browser holds the socket. Accepted trade-off — the
+    // pre-fix behavior stacked overlapping polls instead.
+    pollInFlightRef.current = true;
     try {
       const resp = await apiFetch(`${endpoint}?${filterQS}&after=${latestIdRef.current}`);
       if (!resp.ok) return;
       const data: LogsResponse = await resp.json();
+      // The view may have been reset (endpoint/filter change) while this
+      // poll was in flight; its rows and cursor belong to the old view.
+      if (epoch !== epochRef.current) return;
       const fresh = data.logs ?? [];
       if (fresh.length > 0) {
-        setRows((prev) => [...fresh, ...prev]);
+        setView((w) => applyLiveBatch(w.rows, fresh, policy, w.historyCount));
       }
       // Guard against out-of-order poll responses rolling the cursor back.
       if (data.latest_id > latestIdRef.current) {
@@ -132,19 +175,26 @@ export default function LogsView({
       }
     } catch {
       // ignore; poll errors are silent
+    } finally {
+      pollInFlightRef.current = false;
     }
   }
 
   async function loadMore() {
     if (nextCursor === null) return;
+    const epoch = epochRef.current;
     setLoadingMore(true);
     try {
       const resp = await apiFetch(`${endpoint}?${filterQS}&before=${nextCursor}`);
       if (!resp.ok) return;
       const data: LogsResponse = await resp.json();
+      // Same stale-view discipline as pollNew: rows and the pagination
+      // cursor fetched for the old endpoint/filter must not leak into
+      // the new view.
+      if (epoch !== epochRef.current) return;
       const older = data.logs ?? [];
       if (older.length > 0) {
-        setRows((prev) => [...prev, ...older]);
+        setView((w) => applyHistoryPage(w.rows, older, policy, w.historyCount));
       }
       setNextCursor(data.next_cursor);
     } finally {
@@ -239,8 +289,9 @@ export default function LogsView({
         <>
           <DataTable
             columns={columns}
-            data={rows}
+            data={view.rows}
             rowKey={(r) => r.id}
+            maxRenderRows={maxRenderRows}
             onRowClick={(r) => setSelected(r)}
             emptyTitle="No requests yet"
             emptyDescription="Requests proxied through this vault will appear here in real time."
