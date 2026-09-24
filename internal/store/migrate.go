@@ -38,6 +38,7 @@ func CountSourceTables(src *SQLStore) ([]TableCount, error) {
 		"context_bindings",
 		"proposals",
 		"proposal_credentials",
+		"proposal_acquisitions",
 		"user_invites",
 		"user_invite_vaults",
 		"email_verifications",
@@ -80,6 +81,7 @@ func CountDestinationData(dst *SQLStore) (string, error) {
 		{"credentials", "SELECT COUNT(*) FROM credentials", nil},
 		{"context_bindings", "SELECT COUNT(*) FROM context_bindings", nil},
 		{"proposals", "SELECT COUNT(*) FROM proposals", nil},
+		{"proposal_acquisitions", "SELECT COUNT(*) FROM proposal_acquisitions", nil},
 	}
 	for _, c := range checks {
 		var n int
@@ -139,6 +141,7 @@ func MigrateData(ctx context.Context, src, dst *SQLStore, progressFn func(table 
 		{"context_bindings", copyContextBindings},
 		{"proposals", copyProposals},
 		{"proposal_credentials", copyProposalCredentials},
+		{"proposal_acquisitions", copyProposalAcquisitions},
 		{"user_invites", copyUserInvites},
 		{"user_invite_vaults", copyUserInviteVaults},
 		{"email_verifications", copyEmailVerifications},
@@ -969,6 +972,60 @@ func copyProposalCredentials(ctx context.Context, src *SQLStore, tx *sql.Tx, dst
 		_, err = tx.ExecContext(ctx,
 			dstDialect.Rebind("INSERT INTO proposal_credentials (vault_id, proposal_id, key, ciphertext, nonce) VALUES (?, ?, ?, ?, ?)"),
 			vaultID, proposalID, key, ct, nonce,
+		)
+		if err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, rows.Err()
+}
+
+func copyProposalAcquisitions(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialect Dialect) (int, error) {
+	rows, err := src.db.QueryContext(ctx, `SELECT `+proposalAcquisitionColumns+` FROM proposal_acquisitions`)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	n := 0
+	for rows.Next() {
+		var id, vaultID, credentialKey, handlerID, handlerGeneration, profile, mode, state string
+		var contextBindingID, source, errorCode string
+		var proposalID, attempt int
+		var ticketHash []byte
+		var credentialExpiresAt, continuationExpiresAt, continuationUsedAt interface{}
+		var startedAt, completedAt, createdAt, updatedAt interface{}
+		if err := rows.Scan(
+			&id, &vaultID, &proposalID, &credentialKey, &attempt,
+			&handlerID, &handlerGeneration, &profile, &mode, &state, &contextBindingID,
+			&source, &errorCode, &credentialExpiresAt, &ticketHash,
+			&continuationExpiresAt, &continuationUsedAt, &startedAt, &completedAt,
+			&createdAt, &updatedAt,
+		); err != nil {
+			return n, err
+		}
+		times := []*interface{}{
+			&credentialExpiresAt, &continuationExpiresAt, &continuationUsedAt,
+			&startedAt, &completedAt, &createdAt, &updatedAt,
+		}
+		for _, value := range times {
+			converted, err := convertTime(*value, src.dialect, dstDialect)
+			if err != nil {
+				return n, fmt.Errorf("converting proposal acquisition timestamp: %w", err)
+			}
+			*value = converted
+		}
+		_, err = tx.ExecContext(ctx, dstDialect.Rebind(`INSERT INTO proposal_acquisitions (
+			id, vault_id, proposal_id, credential_key, attempt, handler_id, handler_generation,
+			profile, mode, state, context_binding_id, source, error_code, credential_expires_at,
+			continuation_ticket_hash, continuation_expires_at, continuation_used_at,
+			started_at, completed_at, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			id, vaultID, proposalID, credentialKey, attempt, handlerID, handlerGeneration,
+			profile, mode, state, contextBindingID, source, errorCode, credentialExpiresAt,
+			ticketHash, continuationExpiresAt, continuationUsedAt,
+			startedAt, completedAt, createdAt, updatedAt,
 		)
 		if err != nil {
 			return n, err

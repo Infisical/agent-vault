@@ -27,6 +27,14 @@ var ErrProposalStateConflict = errors.New("proposal state conflict")
 // ErrAcquisitionHandlerExists is returned when a registry ID is already in use.
 var ErrAcquisitionHandlerExists = errors.New("acquisition handler already exists")
 
+var (
+	ErrAcquisitionHandlerUnavailable              = errors.New("acquisition handler unavailable")
+	ErrProposalAcquisitionActive                  = errors.New("proposal credential already has an active acquisition")
+	ErrProposalAcquisitionStateConflict           = errors.New("proposal acquisition state conflict")
+	ErrProposalAcquisitionContinuationUnavailable = errors.New("proposal acquisition continuation unavailable")
+	ErrProposalAcquisitionContextBindingRequired  = errors.New("proposal acquisition requires a context binding")
+)
+
 // DefaultVault is the name of the automatically-seeded vault.
 const DefaultVault = "default"
 
@@ -274,6 +282,55 @@ type AcquisitionHandler struct {
 	Enabled          bool
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+}
+
+const (
+	AcquisitionQueued       = "queued"
+	AcquisitionRunning      = "running"
+	AcquisitionAwaitingUser = "awaiting_user"
+	AcquisitionSucceeded    = "succeeded"
+	AcquisitionFailed       = "failed"
+	AcquisitionCancelled    = "cancelled"
+	AcquisitionExpired      = "expired"
+)
+
+// ProposalAcquisition is non-secret job metadata. Secret values are written
+// only to proposal_credentials as encrypted ciphertext in the same transaction
+// that marks a job succeeded.
+type ProposalAcquisition struct {
+	ID                     string
+	VaultID                string
+	ProposalID             int
+	CredentialKey          string
+	Attempt                int
+	HandlerID              string
+	HandlerGeneration      string
+	Profile                string
+	Mode                   string
+	State                  string
+	ContextBindingID       string
+	Source                 string
+	ErrorCode              string
+	CredentialExpiresAt    *time.Time
+	ContinuationTicketHash []byte
+	ContinuationExpiresAt  *time.Time
+	ContinuationUsedAt     *time.Time
+	StartedAt              *time.Time
+	CompletedAt            *time.Time
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
+// ProposalAcquisitionStart contains only proposal-controlled identifiers.
+// Handler executable, generation, allowlists, and context binding are resolved
+// from server-owned rows in the creation transaction.
+type ProposalAcquisitionStart struct {
+	VaultID       string
+	ProposalID    int
+	CredentialKey string
+	HandlerID     string
+	Profile       string
+	Mode          string
 }
 
 const (
