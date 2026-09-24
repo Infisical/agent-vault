@@ -46,6 +46,9 @@ func readVaultAcquisitionPolicy(ctx context.Context, st interface {
 func validateVaultAcquisitionPolicy(ctx context.Context, st interface {
 	GetAcquisitionHandler(context.Context, string) (*store.AcquisitionHandler, error)
 }, vaultID string, policy vaultAcquisitionPolicy) error {
+	if policy.BrowserDOMEnabled {
+		return store.ErrBrowserDOMAcquisitionUnavailable
+	}
 	if len(policy.EnabledHandlers) > 64 {
 		return store.ErrAcquisitionPolicyHandlerUnavailable
 	}
@@ -130,6 +133,10 @@ func (s *Server) handleVaultAcquisitionPolicyPatch(w http.ResponseWriter, r *htt
 	}
 	if policy.EnabledHandlers == nil {
 		policy.EnabledHandlers = []string{}
+	}
+	if policy.BrowserDOMEnabled {
+		jsonCodedError(w, http.StatusConflict, "browser_dom_unavailable", "Browser DOM acquisition is not available in this build")
+		return
 	}
 	if len(policy.EnabledHandlers) > 64 {
 		jsonError(w, http.StatusBadRequest, "Too many enabled handlers")

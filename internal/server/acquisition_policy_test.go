@@ -43,17 +43,17 @@ func TestVaultAcquisitionPolicyLifecycleAndAuthorization(t *testing.T) {
 	}
 
 	patch := httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/acquisition-policy",
-		strings.NewReader(`{"enabled_handlers":["github-cli"],"browser_dom_enabled":true}`))
+		strings.NewReader(`{"enabled_handlers":["github-cli"],"browser_dom_enabled":false}`))
 	patch.Header.Set("Authorization", "Bearer "+ownerToken)
 	patchRec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(patchRec, patch)
 	if patchRec.Code != http.StatusOK {
 		t.Fatalf("PATCH status=%d body=%s", patchRec.Code, patchRec.Body.String())
 	}
-	if raw := ms.vaultSettings["root-ns-id"][settingCredentialAcquisitionPolicy]; !strings.Contains(raw, `"github-cli"`) || !strings.Contains(raw, `"browser_dom_enabled":true`) {
+	if raw := ms.vaultSettings["root-ns-id"][settingCredentialAcquisitionPolicy]; !strings.Contains(raw, `"github-cli"`) || !strings.Contains(raw, `"browser_dom_enabled":false`) {
 		t.Fatalf("stored policy=%q", raw)
 	}
-	if status, policy, _ := get(memberToken); status != http.StatusOK || len(policy.EnabledHandlers) != 1 || policy.EnabledHandlers[0] != "github-cli" || !policy.BrowserDOMEnabled {
+	if status, policy, _ := get(memberToken); status != http.StatusOK || len(policy.EnabledHandlers) != 1 || policy.EnabledHandlers[0] != "github-cli" || policy.BrowserDOMEnabled {
 		t.Fatalf("member GET status=%d policy=%+v", status, policy)
 	}
 	if status, _, _ := get(proxyToken); status != http.StatusForbidden {
@@ -184,6 +184,7 @@ func TestVaultAcquisitionPolicyRejectsUntrustedHandlerReferencesAndUnknownFields
 		{"unknown handler", `{"enabled_handlers":["missing"]}`, http.StatusConflict},
 		{"disabled handler", `{"enabled_handlers":["disabled"]}`, http.StatusConflict},
 		{"handler outside vault", `{"enabled_handlers":["other-vault"]}`, http.StatusConflict},
+		{"browser DOM opt-in without handler", `{"enabled_handlers":[],"browser_dom_enabled":true}`, http.StatusConflict},
 		{"browser DOM handler without opt-in", `{"enabled_handlers":["browser-dom"],"browser_dom_enabled":false}`, http.StatusConflict},
 		{"browser DOM handler with opt-in", `{"enabled_handlers":["browser-dom"],"browser_dom_enabled":true}`, http.StatusConflict},
 	}

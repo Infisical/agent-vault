@@ -21,6 +21,9 @@ func (s *SQLStore) SetVaultAcquisitionPolicy(ctx context.Context, vaultID string
 	if !acquisitionHandlerVaultPattern.MatchString(vaultID) {
 		return ErrAcquisitionPolicyHandlerUnavailable
 	}
+	if policy.BrowserDOMEnabled {
+		return ErrBrowserDOMAcquisitionUnavailable
+	}
 	if policy.EnabledHandlers == nil {
 		policy.EnabledHandlers = []string{}
 	}
@@ -158,6 +161,9 @@ func ParseVaultAcquisitionPolicyJSON(raw string) (VaultAcquisitionPolicy, error)
 	}
 	if _, ok := seen["browser_dom_enabled"]; !ok {
 		return VaultAcquisitionPolicy{}, fmt.Errorf("browser_dom_enabled is required")
+	}
+	if policy.BrowserDOMEnabled {
+		return VaultAcquisitionPolicy{}, ErrBrowserDOMAcquisitionUnavailable
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return VaultAcquisitionPolicy{}, fmt.Errorf("acquisition policy has trailing data")

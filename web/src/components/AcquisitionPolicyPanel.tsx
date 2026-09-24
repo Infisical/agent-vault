@@ -11,7 +11,6 @@ import {
 } from "../lib/acquisition";
 import Button from "./Button";
 import Sheet from "./Sheet";
-import Toggle from "./Toggle";
 import { ErrorBanner } from "./shared";
 
 const emptyPolicy: VaultAcquisitionPolicy = {
@@ -109,8 +108,8 @@ export default function AcquisitionPolicyPanel({
             value={loading ? "—" : String(policy?.enabled_handlers.length ?? 0)}
           />
           <PolicyValue
-            label="Browser DOM opt-in"
-            value={loading ? "—" : policy?.browser_dom_enabled ? "Enabled" : "Disabled"}
+            label="Browser capture"
+            value={loading ? "—" : "Unavailable in V1"}
           />
         </div>
         {error && <ErrorBanner message={error} className="mt-4" />}
@@ -168,7 +167,7 @@ function AcquisitionPolicySheet({
     if (!open) return;
     setDraft({
       enabled_handlers: policy.enabled_handlers.slice(),
-      browser_dom_enabled: policy.browser_dom_enabled,
+      browser_dom_enabled: false,
     });
     setError("");
   }, [open, policy]);
@@ -176,8 +175,7 @@ function AcquisitionPolicySheet({
   const changed = useMemo(() => {
     const current = [...policy.enabled_handlers].sort();
     const next = [...draft.enabled_handlers].sort();
-    return policy.browser_dom_enabled !== draft.browser_dom_enabled ||
-      current.length !== next.length || current.some((id, index) => id !== next[index]);
+    return current.length !== next.length || current.some((id, index) => id !== next[index]);
   }, [draft, policy]);
   const unavailableHandlerIDs = draft.enabled_handlers.filter(
     (id) => !handlers.some((handler) => handler.id === id),
@@ -245,7 +243,6 @@ function AcquisitionPolicySheet({
                       type="checkbox"
                       className="mt-1"
                       checked={checked}
-                      disabled={handler.kind === "browser_dom" && !draft.browser_dom_enabled}
                       onChange={(event) => toggleHandler(handler.id, event.target.checked)}
                     />
                     <span className="min-w-0">
@@ -253,9 +250,6 @@ function AcquisitionPolicySheet({
                       <span className="block text-xs text-text-muted mt-1">
                         Keys: {handler.allowed_keys.join(", ") || "none"} · Profiles: {handler.allowed_profiles.join(", ") || "none"}
                       </span>
-                      {handler.kind === "browser_dom" && !draft.browser_dom_enabled && (
-                        <span className="block text-xs text-warning mt-1">Enable the Browser DOM opt-in before selecting this handler.</span>
-                      )}
                     </span>
                   </label>
                 );
@@ -282,24 +276,13 @@ function AcquisitionPolicySheet({
           )}
         </div>
 
-        <div className="border-t border-border pt-5 flex items-start justify-between gap-4">
+        <div className="border-t border-border pt-5">
           <div>
-            <h4 className="text-sm font-semibold text-text">Browser DOM capture opt-in</h4>
+            <h4 className="text-sm font-semibold text-text">Browser credential capture is unavailable</h4>
             <p className="text-xs text-text-muted mt-1 leading-relaxed">
-              Reserved for a future signed-recipe provider. This build does not execute browser_dom handlers, and this opt-in alone never enables capture. Proposals cannot supply selectors, page text, screenshots, cookies, or credentials.
+              V1 permanently rejects browser_dom handlers. Proposals cannot supply selectors, page text, screenshots, cookies, or credentials. Any future browser capture requires a new security review and an explicit product change.
             </p>
           </div>
-          <Toggle
-            checked={draft.browser_dom_enabled}
-            onChange={(enabled) => setDraft((current) => ({
-              ...current,
-              browser_dom_enabled: enabled,
-              enabled_handlers: enabled
-                ? current.enabled_handlers
-                : current.enabled_handlers.filter((id) => handlers.find((handler) => handler.id === id)?.kind !== "browser_dom"),
-            }))}
-            ariaLabel="Allow verified browser DOM acquisition providers"
-          />
         </div>
 
         {error && <ErrorBanner message={error} />}

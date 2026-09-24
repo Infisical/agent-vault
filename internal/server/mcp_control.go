@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Infisical/agent-vault/internal/contextbinding"
 	"github.com/Infisical/agent-vault/internal/proposal"
 	"github.com/Infisical/agent-vault/internal/store"
 )
@@ -51,12 +52,16 @@ type mcpToolResult struct {
 }
 
 var mcpControlTools = []mcpTool{
-	{Name: "vault_proposal_list", Description: "List proposals in the authenticated vault.", InputSchema: mcpObjectSchema(map[string]any{"status": map[string]any{"type": "string", "enum": []string{"pending", "applied", "rejected"}}}, nil)},
-	{Name: "vault_proposal_show", Description: "Show safe, non-secret details for a proposal in the authenticated vault.", InputSchema: mcpObjectSchema(map[string]any{"proposal_id": map[string]any{"type": "integer", "minimum": 1}}, []string{"proposal_id"})},
-	{Name: "vault_acquisition_start", Description: "Start the acquisition declared by a proposal for one credential key.", InputSchema: mcpObjectSchema(map[string]any{"proposal_id": map[string]any{"type": "integer", "minimum": 1}, "key": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}}, []string{"proposal_id", "key"})},
-	{Name: "vault_acquisition_status", Description: "Read safe acquisition status for a proposal, optionally filtered to one credential key.", InputSchema: mcpObjectSchema(map[string]any{"proposal_id": map[string]any{"type": "integer", "minimum": 1}, "key": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}}, []string{"proposal_id"})},
-	{Name: "vault_acquisition_cancel", Description: "Cancel an active acquisition for one proposal credential key.", InputSchema: mcpObjectSchema(map[string]any{"proposal_id": map[string]any{"type": "integer", "minimum": 1}, "key": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}}, []string{"proposal_id", "key"})},
-	{Name: "vault_approval_open", Description: "Return the authenticated dashboard destination for reviewing a proposal.", InputSchema: mcpObjectSchema(map[string]any{"proposal_id": map[string]any{"type": "integer", "minimum": 1}}, []string{"proposal_id"})},
+	{Name: "vault_proposal_list", Description: "List proposals in the authenticated vault and bound context.", InputSchema: mcpObjectSchema(map[string]any{"context_binding_id": mcpContextBindingSchema(), "status": map[string]any{"type": "string", "enum": []string{"pending", "applied", "rejected"}}}, []string{"context_binding_id"})},
+	{Name: "vault_proposal_show", Description: "Show safe, non-secret details for a proposal in the bound context.", InputSchema: mcpObjectSchema(map[string]any{"context_binding_id": mcpContextBindingSchema(), "proposal_id": map[string]any{"type": "integer", "minimum": 1}}, []string{"context_binding_id", "proposal_id"})},
+	{Name: "vault_acquisition_start", Description: "Start the acquisition declared by a proposal in the bound context for one credential key.", InputSchema: mcpObjectSchema(map[string]any{"context_binding_id": mcpContextBindingSchema(), "proposal_id": map[string]any{"type": "integer", "minimum": 1}, "key": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}}, []string{"context_binding_id", "proposal_id", "key"})},
+	{Name: "vault_acquisition_status", Description: "Read safe acquisition status for a proposal in the bound context, optionally filtered to one credential key.", InputSchema: mcpObjectSchema(map[string]any{"context_binding_id": mcpContextBindingSchema(), "proposal_id": map[string]any{"type": "integer", "minimum": 1}, "key": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}}, []string{"context_binding_id", "proposal_id"})},
+	{Name: "vault_acquisition_cancel", Description: "Cancel an active acquisition for one bound proposal credential key.", InputSchema: mcpObjectSchema(map[string]any{"context_binding_id": mcpContextBindingSchema(), "proposal_id": map[string]any{"type": "integer", "minimum": 1}, "key": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}}, []string{"context_binding_id", "proposal_id", "key"})},
+	{Name: "vault_approval_open", Description: "Return the authenticated dashboard destination for reviewing a bound proposal.", InputSchema: mcpObjectSchema(map[string]any{"context_binding_id": mcpContextBindingSchema(), "proposal_id": map[string]any{"type": "integer", "minimum": 1}}, []string{"context_binding_id", "proposal_id"})},
+}
+
+func mcpContextBindingSchema() map[string]any {
+	return map[string]any{"type": "string", "pattern": `^[A-Za-z0-9_-]{26,64}$`}
 }
 
 func mcpObjectSchema(properties map[string]any, required []string) map[string]any {
@@ -249,10 +254,14 @@ func (s *Server) callMCPControlTool(r *http.Request, vault *store.Vault, raw jso
 	switch params.Name {
 	case "vault_proposal_list":
 		var args struct {
-			Status string `json:"status,omitempty"`
+			ContextBindingID string `json:"context_binding_id"`
+			Status           string `json:"status,omitempty"`
 		}
 		if err := decodeMCPParams(params.Arguments, &args); err != nil || (args.Status != "" && args.Status != "pending" && args.Status != "applied" && args.Status != "rejected") {
 			return nil, errors.New("invalid arguments")
+		}
+		if err := s.verifyMCPContextBinding(r, args.ContextBindingID, nil); err != nil {
+			return nil, err
 		}
 		proposals, err := s.store.ListProposals(r.Context(), vault.ID, args.Status)
 		if err != nil {
@@ -260,12 +269,15 @@ func (s *Server) callMCPControlTool(r *http.Request, vault *store.Vault, raw jso
 		}
 		items := make([]mcpProposalSummary, 0, len(proposals))
 		for i := range proposals {
-			items = append(items, projectMCPProposal(&proposals[i]))
+			if proposals[i].ContextBindingID != nil && *proposals[i].ContextBindingID == args.ContextBindingID {
+				items = append(items, projectMCPProposal(&proposals[i]))
+			}
 		}
 		return map[string]any{"proposals": items}, nil
 	case "vault_proposal_show", "vault_approval_open":
 		var args struct {
-			ProposalID int `json:"proposal_id"`
+			ContextBindingID string `json:"context_binding_id"`
+			ProposalID       int    `json:"proposal_id"`
 		}
 		if err := decodeMCPParams(params.Arguments, &args); err != nil || args.ProposalID <= 0 {
 			return nil, errors.New("invalid arguments")
@@ -274,14 +286,18 @@ func (s *Server) callMCPControlTool(r *http.Request, vault *store.Vault, raw jso
 		if err != nil || proposalRow == nil {
 			return nil, errors.New("proposal not found")
 		}
+		if err := s.verifyMCPContextBinding(r, args.ContextBindingID, proposalRow); err != nil {
+			return nil, err
+		}
 		if params.Name == "vault_approval_open" {
 			return map[string]any{"destination": "/vaults/" + url.PathEscape(vault.Name) + "/proposals"}, nil
 		}
 		return projectMCPProposalDetails(proposalRow)
 	case "vault_acquisition_start":
 		var args struct {
-			ProposalID int    `json:"proposal_id"`
-			Key        string `json:"key"`
+			ContextBindingID string `json:"context_binding_id"`
+			ProposalID       int    `json:"proposal_id"`
+			Key              string `json:"key"`
 		}
 		if err := decodeMCPParams(params.Arguments, &args); err != nil || args.ProposalID <= 0 || args.Key == "" {
 			return nil, errors.New("invalid arguments")
@@ -289,6 +305,9 @@ func (s *Server) callMCPControlTool(r *http.Request, vault *store.Vault, raw jso
 		proposalRow, err := s.store.GetProposal(r.Context(), vault.ID, args.ProposalID)
 		if err != nil || proposalRow == nil {
 			return nil, errors.New("proposal not found")
+		}
+		if err := s.verifyMCPContextBinding(r, args.ContextBindingID, proposalRow); err != nil {
+			return nil, err
 		}
 		ref, err := proposalAcquisitionRef(proposalRow.CredentialsJSON, args.Key)
 		if err != nil || ref == nil {
@@ -300,11 +319,19 @@ func (s *Server) callMCPControlTool(r *http.Request, vault *store.Vault, raw jso
 		return s.invokeMCPAcquisitionHandler(request, s.handleProposalAcquisitionStart)
 	case "vault_acquisition_status":
 		var args struct {
-			ProposalID int    `json:"proposal_id"`
-			Key        string `json:"key,omitempty"`
+			ContextBindingID string `json:"context_binding_id"`
+			ProposalID       int    `json:"proposal_id"`
+			Key              string `json:"key,omitempty"`
 		}
 		if err := decodeMCPParams(params.Arguments, &args); err != nil || args.ProposalID <= 0 {
 			return nil, errors.New("invalid arguments")
+		}
+		proposalRow, err := s.store.GetProposal(r.Context(), vault.ID, args.ProposalID)
+		if err != nil || proposalRow == nil {
+			return nil, errors.New("proposal not found")
+		}
+		if err := s.verifyMCPContextBinding(r, args.ContextBindingID, proposalRow); err != nil {
+			return nil, err
 		}
 		query := url.Values{"vault": []string{vault.Name}}
 		if args.Key != "" {
@@ -315,11 +342,19 @@ func (s *Server) callMCPControlTool(r *http.Request, vault *store.Vault, raw jso
 		return s.invokeMCPAcquisitionHandler(request, s.handleProposalAcquisitionStatus)
 	case "vault_acquisition_cancel":
 		var args struct {
-			ProposalID int    `json:"proposal_id"`
-			Key        string `json:"key"`
+			ContextBindingID string `json:"context_binding_id"`
+			ProposalID       int    `json:"proposal_id"`
+			Key              string `json:"key"`
 		}
 		if err := decodeMCPParams(params.Arguments, &args); err != nil || args.ProposalID <= 0 || args.Key == "" {
 			return nil, errors.New("invalid arguments")
+		}
+		proposalRow, err := s.store.GetProposal(r.Context(), vault.ID, args.ProposalID)
+		if err != nil || proposalRow == nil {
+			return nil, errors.New("proposal not found")
+		}
+		if err := s.verifyMCPContextBinding(r, args.ContextBindingID, proposalRow); err != nil {
+			return nil, err
 		}
 		request := mcpInternalRequest(r, http.MethodPost, "/v1/admin/proposals/"+strconv.Itoa(args.ProposalID)+"/acquisitions/"+url.PathEscape(args.Key)+"/cancel", strings.NewReader(mustJSON(proposalAcquisitionCancelRequest{Vault: vault.Name})))
 		request.SetPathValue("id", strconv.Itoa(args.ProposalID))
@@ -328,6 +363,20 @@ func (s *Server) callMCPControlTool(r *http.Request, vault *store.Vault, raw jso
 	default:
 		return nil, errors.New("unknown tool")
 	}
+}
+
+func (s *Server) verifyMCPContextBinding(r *http.Request, id string, proposalRow *store.Proposal) error {
+	if r == nil || contextbinding.ValidateBindingID(id) != nil {
+		return errors.New("context binding mismatch")
+	}
+	binding, err := s.store.GetContextBinding(r.Context(), id)
+	if err != nil || binding == nil || binding.RetiredAt != nil || binding.Tuple.Validate() != nil {
+		return errors.New("context binding mismatch")
+	}
+	if proposalRow != nil && (proposalRow.ContextBindingID == nil || *proposalRow.ContextBindingID != id) {
+		return errors.New("context binding mismatch")
+	}
+	return nil
 }
 
 func mcpInternalRequest(parent *http.Request, method, target string, body io.Reader) *http.Request {

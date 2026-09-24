@@ -28,7 +28,7 @@ func TestSetVaultAcquisitionPolicyValidatesHandlersAndPersistsAtomically(t *test
 
 	policy := VaultAcquisitionPolicy{
 		EnabledHandlers:   []string{created.ID},
-		BrowserDOMEnabled: true,
+		BrowserDOMEnabled: false,
 	}
 	if err := s.SetVaultAcquisitionPolicy(ctx, vault.ID, policy); err != nil {
 		t.Fatalf("SetVaultAcquisitionPolicy: %v", err)
@@ -37,8 +37,11 @@ func TestSetVaultAcquisitionPolicyValidatesHandlersAndPersistsAtomically(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if raw != `{"enabled_handlers":["github-cli"],"browser_dom_enabled":true}` {
+	if raw != `{"enabled_handlers":["github-cli"],"browser_dom_enabled":false}` {
 		t.Fatalf("stored policy=%q", raw)
+	}
+	if err := s.SetVaultAcquisitionPolicy(ctx, vault.ID, VaultAcquisitionPolicy{BrowserDOMEnabled: true}); !errors.Is(err, ErrBrowserDOMAcquisitionUnavailable) {
+		t.Fatalf("browser DOM opt-in error=%v", err)
 	}
 
 	if err := s.SetAcquisitionHandlerEnabled(ctx, created.ID, false); err != nil {
