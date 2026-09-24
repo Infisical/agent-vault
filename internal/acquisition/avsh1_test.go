@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	vaultcrypto "github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/fxamacker/cbor/v2"
 )
 
@@ -163,6 +164,27 @@ func TestSecretBufferRedactsFormattingAndZeroizes(t *testing.T) {
 		t.Fatal("destroyed secret retained bytes")
 	}
 	secret.Destroy() // idempotent
+}
+
+func TestSecretBufferEncryptWithKeyKeepsPlaintextInsideLockedBuffer(t *testing.T) {
+	secret, err := NewSecretBuffer([]byte("LOCKED_BUFFER_SENTINEL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secret.Destroy()
+	key := make([]byte, 32)
+	ciphertext, nonce, err := secret.EncryptWithKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plaintext, err := vaultcrypto.Decrypt(ciphertext, nonce, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vaultcrypto.WipeBytes(plaintext)
+	if string(plaintext) != "LOCKED_BUFFER_SENTINEL" {
+		t.Fatal("encrypted secret did not round trip")
+	}
 }
 
 func TestProgressTrackerEnforcesEightMessageCap(t *testing.T) {

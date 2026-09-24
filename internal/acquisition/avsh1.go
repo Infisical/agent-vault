@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/Infisical/agent-vault/internal/contextbinding"
+	vaultcrypto "github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/fxamacker/cbor/v2"
 )
 
@@ -659,6 +660,17 @@ func (s *SecretBuffer) withBytes(fn func([]byte) error) error {
 		return ErrSecretDestroyed
 	}
 	return fn(s.value)
+}
+
+// EncryptWithKey encrypts the secret while it remains inside its locked
+// buffer. The caller receives ciphertext and nonce only and must Destroy the
+// buffer immediately after this returns.
+func (s *SecretBuffer) EncryptWithKey(key []byte) (ciphertext, nonce []byte, err error) {
+	err = s.withBytes(func(plaintext []byte) error {
+		ciphertext, nonce, err = vaultcrypto.Encrypt(plaintext, key)
+		return err
+	})
+	return ciphertext, nonce, err
 }
 
 func (s *SecretBuffer) Destroy() {
