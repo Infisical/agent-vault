@@ -1,7 +1,9 @@
 package mitm
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -27,6 +29,37 @@ func mitmIPKey(r *http.Request) string {
 	return "mitm:" + host
 }
 
+// mitmCredKey is the per-credential rate-limit key for the
+// auth-failure flood gate, or "" when the request carries no
+// Proxy-Authorization header. Behind an L4 ingress or NAT the backend's
+// RemoteAddr collapses to a small set of shared proxy IPs, so an
+// IP-only bucket lets one client's bad credential exhaust the budget and
+// 429 every other client arriving through the same ingress. The
+// credential is hashed so tokens never appear in rate-limit keys (which
+// may surface in logs or metrics).
+func mitmCredKey(r *http.Request) string {
+	creds := r.Header.Get("Proxy-Authorization")
+	if creds == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(creds))
+	return "mitm:cred:" + hex.EncodeToString(sum[:8])
+}
+
+// checkAuthFlood is the read-only pre-gate shared by CONNECT and
+// forward requests. It denies when either the peer's budget or the
+// presented credential's budget is exhausted. The peer budget is
+// charged once per distinct failing credential (see recordAuthFailure),
+// so it catches a client that rotates credentials to dodge the
+// per-credential budget without letting one repeatedly failing
+// credential lock out every other client behind the same peer.
+func (p *Proxy) checkAuthFlood(r *http.Request) ratelimit.Decision {
+	if d := p.rateLimit.Check(ratelimit.TierAuth, mitmIPKey(r)); !d.Allow {
+		return d
+	}
+	return p.rateLimit.Check(ratelimit.TierAuth, mitmCredKey(r))
+}
+
 // isLoopbackPeer reports whether the HTTP request came from a loopback
 // peer (127.0.0.0/8 or ::1). Used to skip the CONNECT flood gate for
 // local `vault run` clients — a single agent legitimately opens dozens
@@ -48,12 +81,12 @@ func isLoopbackPeer(r *http.Request) bool {
 // CONNECT request line (r.Host) and captured in a closure so subsequent
 // Host-header rewrites by the client cannot redirect the tunnel.
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
-	// Read-only pre-gate: if this IP has exhausted its auth-failure
-	// budget, reject immediately. Only auth failures are recorded
+	// Read-only pre-gate: if this peer or credential has exhausted its
+	// auth-failure budget, reject immediately. Only auth failures are recorded
 	// (below) so legitimate agents don't burn the budget. Loopback
 	// is exempt — see isLoopbackPeer.
 	if p.rateLimit != nil && !isLoopbackPeer(r) {
-		if d := p.rateLimit.Check(ratelimit.TierAuth, mitmIPKey(r)); !d.Allow {
+		if d := p.checkAuthFlood(r); !d.Allow {
 			ratelimit.WriteDenial(w, d, "Too many CONNECT attempts")
 			return
 		}
@@ -155,13 +188,26 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	_ = srv.Serve(listener)
 }
 
-// recordAuthFailure records one auth-failure event against the per-IP
-// TierAuth budget so the read-only pre-gate in handleConnect /
-// handleForward will reject subsequent requests once the budget is
-// exhausted. Only called on auth failure — successful requests skip
-// TierAuth entirely (TierProxy covers them). Loopback peers are exempt.
+// recordAuthFailure records one auth-failure event against the TierAuth
+// budgets so the read-only pre-gate in handleConnect / handleForward
+// will reject subsequent requests once a budget is exhausted. A failure
+// without a credential is charged to the peer. A failure with a
+// credential is charged to that credential, and to the peer only the
+// first time the credential fails within the window: a client that
+// rotates credentials still exhausts the peer budget, while one
+// repeatedly failing credential cannot. Only called on auth failure —
+// successful requests skip TierAuth entirely (TierProxy covers them).
+// Loopback peers are exempt.
 func (p *Proxy) recordAuthFailure(r *http.Request) {
-	if p.rateLimit != nil && !isLoopbackPeer(r) {
+	if p.rateLimit == nil || isLoopbackPeer(r) {
+		return
+	}
+	credKey := mitmCredKey(r)
+	if credKey == "" {
+		p.rateLimit.Allow(ratelimit.TierAuth, mitmIPKey(r))
+		return
+	}
+	if d := p.rateLimit.Allow(ratelimit.TierAuth, credKey); d.Allow && d.Remaining == d.Limit-1 {
 		p.rateLimit.Allow(ratelimit.TierAuth, mitmIPKey(r))
 	}
 }
