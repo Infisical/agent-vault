@@ -95,6 +95,11 @@ export default function InstanceSettingsTab() {
   const [testEmailError, setTestEmailError] = useState("");
   const [testEmailSuccess, setTestEmailSuccess] = useState("");
 
+  const [webhookConfigured, setWebhookConfigured] = useState(false);
+  const [testWebhookSending, setTestWebhookSending] = useState(false);
+  const [testWebhookError, setTestWebhookError] = useState("");
+  const [testWebhookSuccess, setTestWebhookSuccess] = useState("");
+
   const [rateLimit, setRateLimit] = useState<RateLimitState | null>(null);
   const [rlProfile, setRlProfile] = useState("default");
   const [rlAdvanced, setRlAdvanced] = useState(false);
@@ -113,6 +118,7 @@ export default function InstanceSettingsTab() {
         setInviteOnly(data.invite_only ?? false);
         setDomains(data.allowed_email_domains || []);
         setSmtpConfigured(data.smtp_configured ?? false);
+        setWebhookConfigured(data.webhook_configured ?? false);
         if (data.rate_limit) {
           setRateLimit(data.rate_limit as RateLimitState);
           setRlProfile(data.rate_limit.profile || "default");
@@ -198,6 +204,25 @@ export default function InstanceSettingsTab() {
       setTestEmailError("Network error.");
     } finally {
       setTestEmailSending(false);
+    }
+  }
+
+  async function handleSendTestWebhook() {
+    setTestWebhookSending(true);
+    setTestWebhookError("");
+    setTestWebhookSuccess("");
+    try {
+      const resp = await apiFetch("/v1/admin/notify/webhook/test", { method: "POST" });
+      const data = await resp.json();
+      if (resp.ok) {
+        setTestWebhookSuccess("Test webhook sent.");
+      } else {
+        setTestWebhookError(data.error || "Failed to send test webhook.");
+      }
+    } catch {
+      setTestWebhookError("Network error.");
+    } finally {
+      setTestWebhookSending(false);
     }
   }
 
@@ -625,6 +650,46 @@ export default function InstanceSettingsTab() {
               {testEmailSuccess && (
                 <div className="bg-success-bg border border-success/20 rounded-lg p-3 text-sm text-success">
                   {testEmailSuccess}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </section>
+
+      <section className="mb-8">
+        <div className="border border-border rounded-xl bg-surface p-5">
+          <h3 className="text-sm font-semibold text-text mb-1">
+            Test Webhook
+          </h3>
+          <p className="text-sm text-text-muted mb-4">
+            Send a synthetic proposal notification to verify your outbound webhook configuration is working.
+          </p>
+
+          {!webhookConfigured ? (
+            <p className="text-sm text-text-dim">
+              Webhook notifications are not configured. Set the <code className="text-text-muted">AGENT_VAULT_NOTIFY_WEBHOOK_URL</code> environment variable to enable them.
+            </p>
+          ) : (
+            <>
+              <div className="flex gap-2 mb-4 max-w-md">
+                <Button
+                  onClick={handleSendTestWebhook}
+                  loading={testWebhookSending}
+                  variant="secondary"
+                >
+                  Send test webhook
+                </Button>
+              </div>
+
+              {testWebhookError && (
+                <div className="bg-danger-bg border border-danger/20 rounded-lg p-3 text-sm text-danger">
+                  {testWebhookError}
+                </div>
+              )}
+              {testWebhookSuccess && (
+                <div className="bg-success-bg border border-success/20 rounded-lg p-3 text-sm text-success">
+                  {testWebhookSuccess}
                 </div>
               )}
             </>
