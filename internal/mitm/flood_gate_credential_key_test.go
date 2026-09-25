@@ -1,10 +1,16 @@
 package mitm
 
 import (
+	"encoding/base64"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/ratelimit"
 )
 
@@ -59,5 +65,94 @@ func TestConnectFloodGateKeysOnCredential(t *testing.T) {
 	}
 	if code := badConnect(""); code != http.StatusTooManyRequests {
 		t.Fatalf("unauthenticated flood: want 429 after budget exhausted, got %d", code)
+	}
+}
+
+// Keying on the credential alone would let an unauthenticated client
+// dodge the gate by sending a fresh Proxy-Authorization value on every
+// attempt. Every newly seen failing credential must still count against
+// the peer, so a rotating-credential flood from one peer is gated.
+func TestConnectFloodGateGatesRotatingCredentials(t *testing.T) {
+	cfg := ratelimit.DefaultsFor(ratelimit.ProfileDefault)
+	cfg.Tiers[ratelimit.TierAuth].Max = 3
+	p := &Proxy{rateLimit: ratelimit.New(cfg)}
+
+	connect := func(proxyAuth string) int {
+		r := httptest.NewRequest(http.MethodConnect, "http://github.com:443", nil)
+		r.RemoteAddr = "203.0.113.7:5555"
+		r.Header.Set("Proxy-Authorization", proxyAuth)
+		w := httptest.NewRecorder()
+		p.handleConnect(w, r)
+		return w.Code
+	}
+
+	for i := 0; i < 3; i++ {
+		if code := connect(fmt.Sprintf("Basic !!!rotating-%d!!!", i)); code == http.StatusTooManyRequests {
+			t.Fatalf("attempt %d: gated before the peer budget was spent", i+1)
+		}
+	}
+	if code := connect("Basic !!!rotating-fresh!!!"); code != http.StatusTooManyRequests {
+		t.Fatalf("rotating-credential flood: want 429 once the peer budget is spent, got %d", code)
+	}
+}
+
+// Forward-proxy (absolute-form) requests share the gate with CONNECT:
+// one credential's failures from a shared peer must not 429 a different,
+// valid credential arriving from that same peer, while rotating bad
+// credentials from the peer are still gated.
+func TestForwardFloodGateKeysOnCredential(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	upHost, upPort, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+		upHost: {result: &brokercore.InjectResult{Passthrough: true}},
+	}}
+	proxyURL, _, p := setupProxy(t, sr, cp)
+
+	cfg := ratelimit.DefaultsFor(ratelimit.ProfileDefault)
+	cfg.Tiers[ratelimit.TierAuth].Max = 3
+	p.rateLimit = ratelimit.New(cfg)
+	overrideRemoteAddr(p, "203.0.113.7:5555") // one ingress IP for everyone
+
+	forward := func(token string) int {
+		conn := dialProxy(t, proxyURL)
+		defer conn.Close()
+		resp := writeRawRequestLine(t, conn,
+			fmt.Sprintf("GET http://%s:%s/x HTTP/1.1", upHost, upPort),
+			map[string]string{
+				"Host":                upstream.Listener.Addr().String(),
+				"Proxy-Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(token+":")),
+			})
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// Client A burns its whole budget with one bad credential.
+	for i := 0; i < 3; i++ {
+		if code := forward("av_sess_bad_a"); code == http.StatusTooManyRequests {
+			t.Fatalf("attempt %d: client A gated before its budget was spent", i+1)
+		}
+	}
+	if code := forward("av_sess_bad_a"); code != http.StatusTooManyRequests {
+		t.Fatalf("exhausted credential: want 429, got %d", code)
+	}
+	// A valid credential from the same peer is unaffected.
+	if code := forward("av_sess_ok"); code != http.StatusOK {
+		t.Fatalf("valid credential from the same peer: want 200, got %d", code)
+	}
+	// Rotating bad credentials from the peer still hit the peer budget
+	// (A's first failure already counted once against it).
+	for i := 0; i < 2; i++ {
+		if code := forward(fmt.Sprintf("av_sess_rotating_%d", i)); code == http.StatusTooManyRequests {
+			t.Fatalf("rotating attempt %d: gated before the peer budget was spent", i+1)
+		}
+	}
+	if code := forward("av_sess_rotating_fresh"); code != http.StatusTooManyRequests {
+		t.Fatalf("rotating-credential flood: want 429 once the peer budget is spent, got %d", code)
 	}
 }
