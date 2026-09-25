@@ -33,6 +33,7 @@ type Service struct {
 	Path          string         `yaml:"path,omitempty" json:"path,omitempty"`
 	Port          *int           `yaml:"port,omitempty" json:"-"`
 	Enabled       *bool          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Methods       []string       `yaml:"methods,omitempty" json:"methods,omitempty"`
 	Auth          Auth           `yaml:"auth" json:"auth"`
 	Substitutions []Substitution `yaml:"substitutions,omitempty" json:"substitutions,omitempty"`
 }
@@ -73,6 +74,57 @@ type Substitution struct {
 // so services persisted before this field existed stay live after upgrade.
 func (s *Service) IsEnabled() bool {
 	return s.Enabled == nil || *s.Enabled
+}
+
+// SupportedMethods lists the HTTP methods a service's Methods field may
+// contain.
+var SupportedMethods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
+
+// NormalizeAndValidateMethods uppercases s.Methods in place, then checks
+// each value against SupportedMethods and rejects duplicates. A nil
+// Methods field means "all methods"; an explicitly-empty list is
+// rejected so `methods: []` can't silently mean "allow everything".
+func (s *Service) NormalizeAndValidateMethods() error {
+	if s.Methods == nil {
+		return nil
+	}
+	if len(s.Methods) == 0 {
+		return fmt.Errorf("methods: must not be an empty list (omit the field to allow all methods)")
+	}
+	allowed := make(map[string]bool, len(SupportedMethods))
+	for _, m := range SupportedMethods {
+		allowed[m] = true
+	}
+	seen := make(map[string]bool, len(s.Methods))
+	for i, m := range s.Methods {
+		u := strings.ToUpper(strings.TrimSpace(m))
+		if !allowed[u] {
+			return fmt.Errorf("methods: unsupported method %q (supported: %s)", m, strings.Join(SupportedMethods, ", "))
+		}
+		if seen[u] {
+			return fmt.Errorf("methods: duplicate method %q", u)
+		}
+		seen[u] = true
+		s.Methods[i] = u
+	}
+	return nil
+}
+
+// AllowsMethod reports whether the service permits the given request
+// method. A service with no Methods list permits all methods. The
+// comparison is case-sensitive against the uppercase-normalized list,
+// so a non-canonical-case request method fails closed rather than being
+// coerced into a match.
+func (s *Service) AllowsMethod(method string) bool {
+	if len(s.Methods) == 0 {
+		return true
+	}
+	for _, m := range s.Methods {
+		if m == method {
+			return true
+		}
+	}
+	return false
 }
 
 // Auth describes how credentials are attached for a broker service.
@@ -371,6 +423,11 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
 		if err := ValidatePort(s.Port); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
+		}
+		// Normalize through the slice element, not the range copy, so the
+		// uppercased methods persist.
+		if err := cfg.Services[i].NormalizeAndValidateMethods(); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
 		if err := s.Auth.Validate(); err != nil {
