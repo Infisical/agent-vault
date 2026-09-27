@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Infisical/agent-vault/internal/approval"
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/ca"
 	"github.com/Infisical/agent-vault/internal/ratelimit"
@@ -68,7 +69,7 @@ type fakeInjectResult struct {
 	err    error
 }
 
-func (f *fakeCredProvider) Inject(_ context.Context, _, targetHost string, targetPort int, _ string) (*brokercore.InjectResult, error) {
+func (f *fakeCredProvider) Inject(_ context.Context, _, targetHost string, targetPort int, _ string, _ ...approval.Request) (*brokercore.InjectResult, error) {
 	host := targetHost
 	if h, _, err := net.SplitHostPort(targetHost); err == nil {
 		host = h

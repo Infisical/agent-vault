@@ -1,0 +1,22 @@
+---
+title: "Approve individual API requests"
+description: "Require a vault admin to release each request before Agent Vault injects a credential."
+---
+
+Use request approval when an agent may call a service but a human must authorize each call, such as a production deployment endpoint. This is a per-service, opt-in setting. It works for HTTP and HTTPS requests passing through Agent Vault's transparent proxy.
+
+## Enable approval
+
+1. Open the vault's **Services** page and edit the service.
+2. Turn on **Approve every request** and save.
+3. Keep the vault's **Request approvals** page open while the agent works. It refreshes automatically and the sidebar shows a pending count.
+
+The setting is also available as `"require_approval": true` on a service through the admin service API. A human admin session must create or change approval-protected service rules. Agents can propose changes for human review. Keep the human session token and browser separate from the agent runtime.
+
+## Review a request
+
+When a request matches the service, the proxy holds that specific connection and queues its method, host, path, service, and agent ID for review. The reviewer must be a signed-in human vault admin. **Approve once** releases only that held request; **Reject** stops it. A second decision for the same request is refused. If the agent disconnects, the server restarts, or no one decides within two minutes, the request is not forwarded. No credential is read or injected before approval.
+
+The approval page does **not** show query parameters, headers, or request body content. Reviewers authorize the displayed endpoint and method, not the semantic contents of a deployment payload. Use a separate deployment review when the payload itself needs verification. The proxy can still forward a streamed body after approval, so this feature does not attest to body bytes. Keep a separate host/network boundary for agents that must not connect around the proxy.
+
+Pending decisions live only in server memory. They are not durable approvals or reusable tokens. A service rule changed while a request waits invalidates that request's approval. Approved calls follow the usual request log behavior; rejected and timed-out calls are logged with approval error codes.

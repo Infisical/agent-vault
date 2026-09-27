@@ -393,6 +393,9 @@ func (s *Server) handleServicesUpsert(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusInternalServerError, "Failed to parse services")
 		return
 	}
+	if !approvalConfigWriteAllowed(w, r, existing, req.Services) {
+		return
+	}
 
 	incomingSlice := splitInlineHosts(req.Services)
 	// rebindStale=false: direct admin upsert must not silently rewrite a
@@ -472,6 +475,9 @@ func (s *Server) handleServiceRemove(w http.ResponseWriter, r *http.Request) {
 	services, err := s.loadServices(ctx, ns.ID)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to parse services")
+		return
+	}
+	if !approvalConfigWriteAllowed(w, r, services, nil) {
 		return
 	}
 	if services == nil {
@@ -562,6 +568,9 @@ func (s *Server) handleServicePatch(w http.ResponseWriter, r *http.Request) {
 	services, err := s.loadServices(ctx, ns.ID)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to parse services")
+		return
+	}
+	if !approvalConfigWriteAllowed(w, r, services, nil) {
 		return
 	}
 	if services == nil {
@@ -655,6 +664,14 @@ func (s *Server) handleServicesSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer unlock()
+	existing, err := s.loadServices(ctx, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to parse services")
+		return
+	}
+	if !approvalConfigWriteAllowed(w, r, existing, services) {
+		return
+	}
 
 	if _, err := s.store.SetBrokerConfig(ctx, ns.ID, string(servicesJSON)); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to set services")
@@ -685,6 +702,14 @@ func (s *Server) handleServicesClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer unlock()
+	existing, err := s.loadServices(ctx, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to parse services")
+		return
+	}
+	if !approvalConfigWriteAllowed(w, r, existing, nil) {
+		return
+	}
 
 	if _, err := s.store.SetBrokerConfig(ctx, ns.ID, "[]"); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Failed to clear services")
@@ -692,6 +717,26 @@ func (s *Server) handleServicesClear(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonOK(w, map[string]interface{}{"vault": name, "cleared": true})
+}
+
+// An agent with an admin grant must not be able to weaken or route around
+// approval rules by changing service matchers. Once a vault has protected
+// services, all direct service writes require a human user session. Agents
+// can still submit proposals for human review.
+func approvalConfigWriteAllowed(w http.ResponseWriter, r *http.Request, existing, incoming []broker.Service) bool {
+	sess := sessionFromContext(r.Context())
+	if sess != nil && sess.UserID != "" {
+		return true
+	}
+	for _, services := range [][]broker.Service{existing, incoming} {
+		for _, service := range services {
+			if service.RequireApproval {
+				jsonError(w, http.StatusForbidden, "A human user session is required to change approval-protected services")
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (s *Server) handleServiceCatalog(w http.ResponseWriter, r *http.Request) {

@@ -17,11 +17,93 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Infisical/agent-vault/internal/approval"
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/netguard"
 	"github.com/Infisical/agent-vault/internal/ratelimit"
 	"github.com/Infisical/agent-vault/internal/requestlog"
 )
+
+type approvalTestProvider struct{ manager *approval.Manager }
+
+func (p approvalTestProvider) Inject(ctx context.Context, vaultID, _ string, _ int, _ string, request ...approval.Request) (*brokercore.InjectResult, error) {
+	if len(request) != 1 {
+		return nil, approval.ErrUnavailable
+	}
+	req := request[0]
+	req.VaultID = vaultID
+	req.Service = "production"
+	if err := p.manager.Wait(ctx, req); err != nil {
+		return &brokercore.InjectResult{MatchedName: "production"}, err
+	}
+	return &brokercore.InjectResult{MatchedName: "production", RequireApproval: true,
+		Headers: map[string]string{"Authorization": "Bearer fake-secret"}}, nil
+}
+
+func TestMITMRequestApprovalBlocksUpstreamUntilDecision(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Header.Get("Authorization") != "Bearer fake-secret" {
+			t.Error("credential was not injected after approval")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	m := approval.NewManager()
+	scope := &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"}
+	proxyURL, roots, _ := setupProxy(t, validTokenResolver("av_sess_ok", scope), approvalTestProvider{manager: m})
+	client := newTrustingClient(proxyURL, url.User("av_sess_ok"), roots)
+	request := func() <-chan int {
+		result := make(chan int, 1)
+		go func() {
+			response, err := client.Get(upstream.URL + "/deploy")
+			if err != nil {
+				result <- 0
+				return
+			}
+			defer response.Body.Close()
+			result <- response.StatusCode
+		}()
+		return result
+	}
+	waitPending := func() approval.Request {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if items := m.List("v1"); len(items) == 1 {
+				return items[0]
+			}
+			time.Sleep(time.Millisecond)
+		}
+		t.Fatal("request did not reach approval queue")
+		return approval.Request{}
+	}
+	first := request()
+	id := waitPending().ID
+	if calls.Load() != 0 {
+		t.Fatal("upstream contacted before approval")
+	}
+	if err := m.Decide("v1", id, true); err != nil {
+		t.Fatal(err)
+	}
+	if status := <-first; status != http.StatusNoContent {
+		t.Fatalf("approved status = %d", status)
+	}
+	second := request()
+	id = waitPending().ID
+	if calls.Load() != 1 {
+		t.Fatal("second request reused first approval")
+	}
+	if err := m.Decide("v1", id, false); err != nil {
+		t.Fatal(err)
+	}
+	if status := <-second; status != http.StatusForbidden {
+		t.Fatalf("rejected status = %d", status)
+	}
+	if calls.Load() != 1 {
+		t.Fatal("rejected request reached upstream")
+	}
+}
 
 // recordingSink captures records from the forward path so tests can
 // assert the audit log shape end-to-end.

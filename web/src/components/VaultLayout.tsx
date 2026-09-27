@@ -10,6 +10,7 @@ const VAULT_TABS = [
   "services",
   "credentials",
   "proposals",
+  "request-approvals",
   "skills",
   "logs",
   "users",
@@ -35,6 +36,7 @@ export default function VaultLayout() {
   const [isExiting, setIsExiting] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
   const [pendingCount, setPendingCount] = useState(0);
+  const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
   const [discoveredCount, setDiscoveredCount] = useState(0);
 
   // The Members section (Users / Agents / Tokens) is only meaningful at
@@ -43,6 +45,22 @@ export default function VaultLayout() {
   // on the people/agents/tokens lists, and the underlying GET endpoints
   // require `member`+ anyway.
   const showMembersNav = vaultContext.vault_role !== "proxy";
+
+  useEffect(() => {
+    if (vaultContext.vault_role !== "admin") return;
+    async function fetchApprovalCount() {
+      try {
+        const resp = await fetch(`/v1/vaults/${encodeURIComponent(vaultContext.vault_name)}/request-approvals`);
+        if (resp.ok) {
+          const data = await resp.json();
+          setPendingApprovalCount((data.approvals ?? []).length);
+        }
+      } catch { /* Retain the last count until the next poll. */ }
+    }
+    fetchApprovalCount();
+    const interval = setInterval(fetchApprovalCount, 5_000);
+    return () => clearInterval(interval);
+  }, [vaultContext.vault_name, vaultContext.vault_role]);
 
   useEffect(() => {
     async function fetchPendingCount() {
@@ -121,6 +139,12 @@ export default function VaultLayout() {
         </svg>
       ),
     },
+    ...(vaultContext.vault_role === "admin" ? [{
+      id: "request-approvals" as VaultTab,
+      label: "Request approvals",
+      badge: pendingApprovalCount > 0 ? pendingApprovalCount : undefined,
+      icon: <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m8 12 3 3 5-6"/></svg>,
+    }] : []),
     {
       id: "skills",
       label: "Skills",

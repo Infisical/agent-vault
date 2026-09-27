@@ -520,6 +520,9 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		jsonError(w, http.StatusInternalServerError, "Failed to load existing services")
 		return
 	}
+	if !approvalConfigWriteAllowed(w, r, existingServices, nil) {
+		return
+	}
 	// At apply time both error modes are state conflicts: surface
 	// not-found as 409 with a "reject manually" framing instead of 404.
 	proposedServices, err = normalizeProposalServices(proposedServices, existingServices)
