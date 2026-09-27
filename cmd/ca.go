@@ -19,16 +19,16 @@ import (
 // case). Returns (nil, 0, false, nil) on 404 (MITM disabled), or an error
 // for any other failure. Body is always drained before returning so the
 // underlying connection can be pooled.
-func fetchMITMCA(addr string) (pem []byte, port int, enabled bool, err error) {
+func fetchMITMCA(addr string) (pem []byte, port int, enabled bool, advertised string, err error) {
 	resp, err := httpClient.Get(addr + "/v1/mitm/ca.pem")
 	if err != nil {
-		return nil, 0, false, fmt.Errorf("could not reach server at %s: %w", addr, err)
+		return nil, 0, false, "", fmt.Errorf("could not reach server at %s: %w", addr, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, 0, false, fmt.Errorf("reading response: %w", err)
+		return nil, 0, false, "", fmt.Errorf("reading response: %w", err)
 	}
 	switch resp.StatusCode {
 	case http.StatusOK:
@@ -38,11 +38,11 @@ func fetchMITMCA(addr string) (pem []byte, port int, enabled bool, err error) {
 				port = n
 			}
 		}
-		return body, port, true, nil
+		return body, port, true, resp.Header.Get("X-Agent-Vault-MITM-Addr"), nil
 	case http.StatusNotFound:
-		return nil, 0, false, nil
+		return nil, 0, false, "", nil
 	default:
-		return nil, 0, false, fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, 0, false, "", fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 }
 
@@ -72,7 +72,7 @@ Examples:
 		addr := resolveAddress(cmd)
 		output, _ := cmd.Flags().GetString("output")
 
-		pem, _, enabled, err := fetchMITMCA(addr)
+		pem, _, enabled, _, err := fetchMITMCA(addr)
 		if err != nil {
 			return err
 		}

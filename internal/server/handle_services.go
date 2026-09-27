@@ -282,8 +282,52 @@ func (s *Server) handleServicesGet(w http.ResponseWriter, r *http.Request) {
 	if services == nil {
 		services = []broker.Service{}
 	}
+	if s.vaultRole(r, ns.ID) == "proxy" {
+		for i := range services {
+			services[i].Filter = nil
+			services[i].FilterOp = broker.FilterOpOmit
+		}
+	}
 
 	jsonOK(w, map[string]interface{}{"vault": name, "services": services})
+}
+
+func (s *Server) vaultRole(r *http.Request, vaultID string) string {
+	sess := sessionFromContext(r.Context())
+	if sess == nil {
+		return ""
+	}
+	if sess.VaultID != "" {
+		return sess.VaultRole
+	}
+	actor, err := s.actorFromSession(r.Context(), sess)
+	if err != nil || actor == nil {
+		return ""
+	}
+	role, err := s.store.GetVaultRole(r.Context(), actor.ID, vaultID)
+	if err != nil {
+		return ""
+	}
+	return role
+}
+
+func (s *Server) authorizePolicyVaults(w http.ResponseWriter, r *http.Request, current string, services []broker.Service) error {
+	seen := map[string]bool{}
+	for _, svc := range services {
+		if svc.Filter == nil || svc.Filter.PolicyVault == "" || svc.Filter.PolicyVault == current || seen[svc.Filter.PolicyVault] {
+			continue
+		}
+		seen[svc.Filter.PolicyVault] = true
+		other, err := s.store.GetVault(r.Context(), svc.Filter.PolicyVault)
+		if err != nil || other == nil {
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("policy vault %q not found", svc.Filter.PolicyVault))
+			return fmt.Errorf("policy vault")
+		}
+		if _, err := s.requireVaultAdmin(w, r, other.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // handleServicesCredentialUsage returns {name, host} for every service
@@ -404,6 +448,9 @@ func (s *Server) handleServicesUpsert(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid services: %v", err))
 		return
 	}
+	if err := s.authorizePolicyVaults(w, r, name, incomingSlice); err != nil {
+		return
+	}
 
 	// Index existing by canonical Name for upsert.
 	byName := make(map[string]int, len(existing))
@@ -414,6 +461,9 @@ func (s *Server) handleServicesUpsert(w http.ResponseWriter, r *http.Request) {
 	var upserted []string
 	for _, svc := range incomingSlice {
 		if idx, ok := byName[svc.Name]; ok {
+			if svc.FilterOp == broker.FilterOpOmit {
+				svc.Filter = existing[idx].Filter
+			}
 			existing[idx] = svc
 		} else {
 			byName[svc.Name] = len(existing)
@@ -640,6 +690,9 @@ func (s *Server) handleServicesSet(w http.ResponseWriter, r *http.Request) {
 	cfg := broker.Config{Vault: name, Services: services}
 	if err := broker.Validate(&cfg); err != nil {
 		jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid services: %v", err))
+		return
+	}
+	if err := s.authorizePolicyVaults(w, r, name, services); err != nil {
 		return
 	}
 

@@ -256,6 +256,27 @@ Substitutions and auth are independent. A service can use either, both, or neith
   substitutions; to clear them, delete and recreate the service.
 </Warning>
 
+## Filters
+
+A service may include a `filter` block. Agent Vault then reverse-proxies the live request to `filter.url` before it decrypts that service's destination credential. The sidecar decides what happens next and returns an ordinary HTTP response. To send the original request onward, it calls back through the MITM address in `X-Agent-Vault-Continuation-Proxy` with the `X-Agent-Vault-Continuation-Token` (`av_cont_` plus a 30-second JWT). When `policy_vault` is set, the hop also carries `X-Agent-Vault-Policy-Token` (`av_pol_`), which selects that vault until the token expires.
+
+```yaml
+services:
+  - name: github-push
+    host: github.com
+    path: /*/git-receive-pack
+    auth:
+      type: bearer
+      token: GITHUB_PAT
+    filter:
+      url: http://127.0.0.1:9
+      policy_vault: dev
+```
+
+`url` is `http` or `https`, with no userinfo, query, or fragment. Cleartext HTTP is limited to a literal loopback address unless `allow_insecure_private_http` is set. `ca` is a PEM bundle used only for `https`, with no fallback to system roots. `vault service add` preserves an omitted filter and clears an explicit null. `vault service set`, `vault service clear`, and the interactive replace write the file as given. Proposals cannot set, clear, or delete a filtered service. A proposal that would add an unfiltered matcher able to win or tie a filtered one is rejected. Proxy-role reads and `/discover` omit the filter block. The services themselves stay visible.
+
+A sidecar denial is the sidecar's own HTTP response. Do not work around it. `502 filter_unreachable`, `502 filter_misconfigured`, and `504 filter_timeout` mean the hop itself failed and no destination credential was read.
+
 ## Matching rules
 
 The `host` pattern is the single matcher knob. It can carry just a hostname (`api.stripe.com`), a wildcard host (`*.github.com`), an inline path glob (`slack.com/api/*`), or a port-scoped form (`internal.corp.com:3000` or `internal.corp.com:3000/api/*`).

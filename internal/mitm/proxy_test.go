@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/ca"
 	"github.com/Infisical/agent-vault/internal/ratelimit"
@@ -66,6 +67,42 @@ type fakeCredProvider struct {
 type fakeInjectResult struct {
 	result *brokercore.InjectResult
 	err    error
+}
+
+func (f *fakeCredProvider) Match(ctx context.Context, vaultID, targetHost string, targetPort int, path string) (*brokercore.MatchResult, error) {
+	res, err := f.Inject(ctx, vaultID, targetHost, targetPort, path)
+	if err != nil {
+		return nil, err
+	}
+	if res != nil && res.Passthrough {
+		return &brokercore.MatchResult{Passthrough: true}, nil
+	}
+	svc := broker.Service{Host: targetHost}
+	if res != nil {
+		svc.Name = res.MatchedName
+		if res.MatchedHost != "" {
+			svc.Host = res.MatchedHost
+		}
+		svc.Path = res.MatchedPath
+		svc.Port = res.MatchedPort
+	}
+	if svc.Port == nil && targetPort > 0 {
+		p := targetPort
+		svc.Port = &p
+	}
+	return &brokercore.MatchResult{Service: svc}, nil
+}
+
+func (f *fakeCredProvider) Resolve(ctx context.Context, vaultID string, svc broker.Service) (*brokercore.InjectResult, error) {
+	port := 0
+	if svc.Port != nil {
+		port = *svc.Port
+	}
+	host := svc.Host
+	if host == "" {
+		host = "unknown"
+	}
+	return f.Inject(ctx, vaultID, host, port, svc.Path)
 }
 
 func (f *fakeCredProvider) Inject(_ context.Context, _, targetHost string, targetPort int, _ string) (*brokercore.InjectResult, error) {

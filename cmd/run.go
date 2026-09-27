@@ -6,7 +6,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
-	"time"
 	"fmt"
 	"net"
 	"net/http"
@@ -17,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Infisical/agent-vault/internal/isolation"
 	"github.com/Infisical/agent-vault/internal/session"
@@ -548,7 +548,7 @@ func requireMITMEnv(env []string, addr, token, vault, caPath string) ([]string, 
 // proxy URL. The listener handles CONNECT for https://
 // upstreams and absolute-form forward-proxy requests for http://.
 func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]string, int, bool, error) {
-	pem, port, enabled, err := fetchMITMCA(addr)
+	pem, port, enabled, advertised, err := fetchMITMCA(addr)
 	if err != nil {
 		return env, 0, false, err
 	}
@@ -581,10 +581,20 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 		return env, 0, false, fmt.Errorf("write CA: %w", err)
 	}
 
-
 	env = stripEnvKeys(env, mitmInjectedKeys)
+	proxyHost := resolveMITMHost(addr)
+	if u, err := url.Parse(advertised); err == nil && u.Host != "" {
+		if h := u.Hostname(); h != "" {
+			proxyHost = h
+		}
+		if rawPort := u.Port(); rawPort != "" {
+			if n, err := strconv.Atoi(rawPort); err == nil && n > 0 {
+				port = n
+			}
+		}
+	}
 	env = append(env, isolation.BuildProxyEnv(isolation.ProxyEnvParams{
-		Host:   resolveMITMHost(addr),
+		Host:   proxyHost,
 		Port:   port,
 		Token:  token,
 		Vault:  vault,

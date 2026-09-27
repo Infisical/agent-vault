@@ -182,9 +182,12 @@ WSS and WS connections also go through the proxy with credential injection — i
 - 401: invalid or expired token
 - 403 with `proposal_hint`: host not allowed — create a proposal
 - 403 `service_disabled`: host is configured but disabled by operator — tell the user
+- 403 from a filtered service: the sidecar refused the request. Relay that response. Do not retry with a different host, strip the filter, or ask for the destination credential.
 - 502: missing credential or upstream unreachable
+- 502 `filter_unreachable` / `filter_misconfigured`: the service filter could not run. Tell the user. Do not call the origin directly.
 - 502 `oauth_not_connected`: OAuth credential approved but not yet connected — tell the user to complete the connection in the dashboard
 - 502 `oauth_refresh_failed`: OAuth token expired and refresh failed — tell the user to reconnect in the dashboard
+- 504 `filter_timeout`: the filter sidecar did not answer in time. Tell the user.
 
 ## Rules
 

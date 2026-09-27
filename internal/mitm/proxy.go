@@ -28,8 +28,8 @@ package mitm
 
 import (
 	"context"
-	"log/slog"
 	"crypto/tls"
+	"log/slog"
 	"net"
 	"net/http"
 	"sync/atomic"
@@ -57,6 +57,8 @@ type Proxy struct {
 	logSink          requestlog.Sink     // never nil (Nop default); shared with the HTTP server
 	maxResponseBytes int64               // 0 = unlimited
 	maxRequestBytes  int64
+	hop              *brokercore.StoreHopMinter
+	filterProxyURL   string
 }
 
 // Options carries the dependencies a Proxy needs. BaseURL is the
@@ -75,6 +77,10 @@ type Options struct {
 	LogSink          requestlog.Sink // nil → Nop
 	MaxResponseBytes int64           // 0 = unlimited (default); >0 = cap in bytes
 	MaxRequestBytes  int64           // 0 → DefaultMaxRequestBytes (1 GiB)
+	// Hop mints continuation and policy JWTs. FilterProxyURL is the
+	// callback address written on the hop (AGENT_VAULT_MITM_ADDR).
+	Hop            *brokercore.StoreHopMinter
+	FilterProxyURL string
 }
 
 // New builds a Proxy bound to addr. The returned Proxy does not begin
@@ -111,6 +117,8 @@ func New(addr string, opts Options) *Proxy {
 		logSink:          sink,
 		maxResponseBytes: opts.MaxResponseBytes, // 0 = unlimited
 		maxRequestBytes:  maxReq,
+		hop:              opts.Hop,
+		filterProxyURL:   opts.FilterProxyURL,
 	}
 
 	p.httpServer = &http.Server{
@@ -123,6 +131,9 @@ func New(addr string, opts Options) *Proxy {
 
 // Addr returns the listener address the Proxy was configured with.
 func (p *Proxy) Addr() string { return p.httpServer.Addr }
+
+// AdvertisedURL is the MITM address sidecars and vault run should dial.
+func (p *Proxy) AdvertisedURL() string { return p.filterProxyURL }
 
 // RootPEM returns the root CA certificate in PEM form. Safe for public
 // distribution — clients install this into trust stores to validate the
