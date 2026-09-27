@@ -45,20 +45,21 @@ import (
 // Proxy is a transparent MITM proxy. It is safe to start at most once;
 // reuse across Shutdown is not supported.
 type Proxy struct {
-	ca               ca.Provider
-	sessions         brokercore.SessionResolver
-	creds            brokercore.CredentialProvider
-	httpServer       *http.Server
-	upstream         *http.Transport
-	isListening      atomic.Bool
-	baseURL          string // externally-reachable control-plane URL for help links
-	logger           *slog.Logger
-	rateLimit        *ratelimit.Registry // shared with the HTTP server; nil = no-op
-	logSink          requestlog.Sink     // never nil (Nop default); shared with the HTTP server
-	maxResponseBytes int64               // 0 = unlimited
-	maxRequestBytes  int64
-	hop              *brokercore.StoreHopMinter
-	filterProxyURL   string
+	ca                  ca.Provider
+	sessions            brokercore.SessionResolver
+	creds               brokercore.CredentialProvider
+	httpServer          *http.Server
+	upstream            *http.Transport
+	isListening         atomic.Bool
+	baseURL             string // externally-reachable control-plane URL for help links
+	logger              *slog.Logger
+	rateLimit           *ratelimit.Registry // shared with the HTTP server; nil = no-op
+	logSink             requestlog.Sink     // never nil (Nop default); shared with the HTTP server
+	maxResponseBytes    int64               // 0 = unlimited
+	maxRequestBytes     int64
+	hop                 *brokercore.StoreHopMinter
+	filterProxyURL      string
+	filterProxyExplicit bool
 }
 
 // Options carries the dependencies a Proxy needs. BaseURL is the
@@ -78,9 +79,13 @@ type Options struct {
 	MaxResponseBytes int64           // 0 = unlimited (default); >0 = cap in bytes
 	MaxRequestBytes  int64           // 0 → DefaultMaxRequestBytes (1 GiB)
 	// Hop mints continuation and policy JWTs. FilterProxyURL is the
-	// callback address written on the hop (AGENT_VAULT_MITM_ADDR).
-	Hop            *brokercore.StoreHopMinter
-	FilterProxyURL string
+	// callback address written on the hop. FilterProxyExplicit is set
+	// only when AGENT_VAULT_MITM_ADDR was configured. vault run uses
+	// that URL in place of the address it already reached; a derived
+	// URL stays on the hop and is not advertised to vault run.
+	Hop                 *brokercore.StoreHopMinter
+	FilterProxyURL      string
+	FilterProxyExplicit bool
 }
 
 // New builds a Proxy bound to addr. The returned Proxy does not begin
@@ -107,18 +112,19 @@ func New(addr string, opts Options) *Proxy {
 	}
 
 	p := &Proxy{
-		ca:               opts.CA,
-		sessions:         opts.Sessions,
-		creds:            opts.Credentials,
-		upstream:         upstream,
-		baseURL:          opts.BaseURL,
-		logger:           opts.Logger,
-		rateLimit:        opts.RateLimit,
-		logSink:          sink,
-		maxResponseBytes: opts.MaxResponseBytes, // 0 = unlimited
-		maxRequestBytes:  maxReq,
-		hop:              opts.Hop,
-		filterProxyURL:   opts.FilterProxyURL,
+		ca:                  opts.CA,
+		sessions:            opts.Sessions,
+		creds:               opts.Credentials,
+		upstream:            upstream,
+		baseURL:             opts.BaseURL,
+		logger:              opts.Logger,
+		rateLimit:           opts.RateLimit,
+		logSink:             sink,
+		maxResponseBytes:    opts.MaxResponseBytes, // 0 = unlimited
+		maxRequestBytes:     maxReq,
+		hop:                 opts.Hop,
+		filterProxyURL:      opts.FilterProxyURL,
+		filterProxyExplicit: opts.FilterProxyExplicit,
 	}
 
 	p.httpServer = &http.Server{
@@ -132,8 +138,12 @@ func New(addr string, opts Options) *Proxy {
 // Addr returns the listener address the Proxy was configured with.
 func (p *Proxy) Addr() string { return p.httpServer.Addr }
 
-// AdvertisedURL is the MITM address sidecars and vault run should dial.
+// AdvertisedURL is the MITM address written on a filter hop.
 func (p *Proxy) AdvertisedURL() string { return p.filterProxyURL }
+
+// AdvertisedURLExplicit reports whether AdvertisedURL came from
+// AGENT_VAULT_MITM_ADDR. vault run dials that host only then.
+func (p *Proxy) AdvertisedURLExplicit() bool { return p.filterProxyExplicit }
 
 // RootPEM returns the root CA certificate in PEM form. Safe for public
 // distribution — clients install this into trust stores to validate the

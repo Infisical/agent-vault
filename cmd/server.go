@@ -218,41 +218,44 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 		fmt.Fprintf(os.Stderr, "warning: transparent proxy disabled (CA init failed: %v); pass --mitm-port 0 to suppress\n", err)
 		return nil
 	}
-	advertised, err := advertisedMITMAddr(srv.BaseURL(), mitmPort)
+	advertised, explicit, err := advertisedMITMAddr(srv.BaseURL(), mitmPort)
 	if err != nil {
 		return err
 	}
 	srv.AttachMITM(mitm.New(
 		net.JoinHostPort(host, strconv.Itoa(mitmPort)),
 		mitm.Options{
-			CA:               caProv,
-			Sessions:         srv.SessionResolver(),
-			Credentials:      srv.CredentialProvider(),
-			BaseURL:          srv.BaseURL(),
-			Logger:           srv.Logger(),
-			RateLimit:        srv.RateLimit(),
-			LogSink:          srv.LogSink(),
-			MaxResponseBytes: maxRespBytes,
-			MaxRequestBytes:  maxReqBytes,
-			Hop:              &brokercore.StoreHopMinter{Vaults: db, DEK: masterKey},
-			FilterProxyURL:   advertised,
+			CA:                  caProv,
+			Sessions:            srv.SessionResolver(),
+			Credentials:         srv.CredentialProvider(),
+			BaseURL:             srv.BaseURL(),
+			Logger:              srv.Logger(),
+			RateLimit:           srv.RateLimit(),
+			LogSink:             srv.LogSink(),
+			MaxResponseBytes:    maxRespBytes,
+			MaxRequestBytes:     maxReqBytes,
+			Hop:                 &brokercore.StoreHopMinter{Vaults: db, DEK: masterKey},
+			FilterProxyURL:      advertised,
+			FilterProxyExplicit: explicit,
 		},
 	))
 	return nil
 }
 
-// advertisedMITMAddr is the URL written into hop callbacks and, when
-// AGENT_VAULT_MITM_ADDR is set, the address vault run should dial.
-// An explicit value is used as given after a parse check. When unset,
-// the host comes from the control-plane address and the port from the
-// MITM listener. A wildcard or missing host is advertised as loopback.
-func advertisedMITMAddr(controlAddr string, mitmPort int) (string, error) {
+// advertisedMITMAddr is the URL written into hop callbacks. The bool
+// is true only when AGENT_VAULT_MITM_ADDR is set, which is also when
+// vault run should dial that host instead of the one it used to reach
+// the API. An explicit value is used as given after a parse check.
+// When unset, the host comes from the control-plane address and the
+// port from the MITM listener. A wildcard or missing host is
+// advertised as loopback.
+func advertisedMITMAddr(controlAddr string, mitmPort int) (string, bool, error) {
 	if raw := strings.TrimSpace(os.Getenv("AGENT_VAULT_MITM_ADDR")); raw != "" {
 		u, err := url.Parse(raw)
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
-			return "", fmt.Errorf("AGENT_VAULT_MITM_ADDR %q is not an http(s) URL", raw)
+			return "", false, fmt.Errorf("AGENT_VAULT_MITM_ADDR %q is not an http(s) URL", raw)
 		}
-		return raw, nil
+		return raw, true, nil
 	}
 	host := ""
 	if u, err := url.Parse(controlAddr); err == nil {
@@ -261,7 +264,7 @@ func advertisedMITMAddr(controlAddr string, mitmPort int) (string, error) {
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
-	return "http://" + net.JoinHostPort(host, strconv.Itoa(mitmPort)), nil
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(mitmPort)), false, nil
 }
 
 // attachServerExtensions wires optional subsystems (MITM, Infisical) onto srv.

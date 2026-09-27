@@ -52,7 +52,13 @@ func CheckFilterPolicy(existing []broker.Service, proposed []Service) error {
 			continue
 		}
 		eff, ok := mergedByName[p.Name]
-		if !ok || eff.Filter != nil {
+		if !ok {
+			continue
+		}
+		if cur, had := byName[p.Name]; had && cur.Filter != nil && filterMatcherChanged(cur, eff) {
+			return fmt.Errorf("cannot change host, path, or port of filtered service %q", p.Name)
+		}
+		if eff.Filter != nil {
 			continue
 		}
 		for _, other := range merged {
@@ -65,4 +71,17 @@ func CheckFilterPolicy(existing []broker.Service, proposed []Service) error {
 		}
 	}
 	return nil
+}
+
+func filterMatcherChanged(cur, eff broker.Service) bool {
+	if cur.Host != eff.Host || cur.Path != eff.Path {
+		return true
+	}
+	if (cur.Port == nil) != (eff.Port == nil) {
+		return true
+	}
+	if cur.Port != nil && *cur.Port != *eff.Port {
+		return true
+	}
+	return false
 }

@@ -300,38 +300,42 @@ func globsOverlap(a, b string) bool {
 	if a == "" || b == "" {
 		return true
 	}
-	return globOverlap(a, b, 0, 0, 0)
-}
-
-func globOverlap(a, b string, i, j, depth int) bool {
-	if depth > 64 {
-		return false
+	// Exact intersection. A depth cap that returns "no overlap" would let a
+	// long star absorb enough of the other pattern to skip the check.
+	n, m := len(a), len(b)
+	dp := make([][]bool, n+1)
+	for i := range dp {
+		dp[i] = make([]bool, m+1)
 	}
-	for i < len(a) && j < len(b) && a[i] != '*' && b[j] != '*' {
-		if a[i] != b[j] {
-			return false
+	dp[n][m] = true
+	for i := n; i >= 0; i-- {
+		for j := m; j >= 0; j-- {
+			if i == n && j == m {
+				continue
+			}
+			if i == n {
+				dp[i][j] = onlyStars(b[j:])
+				continue
+			}
+			if j == m {
+				dp[i][j] = onlyStars(a[i:])
+				continue
+			}
+			switch {
+			case a[i] != '*' && b[j] != '*':
+				if a[i] == b[j] {
+					dp[i][j] = dp[i+1][j+1]
+				}
+			case a[i] == '*' && b[j] == '*':
+				dp[i][j] = dp[i+1][j] || dp[i][j+1] || dp[i+1][j+1]
+			case a[i] == '*':
+				dp[i][j] = dp[i+1][j] || dp[i][j+1]
+			default:
+				dp[i][j] = dp[i][j+1] || dp[i+1][j]
+			}
 		}
-		i++
-		j++
 	}
-	if i == len(a) && j == len(b) {
-		return true
-	}
-	if i == len(a) {
-		return onlyStars(b[j:])
-	}
-	if j == len(b) {
-		return onlyStars(a[i:])
-	}
-	if a[i] == '*' && b[j] == '*' {
-		return globOverlap(a, b, i+1, j, depth+1) ||
-			globOverlap(a, b, i, j+1, depth+1) ||
-			globOverlap(a, b, i+1, j+1, depth+1)
-	}
-	if a[i] == '*' {
-		return globOverlap(a, b, i+1, j, depth+1) || globOverlap(a, b, i, j+1, depth+1)
-	}
-	return globOverlap(a, b, i, j+1, depth+1) || globOverlap(a, b, i+1, j, depth+1)
+	return dp[0][0]
 }
 
 func onlyStars(s string) bool {

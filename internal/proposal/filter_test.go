@@ -59,4 +59,26 @@ func TestFilterPolicyDeleteAndShadow(t *testing.T) {
 	if len(merged) != 1 || merged[0].Filter == nil {
 		t.Fatalf("filter not preserved: %+v", merged)
 	}
+	narrow := []Service{{
+		Action: ActionSet,
+		Name:   "push",
+		Host:   "github.com",
+		Path:   "/nonexistent-org/*",
+		Auth:   &broker.Auth{Type: "bearer", Token: "GITHUB_PAT"},
+	}}
+	if err := CheckFilterPolicy(existing, narrow); err == nil {
+		t.Fatal("narrowing a filtered matcher should fail")
+	}
+	port := 443
+	withPort := []Service{{
+		Action: ActionSet,
+		Name:   "push",
+		Host:   "github.com",
+		Path:   "/*/git-receive-pack",
+		Port:   &port,
+		Auth:   &broker.Auth{Type: "bearer", Token: "GITHUB_PAT"},
+	}}
+	if err := CheckFilterPolicy(existing, withPort); err == nil {
+		t.Fatal("changing the port of a filtered service should fail")
+	}
 }

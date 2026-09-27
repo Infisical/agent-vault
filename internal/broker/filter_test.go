@@ -2,6 +2,7 @@ package broker
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -75,6 +76,12 @@ func TestShadowsFiltered(t *testing.T) {
 	wild := Service{Name: "wild", Host: "*.github.com", Filter: &Filter{URL: "http://127.0.0.1:9"}}
 	if !ShadowsFiltered(exactOverWild, wild) {
 		t.Fatal("exact host should shadow a wildcard filter")
+	}
+	org := strings.Repeat("a", 60)
+	long := Service{Name: "open", Host: "github.com", Path: "/" + org + "/*"}
+	receive := Service{Name: "push", Host: "github.com", Path: "/*/git-receive-pack", Filter: &Filter{URL: "http://127.0.0.1:9"}}
+	if !ShadowsFiltered(long, receive) {
+		t.Fatal("a long starred path should still overlap the filtered receive-pack path")
 	}
 }
 

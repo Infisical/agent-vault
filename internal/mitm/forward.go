@@ -273,6 +273,10 @@ func (p *Proxy) forwardRequest(
 	event.InvocationID = scope.InvocationID
 	if matched.Service.Filter != nil && matched.Service.Filter.URL != "" {
 		event.CredentialKeys = nil
+		// The hop is still charged above. Release the concurrency slot
+		// before waiting on the sidecar so the continuation can acquire
+		// its own slot instead of queueing behind this request.
+		enf.Release()
 		p.forwardFilter(w, r, scope, matched.Service, scheme, target, emit)
 		return
 	}

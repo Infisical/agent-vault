@@ -582,6 +582,10 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 	}
 
 	env = stripEnvKeys(env, mitmInjectedKeys)
+	// The server sends X-Agent-Vault-MITM-Addr only when
+	// AGENT_VAULT_MITM_ADDR is set. Otherwise keep the host this
+	// client used to reach the API. A derived callback URL is for
+	// filter sidecars, not for every vault run.
 	proxyHost := resolveMITMHost(addr)
 	if u, err := url.Parse(advertised); err == nil && u.Host != "" {
 		if h := u.Hostname(); h != "" {

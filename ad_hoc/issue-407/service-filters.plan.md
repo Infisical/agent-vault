@@ -239,6 +239,9 @@ Unset: hostname from `AGENT_VAULT_ADDR`, port from the MITM listener, scheme `ht
 If `AGENT_VAULT_ADDR` is unset, or its host is missing or a wildcard (`0.0.0.0`, `::`), advertise loopback.
 Compose with only `AGENT_VAULT_ADDR=http://agent-vault:14321` still yields `http://agent-vault:14322`.
 Set `AGENT_VAULT_MITM_ADDR` when the proxy must be advertised under a different name than the control plane (public UI vs docker DNS).
+`vault run` dials that host only when the variable is set.
+When it is unset, the CA response omits `X-Agent-Vault-MITM-Addr`, and `vault run` keeps the host it used to reach the API plus the port from `X-MITM-Port`.
+Hop headers still carry the derived callback URL.
 
 Document in [`.env.example`](../../.env.example), [environment variables](../../docs/self-hosting/environment-variables.mdx), and the env table in [CLI reference](../../docs/reference/cli.mdx), next to `AGENT_VAULT_ADDR`.
 
@@ -249,7 +252,8 @@ Document in [`.env.example`](../../.env.example), [environment variables](../../
 | Agent | Proposal that sets or clears `filter` (object or `null`) | Reject 400 |
 | Agent | Proposal that deletes a filtered service | Reject at create and apply |
 | Agent | Proposal whose effective `set` matcher can win or tie an existing filtered matcher | Reject 400 at create, 409 at apply ([section 3.1](#31-proposals-cannot-shadow-a-filtered-matcher)) |
-| Agent | Proposal that updates auth or host of a filtered service and keeps that service's filter | Preserve `filter` |
+| Agent | Proposal that updates auth of a filtered service and leaves host, path, and port unchanged | Preserve `filter` |
+| Agent | Proposal that changes host, path, or port of a filtered service | Reject at create and apply |
 | Agent | Proposal with `enabled: false` on a filtered service | Allow |
 | Admin | `vault service add` / POST upsert, `filter` omitted | Preserve |
 | Admin | `vault service add` with `filter:` or `filter: null` | Set or clear |
@@ -294,7 +298,8 @@ A conflict introduced between create and apply returns 409 and the proposal is n
 The error names both the proposed and the filtered service.
 
 The comparison runs on the effective merge.
-Updating a filtered service in a way that preserves its filter is not rejected.
+Updating a filtered service's auth, which preserves its filter, is not rejected.
+Changing its host, path, or port is rejected.
 Normalize inline host, path, and port forms first.
 
 Implement a reusable overlap helper using real matching semantics:
@@ -660,7 +665,7 @@ Continuation resolution still writes each injected header with `Set`, not `Add`,
 
 ### 7.3 WebSocket
 
-Reverse-proxy the upgrade and byte stream to the sidecar, preserving `Upgrade` / `Connection` on this hop.
+Reverse-proxy the upgrade and byte stream to the sidecar, preserving `Upgrade` / `Connection` on this hop, including a `101` response back to the client.
 The sidecar either rejects, or opens a new WebSocket via the exact continuation and bridges.
 
 Agent Vault verifies the continuation bind, then Resolve and the origin dial.
@@ -671,7 +676,8 @@ Unfiltered services keep today's direct origin WS path.
 
 ### 7.4 Dial policy
 
-A dedicated per-service transport.
+A dedicated per-request transport, closed (`CloseIdleConnections`) when the hop returns so idle connections are not left open.
+It is not reused across requests.
 It does not consult `AGENT_VAULT_ALLOW_PRIVATE_RANGES`.
 Where an origin may live has no bearing on where a policy sidecar may live.
 
@@ -902,6 +908,7 @@ This section does not restate the design.
     The sidecar returns its decision as the HTTP response to the hop.
     A policy token presented again before `exp` still verifies ([section 4.7](#47-minting)).
 26. Filtered ingress is rate-limited once.
+    The concurrency slot is released before the sidecar round trip so the continuation can acquire its own.
     Each continuation admission is charged.
     Every policy request is charged.
     Logs retain initiator, service, and key-name attribution without raw tokens or values ([section 4.8](#48-rate-limits-and-request-logs)).

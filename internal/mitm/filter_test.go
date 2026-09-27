@@ -16,6 +16,7 @@ import (
 
 	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/brokercore"
+	"github.com/Infisical/agent-vault/internal/ratelimit"
 	"github.com/Infisical/agent-vault/internal/store"
 )
 
@@ -56,12 +57,13 @@ func TestFilterHopDeniesWithoutCredentialOrOrigin(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	var sawAuth, sawAPIKey, sawCont, sawPolicy string
+	var sawAuth, sawAPIKey, sawCont, sawPolicy, sawHost string
 	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawAuth = r.Header.Get("Authorization")
 		sawAPIKey = r.Header.Get("X-Api-Key")
 		sawCont = r.Header.Get("X-Agent-Vault-Continuation-Token")
 		sawPolicy = r.Header.Get("X-Agent-Vault-Policy-Token")
+		sawHost = r.Host
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = io.WriteString(w, `{"error":"denied"}`)
 	}))
@@ -97,6 +99,9 @@ func TestFilterHopDeniesWithoutCredentialOrOrigin(t *testing.T) {
 	}
 	if sawAPIKey != "" {
 		t.Fatalf("sidecar saw credential header %q", sawAPIKey)
+	}
+	if sawHost != origin.Listener.Addr().String() {
+		t.Fatalf("sidecar Host = %q, want original %q", sawHost, origin.Listener.Addr().String())
 	}
 	if sawAuth != "Bearer client-secret" {
 		t.Fatalf("Authorization = %q, want the client value kept", sawAuth)
@@ -312,5 +317,117 @@ func TestWebSocketFilterDenialDoesNotResolve(t *testing.T) {
 	resp.Body.Close()
 	if creds.resolves != 0 {
 		t.Fatalf("resolves = %d", creds.resolves)
+	}
+}
+
+func TestStripFilterResponseKeepsUpgrade(t *testing.T) {
+	h := http.Header{}
+	h.Set("Upgrade", "websocket")
+	h.Set("Connection", "Upgrade")
+	h.Set("X-Agent-Vault-Continuation-Token", "av_cont_secret")
+	stripFilterResponseHeaders(h, http.StatusSwitchingProtocols)
+	if h.Get("Upgrade") != "websocket" || h.Get("Connection") != "Upgrade" {
+		t.Fatalf("switch headers = %v", h)
+	}
+	if h.Get("X-Agent-Vault-Continuation-Token") != "" {
+		t.Fatal("hop header survived")
+	}
+	plain := http.Header{}
+	plain.Set("Upgrade", "websocket")
+	plain.Set("Connection", "Upgrade")
+	stripFilterResponseHeaders(plain, http.StatusOK)
+	if plain.Get("Upgrade") != "" || plain.Get("Connection") != "" {
+		t.Fatalf("non-switch response kept hop headers: %v", plain)
+	}
+}
+
+func TestFilterHopReleasesConcurrencyForContinuation(t *testing.T) {
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer origin.Close()
+
+	var proxyURL *url.URL
+	var roots *x509.CertPool
+	var callbackStatus int
+	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		orig := r.Header.Get("X-Agent-Vault-Original-URL")
+		token := r.Header.Get("X-Agent-Vault-Continuation-Token")
+		cb, err := http.NewRequest(http.MethodGet, orig, nil)
+		if err != nil {
+			t.Errorf("callback request: %v", err)
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		client := &http.Client{
+			Timeout: 3 * time.Second,
+			Transport: &http.Transport{
+				Proxy: http.ProxyURL(&url.URL{Scheme: "http", Host: proxyURL.Host}),
+				ProxyConnectHeader: http.Header{
+					"Proxy-Authorization": []string{"Bearer " + token},
+				},
+				TLSClientConfig: &tls.Config{RootCAs: roots},
+			},
+		}
+		resp, err := client.Do(cb)
+		if err != nil {
+			t.Errorf("callback: %v", err)
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		callbackStatus = resp.StatusCode
+		resp.Body.Close()
+		w.WriteHeader(resp.StatusCode)
+	}))
+	defer sidecar.Close()
+
+	cfg := ratelimit.DefaultsFor(ratelimit.ProfileDefault)
+	cfg.Tiers[ratelimit.TierProxy].Concurrency = 1
+	dek := bytes32(0x44)
+	creds := &filterCreds{svc: broker.Service{
+		Name: "push", Host: "example.com", Auth: broker.Auth{Type: "bearer", Token: "TOK"},
+		Filter: &broker.Filter{URL: sidecar.URL},
+	}}
+	sr := &fakeSessionResolver{resolve: func(token, _ string) (*brokercore.ProxyScope, error) {
+		if token == "av_sess_ok" {
+			return &brokercore.ProxyScope{VaultID: "v1", VaultName: "dev", VaultRole: "proxy", UserID: "u1"}, nil
+		}
+		if !brokercore.IsHopToken(token) {
+			return nil, brokercore.ErrInvalidSession
+		}
+		hop, err := brokercore.VerifyHopToken(context.Background(), staticVaults{}, dek, token, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		scope := &brokercore.ProxyScope{
+			HopActorID: hop.ActorID, VaultID: hop.Vault.ID, VaultName: hop.Vault.Name,
+			VaultRole: "proxy", HopKind: hop.Kind, InvocationID: hop.InvocationID,
+		}
+		if hop.Kind == "cont" {
+			scope.Bind = &hop.Bind
+			scope.Frozen = hop.Frozen
+		}
+		return scope, nil
+	}}
+	var p *Proxy
+	proxyURL, roots, p = setupProxy(t, sr, creds, func(o *Options) {
+		o.FilterProxyURL = "http://127.0.0.1:1"
+		o.Hop = &brokercore.StoreHopMinter{Vaults: staticVaults{}, DEK: dek}
+		o.RateLimit = ratelimit.New(cfg)
+	})
+	pool := x509.NewCertPool()
+	pool.AddCert(origin.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool}
+	client := newTrustingClient(proxyURL, url.User("av_sess_ok"), roots)
+	resp, err := client.Get(origin.URL + "/ping")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if callbackStatus == http.StatusTooManyRequests || resp.StatusCode == http.StatusTooManyRequests {
+		t.Fatalf("continuation was rate limited: callback=%d client=%d", callbackStatus, resp.StatusCode)
+	}
+	if callbackStatus != http.StatusOK {
+		t.Fatalf("callback status %d", callbackStatus)
 	}
 }

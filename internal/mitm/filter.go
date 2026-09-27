@@ -45,6 +45,7 @@ func (p *Proxy) forwardFilter(
 		emit(http.StatusBadGateway, "filter_misconfigured")
 		return
 	}
+	defer transport.CloseIdleConnections()
 	bind := brokercore.HopBind{
 		Method:    r.Method,
 		Scheme:    scheme,
@@ -71,18 +72,21 @@ func (p *Proxy) forwardFilter(
 	}
 
 	original := &url.URL{Scheme: scheme, Host: authority, Path: r.URL.Path, RawPath: r.URL.RawPath, RawQuery: r.URL.RawQuery}
+	inHost := r.Host
 	hopStatus := http.StatusBadGateway
 	hopErr := ""
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
-			pr.Out.Host = target.Host
+			if inHost != "" {
+				pr.Out.Host = inHost
+			}
 			prepareSidecarRequest(pr.Out, svc, p.filterProxyURL, original.String(), cont, policy, p.caPEM())
 		},
 		Transport: transport,
 		ModifyResponse: func(resp *http.Response) error {
 			hopStatus = resp.StatusCode
-			stripReservedResponseHeaders(resp.Header)
+			stripFilterResponseHeaders(resp.Header, resp.StatusCode)
 			return nil
 		},
 		ErrorHandler: func(rw http.ResponseWriter, _ *http.Request, err error) {
@@ -152,6 +156,26 @@ func stripAgentVaultHeaders(h http.Header) {
 		if strings.HasPrefix(http.CanonicalHeaderKey(name), "X-Agent-Vault-") {
 			h.Del(name)
 		}
+	}
+}
+
+func stripFilterResponseHeaders(h http.Header, status int) {
+	var upgrade, connection []string
+	if status == http.StatusSwitchingProtocols {
+		upgrade = append([]string(nil), h.Values("Upgrade")...)
+		connection = append([]string(nil), h.Values("Connection")...)
+	}
+	stripReservedResponseHeaders(h)
+	if status != http.StatusSwitchingProtocols {
+		return
+	}
+	h.Del("Upgrade")
+	h.Del("Connection")
+	for _, v := range upgrade {
+		h.Add("Upgrade", v)
+	}
+	for _, v := range connection {
+		h.Add("Connection", v)
 	}
 }
 
