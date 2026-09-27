@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -102,6 +104,75 @@ func TestMITMRequestApprovalBlocksUpstreamUntilDecision(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatal("rejected request reached upstream")
+	}
+}
+
+func TestMITMHTTPSApprovalKeepsBodyReadablePastNormalDeadline(t *testing.T) {
+	bodies := make(chan string, 1)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies <- string(body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	m := approval.NewManager()
+	scope := &brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"}
+	proxyURL, roots, p := setupProxy(t, validTokenResolver("av_sess_ok", scope), approvalTestProvider{manager: m})
+	p.httpsReadTimeout = 100 * time.Millisecond
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(upstream.Certificate())
+	p.upstream.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: upstreamRoots}
+	client := newTrustingClient(proxyURL, url.User("av_sess_ok"), roots)
+	reader, writer := io.Pipe()
+	request, err := http.NewRequest(http.MethodPost, upstream.URL+"/deploy", reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.ContentLength = 5
+	type outcome struct {
+		status int
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		response, err := client.Do(request)
+		if err != nil {
+			done <- outcome{err: err}
+			return
+		}
+		defer response.Body.Close()
+		done <- outcome{status: response.StatusCode}
+	}()
+	var id string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if items := m.List("v1"); len(items) == 1 {
+			id = items[0].ID
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if id == "" {
+		t.Fatal("HTTPS request did not reach approval queue")
+	}
+	// The tunnel's original body-read deadline has expired by the time the
+	// human approves. The proxy must grant a fresh body-read window.
+	time.Sleep(150 * time.Millisecond)
+	if err := m.Decide("v1", id, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	result := <-done
+	if result.err != nil || result.status != http.StatusNoContent {
+		t.Fatalf("response: status=%d err=%v", result.status, result.err)
+	}
+	if body := <-bodies; body != "hello" {
+		t.Fatalf("upstream body = %q", body)
 	}
 }
 

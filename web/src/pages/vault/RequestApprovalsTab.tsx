@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { apiFetch } from "../../lib/api";
+import { useEffect, useRef, useState } from "react";
+import { apiFetch, isAbortError } from "../../lib/api";
 import { useVaultParams, ErrorBanner } from "./shared";
 import Button from "../../components/Button";
 
@@ -17,27 +17,46 @@ interface PendingRequest {
 
 export default function RequestApprovalsTab() {
   const { vaultName } = useVaultParams();
-  const [items, setItems] = useState<PendingRequest[]>([]);
+  const currentVault = useRef(vaultName);
+  currentVault.current = vaultName;
+  const [snapshot, setSnapshot] = useState<{ vault: string; items: PendingRequest[] }>({ vault: vaultName, items: [] });
+  const items = snapshot.vault === vaultName ? snapshot.items : [];
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const base = `/v1/vaults/${encodeURIComponent(vaultName)}/request-approvals`;
 
-  async function refresh() {
-    try {
-      const response = await apiFetch(base);
-      if (!response.ok) throw new Error((await response.json()).error || "Could not load requests");
-      const data = await response.json();
-      setItems(data.approvals ?? []);
-      setError("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load requests");
-    }
-  }
-
   useEffect(() => {
+    let active = true;
+    const controllers = new Set<AbortController>();
+    setSnapshot({ vault: vaultName, items: [] });
+    setError("");
+    setBusy(null);
+    async function refresh() {
+      const controller = new AbortController();
+      controllers.add(controller);
+      try {
+        const response = await apiFetch(base, { signal: controller.signal });
+        if (!response.ok) throw new Error((await response.json()).error || "Could not load requests");
+        const data = await response.json();
+        if (active && currentVault.current === vaultName) {
+          setSnapshot({ vault: vaultName, items: data.approvals ?? [] });
+          setError("");
+        }
+      } catch (err) {
+        if (active && currentVault.current === vaultName && !isAbortError(err)) {
+          setError(err instanceof Error ? err.message : "Could not load requests");
+        }
+      } finally {
+        controllers.delete(controller);
+      }
+    }
     refresh();
     const interval = setInterval(refresh, 2_000);
-    return () => clearInterval(interval);
+    return () => {
+      active = false;
+      clearInterval(interval);
+      controllers.forEach((controller) => controller.abort());
+    };
   }, [vaultName]);
 
   async function decide(item: PendingRequest, approve: boolean) {
@@ -46,13 +65,14 @@ export default function RequestApprovalsTab() {
     try {
       const response = await apiFetch(`${base}/${encodeURIComponent(item.id)}/${approve ? "approve" : "reject"}`, { method: "POST" });
       if (!response.ok) throw new Error((await response.json()).error || "Decision failed");
-      setItems((current) => current.filter((candidate) => candidate.id !== item.id));
-      setError("");
+      if (currentVault.current === vaultName) {
+        setSnapshot((current) => ({ vault: vaultName, items: current.items.filter((candidate) => candidate.id !== item.id) }));
+        setError("");
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Decision failed");
-      await refresh();
+      if (currentVault.current === vaultName) setError(err instanceof Error ? err.message : "Decision failed");
     } finally {
-      setBusy(null);
+      if (currentVault.current === vaultName) setBusy(null);
     }
   }
 
