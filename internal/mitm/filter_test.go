@@ -84,6 +84,7 @@ func TestFilterHopDeniesWithoutCredentialOrOrigin(t *testing.T) {
 	})
 	client := newTrustingClient(proxyURL, url.User("av_sess_ok"), roots)
 	req, _ := http.NewRequest(http.MethodGet, origin.URL+"/ping", nil)
+	req.Host = "evil.example"
 	req.Header.Set("Authorization", "Bearer client-secret")
 	req.Header.Set("X-Api-Key", "client-key")
 	resp, err := client.Do(req)
@@ -429,5 +430,41 @@ func TestFilterHopReleasesConcurrencyForContinuation(t *testing.T) {
 	}
 	if callbackStatus != http.StatusOK {
 		t.Fatalf("callback status %d", callbackStatus)
+	}
+}
+
+func TestFilterResponseLimitRejectsOversize(t *testing.T) {
+	body := strings.Repeat("x", 64)
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("origin contacted")
+	}))
+	defer origin.Close()
+	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "64")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer sidecar.Close()
+	creds := &filterCreds{svc: broker.Service{
+		Name: "push", Host: "example.com", Auth: broker.Auth{Type: "bearer", Token: "TOK"},
+		Filter: &broker.Filter{URL: sidecar.URL},
+	}}
+	sr := validTokenResolver("av_sess_ok", &brokercore.ProxyScope{VaultID: "v1", VaultName: "dev", VaultRole: "proxy", UserID: "u1"})
+	proxyURL, roots, _ := setupProxy(t, sr, creds, func(o *Options) {
+		o.MaxResponseBytes = 16
+		o.FilterProxyURL = "http://127.0.0.1:14322"
+		o.Hop = &brokercore.StoreHopMinter{Vaults: staticVaults{}, DEK: bytes32(0x55)}
+	})
+	resp, err := newTrustingClient(proxyURL, url.User("av_sess_ok"), roots).Get(origin.URL + "/ping")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(got), "response_too_large") {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, got)
+	}
+	if creds.resolves != 0 {
+		t.Fatalf("resolves = %d", creds.resolves)
 	}
 }

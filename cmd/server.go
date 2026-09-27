@@ -251,9 +251,8 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 // advertised as loopback.
 func advertisedMITMAddr(controlAddr string, mitmPort int) (string, bool, error) {
 	if raw := strings.TrimSpace(os.Getenv("AGENT_VAULT_MITM_ADDR")); raw != "" {
-		u, err := url.Parse(raw)
-		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
-			return "", false, fmt.Errorf("AGENT_VAULT_MITM_ADDR %q is not an http(s) URL", raw)
+		if err := validateAdvertisedMITMAddr(raw); err != nil {
+			return "", false, err
 		}
 		return raw, true, nil
 	}
@@ -265,6 +264,25 @@ func advertisedMITMAddr(controlAddr string, mitmPort int) (string, bool, error) 
 		host = "127.0.0.1"
 	}
 	return "http://" + net.JoinHostPort(host, strconv.Itoa(mitmPort)), false, nil
+}
+
+// validateAdvertisedMITMAddr accepts an http base URL: host, optional
+// port, no userinfo, path, query, or fragment. The MITM listener is a
+// plain HTTP proxy, so https and a path would send the sidecar somewhere
+// it cannot continue.
+func validateAdvertisedMITMAddr(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" || u.Hostname() == "" || u.User != nil ||
+		u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" {
+		return fmt.Errorf("AGENT_VAULT_MITM_ADDR %q must be an http base URL", raw)
+	}
+	if port := u.Port(); port != "" {
+		n, nerr := strconv.Atoi(port)
+		if nerr != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("AGENT_VAULT_MITM_ADDR %q must be an http base URL", raw)
+		}
+	}
+	return nil
 }
 
 // attachServerExtensions wires optional subsystems (MITM, Infisical) onto srv.

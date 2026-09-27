@@ -32,7 +32,10 @@ func (fw *flushingWriter) Write(p []byte) (int, error) {
 }
 
 // actorFromScope returns the (type, id) pair used in request log rows.
-// Empty strings when neither principal is set on the scope.
+// A session scope carries UserID or AgentID. A hop scope carries only
+// HopActorID: the token does not say whether that initiator was a user
+// or an agent, and verify does not look the session up, so the type
+// stays empty and the existing actor_id column still records them.
 func actorFromScope(scope *brokercore.ProxyScope) (string, string) {
 	if scope == nil {
 		return "", ""
@@ -42,6 +45,9 @@ func actorFromScope(scope *brokercore.ProxyScope) (string, string) {
 	}
 	if scope.AgentID != "" {
 		return brokercore.ActorTypeAgent, scope.AgentID
+	}
+	if scope.HopActorID != "" {
+		return "", scope.HopActorID
 	}
 	return "", ""
 }

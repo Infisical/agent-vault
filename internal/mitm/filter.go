@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -72,14 +74,15 @@ func (p *Proxy) forwardFilter(
 	}
 
 	original := &url.URL{Scheme: scheme, Host: authority, Path: r.URL.Path, RawPath: r.URL.RawPath, RawQuery: r.URL.RawQuery}
-	inHost := r.Host
 	hopStatus := http.StatusBadGateway
 	hopErr := ""
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
-			if inHost != "" {
-				pr.Out.Host = inHost
+			// Host is the matched authority, not the client Host header
+			// and not the sidecar. Absolute-form requests can disagree.
+			if authority != "" {
+				pr.Out.Host = authority
 			}
 			prepareSidecarRequest(pr.Out, svc, p.filterProxyURL, original.String(), cont, policy, p.caPEM())
 		},
@@ -87,9 +90,24 @@ func (p *Proxy) forwardFilter(
 		ModifyResponse: func(resp *http.Response) error {
 			hopStatus = resp.StatusCode
 			stripFilterResponseHeaders(resp.Header, resp.StatusCode)
+			if p.maxResponseBytes > 0 && resp.ContentLength > p.maxResponseBytes {
+				hopStatus = http.StatusBadGateway
+				hopErr = "response_too_large"
+				return errFilterResponseTooLarge
+			}
+			if p.maxResponseBytes > 0 && resp.StatusCode != http.StatusSwitchingProtocols {
+				resp.Body = &maxResponseBody{rc: resp.Body, left: p.maxResponseBytes}
+			}
 			return nil
 		},
 		ErrorHandler: func(rw http.ResponseWriter, _ *http.Request, err error) {
+			if errors.Is(err, errFilterResponseTooLarge) {
+				hopStatus = http.StatusBadGateway
+				hopErr = "response_too_large"
+				brokercore.WriteProxyError(rw, http.StatusBadGateway, "response_too_large",
+					fmt.Sprintf("Upstream response body exceeds the proxy response-size limit (%d bytes).", p.maxResponseBytes))
+				return
+			}
 			status, code := filterDialError(err)
 			hopStatus = status
 			hopErr = code
@@ -207,6 +225,35 @@ func filterDialError(err error) (int, string) {
 	}
 	return http.StatusBadGateway, "filter_unreachable"
 }
+
+var errFilterResponseTooLarge = errors.New("filter response exceeds max response bytes")
+
+// maxResponseBody reads at most left bytes, then one more. A further
+// byte aborts the client connection the same way an over-limit origin
+// body does. An exact fit ends at EOF.
+type maxResponseBody struct {
+	rc   io.ReadCloser
+	left int64
+}
+
+func (b *maxResponseBody) Read(p []byte) (int, error) {
+	if b.left <= 0 {
+		var probe [1]byte
+		n, _ := b.rc.Read(probe[:])
+		if n > 0 {
+			panic(http.ErrAbortHandler)
+		}
+		return 0, io.EOF
+	}
+	if int64(len(p)) > b.left {
+		p = p[:b.left]
+	}
+	n, err := b.rc.Read(p)
+	b.left -= int64(n)
+	return n, err
+}
+
+func (b *maxResponseBody) Close() error { return b.rc.Close() }
 
 func escapedPath(u *url.URL) string {
 	if u == nil {
