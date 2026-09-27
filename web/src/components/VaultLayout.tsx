@@ -36,7 +36,8 @@ export default function VaultLayout() {
   const [isExiting, setIsExiting] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
   const [pendingCount, setPendingCount] = useState(0);
-  const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
+  const [approvalCount, setApprovalCount] = useState({ vault: vaultContext.vault_name, count: 0 });
+  const pendingApprovalCount = approvalCount.vault === vaultContext.vault_name ? approvalCount.count : 0;
   const [discoveredCount, setDiscoveredCount] = useState(0);
 
   // The Members section (Users / Agents / Tokens) is only meaningful at
@@ -48,18 +49,28 @@ export default function VaultLayout() {
 
   useEffect(() => {
     if (vaultContext.vault_role !== "admin") return;
+    let active = true;
+    const controllers = new Set<AbortController>();
+    setApprovalCount({ vault: vaultContext.vault_name, count: 0 });
     async function fetchApprovalCount() {
+      const controller = new AbortController();
+      controllers.add(controller);
       try {
-        const resp = await fetch(`/v1/vaults/${encodeURIComponent(vaultContext.vault_name)}/request-approvals`);
-        if (resp.ok) {
+        const resp = await fetch(`/v1/vaults/${encodeURIComponent(vaultContext.vault_name)}/request-approvals`, { signal: controller.signal });
+        if (resp.ok && active) {
           const data = await resp.json();
-          setPendingApprovalCount((data.approvals ?? []).length);
+          if (active) setApprovalCount({ vault: vaultContext.vault_name, count: (data.approvals ?? []).length });
         }
       } catch { /* Retain the last count until the next poll. */ }
+      finally { controllers.delete(controller); }
     }
     fetchApprovalCount();
     const interval = setInterval(fetchApprovalCount, 5_000);
-    return () => clearInterval(interval);
+    return () => {
+      active = false;
+      clearInterval(interval);
+      controllers.forEach((controller) => controller.abort());
+    };
   }, [vaultContext.vault_name, vaultContext.vault_role]);
 
   useEffect(() => {
