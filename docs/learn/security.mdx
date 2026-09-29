@@ -105,7 +105,11 @@ RFC-1918 and other reserved ranges are additionally blocked under the default po
 
 ### DNS rebinding protection
 
-Agent Vault resolves hostnames to IP addresses, validates every resolved IP against the block list, then connects directly to the validated IP. This prevents DNS rebinding attacks where a hostname resolves to a safe IP during validation but a different (internal) IP during connection.
+Agent Vault validates the exact IP address of every outbound connection attempt against the block list, immediately before connecting. When a hostname resolves to several addresses, each one is checked as it is tried: blocked addresses are skipped without any packet being sent, and the connection only ever uses an address that passes the policy. Because the check runs on the address actually being dialed, DNS rebinding attacks, where a hostname resolves to a safe IP during validation but a different (internal) IP during connection, cannot bypass it.
+
+### Dual-stack targets
+
+When a target resolves to both IPv6 and IPv4 addresses, Agent Vault races the two families (Happy Eyeballs, [RFC 6555](https://www.rfc-editor.org/rfc/rfc6555)): if the preferred family has not connected within 300ms, the other family is tried in parallel and the first connection to succeed is used. A host whose IPv6 (or IPv4) path is broken or silently dropping traffic therefore still reaches dual-stack targets without failing or stalling.
 
 ## Transport security
 
@@ -123,7 +127,7 @@ This means:
 The MITM listener that backs `HTTPS_PROXY` and `HTTP_PROXY` is a plain HTTP forward proxy. The `Proxy-Authorization` header carrying the session token travels in cleartext between agent and broker. Deploy Agent Vault on a trusted or private network (localhost, VPN, private subnet). CONNECT tunnels to upstream HTTPS destinations are end-to-end encrypted inside the proxy connection.
 
 - **Root CA private key** is encrypted at rest with the DEK (same key that wraps credentials). See [Encryption at rest](#encryption-at-rest).
-- **DNS rebinding protection** and **[netguard](#network-security)** — every outbound connection is resolved and validated against the IP blocklist before Agent Vault dials the upstream.
+- **DNS rebinding protection** and **[netguard](#network-security)** validate every outbound connection attempt against the IP blocklist, on the exact IP being dialed, before any packet is sent.
 - **Rate limiting** is enforced per `(actor, vault)` budget.
 
 ## Access control

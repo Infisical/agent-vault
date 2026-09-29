@@ -2,13 +2,14 @@ package netguard
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -161,78 +162,53 @@ func isBlockedIP(ip net.IP, allowPrivate bool, allowed []net.IPNet) bool {
 	return false
 }
 
-const safeDialTimeout = 10 * time.Second
-
 // SafeDialContext returns a DialContext function that blocks connections to
 // forbidden IP ranges. When allowPrivate is true, only IMDS endpoints are
 // blocked. When false, private/reserved ranges are also blocked unless
 // allowlisted via AGENT_VAULT_NETWORK_ALLOWLIST.
+//
+// Resolution and address selection are left to net.Dialer, which tries every
+// resolved address and races IPv6 against IPv4 (RFC 6555 Fast Fallback), so
+// one broken address family does not fail or stall the dial. The policy check
+// runs in the dialer's ControlContext hook on each address right before
+// connect, so blocked addresses are skipped and DNS rebinding cannot swap in
+// an unchecked IP between validation and connection.
 func SafeDialContext(allowPrivate bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
-	dialer := &net.Dialer{
-		Timeout:   safeDialTimeout,
-		KeepAlive: 30 * time.Second,
-	}
-	return safeDialContext(allowPrivate, safeDialTimeout, net.DefaultResolver.LookupIPAddr, dialer.DialContext)
-}
-
-func safeDialContext(
-	allowPrivate bool,
-	timeout time.Duration,
-	lookupIPAddr func(context.Context, string) ([]net.IPAddr, error),
-	dialContext func(context.Context, string, string) (net.Conn, error),
-) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	var allowed []net.IPNet
 	if !allowPrivate {
 		allowed = AllowlistFromEnv()
 	}
+	return newSafeDialer(allowPrivate, allowed).DialContext
+}
 
-	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		host, port, err := net.SplitHostPort(addr)
-		if err != nil {
-			return nil, fmt.Errorf("netguard: invalid address %q: %w", addr, err)
-		}
-
-		// Resolve the hostname to IP addresses.
-		ips, err := lookupIPAddr(ctx, host)
-		if err != nil {
-			return nil, fmt.Errorf("netguard: DNS lookup failed for %q: %w", host, err)
-		}
-
-		// Check all resolved IPs before connecting.
-		for _, ipAddr := range ips {
-			if isBlockedIP(ipAddr.IP, allowPrivate, allowed) {
-				return nil, fmt.Errorf("netguard: connection to %s (%s) blocked by network policy",
-					host, ipAddr.IP.String())
+func newSafeDialer(allowPrivate bool, allowed []net.IPNet) *net.Dialer {
+	return &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+		ControlContext: func(_ context.Context, _, address string, _ syscall.RawConn) error {
+			err := checkDialAddress(address, allowPrivate, allowed)
+			if err != nil {
+				// A refused address may be skipped in favor of another one, in
+				// which case the request succeeds and this is the only trace.
+				slog.Warn("netguard: dial attempt refused", //nolint:gosec // G706: structured slog attrs, handlers quote control chars
+					slog.String("address", address), slog.String("error", err.Error()))
 			}
-		}
-		if len(ips) == 0 {
-			return nil, fmt.Errorf("netguard: DNS lookup returned no addresses for %q", host)
-		}
-
-		// All IPs are safe — connect directly to validated IPs in resolver order
-		// to prevent DNS rebinding while allowing fallback across address families.
-		dialCtx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		var dialErrs []error
-		for i, ipAddr := range ips {
-			if err := dialCtx.Err(); err != nil {
-				return nil, err
-			}
-			deadline, _ := dialCtx.Deadline()
-			remaining := time.Until(deadline)
-			attemptTimeout := remaining / time.Duration(len(ips)-i)
-			attemptCtx, attemptCancel := context.WithTimeout(dialCtx, attemptTimeout)
-			ip := ipAddr.IP.String()
-			conn, err := dialContext(attemptCtx, network, net.JoinHostPort(ip, port))
-			attemptCancel()
-			if err == nil {
-				return conn, nil
-			}
-			dialErrs = append(dialErrs, fmt.Errorf("%s: %w", ip, err))
-			if err := dialCtx.Err(); err != nil {
-				return nil, err
-			}
-		}
-		return nil, fmt.Errorf("netguard: connection to %s failed: %w", host, errors.Join(dialErrs...))
+			return err
+		},
 	}
+}
+
+// checkDialAddress applies the network policy to the ip:port net.Dialer is
+// about to connect to. Anything that does not parse as an IP address is
+// rejected, so an unexpected address form cannot slip past the policy.
+func checkDialAddress(address string, allowPrivate bool, allowed []net.IPNet) error {
+	addrPort, err := netip.ParseAddrPort(address)
+	if err != nil {
+		return fmt.Errorf("netguard: cannot validate dial address %q: %w", address, err)
+	}
+	ip := addrPort.Addr().Unmap()
+	if isBlockedIP(ip.AsSlice(), allowPrivate, allowed) {
+		return fmt.Errorf("netguard: connection to %s blocked by network policy", ip)
+	}
+	return nil
 }

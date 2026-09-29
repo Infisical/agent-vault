@@ -2,11 +2,16 @@ package netguard
 
 import (
 	"context"
-	"errors"
 	"net"
-	"reflect"
+	"net/netip"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 func TestIsBlockedIP_AlwaysBlocked(t *testing.T) {
@@ -236,223 +241,277 @@ func TestParseCIDRList(t *testing.T) {
 	}
 }
 
-func TestSafeDialContext_AddressFamilies(t *testing.T) {
+func TestCheckDialAddress(t *testing.T) {
+	allowlist := ParseCIDRList("10.1.2.0/24", "test")
 	tests := []struct {
-		name    string
-		network string
-		address string
-		ip      net.IP
+		name         string
+		address      string
+		allowPrivate bool
+		wantBlocked  bool
 	}{
-		{name: "IPv4", network: "tcp4", address: "127.0.0.1:0", ip: net.ParseIP("127.0.0.1")},
-		{name: "IPv6", network: "tcp6", address: "[::1]:0", ip: net.ParseIP("::1")},
+		{"public IPv4", "203.0.113.10:443", false, false},
+		{"public IPv6", "[2001:db8::10]:443", false, false},
+		{"IMDS", "169.254.169.254:80", true, true},
+		{"IMDS IPv6", "[fd00:ec2::254]:80", true, true},
+		{"IMDS IPv6 with zone", "[fd00:ec2::254%eth0]:80", true, true},
+		{"IPv4-mapped IMDS", "[::ffff:169.254.169.254]:80", true, true},
+		{"link-local with zone", "[fe80::1%eth0]:443", false, true},
+		{"loopback blocked by default", "127.0.0.1:443", false, true},
+		{"loopback allowed with private ranges", "127.0.0.1:443", true, false},
+		{"allowlisted private", "10.1.2.3:443", false, false},
+		{"private outside allowlist", "10.9.9.9:443", false, true},
+		{"hostname fails closed", "example.com:443", true, true},
+		{"missing port fails closed", "203.0.113.10", true, true},
+		{"empty fails closed", "", true, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			listener, err := net.Listen(tt.network, tt.address)
-			if err != nil {
-				if tt.network == "tcp6" {
-					t.Skipf("IPv6 loopback is unavailable: %v", err)
-				}
-				t.Fatalf("listen: %v", err)
+			var allowed []net.IPNet
+			if !tt.allowPrivate {
+				allowed = allowlist
 			}
-			t.Cleanup(func() { _ = listener.Close() })
-
-			_, port, err := net.SplitHostPort(listener.Addr().String())
-			if err != nil {
-				t.Fatalf("split listener address: %v", err)
-			}
-			lookup := func(context.Context, string) ([]net.IPAddr, error) {
-				return []net.IPAddr{{IP: tt.ip}}, nil
-			}
-			dial := safeDialContext(true, time.Second, lookup, (&net.Dialer{Timeout: time.Second}).DialContext)
-
-			conn, err := dial(context.Background(), "tcp", net.JoinHostPort("dual-stack.test", port))
-			if err != nil {
-				t.Fatalf("dial: %v", err)
-			}
-			_ = conn.Close()
-		})
-	}
-}
-
-func TestSafeDialContext_FallsBackInResolverOrder(t *testing.T) {
-	tests := []struct {
-		name string
-		ips  []net.IPAddr
-		want []string
-	}{
-		{
-			name: "IPv6 to IPv4",
-			ips:  []net.IPAddr{{IP: net.ParseIP("::1")}, {IP: net.ParseIP("127.0.0.1")}},
-			want: []string{"[::1]:443", "127.0.0.1:443"},
-		},
-		{
-			name: "IPv4 to IPv6",
-			ips:  []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}, {IP: net.ParseIP("::1")}},
-			want: []string{"127.0.0.1:443", "[::1]:443"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			lookup := func(context.Context, string) ([]net.IPAddr, error) { return tt.ips, nil }
-			var attempts []string
-			var attemptBudgets []time.Duration
-			dialContext := func(ctx context.Context, _, addr string) (net.Conn, error) {
-				attempts = append(attempts, addr)
-				deadline, _ := ctx.Deadline()
-				attemptBudgets = append(attemptBudgets, time.Until(deadline))
-				if len(attempts) == 1 {
-					return nil, errors.New("first family unavailable")
-				}
-				client, server := net.Pipe()
-				_ = server.Close()
-				return client, nil
-			}
-			dial := safeDialContext(true, time.Second, lookup, dialContext)
-
-			conn, err := dial(context.Background(), "tcp", "dual-stack.test:443")
-			if err != nil {
-				t.Fatalf("dial: %v", err)
-			}
-			_ = conn.Close()
-
-			if !reflect.DeepEqual(attempts, tt.want) {
-				t.Fatalf("dial attempts = %v, want %v", attempts, tt.want)
-			}
-			if attemptBudgets[1] <= attemptBudgets[0] {
-				t.Fatalf("second attempt budget = %v, want more than first attempt budget %v", attemptBudgets[1], attemptBudgets[0])
+			err := checkDialAddress(tt.address, tt.allowPrivate, allowed)
+			if blocked := err != nil; blocked != tt.wantBlocked {
+				t.Fatalf("checkDialAddress(%q) error = %v, want blocked = %v", tt.address, err, tt.wantBlocked)
 			}
 		})
 	}
 }
 
-func TestSafeDialContext_ValidatesAllAddressesBeforeDialing(t *testing.T) {
+func TestSafeDialContext_BlocksBeforeConnecting(t *testing.T) {
 	t.Setenv("AGENT_VAULT_NETWORK_ALLOWLIST", "")
-	lookup := func(context.Context, string) ([]net.IPAddr, error) {
-		return []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}, {IP: net.ParseIP("127.0.0.1")}}, nil
-	}
-	dialCalled := false
-	dialContext := func(context.Context, string, string) (net.Conn, error) {
-		dialCalled = true
-		return nil, errors.New("unexpected dial")
-	}
-	dial := safeDialContext(false, time.Second, lookup, dialContext)
+	listener := listenTCP(t, "tcp4", "127.0.0.1:0")
 
-	_, err := dial(context.Background(), "tcp", "mixed-policy.test:443")
-	if err == nil {
-		t.Fatal("expected network policy error")
+	_, err := SafeDialContext(false)(context.Background(), "tcp", listener.Addr().String())
+	if err == nil || !strings.Contains(err.Error(), "blocked by network policy") {
+		t.Fatalf("error = %v, want network policy error", err)
 	}
-	if dialCalled {
-		t.Fatal("dial was attempted before every resolved address passed policy validation")
+	if !strings.Contains(err.Error(), listener.Addr().String()) {
+		t.Errorf("error %q does not name the requested address", err)
+	}
+
+	// A completed connect would already be queued on the listener.
+	_ = listener.(*net.TCPListener).SetDeadline(time.Now().Add(50 * time.Millisecond))
+	if conn, err := listener.Accept(); err == nil {
+		_ = conn.Close()
+		t.Fatal("blocked address was connected to")
 	}
 }
 
-func TestSafeDialContext_ReturnsAllConnectionFailures(t *testing.T) {
-	firstErr := errors.New("IPv6 unavailable")
-	secondErr := errors.New("IPv4 unavailable")
-	lookup := func(context.Context, string) ([]net.IPAddr, error) {
-		return []net.IPAddr{{IP: net.ParseIP("::1")}, {IP: net.ParseIP("127.0.0.1")}}, nil
-	}
-	attempt := 0
-	dialContext := func(context.Context, string, string) (net.Conn, error) {
-		attempt++
-		if attempt == 1 {
-			return nil, firstErr
-		}
-		return nil, secondErr
-	}
-	dial := safeDialContext(true, time.Second, lookup, dialContext)
+func TestSafeDialContext_ConnectsToAllowedAddress(t *testing.T) {
+	listener := listenTCP(t, "tcp4", "127.0.0.1:0")
 
-	_, err := dial(context.Background(), "tcp", "unreachable.test:443")
-	if !errors.Is(err, firstErr) || !errors.Is(err, secondErr) {
-		t.Fatalf("error %v does not preserve both connection failures", err)
-	}
-}
-
-func TestSafeDialContext_StopsFallbackOnCancellation(t *testing.T) {
-	lookup := func(context.Context, string) ([]net.IPAddr, error) {
-		return []net.IPAddr{{IP: net.ParseIP("::1")}, {IP: net.ParseIP("127.0.0.1")}}, nil
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	attempts := 0
-	dialContext := func(ctx context.Context, _, _ string) (net.Conn, error) {
-		attempts++
-		cancel()
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}
-	dial := safeDialContext(true, time.Second, lookup, dialContext)
-
-	_, err := dial(ctx, "tcp", "canceled.test:443")
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("error = %v, want context.Canceled", err)
-	}
-	if attempts != 1 {
-		t.Fatalf("dial attempts = %d, want 1", attempts)
-	}
-}
-
-func TestSafeDialContext_SharesRemainingTimeoutAcrossAddresses(t *testing.T) {
-	const timeout = 100 * time.Millisecond
-	lookup := func(context.Context, string) ([]net.IPAddr, error) {
-		return []net.IPAddr{{IP: net.ParseIP("::1")}, {IP: net.ParseIP("127.0.0.1")}}, nil
-	}
-	attempts := 0
-	dialContext := func(ctx context.Context, _, _ string) (net.Conn, error) {
-		attempts++
-		if attempts == 1 {
-			<-ctx.Done()
-			return nil, ctx.Err()
-		}
-		client, server := net.Pipe()
-		_ = server.Close()
-		return client, nil
-	}
-	dial := safeDialContext(true, timeout, lookup, dialContext)
-
-	started := time.Now()
-	conn, err := dial(context.Background(), "tcp", "dual-stack.test:443")
-	elapsed := time.Since(started)
+	conn, err := SafeDialContext(true)(context.Background(), "tcp", listener.Addr().String())
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 	_ = conn.Close()
+}
 
-	if attempts != 2 {
-		t.Fatalf("dial attempts = %d, want 2", attempts)
+func TestSafeDialer_FallsBackToOtherAddressFamily(t *testing.T) {
+	listener := listenTCP(t, "tcp4", "127.0.0.1:0")
+	_, port, _ := net.SplitHostPort(listener.Addr().String())
+	d := newSafeDialer(true, nil)
+	d.Resolver = fakeResolver(t, map[string][]netip.Addr{
+		"dual.test.": {netip.MustParseAddr("::1"), netip.MustParseAddr("127.0.0.1")},
+	})
+	policy := d.ControlContext
+	d.ControlContext = func(ctx context.Context, network, address string, c syscall.RawConn) error {
+		if network == "tcp6" {
+			// Simulate an IPv6 path that is refused outright, without relying
+			// on nothing else listening on [::1]:port.
+			return syscall.ECONNREFUSED
+		}
+		return policy(ctx, network, address, c)
 	}
-	if elapsed >= timeout {
-		t.Fatalf("dial elapsed = %v, want less than total timeout %v", elapsed, timeout)
+
+	// Whichever family is tried first, the dial has to end up on IPv4.
+	conn, err := d.DialContext(context.Background(), "tcp", net.JoinHostPort("dual.test", port))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if got := conn.RemoteAddr().String(); got != listener.Addr().String() {
+		t.Fatalf("connected to %s, want %s", got, listener.Addr())
 	}
 }
 
-func TestSafeDialContext_PreservesEarlierCallerDeadline(t *testing.T) {
-	const callerTimeout = 25 * time.Millisecond
-	lookup := func(context.Context, string) ([]net.IPAddr, error) {
-		return []net.IPAddr{{IP: net.ParseIP("::1")}}, nil
+func TestSafeDialer_SilentlyDroppedFamilyDoesNotStall(t *testing.T) {
+	listener := listenTCP(t, "tcp4", "127.0.0.1:0")
+	_, port, _ := net.SplitHostPort(listener.Addr().String())
+	d := newSafeDialer(true, nil)
+	d.Resolver = fakeResolver(t, map[string][]netip.Addr{
+		"dual.test.": {netip.MustParseAddr("::1"), netip.MustParseAddr("127.0.0.1")},
+	})
+	policy := d.ControlContext
+	var ipv6Attempted atomic.Bool
+	d.ControlContext = func(ctx context.Context, network, address string, c syscall.RawConn) error {
+		if network == "tcp6" {
+			// Simulate a path that drops packets without replying: the
+			// attempt only ends when the dialer gives up on it.
+			ipv6Attempted.Store(true)
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return policy(ctx, network, address, c)
 	}
-	attempts := 0
-	dialContext := func(ctx context.Context, _, _ string) (net.Conn, error) {
-		attempts++
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}
-	dial := safeDialContext(true, time.Second, lookup, dialContext)
-	ctx, cancel := context.WithTimeout(context.Background(), callerTimeout)
-	defer cancel()
 
 	started := time.Now()
-	_, err := dial(ctx, "tcp", "deadline.test:443")
+	conn, err := d.DialContext(context.Background(), "tcp", net.JoinHostPort("dual.test", port))
 	elapsed := time.Since(started)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("error = %v, want context.DeadlineExceeded", err)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
 	}
-	if attempts != 1 {
-		t.Fatalf("dial attempts = %d, want 1", attempts)
+	defer conn.Close()
+
+	if !ipv6Attempted.Load() {
+		t.Skip("resolver ordered IPv4 first on this host; the fallback race was not exercised")
 	}
-	if elapsed >= 2*callerTimeout {
-		t.Fatalf("dial elapsed = %v, want bounded by caller deadline %v", elapsed, callerTimeout)
+	// The IPv4 attempt starts after the 300ms fallback delay. Waiting for
+	// the dropped IPv6 attempt instead would take most of the 10s timeout.
+	if elapsed > 3*time.Second {
+		t.Fatalf("dial took %v; IPv4 fallback should not wait for the dropped IPv6 attempt", elapsed)
 	}
+}
+
+func TestSafeDialer_SkipsBlockedAddresses(t *testing.T) {
+	listener := listenTCP(t, "tcp4", "127.0.0.1:0")
+	_, port, _ := net.SplitHostPort(listener.Addr().String())
+	// Loopback is blocked except for the allowlisted 127.0.0.1, so ::1 (tried
+	// first on hosts with IPv6) must be refused and 127.0.0.1 used instead.
+	d := newSafeDialer(false, ParseCIDRList("127.0.0.1", "test"))
+	d.Resolver = fakeResolver(t, map[string][]netip.Addr{
+		"mixed.test.": {netip.MustParseAddr("::1"), netip.MustParseAddr("127.0.0.1")},
+	})
+	policy := d.ControlContext
+	var mu sync.Mutex
+	var attempts, refused []string
+	d.ControlContext = func(ctx context.Context, network, address string, c syscall.RawConn) error {
+		err := policy(ctx, network, address, c)
+		mu.Lock()
+		attempts = append(attempts, address)
+		if err != nil {
+			refused = append(refused, address)
+		}
+		mu.Unlock()
+		return err
+	}
+
+	conn, err := d.DialContext(context.Background(), "tcp", net.JoinHostPort("mixed.test", port))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if got := conn.RemoteAddr().String(); got != listener.Addr().String() {
+		t.Fatalf("connected to %s, want %s", got, listener.Addr())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(attempts) == 0 || !strings.HasPrefix(attempts[0], "[::1]:") {
+		t.Skipf("resolver ordered IPv4 first on this host (attempts %v); the skip was not exercised", attempts)
+	}
+	if len(refused) != 1 || refused[0] != attempts[0] {
+		t.Fatalf("refused = %v, want exactly the blocked %s", refused, attempts[0])
+	}
+}
+
+func TestSafeDialer_AllAddressesBlocked(t *testing.T) {
+	d := newSafeDialer(false, nil)
+	d.Resolver = fakeResolver(t, map[string][]netip.Addr{
+		"blocked.test.": {
+			netip.MustParseAddr("169.254.169.254"),
+			netip.MustParseAddr("10.1.2.3"),
+			netip.MustParseAddr("::1"),
+		},
+	})
+
+	_, err := d.DialContext(context.Background(), "tcp", "blocked.test:443")
+	if err == nil || !strings.Contains(err.Error(), "blocked by network policy") {
+		t.Fatalf("error = %v, want network policy error", err)
+	}
+}
+
+func listenTCP(t *testing.T, network, address string) net.Listener {
+	t.Helper()
+	listener, err := net.Listen(network, address)
+	if err != nil {
+		t.Fatalf("listen %s %s: %v", network, address, err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener
+}
+
+// fakeResolver returns a resolver backed by an in-process DNS server that
+// answers A and AAAA queries from records (keyed by FQDN) and NXDOMAIN for
+// anything else, so dial tests control exactly what net.Dialer resolves.
+func fakeResolver(t *testing.T, records map[string][]netip.Addr) *net.Resolver {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen dns: %v", err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			n, from, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			if resp, err := fakeDNSAnswer(buf[:n], records); err == nil {
+				_, _ = pc.WriteTo(resp, from)
+			}
+		}
+	}()
+
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "udp", pc.LocalAddr().String())
+		},
+	}
+}
+
+func fakeDNSAnswer(query []byte, records map[string][]netip.Addr) ([]byte, error) {
+	var p dnsmessage.Parser
+	hdr, err := p.Start(query)
+	if err != nil {
+		return nil, err
+	}
+	q, err := p.Question()
+	if err != nil {
+		return nil, err
+	}
+
+	addrs, ok := records[q.Name.String()]
+	rcode := dnsmessage.RCodeSuccess
+	if !ok {
+		rcode = dnsmessage.RCodeNameError
+	}
+	b := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: hdr.ID, Response: true, Authoritative: true, RCode: rcode})
+	if err := b.StartQuestions(); err != nil {
+		return nil, err
+	}
+	if err := b.Question(q); err != nil {
+		return nil, err
+	}
+	if err := b.StartAnswers(); err != nil {
+		return nil, err
+	}
+	rh := dnsmessage.ResourceHeader{Name: q.Name, Class: dnsmessage.ClassINET, TTL: 60}
+	for _, addr := range addrs {
+		switch {
+		case q.Type == dnsmessage.TypeA && addr.Is4():
+			err = b.AResource(rh, dnsmessage.AResource{A: addr.As4()})
+		case q.Type == dnsmessage.TypeAAAA && addr.Is6():
+			err = b.AAAAResource(rh, dnsmessage.AAAAResource{AAAA: addr.As16()})
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return b.Finish()
 }
