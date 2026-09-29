@@ -121,8 +121,9 @@ var privateRanges = []net.IPNet{
 	parseCIDR("fe80::/10"),
 	// IPv6 unique local
 	parseCIDR("fc00::/7"),
-	// 0.0.0.0 (often routes to localhost)
+	// 0.0.0.0 and :: (unspecified; connecting to them reaches localhost)
 	parseCIDR("0.0.0.0/32"),
+	parseCIDR("::/128"),
 }
 
 func parseCIDR(s string) net.IPNet {

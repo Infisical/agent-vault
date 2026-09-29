@@ -63,6 +63,8 @@ func TestIsBlockedIP_BlockPrivate(t *testing.T) {
 		"127.0.0.1",
 		"169.254.0.1",
 		"100.64.0.1",
+		"0.0.0.0",
+		"::",
 	}
 	for _, ip := range blocked {
 		if !isBlockedIP(net.ParseIP(ip), false, nil) {
@@ -258,6 +260,7 @@ func TestCheckDialAddress(t *testing.T) {
 		{"link-local with zone", "[fe80::1%eth0]:443", false, true},
 		{"loopback blocked by default", "127.0.0.1:443", false, true},
 		{"loopback allowed with private ranges", "127.0.0.1:443", true, false},
+		{"IPv6 unspecified reaches loopback", "[::]:443", false, true},
 		{"allowlisted private", "10.1.2.3:443", false, false},
 		{"private outside allowlist", "10.9.9.9:443", false, true},
 		{"hostname fails closed", "example.com:443", true, true},
