@@ -1,6 +1,6 @@
 module github.com/Infisical/agent-vault
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/charmbracelet/huh v1.0.0
@@ -15,7 +15,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/crypto v0.55.0
 	golang.org/x/net v0.57.0
-	golang.org/x/sync v0.22.0
+	golang.org/x/sync v0.23.0
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/postgres v1.6.2
