@@ -101,11 +101,11 @@ RFC-1918 and other reserved ranges are additionally blocked under the default po
 - `169.254.0.0/16`, `fe80::/10` (link-local)
 - `fc00::/7` (IPv6 unique local)
 - `100.64.0.0/10` (carrier-grade NAT)
-- `0.0.0.0/32`
+- `0.0.0.0/32`, `::/128` (unspecified addresses, which connect to localhost)
 
 ### DNS rebinding protection
 
-Agent Vault resolves hostnames to IP addresses, validates every resolved IP against the block list, then connects directly to the validated IP. This prevents DNS rebinding attacks where a hostname resolves to a safe IP during validation but a different (internal) IP during connection.
+Agent Vault checks the exact IP of every outbound connection attempt against the block list, right before connecting. If a hostname resolves to several addresses, blocked ones are skipped and never contacted. Because the check runs on the address actually being dialed, DNS rebinding (a hostname resolving to a safe IP during validation but an internal one at connection time) can't bypass it.
 
 ## Transport security
 
