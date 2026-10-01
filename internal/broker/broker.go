@@ -28,13 +28,14 @@ type Config struct {
 // existed stay live after upgrade — use IsEnabled() rather than
 // dereferencing the pointer.
 type Service struct {
-	Name          string         `yaml:"name" json:"name"`
-	Host          string         `yaml:"host" json:"host"`
-	Path          string         `yaml:"path,omitempty" json:"path,omitempty"`
-	Port          *int           `yaml:"port,omitempty" json:"-"`
-	Enabled       *bool          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	Auth          Auth           `yaml:"auth" json:"auth"`
-	Substitutions []Substitution `yaml:"substitutions,omitempty" json:"substitutions,omitempty"`
+	Name            string         `yaml:"name" json:"name"`
+	Host            string         `yaml:"host" json:"host"`
+	Path            string         `yaml:"path,omitempty" json:"path,omitempty"`
+	Port            *int           `yaml:"port,omitempty" json:"-"`
+	Enabled         *bool          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	RequireApproval bool           `yaml:"require_approval,omitempty" json:"require_approval,omitempty"`
+	Auth            Auth           `yaml:"auth" json:"auth"`
+	Substitutions   []Substitution `yaml:"substitutions,omitempty" json:"substitutions,omitempty"`
 }
 
 // MatcherPattern returns the joined inline form (`slack.com/api/*`),

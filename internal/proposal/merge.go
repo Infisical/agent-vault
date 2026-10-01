@@ -54,6 +54,9 @@ func MergeServices(existing []broker.Service, proposed []Service) ([]broker.Serv
 				merged[idx].Enabled = p.Enabled
 			case exists:
 				next := toBrokerService(p)
+				// Agents cannot turn off a human-configured request approval
+				// requirement through an unrelated service proposal.
+				next.RequireApproval = merged[idx].RequireApproval
 				// Empty Substitutions means "leave existing alone";
 				// callers clear by delete+recreate.
 				if len(p.Substitutions) == 0 {
