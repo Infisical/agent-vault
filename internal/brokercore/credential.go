@@ -64,6 +64,16 @@ type InjectResult struct {
 // path only — no query, no fragment.
 type CredentialProvider interface {
 	Inject(ctx context.Context, vaultID, targetHost string, targetPort int, targetPath string) (*InjectResult, error)
+	Match(ctx context.Context, vaultID, targetHost string, targetPort int, targetPath string) (*MatchResult, error)
+	Resolve(ctx context.Context, vaultID string, svc broker.Service) (*InjectResult, error)
+}
+
+// MatchResult is a matcher outcome that has not read a credential.
+// Passthrough is the unmatched-host allow policy. Service is set when a
+// rule matched and is enabled.
+type MatchResult struct {
+	Service     broker.Service
+	Passthrough bool
 }
 
 // CredentialStore is the minimal store surface used by StoreCredentialProvider.
@@ -110,6 +120,27 @@ func NewStoreCredentialProvider(s CredentialStore, encKey []byte) *StoreCredenti
 // stripped before matching. Pass "/" for targetPath when no path is
 // meaningful.
 func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHost string, targetPort int, targetPath string) (*InjectResult, error) {
+	matched, err := p.Match(ctx, vaultID, targetHost, targetPort, targetPath)
+	if err != nil {
+		return nil, err
+	}
+	if matched.Passthrough {
+		return &InjectResult{Passthrough: true}, nil
+	}
+	if matched.Service.Filter != nil && matched.Service.Filter.URL != "" {
+		return &InjectResult{
+			MatchedName: matched.Service.Name,
+			MatchedHost: matched.Service.Host,
+			MatchedPath: matched.Service.Path,
+			MatchedPort: matched.Service.Port,
+		}, ErrFilterMisconfigured
+	}
+	return p.Resolve(ctx, vaultID, matched.Service)
+}
+
+// Match selects a service and does not decrypt. A filter on the match is
+// left for the caller to hop. Resolve is a separate call.
+func (p *StoreCredentialProvider) Match(ctx context.Context, vaultID, targetHost string, targetPort int, targetPath string) (*MatchResult, error) {
 	// A missing row is equivalent to an empty services list — fall
 	// through to the unmatched-host policy. Any other error fails closed
 	// so a transient store failure can't silently strip enforcement.
@@ -150,7 +181,7 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 		if err != nil || policy == PolicyDeny {
 			return nil, ErrServiceNotFound
 		}
-		return &InjectResult{Passthrough: true}, nil
+		return &MatchResult{Passthrough: true}, nil
 	}
 	if !matched.IsEnabled() {
 		return nil, ErrServiceDisabled
@@ -164,7 +195,13 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 		slog.Int("path_prefix_len", score.PathLiteralLen),
 		slog.Int("decl_order", score.DeclOrder),
 	)
+	return &MatchResult{Service: *matched}, nil
+}
 
+// Resolve decrypts the credential key names on svc. It does not match.
+// Callers on the filter path must not call this until the continuation
+// bind has been checked.
+func (p *StoreCredentialProvider) Resolve(ctx context.Context, vaultID string, matched broker.Service) (*InjectResult, error) {
 	// Memoize per-key lookups so a credential shared by auth and a
 	// substitution decrypts only once.
 	cache := make(map[string]string)

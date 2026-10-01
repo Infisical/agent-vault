@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/ratelimit"
 	"github.com/Infisical/agent-vault/internal/requestlog"
@@ -31,7 +32,10 @@ func (fw *flushingWriter) Write(p []byte) (int, error) {
 }
 
 // actorFromScope returns the (type, id) pair used in request log rows.
-// Empty strings when neither principal is set on the scope.
+// A session scope carries UserID or AgentID. A hop scope carries only
+// HopActorID: the token does not say whether that initiator was a user
+// or an agent, and verify does not look the session up, so the type
+// stays empty and the existing actor_id column still records them.
 func actorFromScope(scope *brokercore.ProxyScope) (string, string) {
 	if scope == nil {
 		return "", ""
@@ -41,6 +45,9 @@ func actorFromScope(scope *brokercore.ProxyScope) (string, string) {
 	}
 	if scope.AgentID != "" {
 		return brokercore.ActorTypeAgent, scope.AgentID
+	}
+	if scope.HopActorID != "" {
+		return "", scope.HopActorID
 	}
 	return "", ""
 }
@@ -238,7 +245,70 @@ func (p *Proxy) forwardRequest(
 		return
 	}
 
-	inject, err := p.creds.Inject(r.Context(), scope.VaultID, host, port, r.URL.Path)
+	if scope.HopKind == "cont" {
+		if scope.ContinuationRequestMismatch(r.Method, scheme, target, escapedPath(r.URL), r.URL.RawQuery) || scope.Frozen == nil {
+			brokercore.WriteProxyError(w, http.StatusForbidden, "continuation_bind",
+				"Continuation token is not valid for this request.")
+			emit(http.StatusForbidden, "continuation_bind")
+			return
+		}
+		p.forwardResolved(w, r, target, host, scheme, outURL, scope, scope.Frozen, true, &event, emit)
+		return
+	}
+
+	matched, err := p.creds.Match(r.Context(), scope.VaultID, host, port, r.URL.Path)
+	if err != nil {
+		errCode := "no_match"
+		status := http.StatusForbidden
+		if errors.Is(err, brokercore.ErrCredentialMissing) {
+			errCode = "credential_not_found"
+			status = http.StatusBadGateway
+		}
+		brokercore.WriteInjectError(w, err, target, scope.VaultName, p.baseURL)
+		emit(status, errCode)
+		return
+	}
+	if matched.Passthrough {
+		p.forwardResolved(w, r, target, host, scheme, outURL, scope, nil, false, &event, emit)
+		return
+	}
+	event.MatchedService = matched.Service.Name
+	event.MatchedHost = matched.Service.Host
+	event.MatchedPath = matched.Service.Path
+	event.MatchedPort = matched.Service.Port
+	event.InvocationID = scope.InvocationID
+	if matched.Service.Filter != nil && matched.Service.Filter.URL != "" {
+		event.CredentialKeys = nil
+		// The hop is still charged above. Release the concurrency slot
+		// before waiting on the sidecar so the continuation can acquire
+		// its own slot instead of queueing behind this request.
+		enf.Release()
+		p.forwardFilter(w, r, scope, matched.Service, scheme, target, emit)
+		return
+	}
+	p.forwardResolved(w, r, target, host, scheme, outURL, scope, &matched.Service, false, &event, emit)
+}
+
+func (p *Proxy) forwardResolved(
+	w http.ResponseWriter,
+	r *http.Request,
+	target, host, scheme string,
+	outURL *url.URL,
+	scope *brokercore.ProxyScope,
+	svc *broker.Service,
+	frozen bool,
+	event *brokercore.ProxyEvent,
+	emit func(status int, errCode string),
+) {
+	var inject *brokercore.InjectResult
+	var err error
+	if svc == nil {
+		inject = &brokercore.InjectResult{Passthrough: true}
+	} else if frozen {
+		inject, err = p.creds.Resolve(r.Context(), scope.VaultID, *svc)
+	} else {
+		inject, err = p.creds.Resolve(r.Context(), scope.VaultID, *svc)
+	}
 	if inject != nil {
 		event.MatchedService = inject.MatchedName
 		event.MatchedHost = inject.MatchedHost
@@ -254,6 +324,10 @@ func (p *Proxy) forwardRequest(
 			errCode = "credential_not_found"
 			status = http.StatusBadGateway
 			brokercore.LogCredentialMissing(p.logger, scope.VaultID, event.MatchedService, event.CredentialKeys)
+		}
+		if errors.Is(err, brokercore.ErrFilterMisconfigured) {
+			errCode = "filter_misconfigured"
+			status = http.StatusBadGateway
 		}
 		brokercore.WriteInjectError(w, err, target, scope.VaultName, p.baseURL)
 		emit(status, errCode)
@@ -297,6 +371,7 @@ func (p *Proxy) forwardRequest(
 	} else {
 		brokercore.ApplyInjection(r.Header, outReq.Header, inject)
 	}
+	stripAgentVaultHeaders(outReq.Header)
 
 	if err := brokercore.ApplySubstitutions(outReq.URL, outReq.Header, inject.Substitutions); err != nil {
 		http.Error(w, "bad gateway", http.StatusBadGateway)
@@ -350,9 +425,14 @@ func (p *Proxy) forwardRequest(
 	// OAuth 401 retry: if the upstream rejected the token and we have an
 	// OAuth credential, force-refresh and retry once. Only safe methods
 	// (GET/HEAD) are retried — the request body is consumed and cannot be replayed.
-	if resp.StatusCode == http.StatusUnauthorized && inject != nil && !inject.Passthrough &&
+	if resp.StatusCode == http.StatusUnauthorized && inject != nil && !inject.Passthrough && !frozen &&
 		(r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		_ = resp.Body.Close()
+		_, portStr, splitErr := net.SplitHostPort(target)
+		port := 0
+		if splitErr == nil {
+			port, _ = strconv.Atoi(portStr)
+		}
 		retryInject, retryErr := p.creds.Inject(r.Context(), scope.VaultID, host, port, r.URL.Path)
 		if retryErr == nil && retryInject != nil && retryInject.Headers != nil {
 			retryReq := outReq.Clone(outReq.Context())
@@ -397,6 +477,7 @@ func (p *Proxy) forwardRequest(
 			w.Header().Add(k, v)
 		}
 	}
+	stripAgentVaultHeaders(w.Header())
 	w.WriteHeader(resp.StatusCode)
 
 	var src io.Reader = resp.Body

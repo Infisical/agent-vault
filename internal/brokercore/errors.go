@@ -50,4 +50,20 @@ var (
 	// ErrOAuthRefreshFailed means the credential's access token expired
 	// and the automatic refresh attempt failed.
 	ErrOAuthRefreshFailed = errors.New("brokercore: oauth token refresh failed")
+
+	// ErrContinuationBind means a continuation token was presented for a
+	// request other than the one it was minted for.
+	ErrContinuationBind = errors.New("brokercore: continuation token does not match this request")
+
+	// ErrFilterMisconfigured means the filter path cannot run because
+	// configuration or frozen state is unusable. Callers surface 502.
+	ErrFilterMisconfigured = errors.New("brokercore: filter is misconfigured")
+
+	// ErrFilterUnreachable means the sidecar could not be dialed or the
+	// hop token could not be minted. Callers surface 502.
+	ErrFilterUnreachable = errors.New("brokercore: filter is unreachable")
+
+	// ErrFilterTimeout means the sidecar did not return response headers
+	// inside the origin hop budget. Callers surface 504.
+	ErrFilterTimeout = errors.New("brokercore: filter timed out")
 )
