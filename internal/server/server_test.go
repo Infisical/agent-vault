@@ -45,6 +45,7 @@ type mockStore struct {
 	agentVaultGrants   []store.VaultGrant                     // agent vault grants
 	settings           map[string]string                      // instance settings
 	vaultSettings      map[string]map[string]string           // per-vault: vaultID -> key -> value
+	vaultSettingErrs   map[string]vaultSettingErr             // injected failures, keyed by setting key
 	skills             map[string]map[string]store.Skill      // per-vault: vaultID -> name -> skill
 	credStores         map[string]*store.VaultCredentialStore // per-vault external credential store config
 	unmatchedHosts     map[string][]store.UnmatchedHost       // keyed by vaultID
@@ -1123,7 +1124,15 @@ func (m *mockStore) GetAllSettings(_ context.Context) (map[string]string, error)
 	return result, nil
 }
 
+// vaultSettingErr injects a store failure for one vault setting key.
+type vaultSettingErr struct {
+	read, write error
+}
+
 func (m *mockStore) GetVaultSetting(_ context.Context, vaultID, key string) (string, error) {
+	if err := m.vaultSettingErrs[key].read; err != nil {
+		return "", err
+	}
 	if vs, ok := m.vaultSettings[vaultID]; ok {
 		if v, ok := vs[key]; ok {
 			return v, nil
@@ -1133,6 +1142,9 @@ func (m *mockStore) GetVaultSetting(_ context.Context, vaultID, key string) (str
 }
 
 func (m *mockStore) SetVaultSetting(_ context.Context, vaultID, key, value string) error {
+	if err := m.vaultSettingErrs[key].write; err != nil {
+		return err
+	}
 	if m.vaultSettings[vaultID] == nil {
 		m.vaultSettings[vaultID] = make(map[string]string)
 	}
@@ -1141,8 +1153,32 @@ func (m *mockStore) SetVaultSetting(_ context.Context, vaultID, key, value strin
 }
 
 func (m *mockStore) DeleteVaultSetting(_ context.Context, vaultID, key string) error {
+	if err := m.vaultSettingErrs[key].write; err != nil {
+		return err
+	}
 	if vs, ok := m.vaultSettings[vaultID]; ok {
 		delete(vs, key)
+	}
+	return nil
+}
+
+// UpdateVaultSettings is all-or-nothing, like the SQL store: an injected
+// write failure on any key leaves every key untouched.
+func (m *mockStore) UpdateVaultSettings(_ context.Context, vaultID string, settings map[string]string) error {
+	for k := range settings {
+		if err := m.vaultSettingErrs[k].write; err != nil {
+			return err
+		}
+	}
+	for k, v := range settings {
+		if v == "" {
+			delete(m.vaultSettings[vaultID], k)
+			continue
+		}
+		if m.vaultSettings[vaultID] == nil {
+			m.vaultSettings[vaultID] = make(map[string]string)
+		}
+		m.vaultSettings[vaultID][k] = v
 	}
 	return nil
 }
@@ -4688,6 +4724,35 @@ func TestVaultSettingsUnmatchedHostCookies(t *testing.T) {
 		}
 		if v := ms.vaultSettings["root-ns-id"][settingUnmatchedHostPolicy]; v != "" {
 			t.Fatalf("valid field must not be persisted when another is invalid, got policy=%q", v)
+		}
+	})
+
+	t.Run("write failure commits neither field", func(t *testing.T) {
+		_ = ms.SetVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostPolicy, "deny")
+		_ = ms.SetVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostCookies, "forward")
+		ms.vaultSettingErrs = map[string]vaultSettingErr{settingUnmatchedHostCookies: {write: errors.New("db down")}}
+		defer func() { ms.vaultSettingErrs = nil }()
+		rec := do(http.MethodPatch, `{"unmatched_host_policy": "passthrough", "unmatched_host_cookies": "strip"}`)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
+		}
+		st := ms.vaultSettings["root-ns-id"]
+		if st[settingUnmatchedHostPolicy] != "deny" || st[settingUnmatchedHostCookies] != "forward" {
+			t.Fatalf("failed PATCH must not partially commit, got policy=%q cookies=%q",
+				st[settingUnmatchedHostPolicy], st[settingUnmatchedHostCookies])
+		}
+	})
+
+	t.Run("read failure for untouched field writes nothing", func(t *testing.T) {
+		_ = ms.DeleteVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostPolicy)
+		ms.vaultSettingErrs = map[string]vaultSettingErr{settingUnmatchedHostCookies: {read: errors.New("db down")}}
+		defer func() { ms.vaultSettingErrs = nil }()
+		rec := do(http.MethodPatch, `{"unmatched_host_policy": "deny"}`)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if v := ms.vaultSettings["root-ns-id"][settingUnmatchedHostPolicy]; v != "" {
+			t.Fatalf("a PATCH that reports failure must not have committed, got policy=%q", v)
 		}
 	})
 

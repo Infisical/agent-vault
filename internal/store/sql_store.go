@@ -14,6 +14,7 @@ import (
 	"io"
 	mrand "math/rand/v2"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -270,6 +271,41 @@ func (s *SQLStore) DeleteVaultSetting(ctx context.Context, vaultID, key string) 
 		s.dialect.Rebind(`DELETE FROM vault_settings WHERE vault_id = ? AND key = ?`),
 		vaultID, key)
 	return err
+}
+
+// UpdateVaultSettings writes every key in one transaction, so a failure
+// partway leaves all of them unchanged. An empty value deletes the row,
+// reverting that setting to its default. Keys are written in sorted order.
+func (s *SQLStore) UpdateVaultSettings(ctx context.Context, vaultID string, settings map[string]string) error {
+	keys := make([]string, 0, len(settings))
+	for k := range settings {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	nowVal := s.now()
+	for _, k := range keys {
+		if v := settings[k]; v == "" {
+			_, err = tx.ExecContext(ctx,
+				s.dialect.Rebind(`DELETE FROM vault_settings WHERE vault_id = ? AND key = ?`),
+				vaultID, k)
+		} else {
+			_, err = tx.ExecContext(ctx,
+				s.dialect.Rebind(`INSERT INTO vault_settings (vault_id, key, value, updated_at) VALUES (?, ?, ?, ?)
+				 ON CONFLICT(vault_id, key) DO UPDATE SET value = excluded.value, updated_at = ?`),
+				vaultID, k, v, nowVal, nowVal)
+		}
+		if err != nil {
+			return fmt.Errorf("writing vault setting %q: %w", k, err)
+		}
+	}
+	return tx.Commit()
 }
 
 // --- Vault Skills ---

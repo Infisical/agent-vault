@@ -604,6 +604,9 @@ type Store interface {
 	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
 	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
 	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
+	// UpdateVaultSettings writes every key in one transaction; an empty
+	// value deletes that key's row.
+	UpdateVaultSettings(ctx context.Context, vaultID string, settings map[string]string) error
 
 	// Vault skills (markdown instruction documents, one row per skill).
 	// ListSkills omits the markdown body; GetSkill returns it.

@@ -1010,23 +1010,10 @@ func (s *Server) handleVaultSettingsPatch(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// On the write path, echo the validated input rather than re-reading
-	// it — otherwise a transient read failure after a committed write
-	// would desync the UI from the DB on a security-relevant control.
-	// Only fields absent from the PATCH are read back.
-	if body.UnmatchedHostPolicy != nil {
-		if err := s.writeVaultSetting(ctx, ns.ID, settingUnmatchedHostPolicy, policyVal); err != nil {
-			jsonError(w, http.StatusInternalServerError, "Failed to update vault settings")
-			return
-		}
-	}
-	if body.UnmatchedHostCookies != nil {
-		if err := s.writeVaultSetting(ctx, ns.ID, settingUnmatchedHostCookies, cookiesVal); err != nil {
-			jsonError(w, http.StatusInternalServerError, "Failed to update vault settings")
-			return
-		}
-	}
-
+	// Read fields absent from the PATCH before writing, so a read failure
+	// returns 500 before anything commits. Supplied fields echo the
+	// validated input rather than a re-read, so a 200 always reflects
+	// what was committed.
 	policy := brokercore.UnmatchedHostPolicy(policyVal)
 	if body.UnmatchedHostPolicy == nil {
 		var err error
@@ -1047,19 +1034,27 @@ func (s *Server) handleVaultSettingsPatch(w http.ResponseWriter, r *http.Request
 	} else if cookiesVal == "" {
 		cookies = brokercore.CookiesStrip
 	}
+
+	// Commit every supplied field in one transaction, so a failure can't
+	// leave e.g. passthrough enabled with cookie forwarding still on.
+	settings := map[string]string{}
+	if body.UnmatchedHostPolicy != nil {
+		settings[settingUnmatchedHostPolicy] = policyVal
+	}
+	if body.UnmatchedHostCookies != nil {
+		settings[settingUnmatchedHostCookies] = cookiesVal
+	}
+	if len(settings) > 0 {
+		if err := s.store.UpdateVaultSettings(ctx, ns.ID, settings); err != nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to update vault settings")
+			return
+		}
+	}
+
 	jsonOK(w, map[string]interface{}{
 		"unmatched_host_policy":  string(policy),
 		"unmatched_host_cookies": string(cookies),
 	})
-}
-
-// writeVaultSetting stores val under key, or deletes the row when val is
-// empty so the setting reverts to its default.
-func (s *Server) writeVaultSetting(ctx context.Context, vaultID, key, val string) error {
-	if val == "" {
-		return s.store.DeleteVaultSetting(ctx, vaultID, key)
-	}
-	return s.store.SetVaultSetting(ctx, vaultID, key, val)
 }
 
 func (s *Server) handleVaultLeave(w http.ResponseWriter, r *http.Request) {
