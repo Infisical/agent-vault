@@ -85,8 +85,9 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 	// exhausted. Only auth failures are recorded (below). Shares the
 	// TierAuth budget and key shape with CONNECT. Loopback is exempt.
 	if p.rateLimit != nil && !isLoopbackPeer(r) {
-		if d := p.rateLimit.Check(ratelimit.TierAuth, mitmIPKey(r)); !d.Allow {
-			ratelimit.WriteDenial(w, d, "Too many proxy requests")
+		key := mitmIPKey(r)
+		if d := p.rateLimit.Check(ratelimit.TierAuth, key); !d.Allow {
+			p.denyAuthFlood(w, r, "forward", key, d, "Too many proxy requests")
 			return
 		}
 	}
