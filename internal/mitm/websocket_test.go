@@ -1,10 +1,12 @@
 package mitm
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"io"
 	"net"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -295,5 +297,39 @@ func TestFilterWebSocketSubs(t *testing.T) {
 	}
 	if ws[0].Placeholder != "__a__" || ws[1].Placeholder != "__c__" {
 		t.Fatalf("unexpected filtered subs: %+v", ws)
+	}
+}
+
+// The 101 Switching Protocols response honours the same Set-Cookie
+// opt-in as plain HTTP responses.
+func TestWriteWebSocketSwitchingResponseSetCookie(t *testing.T) {
+	for _, forward := range []bool{false, true} {
+		upstream := &http.Response{
+			StatusCode: http.StatusSwitchingProtocols,
+			Proto:      "HTTP/1.1",
+			Header: http.Header{
+				"Sec-Websocket-Accept": {"abc"},
+				"Set-Cookie":           {"a=1", "b=2"},
+			},
+		}
+		var buf bytes.Buffer
+		if err := writeWebSocketSwitchingResponse(&buf, upstream, forward); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		resp, err := http.ReadResponse(bufio.NewReader(&buf), &http.Request{Method: http.MethodGet})
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		_ = resp.Body.Close()
+		want := 0
+		if forward {
+			want = 2
+		}
+		if got := resp.Header.Values("Set-Cookie"); len(got) != want {
+			t.Errorf("forward=%v: Set-Cookie = %q, want %d values", forward, got, want)
+		}
+		if got := resp.Header.Get("Sec-Websocket-Accept"); got != "abc" {
+			t.Errorf("forward=%v: Sec-WebSocket-Accept = %q, want abc", forward, got)
+		}
 	}
 }
