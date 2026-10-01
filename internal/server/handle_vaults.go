@@ -55,11 +55,44 @@ func readUnmatchedHostPolicy(ctx context.Context, st interface {
 		}
 		return brokercore.PolicyPassthrough, err
 	}
+	return parseUnmatchedHostPolicy(raw), nil
+}
+
+// parseUnmatchedHostPolicy maps a stored value to a policy, defaulting to
+// PolicyPassthrough when it is empty (absent) or unrecognised.
+func parseUnmatchedHostPolicy(raw string) brokercore.UnmatchedHostPolicy {
 	policy := brokercore.UnmatchedHostPolicy(raw)
 	if !brokercore.IsValidUnmatchedHostPolicy(policy) {
-		return brokercore.PolicyPassthrough, nil
+		return brokercore.PolicyPassthrough
 	}
-	return policy, nil
+	return policy
+}
+
+// readUnmatchedHostCookies returns the per-vault unmatched_host_cookies
+// setting, defaulting to CookiesStrip when the row is absent or holds an
+// unrecognised value. A non-nil error means the underlying store read
+// failed for a reason other than "not present".
+func readUnmatchedHostCookies(ctx context.Context, st interface {
+	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
+}, vaultID string) (brokercore.UnmatchedHostCookies, error) {
+	raw, err := st.GetVaultSetting(ctx, vaultID, settingUnmatchedHostCookies)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return brokercore.CookiesStrip, nil
+		}
+		return brokercore.CookiesStrip, err
+	}
+	return parseUnmatchedHostCookies(raw), nil
+}
+
+// parseUnmatchedHostCookies maps a stored value to a cookie mode,
+// defaulting to CookiesStrip when it is empty (absent) or unrecognised.
+func parseUnmatchedHostCookies(raw string) brokercore.UnmatchedHostCookies {
+	cookies := brokercore.UnmatchedHostCookies(raw)
+	if !brokercore.IsValidUnmatchedHostCookies(cookies) {
+		return brokercore.CookiesStrip
+	}
+	return cookies
 }
 
 // handleVaultContext returns the current user's membership context for a vault.
@@ -938,13 +971,19 @@ func (s *Server) handleVaultSettingsGet(w http.ResponseWriter, r *http.Request) 
 		jsonError(w, http.StatusInternalServerError, "Failed to read vault settings")
 		return
 	}
+	cookies, err := readUnmatchedHostCookies(ctx, s.store, ns.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to read vault settings")
+		return
+	}
 	// infisical_available enables the Infisical option in the credential-store
 	// switcher. Only owners can connect a vault to Infisical (see
 	// handleVaultCredentialStorePatch), so report it owner-gated — otherwise a
 	// non-owner admin would see an option that 403s on submit.
 	jsonOK(w, map[string]interface{}{
-		"unmatched_host_policy": string(policy),
-		"infisical_available":   s.infisicalClient != nil && actor != nil && actor.IsOwner(),
+		"unmatched_host_policy":  string(policy),
+		"unmatched_host_cookies": string(cookies),
+		"infisical_available":    s.infisicalClient != nil && actor != nil && actor.IsOwner(),
 	})
 }
 
@@ -956,48 +995,56 @@ func (s *Server) handleVaultSettingsPatch(w http.ResponseWriter, r *http.Request
 	ctx := r.Context()
 
 	var body struct {
-		UnmatchedHostPolicy *string `json:"unmatched_host_policy"`
+		UnmatchedHostPolicy  *string `json:"unmatched_host_policy"`
+		UnmatchedHostCookies *string `json:"unmatched_host_cookies"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	// On the write path, echo the validated input. The follow-up read
-	// only fires for no-op PATCHes (no field set) — otherwise a transient
-	// read failure after a committed write would desync the UI from the
-	// DB on a security-relevant control.
+	// Validate every supplied field before writing any of them so an
+	// invalid value can't leave the vault half-updated. An empty string
+	// clears the setting back to its default.
+	var policyVal, cookiesVal string
 	if body.UnmatchedHostPolicy != nil {
-		val := strings.TrimSpace(*body.UnmatchedHostPolicy)
-		var effective brokercore.UnmatchedHostPolicy
-		if val == "" {
-			if err := s.store.DeleteVaultSetting(ctx, ns.ID, settingUnmatchedHostPolicy); err != nil {
-				jsonError(w, http.StatusInternalServerError, "Failed to update vault settings")
-				return
-			}
-			effective = brokercore.PolicyPassthrough
-		} else {
-			policy := brokercore.UnmatchedHostPolicy(val)
-			if !brokercore.IsValidUnmatchedHostPolicy(policy) {
-				jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid unmatched_host_policy %q (expected \"passthrough\" or \"deny\")", val))
-				return
-			}
-			if err := s.store.SetVaultSetting(ctx, ns.ID, settingUnmatchedHostPolicy, string(policy)); err != nil {
-				jsonError(w, http.StatusInternalServerError, "Failed to update vault settings")
-				return
-			}
-			effective = policy
+		policyVal = strings.TrimSpace(*body.UnmatchedHostPolicy)
+		if policyVal != "" && !brokercore.IsValidUnmatchedHostPolicy(brokercore.UnmatchedHostPolicy(policyVal)) {
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid unmatched_host_policy %q (expected \"passthrough\" or \"deny\")", policyVal))
+			return
 		}
-		jsonOK(w, map[string]interface{}{"unmatched_host_policy": string(effective)})
+	}
+	if body.UnmatchedHostCookies != nil {
+		cookiesVal = strings.TrimSpace(*body.UnmatchedHostCookies)
+		if cookiesVal != "" && !brokercore.IsValidUnmatchedHostCookies(brokercore.UnmatchedHostCookies(cookiesVal)) {
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid unmatched_host_cookies %q (expected \"strip\" or \"forward\")", cookiesVal))
+			return
+		}
+	}
+
+	// Commit every supplied field in one transaction, so a failure can't
+	// leave e.g. passthrough enabled with cookie forwarding still on. The
+	// response is built from the settings read back inside that same
+	// transaction, so it reports what this PATCH committed together with
+	// the current value of any field it omitted — a separate read before
+	// or after the write could race a concurrent PATCH.
+	settings := map[string]string{}
+	if body.UnmatchedHostPolicy != nil {
+		settings[settingUnmatchedHostPolicy] = policyVal
+	}
+	if body.UnmatchedHostCookies != nil {
+		settings[settingUnmatchedHostCookies] = cookiesVal
+	}
+	current, err := s.store.UpdateVaultSettings(ctx, ns.ID, settings)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "Failed to update vault settings")
 		return
 	}
 
-	policy, err := readUnmatchedHostPolicy(ctx, s.store, ns.ID)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to read vault settings")
-		return
-	}
-	jsonOK(w, map[string]interface{}{"unmatched_host_policy": string(policy)})
+	jsonOK(w, map[string]interface{}{
+		"unmatched_host_policy":  string(parseUnmatchedHostPolicy(current[settingUnmatchedHostPolicy])),
+		"unmatched_host_cookies": string(parseUnmatchedHostCookies(current[settingUnmatchedHostCookies])),
+	})
 }
 
 func (s *Server) handleVaultLeave(w http.ResponseWriter, r *http.Request) {

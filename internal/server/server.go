@@ -231,6 +231,10 @@ func (a credentialStoreAdapter) UnmatchedHostPolicy(ctx context.Context, vaultID
 	return readUnmatchedHostPolicy(ctx, a.Store, vaultID)
 }
 
+func (a credentialStoreAdapter) UnmatchedHostCookies(ctx context.Context, vaultID string) (brokercore.UnmatchedHostCookies, error) {
+	return readUnmatchedHostCookies(ctx, a.Store, vaultID)
+}
+
 func (a credentialStoreAdapter) GetCredentialOAuth(ctx context.Context, vaultID, key string) (*store.CredentialOAuth, error) {
 	return a.Store.GetCredentialOAuth(ctx, vaultID, key)
 }
@@ -362,6 +366,7 @@ type Store interface {
 	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
 	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
 	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
+	UpdateVaultSettings(ctx context.Context, vaultID string, settings map[string]string) (map[string]string, error)
 
 	// Vault skills (markdown instruction documents)
 	ListSkills(ctx context.Context, vaultID string) ([]store.SkillMeta, error)
@@ -1438,3 +1443,8 @@ const settingRateLimitConfig = "ratelimit_config"
 // settingUnmatchedHostPolicy is the per-vault key in vault_settings that
 // controls whether requests to unmatched hosts passthrough or are denied.
 const settingUnmatchedHostPolicy = "unmatched_host_policy"
+
+// settingUnmatchedHostCookies is the per-vault key in vault_settings that
+// controls whether upstream Set-Cookie headers are relayed to the agent
+// for unmatched-host passthrough traffic.
+const settingUnmatchedHostCookies = "unmatched_host_cookies"

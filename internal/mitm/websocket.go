@@ -57,6 +57,7 @@ func (p *Proxy) forwardWebSocket(
 	r *http.Request,
 	outReq *http.Request,
 	wsSubs []brokercore.ResolvedSubstitution,
+	forwardSetCookie bool,
 	emit func(status int, errCode string),
 ) {
 	upstreamConn, upstreamReader, resp, err := p.dialWebSocketUpstream(r.Context(), outReq)
@@ -83,7 +84,7 @@ func (p *Proxy) forwardWebSocket(
 		}
 
 		for k, vv := range resp.Header {
-			if brokercore.ShouldStripResponseHeader(k) {
+			if brokercore.ShouldStripResponseHeader(k, forwardSetCookie) {
 				continue
 			}
 			for _, v := range vv {
@@ -137,7 +138,7 @@ func (p *Proxy) forwardWebSocket(
 	}
 
 	_ = clientConn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	if err := writeWebSocketSwitchingResponse(clientConn, resp); err != nil {
+	if err := writeWebSocketSwitchingResponse(clientConn, resp, forwardSetCookie); err != nil {
 		_ = clientConn.Close()
 		_ = upstreamConn.Close()
 		emit(http.StatusBadGateway, "upstream_error")
@@ -243,7 +244,7 @@ func (p *Proxy) responseHeaderTimeout() time.Duration {
 	return 30 * time.Second
 }
 
-func writeWebSocketSwitchingResponse(w io.Writer, resp *http.Response) error {
+func writeWebSocketSwitchingResponse(w io.Writer, resp *http.Response, forwardSetCookie bool) error {
 	proto := resp.Proto
 	if proto == "" {
 		proto = "HTTP/1.1"
@@ -258,7 +259,7 @@ func writeWebSocketSwitchingResponse(w io.Writer, resp *http.Response) error {
 
 	header := make(http.Header)
 	for k, vv := range resp.Header {
-		if !isSafeWebSocketSwitchHeader(k) {
+		if !isSafeWebSocketSwitchHeader(k, forwardSetCookie) {
 			continue
 		}
 		for _, v := range vv {
@@ -280,7 +281,7 @@ func writeWebSocketSwitchingResponse(w io.Writer, resp *http.Response) error {
 	return err
 }
 
-func isSafeWebSocketSwitchHeader(name string) bool {
+func isSafeWebSocketSwitchHeader(name string, forwardSetCookie bool) bool {
 	switch http.CanonicalHeaderKey(name) {
 	case "Connection",
 		"Upgrade",
@@ -289,7 +290,7 @@ func isSafeWebSocketSwitchHeader(name string) bool {
 		"Sec-Websocket-Protocol":
 		return true
 	default:
-		return !brokercore.ShouldStripResponseHeader(name) && !strings.HasPrefix(http.CanonicalHeaderKey(name), "Sec-")
+		return !brokercore.ShouldStripResponseHeader(name, forwardSetCookie) && !strings.HasPrefix(http.CanonicalHeaderKey(name), "Sec-")
 	}
 }
 

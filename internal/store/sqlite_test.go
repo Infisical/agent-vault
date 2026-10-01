@@ -2738,3 +2738,45 @@ func TestListUnmatchedHosts(t *testing.T) {
 		t.Fatalf("expected 0 hosts for nonexistent vault, got %d", len(empty))
 	}
 }
+
+func TestUpdateVaultSettings(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	ns, err := s.CreateVault(ctx, "settings")
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+
+	if err := s.SetVaultSetting(ctx, ns.ID, "cleared", "old"); err != nil {
+		t.Fatalf("SetVaultSetting: %v", err)
+	}
+	if err := s.SetVaultSetting(ctx, ns.ID, "untouched", "u"); err != nil {
+		t.Fatalf("SetVaultSetting: %v", err)
+	}
+	current, err := s.UpdateVaultSettings(ctx, ns.ID, map[string]string{"kept": "v1", "cleared": ""})
+	if err != nil {
+		t.Fatalf("UpdateVaultSettings: %v", err)
+	}
+	if len(current) != 2 || current["kept"] != "v1" || current["untouched"] != "u" {
+		t.Fatalf("expected post-write settings {kept:v1 untouched:u}, got %v", current)
+	}
+	if v, err := s.GetVaultSetting(ctx, ns.ID, "kept"); err != nil || v != "v1" {
+		t.Fatalf("expected kept=v1, got %q (err %v)", v, err)
+	}
+	if _, err := s.GetVaultSetting(ctx, ns.ID, "cleared"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected empty value to delete the row, got err %v", err)
+	}
+
+	// Writes apply in key order, so "a_first" lands before the trigger
+	// aborts "z_boom" — the rollback must undo it.
+	if _, err := s.db.ExecContext(ctx, `CREATE TRIGGER boom BEFORE INSERT ON vault_settings
+		WHEN NEW.key = 'z_boom' BEGIN SELECT RAISE(ABORT, 'boom'); END`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	if _, err := s.UpdateVaultSettings(ctx, ns.ID, map[string]string{"a_first": "x", "z_boom": "y"}); err == nil {
+		t.Fatal("expected UpdateVaultSettings to fail")
+	}
+	if _, err := s.GetVaultSetting(ctx, ns.ID, "a_first"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("failed update must not partially commit, got err %v", err)
+	}
+}
