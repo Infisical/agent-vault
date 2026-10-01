@@ -2750,8 +2750,15 @@ func TestUpdateVaultSettings(t *testing.T) {
 	if err := s.SetVaultSetting(ctx, ns.ID, "cleared", "old"); err != nil {
 		t.Fatalf("SetVaultSetting: %v", err)
 	}
-	if err := s.UpdateVaultSettings(ctx, ns.ID, map[string]string{"kept": "v1", "cleared": ""}); err != nil {
+	if err := s.SetVaultSetting(ctx, ns.ID, "untouched", "u"); err != nil {
+		t.Fatalf("SetVaultSetting: %v", err)
+	}
+	current, err := s.UpdateVaultSettings(ctx, ns.ID, map[string]string{"kept": "v1", "cleared": ""})
+	if err != nil {
 		t.Fatalf("UpdateVaultSettings: %v", err)
+	}
+	if len(current) != 2 || current["kept"] != "v1" || current["untouched"] != "u" {
+		t.Fatalf("expected post-write settings {kept:v1 untouched:u}, got %v", current)
 	}
 	if v, err := s.GetVaultSetting(ctx, ns.ID, "kept"); err != nil || v != "v1" {
 		t.Fatalf("expected kept=v1, got %q (err %v)", v, err)
@@ -2766,7 +2773,7 @@ func TestUpdateVaultSettings(t *testing.T) {
 		WHEN NEW.key = 'z_boom' BEGIN SELECT RAISE(ABORT, 'boom'); END`); err != nil {
 		t.Fatalf("create trigger: %v", err)
 	}
-	if err := s.UpdateVaultSettings(ctx, ns.ID, map[string]string{"a_first": "x", "z_boom": "y"}); err == nil {
+	if _, err := s.UpdateVaultSettings(ctx, ns.ID, map[string]string{"a_first": "x", "z_boom": "y"}); err == nil {
 		t.Fatal("expected UpdateVaultSettings to fail")
 	}
 	if _, err := s.GetVaultSetting(ctx, ns.ID, "a_first"); !errors.Is(err, sql.ErrNoRows) {

@@ -276,7 +276,10 @@ func (s *SQLStore) DeleteVaultSetting(ctx context.Context, vaultID, key string) 
 // UpdateVaultSettings writes every key in one transaction, so a failure
 // partway leaves all of them unchanged. An empty value deletes the row,
 // reverting that setting to its default. Keys are written in sorted order.
-func (s *SQLStore) UpdateVaultSettings(ctx context.Context, vaultID string, settings map[string]string) error {
+// It returns all of the vault's settings read back inside the transaction
+// after the writes, so callers can report what was committed alongside
+// keys they didn't touch without a separate (racy) read.
+func (s *SQLStore) UpdateVaultSettings(ctx context.Context, vaultID string, settings map[string]string) (map[string]string, error) {
 	keys := make([]string, 0, len(settings))
 	for k := range settings {
 		keys = append(keys, k)
@@ -285,7 +288,7 @@ func (s *SQLStore) UpdateVaultSettings(ctx context.Context, vaultID string, sett
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+		return nil, fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -302,10 +305,34 @@ func (s *SQLStore) UpdateVaultSettings(ctx context.Context, vaultID string, sett
 				vaultID, k, v, nowVal, nowVal)
 		}
 		if err != nil {
-			return fmt.Errorf("writing vault setting %q: %w", k, err)
+			return nil, fmt.Errorf("writing vault setting %q: %w", k, err)
 		}
 	}
-	return tx.Commit()
+
+	rows, err := tx.QueryContext(ctx,
+		s.dialect.Rebind(`SELECT key, value FROM vault_settings WHERE vault_id = ?`), vaultID)
+	if err != nil {
+		return nil, fmt.Errorf("reading vault settings: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	current := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, fmt.Errorf("scanning vault setting: %w", err)
+		}
+		current[k] = v
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading vault settings: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("reading vault settings: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return current, nil
 }
 
 // --- Vault Skills ---

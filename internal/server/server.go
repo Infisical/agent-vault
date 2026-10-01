@@ -366,7 +366,7 @@ type Store interface {
 	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
 	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
 	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
-	UpdateVaultSettings(ctx context.Context, vaultID string, settings map[string]string) error
+	UpdateVaultSettings(ctx context.Context, vaultID string, settings map[string]string) (map[string]string, error)
 
 	// Vault skills (markdown instruction documents)
 	ListSkills(ctx context.Context, vaultID string) ([]store.SkillMeta, error)

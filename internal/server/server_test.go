@@ -46,6 +46,7 @@ type mockStore struct {
 	settings           map[string]string                      // instance settings
 	vaultSettings      map[string]map[string]string           // per-vault: vaultID -> key -> value
 	vaultSettingErrs   map[string]vaultSettingErr             // injected failures, keyed by setting key
+	onUpdateVaultSettings func()                              // runs before UpdateVaultSettings applies, to simulate a concurrent write
 	skills             map[string]map[string]store.Skill      // per-vault: vaultID -> name -> skill
 	credStores         map[string]*store.VaultCredentialStore // per-vault external credential store config
 	unmatchedHosts     map[string][]store.UnmatchedHost       // keyed by vaultID
@@ -1163,11 +1164,20 @@ func (m *mockStore) DeleteVaultSetting(_ context.Context, vaultID, key string) e
 }
 
 // UpdateVaultSettings is all-or-nothing, like the SQL store: an injected
-// write failure on any key leaves every key untouched.
-func (m *mockStore) UpdateVaultSettings(_ context.Context, vaultID string, settings map[string]string) error {
+// write failure on any key, or a read failure on any key, leaves every key
+// untouched.
+func (m *mockStore) UpdateVaultSettings(_ context.Context, vaultID string, settings map[string]string) (map[string]string, error) {
+	if m.onUpdateVaultSettings != nil {
+		m.onUpdateVaultSettings()
+	}
 	for k := range settings {
 		if err := m.vaultSettingErrs[k].write; err != nil {
-			return err
+			return nil, err
+		}
+	}
+	for _, e := range m.vaultSettingErrs {
+		if e.read != nil {
+			return nil, e.read
 		}
 	}
 	for k, v := range settings {
@@ -1180,7 +1190,11 @@ func (m *mockStore) UpdateVaultSettings(_ context.Context, vaultID string, setti
 		}
 		m.vaultSettings[vaultID][k] = v
 	}
-	return nil
+	current := make(map[string]string, len(m.vaultSettings[vaultID]))
+	for k, v := range m.vaultSettings[vaultID] {
+		current[k] = v
+	}
+	return current, nil
 }
 
 // Vault skills: real in-memory behavior, not stubs — the handler tests assert
@@ -4753,6 +4767,23 @@ func TestVaultSettingsUnmatchedHostCookies(t *testing.T) {
 		}
 		if v := ms.vaultSettings["root-ns-id"][settingUnmatchedHostPolicy]; v != "" {
 			t.Fatalf("a PATCH that reports failure must not have committed, got policy=%q", v)
+		}
+	})
+
+	t.Run("response reflects a concurrent commit to an omitted field", func(t *testing.T) {
+		_ = ms.DeleteVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostPolicy)
+		_ = ms.DeleteVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostCookies)
+		// Another admin enables cookie forwarding while this PATCH is in flight.
+		ms.onUpdateVaultSettings = func() {
+			_ = ms.SetVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostCookies, "forward")
+		}
+		defer func() { ms.onUpdateVaultSettings = nil }()
+		rec := do(http.MethodPatch, `{"unmatched_host_policy": "deny"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if got := decode(rec)["unmatched_host_cookies"]; got != "forward" {
+			t.Fatalf("expected response to report the committed forward, got %v", got)
 		}
 	})
 
