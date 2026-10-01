@@ -17,6 +17,9 @@ type VaultConfig struct {
 	ProjectID   string `json:"project_id"`
 	Environment string `json:"environment"`
 	SecretPath  string `json:"secret_path"`
+	// Recursive syncs secrets from all subfolders of SecretPath. Keys must
+	// then be unique across the whole folder tree (see ErrDuplicateKey).
+	Recursive bool `json:"recursive"`
 }
 
 // Validate enforces the structural invariants the SDK and the broker both
