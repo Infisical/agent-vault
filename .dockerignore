@@ -3,3 +3,9 @@ sb
 .gitignore
 *.md
 !README.md
+web/node_modules
+web/dist
+agent-vault
+internal/server/webdist
+.env
+.idea
