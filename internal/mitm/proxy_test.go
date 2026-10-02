@@ -68,7 +68,7 @@ type fakeInjectResult struct {
 	err    error
 }
 
-func (f *fakeCredProvider) Inject(_ context.Context, _, targetHost string, targetPort int, _ string) (*brokercore.InjectResult, error) {
+func (f *fakeCredProvider) Inject(_ context.Context, _, targetHost string, targetPort int, _, _ string) (*brokercore.InjectResult, error) {
 	host := targetHost
 	if h, _, err := net.SplitHostPort(targetHost); err == nil {
 		host = h
