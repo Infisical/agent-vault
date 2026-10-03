@@ -32,7 +32,7 @@ func TestCommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"server", "auth", "vault", "owner", "account", "catalog", "user", "agent", "ca", "migrate-db"}
+	expected := []string{"server", "auth", "vault", "owner", "account", "catalog", "user", "agent", "ca", "migrate-db", "wrap", "unwrap"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected command %q to be registered, but it was not", name)
