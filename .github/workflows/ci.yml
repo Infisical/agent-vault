@@ -175,12 +175,28 @@ jobs:
       - name: Build
         run: npm run build
 
+  helm-chart:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.2
+
+      - name: Lint and render chart security scenarios
+        run: charts/agent-vault/ci/test-chart.sh
+
   # Single required status check. `if: always()` is mandatory — without it,
   # a skipped upstream job would mark this job as skipped, and a skipped
   # required check blocks merging.
   ci-summary:
     if: always()
-    needs: [changes, frontend-build, go-test, go-lint, go-mod-tidy, sdk-ts]
+    needs: [changes, frontend-build, go-test, go-lint, go-mod-tidy, sdk-ts, helm-chart]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required jobs
@@ -191,6 +207,7 @@ jobs:
           GO_LINT: ${{ needs.go-lint.result }}
           GO_MOD_TIDY: ${{ needs.go-mod-tidy.result }}
           SDK_TS: ${{ needs.sdk-ts.result }}
+          HELM_CHART: ${{ needs.helm-chart.result }}
         run: |
           fail=0
           check() {
@@ -209,4 +226,5 @@ jobs:
           check go-lint        "$GO_LINT"
           check go-mod-tidy    "$GO_MOD_TIDY"
           check sdk-ts         "$SDK_TS"
+          check helm-chart     "$HELM_CHART"
           exit $fail

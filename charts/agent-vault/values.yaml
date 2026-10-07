@@ -1,0 +1,178 @@
+# Default values for agent-vault.
+
+replicaCount: 1
+
+image:
+  repository: infisical/agent-vault
+  pullPolicy: IfNotPresent
+  # Defaults to Chart.appVersion when empty.
+  tag: ""
+  # When set, the digest takes precedence over tag (repository@digest).
+  digest: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  # Enable only when Agent Vault uses Kubernetes workload identity (for
+  # example, Infisical Kubernetes Auth).
+  automount: false
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+
+server:
+  host: 0.0.0.0
+  port: 14321
+  mitmPort: 14322
+  logLevel: info
+
+# Non-secret environment variables passed directly to the container.
+env: {}
+  # AGENT_VAULT_ADDR: https://agent-vault.example.com
+  # AGENT_VAULT_TELEMETRY: "false"
+  # INFISICAL_URL: https://app.infisical.com
+
+# Secret environment variables. When non-empty and existingSecret is unset, this
+# chart creates a Secret and wires these keys into the container env.
+secretEnv: {}
+  # AGENT_VAULT_MASTER_PASSWORD: change-me
+  # DATABASE_URL: postgres://user:password@postgres:5432/agentvault?sslmode=require
+  # INFISICAL_UNIVERSAL_AUTH_CLIENT_ID: ...
+  # INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET: ...
+
+# Use an existing Secret for sensitive env vars. Required keys fail pod startup
+# if absent; optional keys are ignored when absent.
+existingSecret: ""
+existingSecretKeys:
+  required:
+    - AGENT_VAULT_MASTER_PASSWORD
+  optional:
+    - DATABASE_URL
+    - INFISICAL_UNIVERSAL_AUTH_CLIENT_ID
+    - INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET
+    - INFISICAL_KUBERNETES_IDENTITY_ID
+    - INFISICAL_KUBERNETES_SERVICE_ACCOUNT_TOKEN_PATH
+    - INFISICAL_AWS_IAM_AUTH_IDENTITY_ID
+    - INFISICAL_GCP_AUTH_IDENTITY_ID
+    - INFISICAL_GCP_IAM_SERVICE_ACCOUNT_KEY_FILE_PATH
+    - INFISICAL_LDAP_AUTH_IDENTITY_ID
+    - INFISICAL_LDAP_AUTH_USERNAME
+    - INFISICAL_LDAP_AUTH_PASSWORD
+    - AGENT_VAULT_SMTP_HOST
+    - AGENT_VAULT_SMTP_PORT
+    - AGENT_VAULT_SMTP_USERNAME
+    - AGENT_VAULT_SMTP_PASSWORD
+    - AGENT_VAULT_SMTP_FROM
+    - AGENT_VAULT_SMTP_FROM_NAME
+
+extraEnv: []
+# - name: AGENT_VAULT_NETWORK_ALLOWLIST
+#   value: 10.0.0.0/8
+
+extraEnvFrom: []
+# - secretRef:
+#     name: agent-vault-extra
+
+service:
+  type: ClusterIP
+  annotations: {}
+  clusterIP: ""
+  loadBalancerClass: ""
+  externalTrafficPolicy: ""
+  api:
+    port: 14321
+    nodePort: 0
+  proxy:
+    port: 14322
+    nodePort: 0
+
+# Ingress policy only. Agent Vault's own netguard separately blocks private,
+# loopback, link-local, and metadata destinations from proxied requests.
+networkPolicy:
+  enabled: true
+  api:
+    # Empty means all sources that can otherwise route to the Service.
+    from: []
+  proxy:
+    # podSelector: {} means all pods in this release namespace.
+    from:
+      - podSelector: {}
+
+# Management UI/API ingress. The MITM proxy port is intentionally not exposed by
+# ingress; keep it reachable only from trusted agent networks.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: agent-vault.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources: {}
+# requests:
+#   cpu: 100m
+#   memory: 256Mi
+# limits:
+#   memory: 1Gi
+
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: api
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: api
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+persistence:
+  enabled: true
+  accessMode: ReadWriteOnce
+  size: 5Gi
+  storageClass: ""
+  annotations: {}
+  existingClaim: ""
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+priorityClassName: ""
+
+# Additional volumes and mounts.
+extraVolumes: []
+extraVolumeMounts: []

@@ -1,0 +1,18 @@
+apiVersion: v2
+name: agent-vault
+description: HTTP credential proxy and vault for AI agents
+type: application
+version: 0.1.0
+appVersion: "0.39.0"
+home: https://github.com/Infisical/agent-vault
+sources:
+  - https://github.com/Infisical/agent-vault
+keywords:
+  - agent-vault
+  - credentials
+  - proxy
+  - infisical
+  - ai-agents
+maintainers:
+  - name: Infisical
+    url: https://infisical.com
