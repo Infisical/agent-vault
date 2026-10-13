@@ -84,7 +84,7 @@ export default function SettingsTab() {
   }
 
   return (
-    <div className="p-8 w-full max-w-[960px]">
+    <div className="p-4 sm:p-8 w-full max-w-[960px]">
       <div className="mb-6">
         <h2 className="text-[22px] font-semibold text-text tracking-tight mb-1">
           Settings

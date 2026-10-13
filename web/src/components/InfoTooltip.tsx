@@ -13,7 +13,7 @@ export default function InfoTooltip({ children }: { children: ReactNode }) {
       </span>
       <span
         role="tooltip"
-        className="pointer-events-none absolute left-0 top-full mt-1.5 z-20 w-72 px-3 py-2 rounded-md bg-surface-raised border border-border text-xs text-text-muted leading-snug shadow-lg opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-100 normal-case tracking-normal font-normal"
+        className="pointer-events-none absolute left-0 top-full mt-1.5 z-20 w-72 max-w-[calc(100vw-2rem)] px-3 py-2 rounded-md bg-surface-raised border border-border text-xs text-text-muted leading-snug shadow-lg opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-100 normal-case tracking-normal font-normal"
       >
         {children}
       </span>

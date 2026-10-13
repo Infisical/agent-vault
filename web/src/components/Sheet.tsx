@@ -53,7 +53,7 @@ export default function Sheet({
         aria-modal="true"
         aria-label={title}
       >
-        <div className="px-6 pt-5 pb-4 border-b border-border">
+        <div className="px-4 sm:px-6 pt-5 pb-4 border-b border-border">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               {eyebrow && (
@@ -66,7 +66,7 @@ export default function Sheet({
             <button
               onClick={onClose}
               aria-label="Close"
-              className="-mr-2 -mt-1 w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-full text-text-dim hover:text-text hover:bg-bg transition-colors"
+              className="-mr-2 -mt-1 w-11 h-11 sm:w-8 sm:h-8 flex-shrink-0 flex items-center justify-center rounded-full text-text-dim hover:text-text hover:bg-bg transition-colors"
             >
               <svg
                 className="w-4 h-4"
@@ -85,10 +85,10 @@ export default function Sheet({
           {headerExtra && <div className="mt-4">{headerExtra}</div>}
         </div>
 
-        <div className="flex-1 overflow-y-auto px-6 py-5">{children}</div>
+        <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-5">{children}</div>
 
         {footer && (
-          <div className="px-6 py-4 border-t border-border flex items-center justify-end gap-3">
+          <div className="px-4 sm:px-6 py-4 border-t border-border flex flex-wrap items-center justify-end gap-3">
             {footer}
           </div>
         )}
