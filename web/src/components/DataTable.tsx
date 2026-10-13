@@ -18,8 +18,11 @@ interface DataTableProps<T> {
 }
 
 // Keeps the identifying column visible while the rest of a wide table
-// scrolls horizontally on small screens. No effect from md up.
-const STICKY_FIRST_COL = "max-md:sticky max-md:left-0 max-md:z-[1] max-md:bg-surface";
+// scrolls horizontally on small screens. The width is capped and long
+// values wrap, so a long name can never cover the whole card and hide the
+// row controls behind it. No effect from md up.
+const STICKY_FIRST_COL =
+  "max-md:sticky max-md:left-0 max-md:z-[1] max-md:bg-surface max-md:max-w-[45vw] max-md:whitespace-normal max-md:[overflow-wrap:anywhere]";
 
 export default function DataTable<T>({
   columns,

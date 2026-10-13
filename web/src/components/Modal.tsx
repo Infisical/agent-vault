@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from "react";
+import { lockBodyScroll } from "../lib/scrollLock";
 
 interface ModalProps {
   open: boolean;
@@ -21,11 +22,7 @@ export default function Modal({ open, onClose, title, description, children, foo
 
   useEffect(() => {
     if (!open) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = prev;
-    };
+    return lockBodyScroll();
   }, [open]);
 
   if (!open) return null;

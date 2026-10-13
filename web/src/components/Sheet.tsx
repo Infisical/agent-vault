@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from "react";
+import { lockBodyScroll } from "../lib/scrollLock";
 
 interface SheetProps {
   open: boolean;
@@ -34,11 +35,7 @@ export default function Sheet({
 
   useEffect(() => {
     if (!open) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = prev;
-    };
+    return lockBodyScroll();
   }, [open]);
 
   if (!open) return null;
@@ -47,7 +44,7 @@ export default function Sheet({
     <div className="fixed inset-0 z-50" onClick={onClose}>
       <div className="absolute inset-0 bg-black/40" />
       <div
-        className={`absolute right-0 top-0 h-full w-full ${widthClass} bg-surface shadow-[0_0_48px_rgba(0,0,0,0.4)] flex flex-col`}
+        className={`absolute right-0 top-0 h-full w-full ${widthClass} bg-surface shadow-[0_0_48px_rgba(0,0,0,0.4)] flex flex-col pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pr-[env(safe-area-inset-right)]`}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"

@@ -1,5 +1,6 @@
 import { type ReactNode, type Ref, useEffect, useRef } from "react";
 import { useLocation } from "@tanstack/react-router";
+import { lockBodyScroll } from "../lib/scrollLock";
 
 export const MOBILE_NAV_ID = "mobile-nav-drawer";
 
@@ -27,6 +28,7 @@ export default function ResponsiveSidebar({
 }: ResponsiveSidebarProps) {
   const location = useLocation();
   const panelRef = useRef<HTMLDivElement>(null);
+  const drawerRootRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -38,11 +40,46 @@ export default function ResponsiveSidebar({
   useEffect(() => {
     if (!open) return;
     const previouslyFocused = document.activeElement as HTMLElement | null;
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
+    const unlockScroll = lockBodyScroll();
+
+    // Make everything outside the drawer unavailable while it is open, so
+    // neither Tab nor assistive tech can reach controls behind the backdrop.
+    const drawerRoot = drawerRootRef.current;
+    const inerted: HTMLElement[] = [];
+    let node: HTMLElement | null = drawerRoot;
+    while (node && node.parentElement && node !== document.body) {
+      for (const sibling of Array.from(node.parentElement.children)) {
+        if (sibling !== node && sibling instanceof HTMLElement && !sibling.inert) {
+          sibling.inert = true;
+          inerted.push(sibling);
+        }
+      }
+      node = node.parentElement;
+    }
 
     function handleKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onCloseRef.current();
+      if (e.key === "Escape") {
+        onCloseRef.current();
+        return;
+      }
+      if (e.key !== "Tab" || !panelRef.current) return;
+      // Keep Tab focus cycling inside the drawer.
+      const focusables = Array.from(
+        panelRef.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || !panelRef.current.contains(active))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (active === last || !panelRef.current.contains(active))) {
+        e.preventDefault();
+        first.focus();
+      }
     }
     function handleResize() {
       if (window.matchMedia("(min-width: 48rem)").matches) onCloseRef.current();
@@ -54,7 +91,8 @@ export default function ResponsiveSidebar({
     firstFocusable?.focus();
 
     return () => {
-      document.body.style.overflow = prevOverflow;
+      unlockScroll();
+      for (const el of inerted) el.inert = false;
       document.removeEventListener("keydown", handleKey);
       window.removeEventListener("resize", handleResize);
       previouslyFocused?.focus?.();
@@ -68,7 +106,7 @@ export default function ResponsiveSidebar({
       </aside>
 
       {open && (
-        <div className="fixed inset-0 z-50 md:hidden">
+        <div ref={drawerRootRef} className="fixed inset-0 z-50 md:hidden">
           <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden="true" />
           <div
             ref={panelRef}
