@@ -1,5 +1,7 @@
 import { useEffect, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { lockBodyScroll } from "../lib/scrollLock";
+import { notifyOverlayOpen } from "../lib/overlayOpen";
 
 interface ModalProps {
   open: boolean;
@@ -25,9 +27,14 @@ export default function Modal({ open, onClose, title, description, children, foo
     return lockBodyScroll();
   }, [open]);
 
+  // Close the mobile nav (and clear inert on main) so a delayed modal is usable.
+  useEffect(() => {
+    if (open) notifyOverlayOpen();
+  }, [open]);
+
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-stretch sm:items-center justify-center"
       onClick={onClose}
@@ -76,6 +83,7 @@ export default function Modal({ open, onClose, title, description, children, foo
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

@@ -1,6 +1,7 @@
 import { type ReactNode, type Ref, useEffect, useRef } from "react";
 import { useLocation } from "@tanstack/react-router";
 import { lockBodyScroll } from "../lib/scrollLock";
+import { OVERLAY_OPEN_EVENT } from "../lib/overlayOpen";
 
 export const MOBILE_NAV_ID = "mobile-nav-drawer";
 
@@ -36,6 +37,17 @@ export default function ResponsiveSidebar({
   useEffect(() => {
     onCloseRef.current();
   }, [location.pathname]);
+
+  // Close when a Sheet or Modal opens so the overlay is not trapped under
+  // inert main (sheets/modals render from page content inside main).
+  useEffect(() => {
+    if (!open) return;
+    function onOverlayOpen() {
+      onCloseRef.current();
+    }
+    window.addEventListener(OVERLAY_OPEN_EVENT, onOverlayOpen);
+    return () => window.removeEventListener(OVERLAY_OPEN_EVENT, onOverlayOpen);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;

@@ -1,5 +1,7 @@
 import { useEffect, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { lockBodyScroll } from "../lib/scrollLock";
+import { notifyOverlayOpen } from "../lib/overlayOpen";
 
 interface SheetProps {
   open: boolean;
@@ -38,9 +40,14 @@ export default function Sheet({
     return lockBodyScroll();
   }, [open]);
 
+  // Close the mobile nav (and clear inert on main) so a delayed sheet is usable.
+  useEffect(() => {
+    if (open) notifyOverlayOpen();
+  }, [open]);
+
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50" onClick={onClose}>
       <div className="absolute inset-0 bg-black/40" />
       <div
@@ -90,6 +97,7 @@ export default function Sheet({
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

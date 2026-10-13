@@ -20,7 +20,9 @@ export default function Tooltip({
 }) {
   const anchorRef = useRef<HTMLSpanElement>(null);
   const tipRef = useRef<HTMLSpanElement>(null);
-  const [open, setOpen] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const open = hovered || focused;
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
 
   const place = useCallback(() => {
@@ -29,8 +31,17 @@ export default function Tooltip({
     if (!anchor || !tip) return;
     const a = anchor.getBoundingClientRect();
     const width = tip.offsetWidth;
+    const height = tip.offsetHeight;
     const maxLeft = window.innerWidth - width - MARGIN;
-    setPos({ top: a.bottom + GAP, left: Math.max(MARGIN, Math.min(a.left, maxLeft)) });
+    const left = Math.max(MARGIN, Math.min(a.left, maxLeft));
+
+    // Prefer below the trigger; flip above when the tip would not fit below.
+    const below = a.bottom + GAP;
+    const above = a.top - height - GAP;
+    const fitsBelow = below + height <= window.innerHeight - MARGIN;
+    const top = fitsBelow || above < MARGIN ? below : above;
+
+    setPos({ top, left });
   }, []);
 
   useLayoutEffect(() => {
@@ -40,7 +51,10 @@ export default function Tooltip({
 
   useEffect(() => {
     if (!open) return;
-    const close = () => setOpen(false);
+    const close = () => {
+      setHovered(false);
+      setFocused(false);
+    };
     window.addEventListener("scroll", close, true);
     window.addEventListener("resize", close);
     return () => {
@@ -53,10 +67,10 @@ export default function Tooltip({
     <span
       ref={anchorRef}
       className={`relative ${className}`}
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
-      onFocus={() => setOpen(true)}
-      onBlur={() => setOpen(false)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
     >
       {trigger}
       {open && (
