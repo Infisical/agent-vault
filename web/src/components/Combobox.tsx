@@ -16,14 +16,20 @@ interface ComboboxProps {
   options: ComboboxOption[];
   /** Called when an option is explicitly picked from the list. */
   onSelect: (id: string) => void;
+  /** Called on Enter when the suggestion popover is closed. */
+  onEnter?: () => void;
   placeholder?: string;
+  /** Overrides the input's default styling (compact/inline variants). */
+  inputClassName?: string;
+  /** Overrides the popover's max-height (e.g. for inputs low on the sheet). */
+  menuMaxHeightClassName?: string;
 }
 
 /**
  * A text input with a suggestion popover. Typing filters the options;
  * text that matches nothing behaves exactly like a plain Input.
  */
-export default function Combobox({ value, onChange, options, onSelect, placeholder }: ComboboxProps) {
+export default function Combobox({ value, onChange, options, onSelect, onEnter, placeholder, inputClassName, menuMaxHeightClassName }: ComboboxProps) {
   const [open, setOpen] = useState(false);
   const [highlighted, setHighlighted] = useState(0);
   const [typing, setTyping] = useState(false);
@@ -54,11 +60,26 @@ export default function Combobox({ value, onChange, options, onSelect, placehold
     return () => document.removeEventListener("mousedown", handleClick);
   }, [open]);
 
+  function reposition() {
+    if (!inputRef.current) return;
+    const rect = inputRef.current.getBoundingClientRect();
+    setPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+  }
+
+  // The popover is position:fixed, so scrolling any ancestor (page or the
+  // sheet body) would leave it stranded — track the input while open.
+  useEffect(() => {
+    if (!open) return;
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    return () => {
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
+    };
+  }, [open]);
+
   function show() {
-    if (inputRef.current) {
-      const rect = inputRef.current.getBoundingClientRect();
-      setPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
-    }
+    reposition();
     setHighlighted(0);
     setOpen(true);
   }
@@ -70,7 +91,10 @@ export default function Combobox({ value, onChange, options, onSelect, placehold
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (!open || filtered.length === 0) return;
+    if (!open || filtered.length === 0) {
+      if (e.key === "Enter") onEnter?.();
+      return;
+    }
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setHighlighted((h) => (h + 1) % filtered.length);
@@ -99,11 +123,12 @@ export default function Combobox({ value, onChange, options, onSelect, placehold
           show();
         }}
         onFocus={() => { setTyping(false); show(); }}
+        onBlur={() => setOpen(false)}
         onKeyDown={handleKeyDown}
         role="combobox"
         aria-expanded={open && filtered.length > 0}
         autoComplete="off"
-        className="w-full px-4 py-3 pr-10 bg-surface-raised border border-border rounded-lg text-text text-sm outline-none transition-colors focus:border-border-focus focus:shadow-[0_0_0_3px_var(--color-primary-ring)]"
+        className={inputClassName ?? "w-full px-4 py-3 pr-10 bg-surface-raised border border-border rounded-lg text-text text-sm outline-none transition-colors focus:border-border-focus focus:shadow-[0_0_0_3px_var(--color-primary-ring)]"}
       />
       <button
         type="button"
@@ -130,8 +155,8 @@ export default function Combobox({ value, onChange, options, onSelect, placehold
         createPortal(
           <div
             ref={listRef}
-            className="fixed z-50 bg-surface border border-border rounded-lg shadow-[0_4px_16px_rgba(0,0,0,0.12)] py-1 max-h-64 overflow-y-auto"
-            style={{ top: pos.top, left: pos.left, width: pos.width, scrollbarWidth: "thin", scrollbarColor: "var(--color-border) var(--color-surface)" }}
+            className={`fixed z-50 bg-surface border border-border rounded-lg shadow-[0_4px_16px_rgba(0,0,0,0.12)] py-1 overflow-y-auto thin-scrollbar ${menuMaxHeightClassName ?? "max-h-64"}`}
+            style={{ top: pos.top, left: pos.left, width: pos.width }}
           >
             {filtered.map((option, i) => (
               <button

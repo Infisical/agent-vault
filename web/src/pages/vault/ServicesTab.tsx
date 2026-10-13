@@ -15,6 +15,8 @@ import Input from "../../components/Input";
 import FormField from "../../components/FormField";
 import Toggle from "../../components/Toggle";
 import SegmentedTabs from "../../components/SegmentedTabs";
+import Combobox from "../../components/Combobox";
+import TemplateInput from "../../components/TemplateInput";
 import {
   type Auth,
   type Substitution,
@@ -79,6 +81,7 @@ export default function ServicesTab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [catalog, setCatalog] = useState<CatalogTemplate[]>([]);
+  const [credentialKeys, setCredentialKeys] = useState<string[]>([]);
   const presetApplied = useRef(false);
 
   // Add/Edit modal state: null = closed, -1 = add, 0+ = edit index
@@ -102,6 +105,7 @@ export default function ServicesTab() {
     fetchServices();
     fetchCatalog();
     fetchDiscoveredHosts();
+    fetchCredentialKeys();
   }, []);
 
   useEffect(() => {
@@ -122,6 +126,20 @@ export default function ServicesTab() {
       setCatalog(entries);
     } catch {
       // Catalog is optional — degrade silently to manual entry.
+    }
+  }
+
+  async function fetchCredentialKeys() {
+    try {
+      const resp = await apiFetch(
+        `/v1/credentials?vault=${encodeURIComponent(vaultName)}`
+      );
+      if (resp.ok) {
+        const data: { keys?: string[] } = await resp.json();
+        setCredentialKeys([...new Set(data.keys ?? [])].sort());
+      }
+    } catch {
+      // Suggestions are optional — degrade silently to manual entry.
     }
   }
 
@@ -422,6 +440,7 @@ export default function ServicesTab() {
           defaultAuthHeader={editingIndex === -1 ? addWithHost?.authHeader : undefined}
           defaultPreset={editingIndex === -1 && !addWithHost ? presetParam : undefined}
           catalog={catalog}
+          credentialKeys={credentialKeys}
           onClose={() => {
             setEditingIndex(null);
             setAddWithHost(null);
@@ -454,6 +473,7 @@ function ServiceModal({
   defaultAuthHeader,
   defaultPreset,
   catalog,
+  credentialKeys,
   onClose,
   onSave,
 }: {
@@ -465,9 +485,11 @@ function ServiceModal({
   defaultAuthHeader?: string;
   defaultPreset?: string;
   catalog: CatalogTemplate[];
+  credentialKeys: string[];
   onClose: () => void;
   onSave: (service: Service) => Promise<void>;
 }) {
+  const credentialOptions = credentialKeys.map((k) => ({ id: k, label: k }));
   const [name, setName] = useState(initial?.name ?? defaultName ?? "");
   const [pattern, setPattern] = useState(initial?.host ?? defaultHost ?? "");
   const [enabled, setEnabled] = useState(initial ? initial.enabled !== false : true);
@@ -740,13 +762,13 @@ function ServiceModal({
               tooltip="The UPPER_SNAKE_CASE name of the credential storing the token."
               required
             >
-              <Input
+              <Combobox
                 placeholder="e.g. STRIPE_KEY"
                 value={token}
-                onChange={(e) => setToken(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSubmit();
-                }}
+                onChange={setToken}
+                onSelect={setToken}
+                onEnter={handleSubmit}
+                options={credentialOptions}
               />
             </FormField>
           )}
@@ -758,23 +780,26 @@ function ServiceModal({
                 tooltip="Credential key for the Basic Auth username."
                 required
               >
-                <Input
+                <Combobox
                   placeholder="e.g. ASHBY_API_KEY"
                   value={username}
-                  onChange={(e) => setUsername(e.target.value)}
+                  onChange={setUsername}
+                  onSelect={setUsername}
+                  onEnter={handleSubmit}
+                  options={credentialOptions}
                 />
               </FormField>
               <FormField
                 label="Password Credential Key"
                 tooltip="Optional — leave empty if the service only requires a username."
               >
-                <Input
+                <Combobox
                   placeholder="e.g. ASHBY_PASSWORD"
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleSubmit();
-                  }}
+                  onChange={setPassword}
+                  onSelect={setPassword}
+                  onEnter={handleSubmit}
+                  options={credentialOptions}
                 />
               </FormField>
             </>
@@ -787,10 +812,12 @@ function ServiceModal({
                 tooltip="The UPPER_SNAKE_CASE name of the credential storing the API key."
                 required
               >
-                <Input
+                <Combobox
                   placeholder="e.g. OPENAI_API_KEY"
                   value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
+                  onChange={setApiKey}
+                  onSelect={setApiKey}
+                  options={credentialOptions}
                 />
               </FormField>
               <FormField
@@ -846,17 +873,16 @@ function ServiceModal({
                         )
                       }
                     />
-                    <Input
+                    <TemplateInput
                       placeholder="e.g. Bearer {{ STRIPE_KEY }}"
                       value={header.value}
-                      onChange={(e) =>
+                      onChange={(value) =>
                         setCustomHeaders((prev) =>
-                          prev.map((h, j) => (j === i ? { ...h, value: e.target.value } : h))
+                          prev.map((h, j) => (j === i ? { ...h, value } : h))
                         )
                       }
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") handleSubmit();
-                      }}
+                      suggestions={credentialKeys}
+                      onEnter={handleSubmit}
                     />
                     {customHeaders.length > 1 && (
                       <IconButton
@@ -952,16 +978,25 @@ function ServiceModal({
                     );
                   })}
                   <span>with value of</span>
-                  <InlineInput
-                    widthClass="w-48"
-                    placeholder="CREDENTIAL_KEY"
-                    value={sub.key}
-                    onChange={(value) =>
-                      setSubs((prev) =>
-                        prev.map((s, j) => (j === i ? { ...s, key: value } : s))
-                      )
-                    }
-                  />
+                  <div className="w-48">
+                    <Combobox
+                      placeholder="CREDENTIAL_KEY"
+                      value={sub.key}
+                      onChange={(value) =>
+                        setSubs((prev) =>
+                          prev.map((s, j) => (j === i ? { ...s, key: value } : s))
+                        )
+                      }
+                      onSelect={(key) =>
+                        setSubs((prev) =>
+                          prev.map((s, j) => (j === i ? { ...s, key } : s))
+                        )
+                      }
+                      options={credentialOptions}
+                      inputClassName="w-full px-3 py-1.5 pr-8 bg-surface-raised border border-border rounded-md font-mono text-sm text-text outline-none transition-colors focus:border-border-focus focus:shadow-[0_0_0_3px_var(--color-primary-ring)]"
+                      menuMaxHeightClassName="max-h-40"
+                    />
+                  </div>
                 </div>
                 <IconButton
                   onClick={() => setSubs((prev) => prev.filter((_, j) => j !== i))}
