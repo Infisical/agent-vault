@@ -390,7 +390,7 @@ func (p *Proxy) forwardRequest(
 	}
 
 	for k, vv := range resp.Header {
-		if brokercore.ShouldStripResponseHeader(k) {
+		if brokercore.ShouldStripResponseHeader(k, inject.ForwardSetCookie) {
 			continue
 		}
 		for _, v := range vv {
