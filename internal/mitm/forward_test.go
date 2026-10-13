@@ -415,6 +415,61 @@ func TestMITMForwardSetCookieFollowsInjectResult(t *testing.T) {
 	}
 }
 
+// sequentialCredProvider returns its results in order, one per Inject
+// call, to simulate a service whose configuration changes mid-request.
+type sequentialCredProvider struct {
+	results []*brokercore.InjectResult
+	calls   int
+}
+
+func (s *sequentialCredProvider) Inject(context.Context, string, string, int, string) (*brokercore.InjectResult, error) {
+	result := s.results[min(s.calls, len(s.results)-1)]
+	s.calls++
+	return result, nil
+}
+
+// TestMITMForwardSetCookieStrippedAfterRetryWithCredentials: when a
+// passthrough service gains credentials before a 401 retry, the retried
+// response was produced with them, so its Set-Cookie must not reach the client.
+func TestMITMForwardSetCookieStrippedAfterRetryWithCredentials(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Add("Set-Cookie", "session=abc; Path=/; HttpOnly")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	sr := validTokenResolver("av_sess_ok",
+		&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+	cp := &sequentialCredProvider{results: []*brokercore.InjectResult{
+		{ForwardSetCookie: true},
+		{Headers: map[string]string{"Authorization": "Bearer secret"}},
+	}}
+	proxyURL, _, _ := setupProxy(t, sr, cp)
+
+	conn := dialProxy(t, proxyURL)
+	defer conn.Close()
+
+	auth := base64.StdEncoding.EncodeToString([]byte("av_sess_ok:"))
+	resp := writeRawRequestLine(t, conn,
+		"GET "+upstream.URL+"/login HTTP/1.1",
+		map[string]string{
+			"Host":                upstreamHost,
+			"Proxy-Authorization": "Basic " + auth,
+		})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 from the retry", resp.StatusCode)
+	}
+	if got := resp.Header.Values("Set-Cookie"); len(got) != 0 {
+		t.Fatalf("client Set-Cookie = %q, want none", got)
+	}
+}
+
 // TestMITMForwardWebSocketPlainHTTP: a ws:// upgrade through the
 // forward proxy succeeds; frames pipe both ways. Exercises the
 // scheme-aware branch in dialWebSocketUpstream that skips TLS for

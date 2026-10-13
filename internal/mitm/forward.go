@@ -347,6 +347,8 @@ func (p *Proxy) forwardRequest(
 		return
 	}
 
+	forwardSetCookie := inject.ForwardSetCookie
+
 	// OAuth 401 retry: if the upstream rejected the token and we have an
 	// OAuth credential, force-refresh and retry once. Only safe methods
 	// (GET/HEAD) are retried — the request body is consumed and cannot be replayed.
@@ -363,6 +365,7 @@ func (p *Proxy) forwardRequest(
 			retryReq.ContentLength = 0
 			if retryResp, retryRTErr := p.upstream.RoundTrip(retryReq); retryRTErr == nil {
 				resp = retryResp
+				forwardSetCookie = retryInject.ForwardSetCookie
 				p.logger.Debug("oauth 401 retry succeeded",
 					slog.String("host", host),
 					slog.String("path", r.URL.Path),
@@ -390,7 +393,7 @@ func (p *Proxy) forwardRequest(
 	}
 
 	for k, vv := range resp.Header {
-		if brokercore.ShouldStripResponseHeader(k, inject.ForwardSetCookie) {
+		if brokercore.ShouldStripResponseHeader(k, forwardSetCookie) {
 			continue
 		}
 		for _, v := range vv {
