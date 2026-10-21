@@ -26,7 +26,7 @@ First run takes ~60s while the isolation image builds. Subsequent runs reuse the
 
 ## What's inside the container
 
-- **Image**: `agent-vault/isolation:<hash>`, built on first use from an embedded Dockerfile. Debian-slim + Node 22 + `@anthropic-ai/claude-code` + `iptables` / `gosu` / `curl` / `git` / `python3`.
+- **Image**: `agent-vault/isolation:<hash>`, built on first use from an embedded Dockerfile. Debian-slim + Node 26 + `@anthropic-ai/claude-code` + `iptables` / `gosu` / `curl` / `git` / `python3`.
 - **Network**: a dedicated per-invocation Docker bridge network (`agent-vault-<session>`). Not the default bridge — other containers you're running cannot reach the forwarder.
 - **User**: `claude` (UID != 0), dropped via `gosu` after `init-firewall.sh` runs as root. `--security-opt=no-new-privileges` + `--cap-drop=ALL` with only `NET_ADMIN` / `NET_RAW` (for iptables), `SETUID` / `SETGID` (so gosu can change UID), and `KILL` (so tini at PID 1 can forward TTY signals across the UID boundary) added. Docker doesn't grant container caps as *ambient* caps to non-root processes, so `claude` post-gosu has an empty effective cap set regardless.
 - **Egress policy**: `OUTPUT DROP` by default on both IPv4 (`iptables`) and IPv6 (`ip6tables`). `ACCEPT` only for loopback, ESTABLISHED/RELATED replies, and the two Agent Vault ports at `host.docker.internal` over IPv4 (the MITM path is v4-only by construction — we resolve via `getent ahostsv4`). **No DNS rule**: `host.docker.internal` is resolved via `/etc/hosts` (`docker run --add-host=host.docker.internal:host-gateway`), closing the DNS-exfiltration channel.
@@ -111,7 +111,7 @@ Security note: container isolation protects *vault-brokered* credentials (Stripe
 
 **"host.docker.internal not resolvable"** inside the container — Docker version is too old. Upgrade to 20.10+ on Linux.
 
-**First run hangs** — the image build pulls `node:22-bookworm-slim` and runs `apt-get install` + `npm install -g @anthropic-ai/claude-code`. ~60 seconds on a fast connection; a slow network or corporate registry proxy can make it much longer. Watch `docker ps` in another terminal to confirm progress.
+**First run hangs** — the image build pulls `node:26-bookworm-slim` and runs `apt-get install` + `npm install -g @anthropic-ai/claude-code`. ~60 seconds on a fast connection; a slow network or corporate registry proxy can make it much longer. Watch `docker ps` in another terminal to confirm progress.
 
 **`iptables -S OUTPUT` in the container shows `DROP` but the agent still makes external calls** — that's impossible unless you passed `--no-firewall`. Check for the loud warning banner on startup.
 

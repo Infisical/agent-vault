@@ -13,9 +13,9 @@ make docker
 
 This runs a multi-stage build:
 
-1. **`node:22-alpine`** -- builds the React/Vite frontend
-2. **`golang:1.25-alpine`** -- compiles the Go binary with the embedded frontend
-3. **`alpine:3.21`** -- minimal runtime image
+1. **`node:26-alpine`** -- builds the React/Vite frontend
+2. **`golang:1.27-alpine`** -- compiles the Go binary with the embedded frontend
+3. **`alpine:3.24`** -- minimal runtime image
 
 The final image runs as non-root user `agentvault` (UID 65532) and includes a built-in health check at `GET /health`.
 
