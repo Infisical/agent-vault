@@ -90,6 +90,8 @@ Agent Vault is both a vault and proxy service and ships as a single binary that 
                 Operator
 ```
 
+A service can also name a filter URL. Matching traffic is sent to that sidecar before the destination credential is decrypted. The sidecar returns its own HTTP response, or sends the request back through the proxy with a short-lived continuation token.
+
 You can configure Agent Vault to broker credentials for an AI agents in just a few steps:
 
 1. [Install](https://docs.agent-vault.dev/installation) and start an Agent Vault server. You can run the script below to Install Agent Vault, supporting macOS (Intel + Apple Silicon) and Linux (x86_64 + ARM64):

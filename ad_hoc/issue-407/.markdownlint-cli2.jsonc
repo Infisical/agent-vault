@@ -1,0 +1,10 @@
+{
+  "config": {
+    // House style wraps at sentence boundaries. An 80-column wrap would
+    // split sentences and make the contract harder to implement from.
+    "MD013": false,
+    // Test and lock numbers are a stable contract across headings.
+    // Restarting each group at 1 would hide those IDs.
+    "MD029": false
+  }
+}

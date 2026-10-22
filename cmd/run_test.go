@@ -134,6 +134,33 @@ func fakeMITMServer(t *testing.T, pem string, advertisedPort int) *httptest.Serv
 	}))
 }
 
+func TestAugmentEnvWithMITM_ExplicitAdvertisedHost(t *testing.T) {
+	const fakePEM = "-----BEGIN CERTIFICATE-----\nMIIFAKE\n-----END CERTIFICATE-----\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-MITM-Port", "9001")
+		w.Header().Set("X-Agent-Vault-MITM-Addr", "http://proxy.internal:14444")
+		w.Header().Set("Content-Type", "application/x-pem-file")
+		_, _ = w.Write([]byte(fakePEM))
+	}))
+	defer srv.Close()
+
+	caPath := filepath.Join(t.TempDir(), "mitm-ca.pem")
+	env, port, ok, err := augmentEnvWithMITM(nil, srv.URL, "av_sess_abc", "default", caPath)
+	if err != nil || !ok {
+		t.Fatalf("augmentEnvWithMITM: ok=%v err=%v", ok, err)
+	}
+	if port != 14444 {
+		t.Fatalf("port = %d, want 14444 from the explicit advertised URL", port)
+	}
+	u, err := url.Parse(envMap(env)["HTTPS_PROXY"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Host != "proxy.internal:14444" {
+		t.Fatalf("proxy host = %q, want proxy.internal:14444", u.Host)
+	}
+}
+
 func TestAugmentEnvWithMITM_Enabled(t *testing.T) {
 	const fakePEM = "-----BEGIN CERTIFICATE-----\nMIIFAKE\n-----END CERTIFICATE-----\n"
 	srv := fakeMITMServer(t, fakePEM, 9001)

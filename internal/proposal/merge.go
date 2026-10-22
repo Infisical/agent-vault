@@ -59,6 +59,9 @@ func MergeServices(existing []broker.Service, proposed []Service) ([]broker.Serv
 				if len(p.Substitutions) == 0 {
 					next.Substitutions = merged[idx].Substitutions
 				}
+				// Proposals cannot author a filter. Preserve the one
+				// already on the service.
+				next.Filter = merged[idx].Filter
 				merged[idx] = next
 			default:
 				nameIndex[p.Name] = len(merged)

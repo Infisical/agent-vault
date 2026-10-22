@@ -826,3 +826,22 @@ func TestDetectAuthFromHeaders(t *testing.T) {
 		})
 	}
 }
+
+func TestActorFromScope(t *testing.T) {
+	typ, id := actorFromScope(&brokercore.ProxyScope{UserID: "user-1"})
+	if typ != brokercore.ActorTypeUser || id != "user-1" {
+		t.Fatalf("user = %q %q", typ, id)
+	}
+	typ, id = actorFromScope(&brokercore.ProxyScope{AgentID: "agent-1"})
+	if typ != brokercore.ActorTypeAgent || id != "agent-1" {
+		t.Fatalf("agent = %q %q", typ, id)
+	}
+	typ, id = actorFromScope(&brokercore.ProxyScope{HopActorID: "actor-1"})
+	if typ != "" || id != "actor-1" {
+		t.Fatalf("hop = %q %q", typ, id)
+	}
+	typ, id = actorFromScope(&brokercore.ProxyScope{UserID: "user-1", HopActorID: "actor-1"})
+	if typ != brokercore.ActorTypeUser || id != "user-1" {
+		t.Fatalf("session wins = %q %q", typ, id)
+	}
+}
