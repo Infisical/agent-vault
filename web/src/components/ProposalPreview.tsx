@@ -1,4 +1,5 @@
 import { StatusBadge } from "./shared";
+import type { AcquisitionDeclaration } from "../lib/acquisition";
 
 export interface Auth {
   type: string;
@@ -50,6 +51,7 @@ export interface CredentialSlot {
   obtain_instructions?: string;
   has_value?: boolean;
   oauth?: OAuthConfig;
+  acquisition?: AcquisitionDeclaration;
 }
 
 export interface ProposalData {
@@ -289,6 +291,13 @@ export default function ProposalPreview({ data }: { data: ProposalData }) {
                   <span className="font-mono">{s.key}</span>
                   {s.description && s.description !== s.key && (
                     <p className="text-xs text-text-muted mt-0.5">{s.description}</p>
+                  )}
+                  {s.acquisition && (
+                    <p className="text-xs text-text-muted mt-0.5">
+                      Provider: <span className="font-mono">{s.acquisition.handler}</span>
+                      {" · "}Profile: <span className="font-mono">{s.acquisition.profile}</span>
+                      {" · "}Mode: <span className="font-mono">{s.acquisition.mode}</span>
+                    </p>
                   )}
                 </div>
               </li>

@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/Infisical/agent-vault/internal/pidfile"
+	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/Infisical/agent-vault/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -32,11 +35,101 @@ func TestCommandsRegistered(t *testing.T) {
 		registered[c.Name()] = true
 	}
 
-	expected := []string{"server", "auth", "vault", "owner", "account", "catalog", "user", "agent", "ca", "migrate-db"}
+	expected := []string{"server", "auth", "vault", "owner", "account", "catalog", "user", "agent", "handler", "ca", "migrate-db"}
 	for _, name := range expected {
 		if !registered[name] {
 			t.Errorf("expected command %q to be registered, but it was not", name)
 		}
+	}
+}
+
+func TestHandlerSubcommandsAndRegisterFlags(t *testing.T) {
+	handler := findSubcommand(rootCmd, "handler")
+	if handler == nil {
+		t.Fatal("handler command not found")
+	}
+	for _, name := range []string{"list", "show", "register", "verify", "disable", "delete"} {
+		if findSubcommand(handler, name) == nil {
+			t.Errorf("expected handler subcommand %q", name)
+		}
+	}
+	register := findSubcommand(handler, "register")
+	if register == nil {
+		return
+	}
+	for _, name := range []string{"kind", "executable", "sha256", "signing-identity", "allow-key", "allow-vault", "profile", "timeout", "output-limit", "address"} {
+		flag := register.Flags().Lookup(name)
+		if flag == nil {
+			flag = register.InheritedFlags().Lookup(name)
+		}
+		if flag == nil {
+			t.Errorf("expected handler register flag --%s", name)
+		}
+	}
+}
+
+func TestHandlerCLIUsesOwnerRegistryEndpoints(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	requests := make(chan string, 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer test-owner-token" {
+			t.Errorf("authorization=%q", got)
+		}
+		body, _ := io.ReadAll(r.Body)
+		requests <- r.Method + " " + r.URL.Path + " " + string(body)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/admin/handlers":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Errorf("decode register body: %v", err)
+			}
+			if _, present := payload["enabled"]; present {
+				t.Error("register body must not carry enabled")
+			}
+			_, _ = io.WriteString(w, `{"id":"github-cli","kind":"executable","executable_path":"/opt/homebrew/bin/gh","sha256":"`+strings.Repeat("a", 64)+`","allowed_keys":["GITHUB_TOKEN"],"allowed_vaults":["root-ns-id"],"allowed_profiles":["github.com"],"timeout_seconds":10,"output_limit_bytes":65536,"enabled":false,"created_at":"2026-09-21T00:00:00Z","updated_at":"2026-09-21T00:00:00Z"}`)
+		case "GET /v1/admin/handlers":
+			_, _ = io.WriteString(w, `{"handlers":[]}`)
+		case "GET /v1/admin/handlers/github-cli":
+			_, _ = io.WriteString(w, `{"id":"github-cli","kind":"executable","executable_path":"/opt/homebrew/bin/gh","sha256":"`+strings.Repeat("a", 64)+`","allowed_keys":["GITHUB_TOKEN"],"allowed_vaults":["root-ns-id"],"allowed_profiles":["github.com"],"timeout_seconds":10,"output_limit_bytes":65536,"enabled":false}`)
+		case "POST /v1/admin/handlers/github-cli/verify":
+			_, _ = io.WriteString(w, `{"id":"github-cli","enabled":true}`)
+		case "POST /v1/admin/handlers/github-cli/disable":
+			_, _ = io.WriteString(w, `{"id":"github-cli","enabled":false}`)
+		case "DELETE /v1/admin/handlers/github-cli":
+			_, _ = io.WriteString(w, `{"deleted":"github-cli"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	if err := session.Save(&session.ClientSession{Token: "test-owner-token", Address: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	commands := [][]string{
+		{"handler", "register", "github-cli", "--kind", "executable", "--executable", "/opt/homebrew/bin/gh", "--sha256", strings.Repeat("a", 64), "--allow-key", "GITHUB_TOKEN", "--allow-vault", "root-ns-id", "--profile", "github.com", "--timeout", "10", "--output-limit", "65536"},
+		{"handler", "list"},
+		{"handler", "show", "github-cli"},
+		{"handler", "verify", "github-cli"},
+		{"handler", "disable", "github-cli"},
+		{"handler", "delete", "github-cli"},
+	}
+	for _, args := range commands {
+		if _, err := executeCommand(args...); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	close(requests)
+	var got []string
+	for request := range requests {
+		got = append(got, request)
+	}
+	if len(got) != len(commands) {
+		t.Fatalf("requests=%d want=%d: %v", len(got), len(commands), got)
+	}
+	if !strings.HasPrefix(got[0], "POST /v1/admin/handlers ") || got[1] != "GET /v1/admin/handlers " || got[2] != "GET /v1/admin/handlers/github-cli " {
+		t.Fatalf("unexpected registry requests: %v", got)
 	}
 }
 
@@ -834,7 +927,7 @@ func TestProposalCreateFlagsRegistered(t *testing.T) {
 		t.Fatal("create command not found under proposal")
 	}
 
-	expectedFlags := []string{"file", "name", "host", "auth-type", "token-key", "credential", "message", "user-message", "json", "username-key", "password-key", "api-key-key", "api-key-header", "api-key-prefix"}
+	expectedFlags := []string{"file", "name", "host", "auth-type", "token-key", "credential", "message", "user-message", "context-binding-id", "json", "username-key", "password-key", "api-key-key", "api-key-header", "api-key-prefix"}
 	for _, name := range expectedFlags {
 		if createCmd.Flags().Lookup(name) == nil {
 			t.Errorf("expected flag --%s on proposal create command", name)

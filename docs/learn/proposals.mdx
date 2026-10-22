@@ -56,11 +56,15 @@ Approval atomically merges services into the [vault's](/learn/vaults) [service c
     # Approve with credentials inline
     agent-vault vault proposal approve 3 STRIPE_KEY=sk_test_abc123
 
+    # Prefer stdin so the credential is not placed in agent-vault's argv
+    credential-provider-command | agent-vault vault proposal approve 3 \
+      --credential-stdin STRIPE_KEY --yes
+
     # Skip confirmation prompt
     agent-vault vault proposal approve 3 --yes
     ```
 
-    The CLI fetches the proposal, displays a summary, prompts for any missing [credential](/learn/credentials) values, and sends the approval to the running server.
+    The CLI fetches the proposal, displays a summary, prompts for any missing [credential](/learn/credentials) values, and sends the approval to the running server. Inline `KEY=VALUE` arguments may be visible in the process table, so use `--credential-stdin KEY --yes` for one secure, noninteractive value. In stdin mode, every other required credential must already be available through an agent value, OAuth connection, or successful acquisition.
 
     For agent-provided values, the CLI asks whether to accept the agent's value or override it manually.
 

@@ -1,0 +1,36 @@
+; Agent Vault Secret Handoff protocol, version 1.
+; One canonical-CBOR object per AF_UNIX transport record, preceded by a
+; 4-byte little-endian body length outside this CDDL value. Linux uses
+; SOCK_SEQPACKET. Darwin lacks AF_UNIX SOCK_SEQPACKET and therefore uses one
+; strictly length-delimited object at a time over a private SOCK_STREAM pair.
+
+message = request / progress / reply
+
+request = {
+  0: 0,                     ; distinguishing kind: request
+  1: bytes .size 32,        ; single-use ticket
+  2: text .size (1..128),   ; credential resource_id
+  ? 3: { * text => text },  ; provider-specific non-secret params
+  4: text .size (26..64),   ; context_binding_id
+}
+
+progress = {
+  0: 1,                                  ; distinguishing kind: progress
+  4: text .size (26..64),                ; echoed context_binding_id
+  5: "working" / "awaiting_user",
+  ? 6: text,
+}
+
+reply = {
+  0: 2,                     ; distinguishing kind: reply
+  1: bytes .size 32,        ; echoed single-use ticket
+  4: text .size (26..64),   ; echoed context_binding_id
+  7: bytes .size (1..65536),
+  8: reply-meta,
+}
+
+reply-meta = {
+  0: int,                   ; issued_at Unix seconds
+  1: uint,                  ; ttl_seconds, 0 when unknown
+  2: text .size (1..64),    ; non-secret provenance source
+}

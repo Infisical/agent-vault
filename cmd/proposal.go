@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/huh"
 	"github.com/Infisical/agent-vault/internal/proposal"
 	"github.com/Infisical/agent-vault/internal/session"
 	"github.com/Infisical/agent-vault/internal/store"
+	"github.com/charmbracelet/huh"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -29,6 +29,9 @@ func displayProposal(w io.Writer, cs *store.Proposal) {
 	fmt.Fprintf(w, "%s\n", boldText(fmt.Sprintf("Proposal #%d", cs.ID)))
 	fmt.Fprintf(w, "%s %s\n", fieldLabel("Status:"), statusBadge(cs.Status))
 	fmt.Fprintf(w, "%s %s\n", fieldLabel("Created:"), cs.CreatedAt.Format(time.RFC3339))
+	if cs.ContextBindingID != nil {
+		fmt.Fprintf(w, "%s %s\n", fieldLabel("Context:"), *cs.ContextBindingID)
+	}
 	if cs.ReviewedAt != nil {
 		fmt.Fprintf(w, "%s %s\n", fieldLabel("Reviewed:"), *cs.ReviewedAt)
 	}
@@ -156,6 +159,19 @@ func collectCredentialValues(cmd *cobra.Command, cs *store.Proposal, credentialO
 	return credentials, nil
 }
 
+func proposalHasCredentialSlot(cs *store.Proposal, key string) bool {
+	var slots []proposal.CredentialSlot
+	if err := json.Unmarshal([]byte(cs.CredentialsJSON), &slots); err != nil {
+		return false
+	}
+	for _, slot := range slots {
+		if slot.Action == proposal.ActionSet && slot.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 // sendApproveRequest sends a proposal approval to the running server via HTTP.
 func sendApproveRequest(sess *session.ClientSession, vault string, id int, credentials map[string]string) error {
 	body, err := json.Marshal(map[string]interface{}{
@@ -173,8 +189,8 @@ func sendApproveRequest(sess *session.ClientSession, vault string, id int, crede
 // sendRejectRequest sends a proposal rejection to the running server via HTTP.
 func sendRejectRequest(sess *session.ClientSession, vault string, id int, reason string) error {
 	body, err := json.Marshal(map[string]interface{}{
-		"vault": vault,
-		"reason":    reason,
+		"vault":  vault,
+		"reason": reason,
 	})
 	if err != nil {
 		return fmt.Errorf("marshalling request: %w", err)
@@ -209,15 +225,16 @@ func fetchProposal(sess *session.ClientSession, vault string, id int) (*store.Pr
 // parseProposalJSON parses the admin proposal API response into a store.Proposal.
 func parseProposalJSON(data []byte) (*store.Proposal, error) {
 	var resp struct {
-		ID          int     `json:"id"`
-		Status      string  `json:"status"`
-		Message     string  `json:"message"`
-		UserMessage string  `json:"user_message"`
-		ServicesJSON string  `json:"services_json"`
-		CredentialsJSON string  `json:"credentials_json"`
-		ReviewNote  string  `json:"review_note"`
-		ReviewedAt  *string `json:"reviewed_at"`
-		CreatedAt   string  `json:"created_at"`
+		ID               int     `json:"id"`
+		Status           string  `json:"status"`
+		Message          string  `json:"message"`
+		UserMessage      string  `json:"user_message"`
+		ServicesJSON     string  `json:"services_json"`
+		CredentialsJSON  string  `json:"credentials_json"`
+		ReviewNote       string  `json:"review_note"`
+		ReviewedAt       *string `json:"reviewed_at"`
+		ContextBindingID *string `json:"context_binding_id"`
+		CreatedAt        string  `json:"created_at"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("parsing proposal: %w", err)
@@ -226,18 +243,18 @@ func parseProposalJSON(data []byte) (*store.Proposal, error) {
 	createdAt, _ := time.Parse(time.RFC3339, resp.CreatedAt)
 
 	return &store.Proposal{
-		ID:          resp.ID,
-		Status:      resp.Status,
-		Message:     resp.Message,
-		UserMessage: resp.UserMessage,
-		ServicesJSON: resp.ServicesJSON,
-		CredentialsJSON: resp.CredentialsJSON,
-		ReviewNote:  resp.ReviewNote,
-		ReviewedAt:  resp.ReviewedAt,
-		CreatedAt:   createdAt,
+		ID:               resp.ID,
+		Status:           resp.Status,
+		Message:          resp.Message,
+		UserMessage:      resp.UserMessage,
+		ServicesJSON:     resp.ServicesJSON,
+		CredentialsJSON:  resp.CredentialsJSON,
+		ReviewNote:       resp.ReviewNote,
+		ReviewedAt:       resp.ReviewedAt,
+		ContextBindingID: resp.ContextBindingID,
+		CreatedAt:        createdAt,
 	}, nil
 }
-
 
 // ---------------------------------------------------------------------------
 // Commands
@@ -272,10 +289,11 @@ var proposalListCmd = &cobra.Command{
 
 		var resp struct {
 			Proposals []struct {
-				ID        int    `json:"id"`
-				Status    string `json:"status"`
-				Message   string `json:"message"`
-				CreatedAt string `json:"created_at"`
+				ID               int     `json:"id"`
+				Status           string  `json:"status"`
+				Message          string  `json:"message"`
+				ContextBindingID *string `json:"context_binding_id"`
+				CreatedAt        string  `json:"created_at"`
 			} `json:"proposals"`
 		}
 		if err := json.Unmarshal(respBody, &resp); err != nil {
@@ -288,14 +306,18 @@ var proposalListCmd = &cobra.Command{
 		}
 
 		t := newTable(cmd.OutOrStdout())
-		t.AppendHeader(table.Row{"#", "STATUS", "CREATED", "MESSAGE"})
+		t.AppendHeader(table.Row{"#", "STATUS", "CREATED", "CONTEXT", "MESSAGE"})
 		for _, cs := range resp.Proposals {
 			created := cs.CreatedAt
 			if parsed, err := time.Parse(time.RFC3339, cs.CreatedAt); err == nil {
 				created = parsed.Format("2006-01-02 15:04")
 			}
+			contextID := "-"
+			if cs.ContextBindingID != nil {
+				contextID = *cs.ContextBindingID
+			}
 			msg := truncateText(cs.Message, 60)
-			t.AppendRow(table.Row{cs.ID, statusBadge(cs.Status), created, msg})
+			t.AppendRow(table.Row{cs.ID, statusBadge(cs.Status), created, contextID, msg})
 		}
 		t.Render()
 		return nil
@@ -332,10 +354,30 @@ var proposalShowCmd = &cobra.Command{
 var proposalApproveCmd = &cobra.Command{
 	Use:   "approve <number> [KEY=VALUE ...]",
 	Short: "Approve and apply a pending proposal",
-	Args:  cobra.MinimumNArgs(1),
+	Long: `Approve and apply a pending proposal.
+
+Credential values supplied as KEY=VALUE arguments may be visible in the process table.
+Prefer --credential-stdin KEY --yes to read exactly one credential from
+standard input without placing it in argv. Stdin mode is noninteractive: any
+other required credentials must already be agent-provided, OAuth-connected, or
+successfully acquired by a registered handler.`,
+	Args: func(cmd *cobra.Command, args []string) error {
+		if err := cobra.MinimumNArgs(1)(cmd, args); err != nil {
+			return err
+		}
+		stdinKey, _ := cmd.Flags().GetString("credential-stdin")
+		if stdinKey != "" && len(args) != 1 {
+			return fmt.Errorf("--credential-stdin cannot be combined with KEY=VALUE arguments")
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vault := resolveVault(cmd)
 		yes, _ := cmd.Flags().GetBool("yes")
+		stdinKey, _ := cmd.Flags().GetString("credential-stdin")
+		if stdinKey != "" && !yes {
+			return fmt.Errorf("--credential-stdin requires --yes because stdin is reserved for the credential value")
+		}
 
 		id, err := strconv.Atoi(args[0])
 		if err != nil {
@@ -364,6 +406,16 @@ var proposalApproveCmd = &cobra.Command{
 		if cs.Status != "pending" {
 			return fmt.Errorf("proposal #%d is already %s", id, cs.Status)
 		}
+		if stdinKey != "" {
+			if !proposalHasCredentialSlot(cs, stdinKey) {
+				return fmt.Errorf("proposal #%d has no set credential %q", id, stdinKey)
+			}
+			value, err := readCredentialStdin(cmd, stdinKey)
+			if err != nil {
+				return err
+			}
+			credentialOverrides[stdinKey] = value
+		}
 
 		// Show summary.
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\n\n", boldText(fmt.Sprintf("Proposal #%d: %s", id, cs.Message)))
@@ -385,10 +437,15 @@ var proposalApproveCmd = &cobra.Command{
 			}
 		}
 
-		// Collect credential values for slots that need human input.
-		credentials, err := collectCredentialValues(cmd, cs, credentialOverrides)
-		if err != nil {
-			return err
+		// Stdin mode is deliberately noninteractive: send only the named value
+		// and let the server atomically verify that every other slot is already
+		// satisfied by an agent value, OAuth flow, or acquisition result.
+		credentials := credentialOverrides
+		if stdinKey == "" {
+			credentials, err = collectCredentialValues(cmd, cs, credentialOverrides)
+			if err != nil {
+				return err
+			}
 		}
 
 		// Send approval to the running server.
@@ -567,6 +624,7 @@ var proposalReviewCmd = &cobra.Command{
 func init() {
 	proposalListCmd.Flags().String("status", "", "filter by status (pending, applied, rejected, expired)")
 	proposalApproveCmd.Flags().Bool("yes", false, "skip confirmation prompt")
+	proposalApproveCmd.Flags().String("credential-stdin", "", "read one proposal credential value from stdin for KEY")
 	proposalRejectCmd.Flags().String("reason", "", "reason for rejection")
 
 	proposalCmd.AddCommand(proposalListCmd)
