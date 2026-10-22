@@ -53,8 +53,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// (below) so legitimate agents don't burn the budget. Loopback
 	// is exempt — see isLoopbackPeer.
 	if p.rateLimit != nil && !isLoopbackPeer(r) {
-		if d := p.rateLimit.Check(ratelimit.TierAuth, mitmIPKey(r)); !d.Allow {
-			ratelimit.WriteDenial(w, d, "Too many CONNECT attempts")
+		key := mitmIPKey(r)
+		if d := p.rateLimit.Check(ratelimit.TierAuth, key); !d.Allow {
+			p.denyAuthFlood(w, r, "connect", key, d, "Too many CONNECT attempts")
 			return
 		}
 	}
