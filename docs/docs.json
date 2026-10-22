@@ -51,6 +51,7 @@
             "group": "Connect Agents",
             "pages": [
               "guides/connect-coding-agent",
+              "guides/request-approvals",
               "guides/connect-custom-agent",
               "guides/slack-agent-template",
               "guides/deploy-agent-container",

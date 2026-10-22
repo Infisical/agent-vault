@@ -140,7 +140,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// (5 min) prevents stalled upstreams. WriteTimeout is 30 min
 		// to allow long-running streaming transfers (git clone, SSE).
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       60 * time.Second,
+		ReadTimeout:       p.httpsReadTimeout,
 		WriteTimeout:      30 * time.Minute,
 		IdleTimeout:       2 * time.Minute,
 		ConnState: func(c net.Conn, state http.ConnState) {
