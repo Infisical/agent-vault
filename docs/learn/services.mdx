@@ -10,6 +10,12 @@ Each service contains:
 - **Name**: A canonical per-vault identifier (slug, 3–64 lowercase alphanumeric/hyphen chars, no leading/trailing hyphen, no consecutive hyphens). **Required on write** for new services — pick a deliberate name like `stripe`, `slack-bot`, or `internal-billing`. `name` may be omitted only when `host` + `path` uniquely matches an existing service (the server adopts that service's name, the same pattern as host-based delete). Legacy services persisted without a name before this contract are auto-slugified from `host` + `path` on read so they remain addressable; the slug becomes durable on the next write.
 - **Host**: The single matcher field. Accepts a bare hostname (`api.stripe.com`), a one-level wildcard (`*.github.com`), an inline path-scoped form (`slack.com/api/*`), or a port-scoped form (`internal.corp.com:3000` or `internal.corp.com:3000/api/*`). When a port is included, the service matches only traffic to that port; without a port, the service matches any port. Reads and writes use the same shape: writes accept any of those forms; reads return the joined inline form so you see exactly what you wrote.
 - **Auth config**: How Agent Vault authenticates. Five types are supported: `bearer`, `basic`, `api-key`, `custom`, and `passthrough` (opt out of injection).
+- **Upstream proxy**: New services dial directly by default, even when an instance default exists. Set `use_upstream_proxy: true` to opt into that default, or set `upstream_proxy` to the name of a specific [upstream proxy](/learn/upstream-proxies) profile. These choices are mutually exclusive.
+- **Existing routes**: Services created before this default changed that have no egress fields continue inheriting the instance default. On POST/PUT, omitting all egress fields preserves an existing service's stored route (including Direct); an explicit `use_upstream_proxy: false`, `upstream_proxy: ""`, or `bypass_upstream_proxy: true` selects Direct. Only instance owners can change an existing route or opt a new service into a proxy. Vault admins can still create new Direct services and edit other service fields. Agents cannot change egress routing through proposals.
+
+The file-based CLI commands `agent-vault vault service set -f` and `agent-vault vault service add -f` preserve the difference between an omitted route field and an explicit YAML `use_upstream_proxy: false` or `upstream_proxy: ""`, including through YAML aliases and merge keys. Route values are serialized according to their service field types: a YAML boolean stays a JSON boolean, and even an unquoted numeric profile name becomes a JSON string.
+
+In the service editor, vault admins who are not instance owners cannot rename an existing service: a rename would otherwise be treated as a new Direct entry instead of preserving its old route. Instance owners can rename in the editor; vault admins can still remove a service and add a new Direct service separately.
 
 <Tip>
   The `/discover` endpoint returns each service's `name` and `host` (joined
@@ -42,6 +48,45 @@ agent-vault vault service set -f stripe-services.yaml --vault my-vault
 ```
 
 The `host` tells Agent Vault which requests this service applies to. The `auth` block tells Agent Vault how to authenticate, referencing [credential](/learn/credentials) keys by name (not the actual credential values). The following section covers all five auth types.
+
+## Upstream proxy
+
+New services dial directly whether or not an instance default is configured. Reference an [upstream proxy](/learn/upstream-proxies) profile to send a matched service through an operator-configured egress hop:
+
+```yaml stripe-services.yaml
+services:
+  - name: stripe
+    host: api.stripe.com
+    upstream_proxy: corp-egress
+    auth:
+      type: bearer
+      token: STRIPE_KEY
+```
+
+The value is a profile name managed by instance owners (**Manage Instance > Upstream Proxies**), never an inline URL — credentials and trust anchors live on the profile, so rotating egress for ten services is one edit. A reference to a profile that does not exist is rejected with `400` at write time, and deleting a profile while services still reference it is refused with `409`.
+
+With an instance default enabled, a newly created service with no proxy setting dials directly. Set `use_upstream_proxy: true` to opt into the default for a path, or name a profile for another path:
+
+```yaml
+services:
+  - name: public-api
+    host: api.example.com/v1/public/*
+    auth:
+      type: passthrough
+  - name: private-api
+    host: api.example.com/v1/private/*
+    use_upstream_proxy: true
+    auth:
+      type: passthrough
+```
+
+An `upstream_proxy: corp-egress` on `private-api` selects that named profile instead of the instance default. The opt-in applies only to requests whose winning service matches; matching uses the most specific host/port/path service. Unmatched requests and broker-originated control-plane traffic still use the instance default. Older services with neither egress field retain their inherited route; set `bypass_upstream_proxy: true` or explicitly send `use_upstream_proxy: false` to make one direct. Omitting egress fields while updating an existing service preserves its route; disabling a named profile requires an explicit Direct choice before deleting it. `no_proxy` is a host/port bypass for a profile, not a path-specific rule. Conflicting egress controls return `400`.
+
+<Tip>
+  Agents cannot change egress routing. A [proposal](/learn/proposals) that adds
+  a service creates it as direct; edits preserve its operator-owned
+  `upstream_proxy`, `use_upstream_proxy`, or `bypass_upstream_proxy` selection.
+</Tip>
 
 ## Auth types
 

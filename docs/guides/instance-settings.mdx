@@ -89,3 +89,9 @@ Example output:
 invite_only: disabled
 allowed_email_domains: acme.com, acme.org
 ```
+
+## Upstream proxies
+
+The **Manage Instance** sidebar also hosts **Upstream Proxies**, where owners define the egress proxies that carry requests from the broker to real APIs (for network allowlisting, filtering, or audit). Like the settings above, every write requires the instance owner role, but the configuration itself is not part of `agent-vault owner settings`.
+
+See [upstream proxies](/learn/upstream-proxies) for the profile fields, failure policies, and how services reference them.

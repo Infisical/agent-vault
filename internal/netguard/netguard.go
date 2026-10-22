@@ -2,6 +2,7 @@ package netguard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -163,23 +164,110 @@ func isBlockedIP(ip net.IP, allowPrivate bool, allowed []net.IPNet) bool {
 	return false
 }
 
+// currentPolicy returns the allow-private flag and allowlist in effect for
+// this process, honouring AGENT_VAULT_ALLOW_PRIVATE_RANGES and
+// AGENT_VAULT_NETWORK_ALLOWLIST. Exported helpers below read it fresh on
+// every call so runtime configuration changes are picked up.
+func currentPolicy() (bool, []net.IPNet) {
+	allowPrivate := AllowPrivateFromEnv()
+	var allowed []net.IPNet
+	if !allowPrivate {
+		allowed = AllowlistFromEnv()
+	}
+	return allowPrivate, allowed
+}
+
+// ResolveTargetIPs resolves host and applies the same private-range and IMDS
+// policy that direct connections enforce. The returned addresses are the
+// exact addresses checked by policy, allowing callers to avoid a second DNS
+// lookup before dialing.
+func ResolveTargetIPs(ctx context.Context, host string) ([]net.IPAddr, error) {
+	allowPrivate, allowed := currentPolicy()
+	return resolveTargetIPs(ctx, host, allowPrivate, allowed)
+}
+
+func resolveTargetIPs(ctx context.Context, host string, allowPrivate bool, allowed []net.IPNet) ([]net.IPAddr, error) {
+	if host == "" {
+		return nil, fmt.Errorf("netguard: empty target host")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if isBlockedIP(ip, allowPrivate, allowed) {
+			return nil, fmt.Errorf("netguard: connection to %s (%s) blocked by network policy", host, ip)
+		}
+		return []net.IPAddr{{IP: ip}}, nil
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("netguard: DNS lookup failed for %q: %w", host, err)
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("netguard: DNS lookup returned no addresses for %q", host)
+	}
+	for _, ipAddr := range ips {
+		if isBlockedIP(ipAddr.IP, allowPrivate, allowed) {
+			return nil, fmt.Errorf("netguard: connection to %s (%s) blocked by network policy",
+				host, ipAddr.IP.String())
+		}
+	}
+	return ips, nil
+}
+
+// ValidateTargetName resolves host and applies the target network policy.
+func ValidateTargetName(ctx context.Context, host string) error {
+	_, err := ResolveTargetIPs(ctx, host)
+	return err
+}
+
+// ValidateTargetAddr applies ValidateTargetName to the host portion of an
+// host:port address.
+func ValidateTargetAddr(ctx context.Context, addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("netguard: invalid address %q: %w", addr, err)
+	}
+	return ValidateTargetName(ctx, host)
+}
+
+// ValidateRemoteTargetName checks a name before sending it to a proxy that
+// resolves DNS remotely. Only a definitive NXDOMAIN may be deferred to that
+// trusted proxy; cancellation and transient resolver failures remain errors.
+func ValidateRemoteTargetName(ctx context.Context, host string) error {
+	_, err := ResolveTargetIPs(ctx, host)
+	if err == nil {
+		return nil
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) && dnsErr.IsNotFound && ctx.Err() == nil {
+		return nil
+	}
+	return err
+}
+
 // SafeDialContext returns a DialContext function that blocks connections to
 // forbidden IP ranges. When allowPrivate is true, only IMDS endpoints are
 // blocked. When false, private/reserved ranges are also blocked unless
 // allowlisted via AGENT_VAULT_NETWORK_ALLOWLIST.
 //
-// Resolution and address selection are left to net.Dialer, which tries every
-// resolved address and races IPv6 against IPv4 (RFC 6555 Fast Fallback), so
-// one broken address family does not fail or stall the dial. The policy check
-// runs in the dialer's ControlContext hook on each address right before
-// connect, so blocked addresses are skipped and DNS rebinding cannot swap in
-// an unchecked IP between validation and connection.
+// SafeDialContext preflights every resolved address, then delegates address
+// selection and dialing to net.Dialer. Its ControlContext policy check runs
+// immediately before each connection, protecting against DNS changes between
+// preflight and connect while retaining net.Dialer's address failover.
 func SafeDialContext(allowPrivate bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	var allowed []net.IPNet
 	if !allowPrivate {
 		allowed = AllowlistFromEnv()
 	}
-	return newSafeDialer(allowPrivate, allowed).DialContext
+	dialer := newSafeDialer(allowPrivate, allowed)
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("netguard: invalid address %q: %w", addr, err)
+		}
+		if _, err := resolveTargetIPs(ctx, host, allowPrivate, allowed); err != nil {
+			return nil, fmt.Errorf("netguard: dialing %q: %w", addr, err)
+		}
+		return dialer.DialContext(ctx, network, addr)
+	}
 }
 
 func newSafeDialer(allowPrivate bool, allowed []net.IPNet) *net.Dialer {

@@ -15,6 +15,7 @@ interface DataTableProps<T> {
   onRowClick?: (item: T, index: number) => void;
   emptyTitle?: string;
   emptyDescription?: ReactNode;
+  emptyAction?: ReactNode;
 }
 
 export default function DataTable<T>({
@@ -24,6 +25,7 @@ export default function DataTable<T>({
   onRowClick,
   emptyTitle = "No data",
   emptyDescription,
+  emptyAction,
 }: DataTableProps<T>) {
   return (
     <div className="border border-border rounded-xl overflow-hidden bg-surface">
@@ -52,6 +54,9 @@ export default function DataTable<T>({
                     <div className="text-sm text-text-muted">
                       {emptyDescription}
                     </div>
+                  )}
+                  {emptyAction && (
+                    <div className="mt-4 flex justify-center">{emptyAction}</div>
                   )}
                 </div>
               </td>

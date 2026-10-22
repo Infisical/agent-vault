@@ -746,6 +746,7 @@ func (s *SQLStore) CreateVault(ctx context.Context, name string) (*Vault, error)
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// #nosec G701 -- Rebind only rewrites this fixed template's placeholders; all values are bound arguments.
 	_, err = tx.ExecContext(ctx,
 		s.dialect.Rebind("INSERT INTO vaults (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)"),
 		nsID, name, nowStr, nowStr,
@@ -754,6 +755,7 @@ func (s *SQLStore) CreateVault(ctx context.Context, name string) (*Vault, error)
 		return nil, fmt.Errorf("creating vault: %w", err)
 	}
 
+	// #nosec G701 -- Rebind only rewrites this fixed template's placeholders; all values are bound arguments.
 	_, err = tx.ExecContext(ctx,
 		s.dialect.Rebind("INSERT INTO broker_configs (id, vault_id, services_json, created_at, updated_at) VALUES (?, ?, '[]', ?, ?)"),
 		bcID, nsID, nowStr, nowStr,
@@ -1940,11 +1942,23 @@ func (s *SQLStore) UpdateMasterKeyRecord(ctx context.Context, record *MasterKeyR
 // --- Broker Configs ---
 
 func (s *SQLStore) SetBrokerConfig(ctx context.Context, vaultID string, servicesJSON string) (*BrokerConfig, error) {
+	tx, err := s.db.BeginTx(ctx, s.upstreamProxyTxOptions())
+	if err != nil {
+		return nil, fmt.Errorf("setting broker config: beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := s.lockUpstreamProxyState(ctx, tx); err != nil {
+		return nil, fmt.Errorf("setting broker config: locking proxy state: %w", err)
+	}
+	if err := s.validateUpstreamProxyRefsTx(ctx, tx, servicesJSON); err != nil {
+		return nil, err
+	}
+
 	id := newUUID()
 	now := time.Now().UTC()
 	nowStr := s.dialect.FormatTime(now)
-
-	_, err := s.db.ExecContext(ctx,
+	// #nosec G701 -- Rebind only rewrites this fixed template's placeholders; servicesJSON is a bound argument.
+	_, err = tx.ExecContext(ctx,
 		s.dialect.Rebind(`INSERT INTO broker_configs (id, vault_id, services_json, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(vault_id) DO UPDATE SET
@@ -1955,7 +1969,9 @@ func (s *SQLStore) SetBrokerConfig(ctx context.Context, vaultID string, services
 	if err != nil {
 		return nil, fmt.Errorf("setting broker config: %w", err)
 	}
-
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("setting broker config: committing: %w", err)
+	}
 	return &BrokerConfig{
 		ID: id, VaultID: vaultID, ServicesJSON: servicesJSON,
 		CreatedAt: now, UpdatedAt: now,
@@ -1963,6 +1979,7 @@ func (s *SQLStore) SetBrokerConfig(ctx context.Context, vaultID string, services
 }
 
 func (s *SQLStore) GetBrokerConfig(ctx context.Context, vaultID string) (*BrokerConfig, error) {
+	// #nosec G701 -- Rebind only rewrites this fixed template's placeholders; vaultID is bound.
 	row := s.db.QueryRowContext(ctx,
 		s.dialect.Rebind("SELECT id, vault_id, services_json, created_at, updated_at FROM broker_configs WHERE vault_id = ?"),
 		vaultID,
@@ -2003,6 +2020,7 @@ func (s *SQLStore) CreateProposal(ctx context.Context, vaultID, sessionID, servi
 	// are serialized and cannot compute the same next ID.
 	if forUpdate := s.dialect.ForUpdateClause(); forUpdate != "" {
 		var dummy int
+		// #nosec G701 -- The dialect lock clause is fixed SQL; vaultID is a bound argument.
 		_ = tx.QueryRowContext(ctx,
 			s.dialect.Rebind("SELECT 1 FROM vaults WHERE id = ? "+forUpdate),
 			vaultID,
@@ -2011,6 +2029,7 @@ func (s *SQLStore) CreateProposal(ctx context.Context, vaultID, sessionID, servi
 
 	// Compute next sequential ID for this vault.
 	var nextID int
+	// #nosec G701 -- Rebind only rewrites this fixed template's placeholders; vaultID is bound.
 	err = tx.QueryRowContext(ctx,
 		s.dialect.Rebind("SELECT COALESCE(MAX(id), 0) + 1 FROM proposals WHERE vault_id = ?"),
 		vaultID,
@@ -2019,6 +2038,7 @@ func (s *SQLStore) CreateProposal(ctx context.Context, vaultID, sessionID, servi
 		return nil, fmt.Errorf("computing next proposal id: %w", err)
 	}
 
+	// #nosec G701 -- Rebind only rewrites this fixed template's placeholders; all proposal data are bound.
 	_, err = tx.ExecContext(ctx,
 		s.dialect.Rebind(`INSERT INTO proposals (id, vault_id, session_id, status, services_json, credentials_json, message, user_message, approval_token_hash, approval_token_expires_at, created_at, updated_at)
 		 VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`),
@@ -2030,6 +2050,7 @@ func (s *SQLStore) CreateProposal(ctx context.Context, vaultID, sessionID, servi
 
 	// Store agent-provided encrypted credential values.
 	for key, enc := range credentials {
+		// #nosec G701 -- Rebind only rewrites this fixed template's placeholders; credential data are bound.
 		_, err = tx.ExecContext(ctx,
 			s.dialect.Rebind(`INSERT INTO proposal_credentials (vault_id, proposal_id, key, ciphertext, nonce)
 			 VALUES (?, ?, ?, ?, ?)`),
@@ -2169,13 +2190,19 @@ func (s *SQLStore) GetProposalCredentials(ctx context.Context, vaultID string, p
 func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []OAuthCredentialConfig) error {
 	nowStr := s.now()
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, s.upstreamProxyTxOptions())
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-
+	if err := s.lockUpstreamProxyState(ctx, tx); err != nil {
+		return fmt.Errorf("locking upstream proxy state: %w", err)
+	}
+	if err := s.validateUpstreamProxyRefsTx(ctx, tx, mergedServicesJSON); err != nil {
+		return err
+	}
 	// 1. Update broker config with merged services.
+	// #nosec G701 -- Rebind only rewrites this fixed template's placeholders; mergedServicesJSON is bound.
 	_, err = tx.ExecContext(ctx,
 		s.dialect.Rebind(`UPDATE broker_configs SET services_json = ?, updated_at = ? WHERE vault_id = ?`),
 		mergedServicesJSON, nowStr, vaultID,
@@ -2187,6 +2214,7 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 	// 2. Upsert each static credential.
 	for key, enc := range credentials {
 		id := newUUID()
+		// #nosec G701 -- Rebind only rewrites this fixed template's placeholders; credential data are bound.
 		_, err = tx.ExecContext(ctx,
 			s.dialect.Rebind(`INSERT INTO credentials (id, vault_id, key, type, ciphertext, nonce, created_at, updated_at)
 			 VALUES (?, ?, ?, 'static', ?, ?, ?, ?)
@@ -2204,6 +2232,7 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 	// 2b. Upsert each OAuth credential config.
 	for _, oc := range oauthConfigs {
 		id := newUUID()
+		// #nosec G701 -- Rebind only rewrites this fixed template's placeholders; credential data are bound.
 		_, err = tx.ExecContext(ctx,
 			s.dialect.Rebind(`INSERT INTO credentials (id, vault_id, key, type, ciphertext, nonce, created_at, updated_at)
 			 VALUES (?, ?, ?, 'oauth', ?, ?, ?, ?)
@@ -2225,6 +2254,7 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 		if scopeSep == "" {
 			scopeSep = " "
 		}
+		// #nosec G701 -- Rebind only rewrites this fixed template's placeholders; all OAuth data are bound.
 		_, err = tx.ExecContext(ctx,
 			s.dialect.Rebind(`INSERT INTO credential_oauth (vault_id, credential_key, authorization_url, token_url, client_id,
 			   client_secret_ct, client_secret_nonce, scopes, scope_separator, disable_pkce, token_auth_method,
@@ -2264,6 +2294,7 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 
 	// 3. Delete credentials marked for removal.
 	for _, key := range deleteCredentialKeys {
+		// #nosec G701 -- Rebind only rewrites this fixed template's placeholders; vaultID and key are bound.
 		_, err = tx.ExecContext(ctx,
 			s.dialect.Rebind(`DELETE FROM credentials WHERE vault_id = ? AND key = ?`),
 			vaultID, key,
@@ -2274,6 +2305,7 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 	}
 
 	// 4. Mark proposal as applied (status guard prevents double-apply race).
+	// #nosec G701 -- Rebind only rewrites this fixed template's placeholders; proposal identity and timestamps are bound.
 	res, err := tx.ExecContext(ctx,
 		s.dialect.Rebind(`UPDATE proposals SET status = 'applied', reviewed_at = ?, updated_at = ?
 		 WHERE vault_id = ? AND id = ? AND status = 'pending'`),

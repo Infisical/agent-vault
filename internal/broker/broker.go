@@ -35,6 +35,16 @@ type Service struct {
 	Enabled       *bool          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Auth          Auth           `yaml:"auth" json:"auth"`
 	Substitutions []Substitution `yaml:"substitutions,omitempty" json:"substitutions,omitempty"`
+	// UpstreamProxy names an instance-level egress profile. A name opts this
+	// service into proxy routing regardless of the instance default.
+	// Operators own this setting; proposals preserve the stored route.
+	UpstreamProxy string `yaml:"upstream_proxy,omitempty" json:"upstream_proxy,omitempty"`
+	// UseUpstreamProxy opts into the instance default without naming a profile.
+	// New services with neither field are stored with BypassUpstreamProxy set.
+	UseUpstreamProxy bool `yaml:"use_upstream_proxy,omitempty" json:"use_upstream_proxy,omitempty"`
+	// BypassUpstreamProxy marks direct routing. Older services with no egress
+	// fields keep inheriting the instance default until explicitly changed.
+	BypassUpstreamProxy bool `yaml:"bypass_upstream_proxy,omitempty" json:"bypass_upstream_proxy,omitempty"`
 }
 
 // MatcherPattern returns the joined inline form (`slack.com/api/*`),
@@ -378,6 +388,37 @@ func Validate(cfg *Config) error {
 		}
 		if err := s.ValidateSubstitutions(); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
+		}
+		if err := ValidateUpstreamProxyName(s.UpstreamProxy); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
+		}
+		if s.BypassUpstreamProxy && (s.UpstreamProxy != "" || s.UseUpstreamProxy) {
+			return fmt.Errorf("service %d: bypass_upstream_proxy cannot be combined with proxy routing", i)
+		}
+		if s.UseUpstreamProxy && s.UpstreamProxy != "" {
+			return fmt.Errorf("service %d: use_upstream_proxy cannot be combined with upstream_proxy", i)
+		}
+	}
+	return nil
+}
+
+// ValidateUpstreamProxyName checks that name can be used to reference an
+// egress proxy profile. Empty is valid and means "no override". Profiles are
+// referenced rather than inlined, so the name must stay small, printable, and
+// free of characters that would complicate logging or JSON round-tripping.
+func ValidateUpstreamProxyName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("upstream_proxy must be at most 64 characters")
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("upstream_proxy must not contain control characters")
+		}
+		if strings.ContainsRune(" \t\r\n\"'\\/@#:,", r) {
+			return fmt.Errorf("upstream_proxy must not contain %q", string(r))
 		}
 	}
 	return nil

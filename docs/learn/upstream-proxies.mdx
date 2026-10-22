@@ -1,0 +1,165 @@
+---
+title: "Upstream Proxies"
+description: "Route requests leaving Agent Vault through an operator-configured egress proxy."
+---
+
+An **upstream proxy** is an egress proxy that carries a request from Agent Vault to the real API after credentials have been injected. Without one, the broker dials each target directly; with one, every matching request leaves through the proxy you control — the hop where corporate networks expect traffic to enter, be filtered, logged, or audited.
+
+Upstream proxies are instance-level configuration owned by the instance [owner](/learn/permissions#instance-roles). Services reference a profile *by name* rather than inlining credentials and endpoints, so one profile can be shared across vaults and rotated in a single place.
+
+<Note>
+  Upstream proxies describe how the broker reaches the **upstream**. The proxy
+  your agents already use (the `HTTPS_PROXY` Agent Vault sets up for them) is
+  the *ingress* side and is unchanged by anything on this page.
+</Note>
+
+## How a route is chosen
+
+For each brokered request, the first matching rule wins:
+
+| Precedence | Rule | Applies to |
+| --- | --- | --- |
+| 1 | The matched service's `bypass_upstream_proxy: true` | Direct routing for new services without a proxy choice, or an explicit direct selection |
+| 2 | The profile named by the matched service's `upstream_proxy` | Requests that matched a service selecting a profile |
+| 3 | The instance default profile (`is_default`) | Services opting in with `use_upstream_proxy: true`, older services without an egress choice, unmatched requests, and the broker's own outbound calls ([OAuth](/learn/credentials) token refreshes, external credential stores, SMTP) |
+| 4 | No proxy — dial the target directly | When no profile applies |
+
+New services dial directly even if an instance default exists. Set `use_upstream_proxy: true` to opt into the default, or set `upstream_proxy` to choose a named profile. These choices and `bypass_upstream_proxy` are mutually exclusive; conflicting writes return `400`. POST/PUT writes that omit egress fields preserve an existing service's route, including Direct and named-profile choices; explicitly set `bypass_upstream_proxy: true` (or `use_upstream_proxy: false`) to make it direct. Only instance owners can change these choices; vault admins may edit other service fields and create new Direct services. Existing services without egress fields keep inheriting the default so an upgrade cannot silently reroute them to direct. A named-but-missing or disabled profile falls back to the instance default; a database or credential-decryption error does **not** cause direct routing. Local administrative edits invalidate this instance's cache immediately; another instance may retain its route for up to five seconds.
+
+For **opt-in routing**, create a profile with `is_default: false` (the UI leaves **Instance default** off when creating one), then select it only on the services that need the proxy. New services without a selection dial directly; unmatched requests use the instance default if one exists (or dial directly otherwise), unless the vault's `unmatched_host_policy=deny` rejects them before egress. A service can match a host, optional port, and path; two paths on the same host can use different routes.
+
+The service editor offers Direct (default for new services), Use instance default proxy, and each named profile. Only matched service requests follow that selection. Unmatched requests and broker-originated OAuth, Infisical, external-store, and SMTP traffic still use the default if enabled; service rules cannot select individual control-plane URLs. Profile `no_proxy` bypasses by target host or port, **not by URL path**. `fail_open` is an outage fallback, not an opt-out.
+
+The default also routes requests to the Infisical API from the first machine-identity login, token renewals, secrets, and dynamic leases. Cloud identity discovery through AWS/GCP credential providers is separate from Infisical API traffic and is not routed by this profile.
+
+## Profile fields
+
+| Field | Description |
+| --- | --- |
+| `name` | Operator-facing identifier services reference, with exact case-sensitive matching. Up to 64 characters; avoid spaces and the characters `"` `'` `\` `/` `@` `#` `:` `,` so referencing always round-trips. Immutable once created. |
+| `scheme` | How the broker talks to the proxy: `http`, `https`, `socks5`, `socks5h`. |
+| `host` | Proxy endpoint as `host:port`. No scheme, no path — the port is required. |
+| `username` / `password` | Optional proxy credentials. Encrypted at rest, write-only through the API: create/list/get/update return only `has_auth`. PATCH may replace either field independently; an explicit empty string clears just that field, while an omitted field stays unchanged. `clear_auth` removes both. Blank UI edit fields keep existing values. |
+| `no_proxy` | Comma-separated hosts that skip this proxy, for host-wide (including control-plane) bypass (`NO_PROXY` matching: exact host, optional leading dot for suffix matching, optional `:port`, or `*` for everything). It matches hosts/ports, not URL paths. Use a direct service for path-scoped bypass. |
+| `proxy_ca_pem` | Additional PEM certificate authority for the TLS connection to an `https` HTTP proxy. It augments system roots; it does not configure SOCKS TLS or the target's trust. Invalid nonempty PEM is rejected. |
+| `on_failure` | What happens when the proxy cannot be reached: `fail_closed` (default) or `fail_open`. |
+| `is_default` | Off by default when created in the UI. When enabled, applies to services opted in with `use_upstream_proxy: true`, older services without an explicit choice, unmatched brokered requests, and the broker's own outbound calls. Setting it clears the previous default — there is at most one. |
+| `enabled` | When false, the profile is skipped and its traffic falls back to the default (or dials directly). |
+
+Default-profile selection and service-reference checks have the same semantics on SQLite and PostgreSQL. The database enforces at most one default. If an existing database already has multiple defaults, the invariant migration stops without selecting a route for the operator; resolve the duplicates before upgrading.
+
+### Schemes
+
+| Scheme | Behaviour |
+| --- | --- |
+| `http` | Plain HTTP proxy. HTTPS upstreams use `CONNECT`; plain-HTTP upstreams are forwarded in absolute form. |
+| `https` | Same, over TLS to the proxy. System roots plus any configured `proxy_ca_pem` validate the proxy; the target keeps its normal trust settings. |
+| `socks5` | SOCKS5 tunnel with **local** DNS resolution for the target; the proxy receives a checked numeric IP. |
+| `socks5h` | SOCKS5 with **remote** DNS resolution by the proxy. The broker checks IP literals and locally resolvable names first; local NXDOMAIN permits passing the domain to the trusted proxy, whose remote IP policy must reject forbidden destinations. Other local DNS errors fail the request. |
+
+## Failure policy
+
+The policy answers exactly one question — *what happens when the proxy itself cannot be reached*:
+
+- **`fail_closed`** (default): reject the request. Nothing silently leaks out over a direct connection, which is what you want when the proxy is carrying an egress guarantee (allowlisting, audit, DLP).
+- **`fail_open`**: log a warning and dial the target directly. Useful while migrating or shadow-testing a proxy; not suitable for enforcing egress policy.
+
+<Warning>
+  `fail_open` absorbs *only* failures reaching the proxy before the request is sent, including TCP refusal and TLS handshake failure with an HTTPS proxy. Resolver errors, invalid profiles, proxy authentication/denial, target DNS/TLS failures and failures after sending a request do not retry directly. A canceled request never retries.
+</Warning>
+
+Requests with a body can be retried only when their declared `Content-Length` is positive and at most 8 MiB and the body can be reproduced. Chunked, unknown-size (including a non-nil body with zero declared length), and larger requests fail closed if the proxy is down. Empty `nil`/`http.NoBody` requests may retry.
+
+## Security notes
+
+- **Network policy still applies to the target.** SOCKS5 resolves and checks the target locally before contacting the proxy. SOCKS5h checks locally when possible, but a trusted proxy must enforce the remote resolved IP. HTTP CONNECT/forward-proxy preflight validation does not pin the proxy's eventual target IP; the HTTP proxy must filter its own remote IPs.
+- **Proxy credentials stay on the proxy hop.** `Proxy-Authorization` is emitted only for the proxy and is stripped before the request continues upstream, alongside every other broker-scoped header.
+- **Trust is not widened for the target.** `proxy_ca_pem` augments the system root pool for the HTTPS proxy hop only; it is not exclusive certificate pinning. A `no_proxy` match uses the direct transport, so it never uses the profile's proxy CA for target TLS, even if the target and proxy share a host and port.
+- **Referenced profiles cannot be deleted.** Deleting a profile that services still reference returns `409` naming the referencing services; concurrent service writes and deletes are serialized.
+
+## Managing profiles
+
+<Tabs>
+  <Tab title="Web UI">
+    Go to **Manage Instance > Upstream Proxies** to create, edit, and delete
+    profiles. Only instance owners see this page. New profiles are not defaults:
+    to route selected endpoints, leave **Instance default** off. In the service
+    editor, choose a profile in **Upstream Proxy** for each matching service.
+  </Tab>
+  <Tab title="API">
+    ```bash
+    # Keep the bearer token and any request credentials out of curl arguments.
+    umask 077
+    printf 'header = "Authorization: Bearer %s"\n' "$OWNER_TOKEN" > owner-curl.conf
+    cat > profile.json <<'JSON'
+    {
+      "name": "corp-egress",
+      "scheme": "http",
+      "host": "proxy.corp.internal:3128",
+      "no_proxy": "internal.corp.com,.local",
+      "on_failure": "fail_closed",
+      "is_default": false,
+      "enabled": true
+    }
+    JSON
+    # If the proxy needs credentials, add username/password to this 0600 JSON
+    # file using your secret manager before sending it.
+    curl --config owner-curl.conf -X POST \
+      -H "Content-Type: application/json" \
+      --data-binary @profile.json http://localhost:14321/v1/admin/upstream-proxies
+
+    # List (returns has_auth, never username, password, or ciphertext).
+    curl --config owner-curl.conf http://localhost:14321/v1/admin/upstream-proxies
+
+    # PATCH may replace username or password independently; omitted fields stay.
+    printf '%s' '{"on_failure":"fail_open"}' > update.json
+    curl --config owner-curl.conf -X PATCH -H "Content-Type: application/json" \
+      --data-binary @update.json http://localhost:14321/v1/admin/upstream-proxies/corp-egress
+    ```
+  </Tab>
+</Tabs>
+
+## Referencing from a service
+
+A new service dials directly unless it opts into the instance default or selects a named profile:
+
+```yaml services.yaml
+services:
+  - name: anthropic
+    host: api.anthropic.com
+    upstream_proxy: corp-egress
+    auth:
+      type: bearer
+      token: ANTHROPIC_KEY
+```
+
+```bash
+agent-vault vault service set -f services.yaml --vault my-vault
+```
+
+Referencing a profile that does not exist is rejected with `400` at write time, so a service can never be stored mid-routed between two interpretations.
+
+With `corp-egress` configured as the instance default, a newly created public service without egress fields dials directly; another service explicitly opts into the default:
+
+```yaml selective-services.yaml
+services:
+  - name: public-api
+    host: api.example.com/v1/public/*
+    auth:
+      type: passthrough
+  - name: private-api
+    host: api.example.com/v1/private/*
+    use_upstream_proxy: true
+    auth:
+      type: passthrough
+```
+
+Use `upstream_proxy: corp-egress` instead of `use_upstream_proxy: true` on `private-api` to select a named profile. Existing services without egress fields continue to inherit the instance default; choosing Direct in the editor or setting `bypass_upstream_proxy: true` changes one to direct. Unmatched requests and broker-originated control-plane calls continue through the instance default. With no default, unmatched requests dial directly unless denied.
+
+<Tip>
+  A runnable end-to-end walkthrough lives in
+  [`examples/upstream-proxy-demo`](https://github.com/Infisical/agent-vault/tree/main/examples/upstream-proxy-demo).
+  It proves opt-in routing for two paths on one host and an unmatched path,
+  default-direct creation under an enabled instance default, `no_proxy`, and
+  `fail_closed`/`fail_open` offline.
+</Tip>

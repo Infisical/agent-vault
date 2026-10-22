@@ -82,6 +82,7 @@
           "learn/credentials",
           "learn/credential-stores",
           "learn/services",
+          "learn/upstream-proxies",
           "learn/proposals",
           "learn/permissions",
           {

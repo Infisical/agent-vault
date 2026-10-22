@@ -317,6 +317,49 @@ type CreateExternalVaultParams struct {
 	CreatorActorType    string // "user" or "agent"
 }
 
+// UpstreamProxy is an instance-scoped egress proxy profile. Services
+// reference it by Name; the egress layer turns it into a dialler at request
+// time. Ciphertext fields hold AES-256-GCM output produced with the data
+// encryption key — the plaintext username/password never touch the database
+// and never leave the server through the API.
+type UpstreamProxy struct {
+	ID         string
+	Name       string
+	Scheme     string // http | https | socks5 | socks5h
+	Host       string // host:port
+	NoProxy    string
+	ProxyCAPEM string
+	OnFailure  string // fail_closed | fail_open
+	IsDefault  bool
+	Enabled    bool
+
+	// Encrypted-at-rest proxy credentials (absent when unused).
+	UsernameCT, UsernameNonce []byte
+	PasswordCT, PasswordNonce []byte
+
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// UpdateUpstreamProxyParams selects the profile to update by Name (not ID) —
+// Name is the operator-facing handle that services reference, so re-creating
+// a profile under an existing name is an update, not a silent duplicate.
+type UpdateUpstreamProxyParams struct {
+	Name       string
+	Scheme     *string
+	Host       *string
+	NoProxy    *string
+	ProxyCAPEM *string
+	OnFailure  *string
+	IsDefault  *bool
+	Enabled    *bool
+
+	// Set only when credentials are rotated or cleared. Nil pointers mean
+	// "leave unchanged"; non-nil empty slices mean "remove".
+	UsernameCT, UsernameNonce *[]byte
+	PasswordCT, PasswordNonce *[]byte
+}
+
 // SetVaultExternalStoreParams carries inputs to SetVaultExternalStore, used to
 // connect an existing vault to an external store (built-in → external switch).
 type SetVaultExternalStoreParams struct {
@@ -604,6 +647,18 @@ type Store interface {
 	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
 	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
 	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
+
+	// Upstream proxies (instance-scoped egress profiles)
+	ListUpstreamProxies(ctx context.Context) ([]UpstreamProxy, error)
+	GetUpstreamProxyByName(ctx context.Context, name string) (*UpstreamProxy, error)
+	GetDefaultUpstreamProxy(ctx context.Context) (*UpstreamProxy, error)
+	CreateUpstreamProxy(ctx context.Context, p *UpstreamProxy) error
+	UpdateUpstreamProxy(ctx context.Context, params UpdateUpstreamProxyParams) (*UpstreamProxy, error)
+	DeleteUpstreamProxy(ctx context.Context, name string) error
+	// CountUpstreamProxyReferences reports how many services across all vaults
+	// reference a profile, used to block deletions that would silently break
+	// live traffic.
+	CountUpstreamProxyReferences(ctx context.Context, name string) ([]string, error)
 
 	// Vault skills (markdown instruction documents, one row per skill).
 	// ListSkills omits the markdown body; GetSkill returns it.

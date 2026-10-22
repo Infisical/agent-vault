@@ -13,6 +13,7 @@ func init() {
 		return db.Exec(postgresBaselineSQL).Error
 	})
 }
+
 // postgresBaselineSQL creates the full Postgres schema equivalent to
 // SQLite migrations 001-050. Embedded as a raw SQL string because
 // defining 20+ GORM model structs just for a one-time baseline is

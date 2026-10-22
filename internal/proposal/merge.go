@@ -59,10 +59,17 @@ func MergeServices(existing []broker.Service, proposed []Service) ([]broker.Serv
 				if len(p.Substitutions) == 0 {
 					next.Substitutions = merged[idx].Substitutions
 				}
+				// Egress selection is operator-owned: proposals cannot
+				// introduce or clear any of its controls.
+				next.UpstreamProxy = merged[idx].UpstreamProxy
+				next.UseUpstreamProxy = merged[idx].UseUpstreamProxy
+				next.BypassUpstreamProxy = merged[idx].BypassUpstreamProxy
 				merged[idx] = next
 			default:
 				nameIndex[p.Name] = len(merged)
-				merged = append(merged, toBrokerService(p))
+				next := toBrokerService(p)
+				next.BypassUpstreamProxy = true
+				merged = append(merged, next)
 			}
 		}
 	}

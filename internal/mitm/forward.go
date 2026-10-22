@@ -218,7 +218,9 @@ func (p *Proxy) forwardRequest(
 	}
 	defer enf.Release()
 
-	r.Body = http.MaxBytesReader(w, r.Body, p.maxRequestBytes)
+	if r.Body != nil && r.Body != http.NoBody {
+		r.Body = http.MaxBytesReader(w, r.Body, p.maxRequestBytes)
+	}
 
 	scheme := "http"
 	if useTLSUpstream {
@@ -325,23 +327,60 @@ func (p *Proxy) forwardRequest(
 		}
 	}
 
+	// Resolve the egress route after injection so the profile can be chosen
+	// per matched service. Nothing configured → the direct baseline.
+	route, err := p.routeFor(r.Context(), scope.VaultID, inject.MatchedName, target)
+	if err != nil {
+		brokercore.WriteProxyError(w, http.StatusBadGateway, "upstream_proxy_error", err.Error())
+		emit(http.StatusBadGateway, "upstream_proxy_error")
+		return
+	}
+
+	logFailure := func(stage string, err error) {
+		// Client-style errors can include a complete URL with substituted
+		// credentials. Log the transport cause, never that URL.
+		for {
+			var urlErr *url.Error
+			if !errors.As(err, &urlErr) {
+				break
+			}
+			err = urlErr.Err
+		}
+		attrs := make([]slog.Attr, 0, 11)
+		attrs = append(attrs,
+			slog.String("vault_id", scope.VaultID),
+			slog.String("vault_name", scope.VaultName),
+			slog.String("target_host", target),
+			slog.String("method", r.Method),
+			slog.String("service", event.MatchedService),
+			slog.String("stage", stage),
+			slog.String("error", err.Error()),
+		)
+		if route.profile == nil {
+			attrs = append(attrs, slog.String("route", "direct"))
+		} else {
+			attrs = append(attrs,
+				slog.String("route", "upstream_proxy"),
+				slog.String("profile", route.profile.Name),
+				slog.String("proxy_scheme", route.profile.Scheme),
+				slog.String("proxy_host", route.profile.Host),
+			)
+		}
+		p.logger.LogAttrs(r.Context(), slog.LevelWarn, "upstream request failed", attrs...)
+	}
+
 	if wsUpgrade {
 		wsSubs := filterWebSocketSubs(inject.Substitutions)
 		if len(wsSubs) > 0 {
 			outReq.Header.Del("Sec-Websocket-Extensions")
 		}
-		p.forwardWebSocket(w, r, outReq, wsSubs, emit)
+		p.forwardWebSocket(w, r, outReq, wsSubs, emit, route, logFailure)
 		return
 	}
 
-	resp, err := p.upstream.RoundTrip(outReq)
+	resp, err := p.roundTrip(outReq, route, target)
 	if err != nil {
-		p.logger.Debug("upstream request failed",
-			slog.String("vault_id", scope.VaultID),
-			slog.String("vault_name", scope.VaultName),
-			slog.String("target_host", target),
-			slog.String("error", err.Error()),
-		)
+		logFailure("round_trip", err)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		emit(http.StatusBadGateway, "upstream_error")
 		return
@@ -361,7 +400,7 @@ func (p *Proxy) forwardRequest(
 			}
 			retryReq.Body = http.NoBody
 			retryReq.ContentLength = 0
-			if retryResp, retryRTErr := p.upstream.RoundTrip(retryReq); retryRTErr == nil {
+			if retryResp, retryRTErr := route.transport.RoundTrip(retryReq); retryRTErr == nil {
 				resp = retryResp
 				p.logger.Debug("oauth 401 retry succeeded",
 					slog.String("host", host),

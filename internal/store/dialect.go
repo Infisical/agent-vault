@@ -218,7 +218,7 @@ func (PostgresDialect) ForUpdateClause() string { return "FOR UPDATE" }
 
 // rebindDollar replaces '?' placeholders with $1, $2, ... for PostgreSQL.
 // Only replaces '?' outside of single-quoted string literals. Handles
-// escaped quotes ('') inside string literals correctly.
+// escaped quotes (”) inside string literals correctly.
 func rebindDollar(query string) string {
 	var b strings.Builder
 	b.Grow(len(query) + 16)
