@@ -109,6 +109,20 @@ func (s *Server) AttachMITM(p *mitm.Proxy) { s.mitm = p }
 // AttachInfisical registers the Infisical client. Must be called before Start.
 func (s *Server) AttachInfisical(c *infisical.Client) { s.infisicalClient = c }
 
+// ensureInfisicalSyncer builds the syncer unless one was pre-wired. It is
+// built even without a client: a fetcher-less syncer marks Infisical-backed
+// vaults as not refreshing instead of leaving a stale "ok" in place.
+func (s *Server) ensureInfisicalSyncer() {
+	if s.infisicalSyncer != nil {
+		return
+	}
+	var fetcher infisical.SecretsFetcher
+	if s.infisicalClient != nil {
+		fetcher = s.infisicalClient // avoid a typed-nil interface
+	}
+	s.infisicalSyncer = infisical.NewSyncer(s.store, fetcher, s.encKey, s.logger)
+}
+
 // AttachInfisicalSyncer pre-wires a syncer instead of letting Start build one
 // from the attached client. Used by tests to inject a fake fetcher; in prod
 // Start auto-builds one when the field is nil.
@@ -1089,9 +1103,7 @@ func (s *Server) Start() error {
 	// AES-GCM never reads a zeroed s.encKey (silently produces garbage
 	// ciphertext that lands in the credentials table).
 	syncerDone := make(chan struct{})
-	if s.infisicalSyncer == nil && s.infisicalClient != nil {
-		s.infisicalSyncer = infisical.NewSyncer(s.store, s.infisicalClient, s.encKey, s.logger)
-	}
+	s.ensureInfisicalSyncer()
 	if s.infisicalSyncer != nil {
 		go func() {
 			defer close(syncerDone)

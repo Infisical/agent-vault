@@ -3642,6 +3642,42 @@ func TestVaultSyncNow_NoSyncerReturns503(t *testing.T) {
 	}
 }
 
+// Start builds a fetcher-less syncer when no client is attached: manual sync
+// still answers 503, and the syncer flags the vault's stale "ok" (#425).
+func TestEnsureInfisicalSyncer_NoClient(t *testing.T) {
+	ms, token := setupMockStoreWithSession(t)
+	ms.credStores["root-ns-id"] = &store.VaultCredentialStore{
+		VaultID: "root-ns-id", Kind: "infisical",
+		ConfigJSON:     `{"project_id":"p","environment":"dev","secret_path":"/"}`,
+		LastSyncStatus: store.SyncStatusOK,
+	}
+	srv := newTestServer(withStore(ms))
+	srv.ensureInfisicalSyncer()
+	if srv.infisicalSyncer == nil {
+		t.Fatal("expected a syncer even without an Infisical client")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/vaults/default/sync", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["code"] != "infisical_not_configured" {
+		t.Fatalf("expected code=infisical_not_configured, got %v", resp)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	srv.infisicalSyncer.Run(ctx) // one pass, then returns
+	if got := ms.credStores["root-ns-id"].LastSyncStatus; got != store.SyncStatusError {
+		t.Fatalf("last_sync_status = %q, want %q", got, store.SyncStatusError)
+	}
+}
+
 // attachStubSyncer wires a Syncer driven by `fetcher` onto srv and returns
 // the populated credStores row so the test can assert post-sync state.
 func attachStubSyncer(t *testing.T, srv *Server, ms *mockStore, fetcher interface {
