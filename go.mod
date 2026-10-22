@@ -1,6 +1,6 @@
 module github.com/Infisical/agent-vault
 
-go 1.25.0
+go 1.26.10
 
 require (
 	github.com/charmbracelet/huh v1.0.0
