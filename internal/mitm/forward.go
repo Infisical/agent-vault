@@ -30,6 +30,21 @@ func (fw *flushingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// readErrRecorder remembers the first non-EOF read error so the relay can
+// tell an upstream failure apart from a client write failure after io.Copy.
+type readErrRecorder struct {
+	r   io.Reader
+	err error
+}
+
+func (rr *readErrRecorder) Read(p []byte) (int, error) {
+	n, err := rr.r.Read(p)
+	if err != nil && err != io.EOF && rr.err == nil {
+		rr.err = err
+	}
+	return n, err
+}
+
 // actorFromScope returns the (type, id) pair used in request log rows.
 // Empty strings when neither principal is set on the scope.
 func actorFromScope(scope *brokercore.ProxyScope) (string, string) {
@@ -399,9 +414,10 @@ func (p *Proxy) forwardRequest(
 	}
 	w.WriteHeader(resp.StatusCode)
 
-	var src io.Reader = resp.Body
+	relayBody := &readErrRecorder{r: resp.Body}
+	var src io.Reader = relayBody
 	if p.maxResponseBytes > 0 {
-		src = io.LimitReader(resp.Body, p.maxResponseBytes)
+		src = io.LimitReader(relayBody, p.maxResponseBytes)
 	}
 	var dst io.Writer = w
 	if f, ok := w.(http.Flusher); ok {
@@ -409,9 +425,11 @@ func (p *Proxy) forwardRequest(
 	}
 	n, _ := io.Copy(dst, src)
 
+	// At the cap, probe for more body. The probe goes through relayBody so
+	// an upstream that dies exactly at the cap is caught below.
 	if p.maxResponseBytes > 0 && n == p.maxResponseBytes {
 		var probe [1]byte
-		if extra, _ := resp.Body.Read(probe[:]); extra > 0 {
+		if extra, _ := relayBody.Read(probe[:]); extra > 0 {
 			p.logger.Warn("response body truncated mid-stream, aborting connection",
 				slog.String("host", target),
 				slog.String("path", r.URL.Path),
@@ -421,6 +439,20 @@ func (p *Proxy) forwardRequest(
 			emit(resp.StatusCode, "response_truncated")
 			panic(http.ErrAbortHandler)
 		}
+	}
+
+	// The upstream failed mid-body. Abort instead of returning: a clean
+	// return would terminate a chunked response normally, and the client
+	// would take the truncated body as complete.
+	if relayBody.err != nil {
+		p.logger.Warn("upstream response body failed mid-stream, aborting connection",
+			slog.String("host", target),
+			slog.String("path", r.URL.Path),
+			slog.Int64("bytes_streamed", n),
+			slog.String("error", relayBody.err.Error()),
+		)
+		emit(resp.StatusCode, "upstream_body_error")
+		panic(http.ErrAbortHandler)
 	}
 
 	emit(resp.StatusCode, "")
