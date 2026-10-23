@@ -20,7 +20,7 @@ import (
 var expectedRunFlags = []string{
 	"address", "ttl", "vault",
 	"isolation", "image", "mount", "keep", "no-firewall",
-	"home-volume-shared", "share-agent-dir",
+	"home-volume-shared", "share-agent-dir", "no-skills",
 }
 
 func TestRunFlagsRegistered(t *testing.T) {
@@ -327,6 +327,112 @@ func newRunCmdForTest() *cobra.Command {
 	c := newRunCmd("test")
 	c.Flags().String("vault", "", "target vault")
 	return c
+}
+
+func setTestHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
+}
+
+func skillPath(home, baseDir string) string {
+	return filepath.Join(home, baseDir, "skills", "agent-vault-cli", "SKILL.md")
+}
+
+func TestRunNoSkillsDefaultsFalse(t *testing.T) {
+	commands := []struct {
+		name string
+		cmd  *cobra.Command
+	}{
+		{"run", topRunCmd},
+		{"vault run", runCmd},
+	}
+	for _, tc := range commands {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.cmd.Flags().GetBool("no-skills")
+			if err != nil {
+				t.Fatalf("reading --no-skills: %v", err)
+			}
+			if got {
+				t.Fatal("--no-skills should default to false")
+			}
+		})
+	}
+}
+
+func TestMaybeInstallSkillsIfEnabled_DefaultInstallsOrUpdates(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+
+	path := skillPath(home, ".claude")
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("create skill directory: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("stale skill"), 0o600); err != nil {
+		t.Fatalf("write stale skill: %v", err)
+	}
+
+	maybeInstallSkillsIfEnabled(false, "Claude Code", ".claude")
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read installed skill: %v", err)
+	}
+	if string(got) != skillCLI {
+		t.Fatal("default behavior should update a stale skill")
+	}
+}
+
+func TestMaybeInstallSkillsIfEnabled_NoSkillsPreservesFilesystem(t *testing.T) {
+	t.Run("does not create missing skill", func(t *testing.T) {
+		home := t.TempDir()
+		setTestHome(t, home)
+
+		maybeInstallSkillsIfEnabled(true, "Claude Code", ".claude")
+
+		if _, err := os.Stat(filepath.Join(home, ".claude")); !os.IsNotExist(err) {
+			t.Fatalf("skill directory should not be created, stat error: %v", err)
+		}
+		if _, err := os.Stat(skillPath(home, ".claude")); !os.IsNotExist(err) {
+			t.Fatalf("skill should not be created, stat error: %v", err)
+		}
+	})
+
+	t.Run("does not modify existing skill", func(t *testing.T) {
+		home := t.TempDir()
+		setTestHome(t, home)
+
+		path := skillPath(home, ".claude")
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatalf("create skill directory: %v", err)
+		}
+		const existing = "user-managed skill"
+		if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
+			t.Fatalf("write existing skill: %v", err)
+		}
+
+		before, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat existing skill: %v", err)
+		}
+		maybeInstallSkillsIfEnabled(true, "Claude Code", ".claude")
+		after, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat preserved skill: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read preserved skill: %v", err)
+		}
+		if string(got) != existing {
+			t.Fatalf("existing skill was modified: got %q", got)
+		}
+		if !after.ModTime().Equal(before.ModTime()) {
+			t.Fatal("existing skill modification time changed")
+		}
+	})
 }
 
 func TestResolveVaultForAgentMode(t *testing.T) {
