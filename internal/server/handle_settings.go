@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Infisical/agent-vault/internal/notify"
 	"github.com/Infisical/agent-vault/internal/ratelimit"
 )
 
@@ -60,6 +61,36 @@ func (s *Server) handleEmailTest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleNotifyWebhookTest posts a synthetic proposal.created event to the
+// configured webhook URL to verify AGENT_VAULT_NOTIFY_WEBHOOK_URL setup.
+// Owner-only.
+func (s *Server) handleNotifyWebhookTest(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.requireOwnerActor(w, r); err != nil {
+		return
+	}
+
+	if !s.notifier.WebhookEnabled() {
+		jsonError(w, http.StatusBadRequest, "Webhook notifications are not configured")
+		return
+	}
+
+	evt := notify.ProposalWebhookEvent{
+		Event:       "proposal.created",
+		Vault:       "test-vault",
+		ProposalID:  0,
+		AgentName:   "test-agent",
+		Message:     "This is a test notification from Agent Vault.",
+		ApprovalURL: s.baseURL + "/approve/0?token=test",
+	}
+
+	if err := s.notifier.SendProposalWebhook(evt); err != nil {
+		jsonError(w, http.StatusBadGateway, fmt.Sprintf("Failed to send test webhook: %v", err))
+		return
+	}
+
+	jsonOK(w, map[string]string{"message": "Test webhook sent"})
+}
+
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.requireOwnerActor(w, r); err != nil {
 		return
@@ -79,6 +110,7 @@ func (s *Server) writeSettingsResponse(w http.ResponseWriter, ctx context.Contex
 		"allowed_email_domains": []string{},
 		"invite_only":           false,
 		"smtp_configured":       s.notifier.Enabled(),
+		"webhook_configured":    s.notifier.WebhookEnabled(),
 	}
 	if raw, ok := settings[settingAllowedDomains]; ok {
 		var domains []string
