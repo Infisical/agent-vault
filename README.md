@@ -154,6 +154,27 @@ agent-vault vault run -- codex
 agent-vault vault run -- opencode
 ```
 
+For repeatable least-privilege roles, define named launch profiles in
+`~/.agent-vault/profiles.yaml`:
+
+```yaml
+profiles:
+  planner:
+    vault: planning
+    ttl: 1800
+    isolation: container
+    mounts:
+      - ./specs:/workspace/specs:ro
+```
+
+```bash
+agent-vault run --profile planner -- claude
+```
+
+Profiles make the vault, session lifetime, isolation mode, image, mounts, and
+container persistence settings reviewable as code. Explicit CLI flags override
+profile values.
+
 Alternatively, if your agent is running with Docker, you can install the Agent Vault CLI via a Dockerfile by copying the binary into your own image and using it to start up your agent process:
 
 ```dockerfile
