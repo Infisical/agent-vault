@@ -314,3 +314,26 @@ func TestForbiddenHintBody_EmptyBaseURL(t *testing.T) {
 		t.Fatal("help field should be absent when baseURL is empty")
 	}
 }
+
+func TestShouldStripResponseHeader(t *testing.T) {
+	cases := []struct {
+		name             string
+		forwardSetCookie bool
+		want             bool
+	}{
+		{"Set-Cookie", false, true},
+		{"set-cookie", false, true},
+		{"Set-Cookie", true, false},
+		{"set-cookie", true, false},
+		{"Connection", true, true},
+		{"Transfer-Encoding", true, true},
+		{"Proxy-Authenticate", false, true},
+		{"Content-Type", false, false},
+		{"Content-Type", true, false},
+	}
+	for _, c := range cases {
+		if got := ShouldStripResponseHeader(c.name, c.forwardSetCookie); got != c.want {
+			t.Errorf("ShouldStripResponseHeader(%q, %v) = %v, want %v", c.name, c.forwardSetCookie, got, c.want)
+		}
+	}
+}

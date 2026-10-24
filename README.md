@@ -36,7 +36,7 @@ Features:
 - **Egress Filtering**: Control which agents should have access to which services and API endpoints on them since authenticated requests flow through Agent Vault.
 - **Request Logging**: Inspect authenticated traffic to monitor and diagnose agent behavior.
 
-By default, requests not matching any service forward as plain proxy traffic; flip a vault into strict deny mode (`unmatched_host_policy=deny`) to reject them with 403 instead.
+By default, requests not matching any service forward as plain proxy traffic; flip a vault into strict deny mode (`unmatched_host_policy=deny`) to reject them with 403 instead. Upstream `Set-Cookie` headers are stripped by default; set `unmatched_host_cookies=forward` to relay them for unmatched-host traffic only.
 
 Read the full backstory behind Agent Vault [here](https://infisical.com/blog/agent-vault-the-open-source-credential-proxy-and-vault-for-agents).
 
