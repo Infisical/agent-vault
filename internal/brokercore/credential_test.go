@@ -552,6 +552,59 @@ func TestInject_ResolvesSubstitutionAlongsideAuth(t *testing.T) {
 	}
 }
 
+func TestInject_ResponseRedactionsWhenEnabled(t *testing.T) {
+	key32 := make32(0xAC)
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "api.example.com",
+		Auth: broker.Auth{Type: "bearer", Token: "API_TOKEN"},
+		Substitutions: []broker.Substitution{
+			{Key: "ACCOUNT_ID", Placeholder: "__account_id__", In: []string{"path"}},
+		},
+		ResponseRedaction: &broker.ResponseRedactionConfig{Enabled: true},
+	}})
+	f.setCred(t, key32, "v1", "API_TOKEN", "secret-token")
+	f.setCred(t, key32, "v1", "ACCOUNT_ID", "acct-123")
+
+	p := NewStoreCredentialProvider(f, key32)
+	res, err := p.Inject(context.Background(), "v1", "api.example.com", 0, "/")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, r := range res.Redactions {
+		got[r.Value] = true
+	}
+	for _, want := range []string{"secret-token", "Bearer secret-token", "acct-123"} {
+		if !got[want] {
+			t.Fatalf("expected redaction value %q in %+v", want, res.Redactions)
+		}
+	}
+	if f.getCredentialCalls != 2 {
+		t.Fatalf("expected credential cache to avoid extra lookups, got %d calls", f.getCredentialCalls)
+	}
+}
+
+func TestInject_ResponseRedactionsDisabledByDefault(t *testing.T) {
+	key32 := make32(0xAD)
+	f := newFakeCredStore()
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "api.example.com",
+		Auth: broker.Auth{Type: "bearer", Token: "API_TOKEN"},
+	}})
+	f.setCred(t, key32, "v1", "API_TOKEN", "secret-token")
+
+	p := NewStoreCredentialProvider(f, key32)
+	res, err := p.Inject(context.Background(), "v1", "api.example.com", 0, "/")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(res.Redactions) != 0 {
+		t.Fatalf("expected no redactions by default, got %+v", res.Redactions)
+	}
+}
+
 func TestInject_ResolvesSubstitutionOnPassthrough(t *testing.T) {
 	key32 := make32(0xCD)
 	f := newFakeCredStore()

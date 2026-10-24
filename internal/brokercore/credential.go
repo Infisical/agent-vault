@@ -54,6 +54,10 @@ type InjectResult struct {
 	// carries a SECRET Value — never log placeholder values.
 	Substitutions []ResolvedSubstitution
 
+	// Redactions are exact secret values to remove from eligible upstream
+	// response bodies. Each Value is SECRET — never log.
+	Redactions []ResolvedRedaction
+
 	// Passthrough is set when no service matched but the unmatched-host
 	// policy permitted forwarding.
 	Passthrough bool
@@ -239,6 +243,9 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 
 	if matched.Auth.Type == "passthrough" {
 		result.Substitutions = resolvedSubs
+		if matched.ResponseRedactionEnabled() {
+			result.Redactions = collectResponseRedactions(nil, nil, resolvedSubs)
+		}
 		return result, nil
 	}
 
@@ -249,7 +256,48 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 
 	result.Headers = headers
 	result.Substitutions = resolvedSubs
+	if matched.ResponseRedactionEnabled() {
+		redactions, err := collectAuthResponseRedactions(matched.Auth.CredentialKeys(), getCredential, headers, resolvedSubs)
+		if err != nil {
+			return result, fmt.Errorf("%w: %v", ErrCredentialMissing, err)
+		}
+		result.Redactions = redactions
+	}
 	return result, nil
+}
+
+func collectAuthResponseRedactions(keys []string, getCredential func(key string) (string, error), headers map[string]string, subs []ResolvedSubstitution) ([]ResolvedRedaction, error) {
+	var raw []ResolvedRedaction
+	for _, key := range keys {
+		val, err := getCredential(key)
+		if err != nil {
+			return nil, err
+		}
+		raw = append(raw, ResolvedRedaction{Value: val, Source: "credential:" + key})
+	}
+	return collectResponseRedactions(raw, headers, subs), nil
+}
+
+func collectResponseRedactions(base []ResolvedRedaction, headers map[string]string, subs []ResolvedSubstitution) []ResolvedRedaction {
+	seen := map[string]bool{}
+	var out []ResolvedRedaction
+	add := func(r ResolvedRedaction) {
+		if r.Value == "" || seen[r.Value] {
+			return
+		}
+		seen[r.Value] = true
+		out = append(out, r)
+	}
+	for _, r := range base {
+		add(r)
+	}
+	for name, value := range headers {
+		add(ResolvedRedaction{Value: value, Source: "header:" + name})
+	}
+	for _, sub := range subs {
+		add(ResolvedRedaction{Value: sub.Value, Source: "substitution:" + sub.Placeholder})
+	}
+	return out
 }
 
 const oauthRefreshBuffer = 5 * time.Minute
