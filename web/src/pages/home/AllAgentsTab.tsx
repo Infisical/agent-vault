@@ -192,8 +192,8 @@ export default function AllAgentsTab() {
   }, [fetchData, auth.is_owner]);
 
   return (
-    <div className="p-8 w-full max-w-[960px]">
-      <div className="flex items-center justify-between mb-6">
+    <div className="p-4 sm:p-8 w-full max-w-[960px]">
+      <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between mb-6">
         <div>
           <h2 className="text-[22px] font-semibold text-text tracking-tight mb-1">
             Agents
@@ -267,7 +267,7 @@ export default function AllAgentsTab() {
           <div className="space-y-3">
             <FormField label="New agent token">
               <div className="relative">
-                <pre className="pl-4 pr-20 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono overflow-x-auto whitespace-pre">{rotatedToken}</pre>
+                <pre className="pl-4 pr-20 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono whitespace-pre-wrap break-all">{rotatedToken}</pre>
                 <CopyButton
                   value={rotatedToken}
                   className="absolute top-2 right-2 px-3 py-1.5 bg-primary text-primary-text rounded-md text-xs font-semibold hover:bg-primary-hover transition-colors"
@@ -739,7 +739,7 @@ function ManualStep({
 function Snippet({ value }: { value: string }) {
   return (
     <div className="relative">
-      <pre className="pl-4 pr-20 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono overflow-x-auto whitespace-pre">{value}</pre>
+      <pre className="pl-4 pr-20 py-3 bg-bg border border-border rounded-lg text-text text-sm font-mono whitespace-pre-wrap break-all">{value}</pre>
       <CopyButton
         value={value}
         className="absolute top-2 right-2 px-3 py-1.5 bg-primary text-primary-text rounded-md text-xs font-semibold hover:bg-primary-hover transition-colors"

@@ -17,6 +17,13 @@ interface DataTableProps<T> {
   emptyDescription?: ReactNode;
 }
 
+// Keeps the identifying column visible while the rest of a wide table
+// scrolls horizontally on small screens. The width is capped and long
+// values wrap, so a long name can never cover the whole card and hide the
+// row controls behind it. No effect from md up.
+const STICKY_FIRST_COL =
+  "max-md:sticky max-md:left-0 max-md:z-[1] max-md:bg-surface max-md:max-w-[45vw] max-md:whitespace-normal max-md:[overflow-wrap:anywhere]";
+
 export default function DataTable<T>({
   columns,
   data,
@@ -27,13 +34,16 @@ export default function DataTable<T>({
 }: DataTableProps<T>) {
   return (
     <div className="border border-border rounded-xl overflow-hidden bg-surface">
-      <table className="w-full">
+      {/* Below md the table scrolls sideways inside its card instead of
+          pushing the page wider, with the first column pinned. */}
+      <div className="overflow-x-auto overscroll-x-contain">
+      <table className="w-full min-w-max md:min-w-0">
         <thead>
           <tr className="border-b border-border">
-            {columns.map((col) => (
+            {columns.map((col, colIndex) => (
               <th
                 key={col.key}
-                className={`px-5 py-3 text-xs font-semibold text-text-muted uppercase tracking-wider ${col.align === "right" ? "text-right w-0" : "text-left"}${col.className ? " " + col.className : ""}`}
+                className={`${colIndex === 0 ? STICKY_FIRST_COL + " " : ""}px-5 py-3 text-xs font-semibold text-text-muted uppercase tracking-wider ${col.align === "right" ? "text-right w-0" : "text-left"}${col.className ? " " + col.className : ""}`}
               >
                 {col.header}
               </th>
@@ -63,8 +73,8 @@ export default function DataTable<T>({
                 className={`border-b border-border last:border-b-0 hover:bg-bg/50 transition-colors${onRowClick ? " cursor-pointer" : ""}`}
                 onClick={onRowClick ? () => onRowClick(item, index) : undefined}
               >
-                {columns.map((col) => (
-                  <td key={col.key} className={`px-5 py-3.5${col.align === "right" ? " w-0" : ""}${col.className ? " " + col.className : ""}`}>
+                {columns.map((col, colIndex) => (
+                  <td key={col.key} className={`${colIndex === 0 ? STICKY_FIRST_COL + " " : ""}px-5 py-3.5${col.align === "right" ? " w-0" : ""}${col.className ? " " + col.className : ""}`}>
                     {col.align === "right" ? (
                       <div className="flex justify-end">{col.render(item, index)}</div>
                     ) : (
@@ -77,6 +87,7 @@ export default function DataTable<T>({
           )}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }

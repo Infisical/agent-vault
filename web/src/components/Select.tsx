@@ -10,7 +10,7 @@ const Select = forwardRef<HTMLSelectElement, SelectProps>(
       <div className="relative">
         <select
           ref={ref}
-          className={`w-full px-4 py-3 pr-10 bg-surface-raised border rounded-lg text-text text-sm outline-none transition-colors focus:border-border-focus focus:shadow-[0_0_0_3px_var(--color-primary-ring)] appearance-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${error ? "border-danger" : "border-border"} ${className}`}
+          className={`w-full px-4 py-3 pr-10 bg-surface-raised border rounded-lg text-text text-base sm:text-sm outline-none transition-colors focus:border-border-focus focus:shadow-[0_0_0_3px_var(--color-primary-ring)] appearance-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${error ? "border-danger" : "border-border"} ${className}`}
           {...props}
         >
           {children}

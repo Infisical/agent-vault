@@ -9,7 +9,7 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
     return (
       <input
         ref={ref}
-        className={`w-full px-4 py-3 bg-surface-raised border rounded-lg text-text text-sm outline-none transition-colors focus:border-border-focus focus:shadow-[0_0_0_3px_var(--color-primary-ring)] ${error ? "border-danger" : "border-border"} ${className}`}
+        className={`w-full px-4 py-3 bg-surface-raised border rounded-lg text-text text-base sm:text-sm outline-none transition-colors focus:border-border-focus focus:shadow-[0_0_0_3px_var(--color-primary-ring)] ${error ? "border-danger" : "border-border"} ${className}`}
         {...props}
       />
     );
