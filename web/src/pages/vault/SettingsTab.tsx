@@ -20,6 +20,7 @@ type InfisicalConfig = {
   project_id?: string;
   environment?: string;
   secret_path?: string;
+  recursive?: boolean;
 };
 
 export default function SettingsTab() {
@@ -199,6 +200,11 @@ function CredentialStoreDisplay({ store }: { store?: CredentialStoreInfo }) {
             <StoreField label="Project" value={config.project_id ?? "—"} />
             <StoreField label="Environment" value={config.environment ?? "—"} />
             <StoreField label="Secret path" value={config.secret_path || "/"} />
+            <StoreField
+              label="Recursive sync"
+              tooltip="When enabled, secrets are synced from all subfolders of the secret path; secret names must be unique across the entire folder tree."
+              value={config.recursive ? "Enabled" : "Disabled"}
+            />
           </>
         )}
         {isInfisical && store?.last_synced_at && (
@@ -251,6 +257,7 @@ function EditSettingsSheet({
     projectID: config.project_id ?? "",
     environment: config.environment ?? "",
     secretPath: config.secret_path || "/",
+    recursive: config.recursive ?? false,
   };
 
   // Draft state, re-seeded from the live values each time the drawer opens.
@@ -276,7 +283,8 @@ function EditSettingsSheet({
     switchToInfisical &&
     (values.projectID.trim() !== (config.project_id ?? "") ||
       values.environment.trim() !== (config.environment ?? "") ||
-      (values.secretPath.trim() || "/") !== (config.secret_path || "/"));
+      (values.secretPath.trim() || "/") !== (config.secret_path || "/") ||
+      values.recursive !== (config.recursive ?? false));
   const storeChanged = values.kind !== currentKind || configChanged;
 
   // nameChanged already implies a non-empty trimmed name, so no extra guard.

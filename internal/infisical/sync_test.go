@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -404,5 +405,61 @@ func TestSyncerWaitGroupDrainsInflightRefreshes(t *testing.T) {
 	case <-waitDone:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("wg.Wait did not return after the in-flight refresh finished")
+	}
+}
+
+// TestSyncerRefresh_PropagatesRecursiveConfig locks the ParseConfigJSON →
+// fetcher plumbing: a stored "recursive":true must reach FetchSecrets.
+func TestSyncerRefresh_PropagatesRecursiveConfig(t *testing.T) {
+	dek := makeDEK(t)
+	fs := newFakeStore(store.VaultCredentialStore{
+		VaultID:             "v1",
+		Kind:                store.CredentialStoreInfisical,
+		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/","recursive":true}`,
+		PollIntervalSeconds: 60,
+	})
+	ff := &fakeFetcher{secrets: []Secret{{Key: "ALPHA", Value: "a"}}}
+	s := &Syncer{store: fs, fetcher: ff, dek: dek, logger: newDiscardLogger(), clock: time.Now, inFlight: map[string]struct{}{}}
+
+	s.refresh(context.Background(), fs.rows[0])
+
+	ff.mu.Lock()
+	defer ff.mu.Unlock()
+	if len(ff.callsLog) != 1 {
+		t.Fatalf("expected 1 fetch, got %d", len(ff.callsLog))
+	}
+	if !ff.callsLog[0].Recursive {
+		t.Fatalf("recursive flag not propagated to FetchSecrets: %+v", ff.callsLog[0])
+	}
+}
+
+// TestSyncerRefresh_DuplicateKeyErrorSurfacedVerbatim: like ErrInvalidKey,
+// a cross-folder duplicate is caller-fixable upstream topology and must be
+// persisted verbatim in last_sync_error, not scrubbed.
+func TestSyncerRefresh_DuplicateKeyErrorSurfacedVerbatim(t *testing.T) {
+	dek := makeDEK(t)
+	fs := newFakeStore(store.VaultCredentialStore{
+		VaultID:             "v1",
+		Kind:                store.CredentialStoreInfisical,
+		ConfigJSON:          `{"project_id":"p","environment":"dev","secret_path":"/","recursive":true}`,
+		PollIntervalSeconds: 60,
+	})
+	dupErr := fmt.Errorf("%w: %q found at /github, /stripe", ErrDuplicateKey, "TOKEN")
+	ff := &fakeFetcher{err: dupErr}
+	s := &Syncer{store: fs, fetcher: ff, dek: dek, logger: newDiscardLogger(), clock: time.Now, inFlight: map[string]struct{}{}}
+
+	s.refresh(context.Background(), fs.rows[0])
+
+	select {
+	case got := <-fs.replaceCh:
+		t.Fatalf("expected no Replace on failure, got %+v", got)
+	default:
+	}
+	h := fs.getHealth("v1")
+	if h.Status != "error" {
+		t.Fatalf("expected error health, got %+v", h)
+	}
+	if h.Error != dupErr.Error() || !strings.Contains(h.Error, "TOKEN") {
+		t.Fatalf("expected verbatim duplicate-key message, got %q", h.Error)
 	}
 }
