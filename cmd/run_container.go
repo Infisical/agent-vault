@@ -53,7 +53,7 @@ func validateIsolationFlagConflicts(cmd *cobra.Command, mode IsolationMode) erro
 
 // runContainer launches the target agent inside a Docker container with
 // egress locked to the agent-vault proxy via iptables.
-func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault string) error {
+func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault string, profileEnv map[string]string) error {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		return fmt.Errorf("--isolation=container: only linux and darwin are supported in v1 (got %s)", runtime.GOOS)
 	}
@@ -197,7 +197,7 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 		return fmt.Errorf("getwd: %w", err)
 	}
 
-	env := isolation.BuildContainerEnv(scopedToken, vault, fwd.HTTPPort, fwd.MITMPort)
+	env := buildContainerRunEnv(profileEnv, scopedToken, vault, fwd.HTTPPort, fwd.MITMPort)
 
 	mounts, _ := cmd.Flags().GetStringArray("mount")
 	keep, _ := cmd.Flags().GetBool("keep")
@@ -279,4 +279,9 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 		return fmt.Errorf("docker run: %w", err)
 	}
 	return nil
+}
+
+func buildContainerRunEnv(profileEnv map[string]string, token, vault string, httpPort, mitmPort int) []string {
+	env := applyProfileEnv(nil, profileEnv)
+	return append(env, isolation.BuildContainerEnv(token, vault, httpPort, mitmPort)...)
 }
