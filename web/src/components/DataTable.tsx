@@ -15,6 +15,17 @@ interface DataTableProps<T> {
   onRowClick?: (item: T, index: number) => void;
   emptyTitle?: string;
   emptyDescription?: ReactNode;
+  /**
+   * Cap on rows rendered at once. Without it every row in `data` is
+   * rendered, so callers feeding unbounded or fast-growing data must set
+   * it; overflow is summarized in a truthful counter below the table.
+   */
+  maxRenderRows?: number;
+  /**
+   * Index of the first rendered row (0 = the newest rows). Indices passed
+   * to rowKey/onRowClick/render refer to the rendered slice.
+   */
+  renderOffset?: number;
 }
 
 export default function DataTable<T>({
@@ -24,7 +35,16 @@ export default function DataTable<T>({
   onRowClick,
   emptyTitle = "No data",
   emptyDescription,
+  maxRenderRows,
+  renderOffset = 0,
 }: DataTableProps<T>) {
+  const visibleRows =
+    maxRenderRows !== undefined
+      ? data.slice(renderOffset, renderOffset + maxRenderRows)
+      : data.slice(renderOffset);
+  const hiddenCount = data.length - visibleRows.length;
+  const rangeStart = data.length > 0 ? renderOffset + 1 : 0;
+  const rangeEnd = renderOffset + visibleRows.length;
   return (
     <div className="border border-border rounded-xl overflow-hidden bg-surface">
       <table className="w-full">
@@ -57,7 +77,7 @@ export default function DataTable<T>({
               </td>
             </tr>
           ) : (
-            data.map((item, index) => (
+            visibleRows.map((item, index) => (
               <tr
                 key={rowKey(item, index)}
                 className={`border-b border-border last:border-b-0 hover:bg-bg/50 transition-colors${onRowClick ? " cursor-pointer" : ""}`}
@@ -76,6 +96,15 @@ export default function DataTable<T>({
             ))
           )}
         </tbody>
+        {hiddenCount > 0 && (
+          <tfoot>
+            <tr className="border-t border-border">
+              <td colSpan={columns.length} className="px-5 py-3 text-center text-xs text-text-muted">
+                Showing rows {rangeStart}–{rangeEnd} of {data.length}
+              </td>
+            </tr>
+          </tfoot>
+        )}
       </table>
     </div>
   );
