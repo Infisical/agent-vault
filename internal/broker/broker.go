@@ -585,10 +585,13 @@ func MatchService(host string, targetPort int, path string, services []Service) 
 // matchHostPattern reports the tier and whether pattern matches host.
 // "*." matches exactly one subdomain level (e.g. "*.github.com" matches
 // "api.github.com" but not "a.b.github.com" or the bare "github.com").
+// Hostnames are case-insensitive (RFC 4343), so both sides are lowercased.
 func matchHostPattern(pattern, host string) (tier int, ok bool) {
 	if h, _, err := net.SplitHostPort(pattern); err == nil {
 		pattern = h
 	}
+	pattern = strings.ToLower(pattern)
+	host = strings.ToLower(host)
 	if pattern == host {
 		return HostTierExact, true
 	}
