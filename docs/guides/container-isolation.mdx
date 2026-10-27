@@ -3,6 +3,10 @@ title: "Container isolation"
 description: "Run `vault run` agents inside a Docker container with iptables-locked egress so the child cannot reach the network outside the Agent Vault proxy, no matter what it tries."
 ---
 
+import DeprecationNotice from "/snippets/deprecation-notice.mdx";
+
+<DeprecationNotice />
+
 `agent-vault vault run` has two isolation modes:
 
 - **`--isolation=host`** (default) — forks the agent on the host with `HTTPS_PROXY`/`HTTP_PROXY` and CA-trust env vars pointing at Agent Vault. Cooperative: a misbehaving or malicious agent can unset the env, spawn a subprocess that doesn't inherit them, use raw sockets, or exfiltrate over DNS.
