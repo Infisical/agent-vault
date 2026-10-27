@@ -21,6 +21,10 @@
       "dark": "#0B0C0E"
     }
   },
+  "banner": {
+    "content": "**Standalone Agent Vault is no longer maintained.** Agent Vault is now part of [Infisical](https://infisical.com/docs/documentation/platform/agent-vault/overview), which is also open source and self-hostable.",
+    "dismissible": false
+  },
   "integrations": {
     "ga4": {
       "measurementId": "G-MKYN2VSJTE"

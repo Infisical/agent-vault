@@ -3,6 +3,10 @@ title: "Run OpenClaw on a VPS"
 description: "Keep real credentials off the agent host by routing every outbound call through Agent Vault on a separate VPS."
 ---
 
+import DeprecationNotice from "/snippets/deprecation-notice.mdx";
+
+<DeprecationNotice />
+
 Provision two DigitalOcean droplets, install Agent Vault on one and [OpenClaw](https://openclaw.ai) on the other, and broker every outbound call through Agent Vault. Plan for 45–60 minutes and ~$12/month.
 
 By the end, you'll have:
