@@ -86,6 +86,13 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, err)
 		return
 	}
+	// Continuation bind is checked before hijack, so a wrong authority
+	// never mints a leaf or opens the tunnel.
+	if scope.ContinuationAuthorityMismatch("https", target) {
+		brokercore.WriteProxyError(w, http.StatusForbidden, "continuation_bind",
+			"Continuation token is not valid for this request.")
+		return
+	}
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {
