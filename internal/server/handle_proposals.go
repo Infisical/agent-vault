@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -539,9 +540,15 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 
 	// Apply atomically.
 	if err := s.store.ApplyProposal(ctx, ns.ID, cs.ID, string(mergedJSON), finalCredentials, deleteCredentialKeys, oauthConfigs); err != nil {
-		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to apply proposal: %v", err))
+		var unknown *store.UnknownUpstreamProxyError
+		if errors.As(err, &unknown) {
+			jsonError(w, http.StatusBadRequest, unknown.Error())
+		} else {
+			jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to apply proposal: %v", err))
+		}
 		return
 	}
+	s.invalidateUpstreamProxyCache()
 
 	jsonOK(w, map[string]interface{}{
 		"id":     id,

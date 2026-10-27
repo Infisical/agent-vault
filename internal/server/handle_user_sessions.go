@@ -95,4 +95,3 @@ type revokeSessionResponse struct {
 	Status  string `json:"status"`
 	Current bool   `json:"current"`
 }
-

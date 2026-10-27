@@ -229,6 +229,7 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 			LogSink:          srv.LogSink(),
 			MaxResponseBytes: maxRespBytes,
 			MaxRequestBytes:  maxReqBytes,
+			UpstreamProxies:  srv.UpstreamProxyResolver(),
 		},
 	))
 	return nil
@@ -252,13 +253,14 @@ func attachInfisicalIfConfigured(srv *server.Server, logger *slog.Logger) {
 	if os.Getenv("INFISICAL_URL") == "" {
 		return
 	}
+	rt := srv.ControlPlaneRoundTripper(nil)
 	type result struct {
 		c   *infisical.Client
 		err error
 	}
 	done := make(chan result, 1)
 	go func() {
-		c, err := infisical.NewClient(context.Background(), logger)
+		c, err := infisical.NewClient(context.Background(), logger, rt)
 		done <- result{c, err}
 	}()
 	select {
@@ -282,6 +284,7 @@ func attachLogSink(srv *server.Server, db store.Store, logger *slog.Logger) func
 	sink := requestlog.NewBatchSink(db, logger, requestlog.BatchSinkConfig{})
 	srv.AttachLogSink(sink)
 
+	// #nosec G118 -- Cancellation ownership is returned to the caller; the shutdown closure below calls cancelRetention.
 	retentionCtx, cancelRetention := context.WithCancel(context.Background())
 	go requestlog.RunRetention(retentionCtx, db, logger)
 

@@ -14,6 +14,7 @@ import Button from "../../components/Button";
 import Input from "../../components/Input";
 import FormField from "../../components/FormField";
 import Toggle from "../../components/Toggle";
+import Select from "../../components/Select";
 import SegmentedTabs from "../../components/SegmentedTabs";
 import {
   type Auth,
@@ -22,7 +23,7 @@ import {
   SUBSTITUTION_SURFACES,
   DEFAULT_SUBSTITUTION_SURFACES,
 } from "../../components/ProposalPreview";
-import { apiFetch, apiRequest } from "../../lib/api";
+import { apiFetch, apiRequest, listUpstreamProxies } from "../../lib/api";
 
 interface Service {
   name: string;
@@ -30,6 +31,11 @@ interface Service {
   enabled?: boolean;
   auth: Auth;
   substitutions?: Substitution[];
+  // Named profile or explicit opt-in to the instance default. Existing
+  // direct and legacy inherited routes retain their stored selection.
+  upstream_proxy?: string;
+  use_upstream_proxy?: boolean;
+  bypass_upstream_proxy?: boolean;
 }
 
 type SubstitutionSurface = (typeof SUBSTITUTION_SURFACES)[number];
@@ -73,12 +79,17 @@ function slugifyHost(host: string): string {
 }
 
 export default function ServicesTab() {
-  const { vaultName, vaultRole } = useVaultParams();
+  const { vaultName, vaultRole, isOwner } = useVaultParams();
   const { preset: presetParam } = useSearch({ strict: false }) as { preset?: string };
   const [services, setServices] = useState<Service[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [catalog, setCatalog] = useState<CatalogTemplate[]>([]);
+  // Egress proxy profiles are instance-owned config, so only owners can list
+  // them. Non-owners still see the field — read-only, seeded with whatever
+  // references exist locally — so editing a service never silently drops an
+  // operator's egress routing.
+  const [upstreamProxyNames, setUpstreamProxyNames] = useState<string[]>([]);
   const presetApplied = useRef(false);
 
   // Add/Edit modal state: null = closed, -1 = add, 0+ = edit index
@@ -102,6 +113,9 @@ export default function ServicesTab() {
     fetchServices();
     fetchCatalog();
     fetchDiscoveredHosts();
+    if (isOwner) {
+      fetchUpstreamProxies();
+    }
   }, []);
 
   useEffect(() => {
@@ -122,6 +136,16 @@ export default function ServicesTab() {
       setCatalog(entries);
     } catch {
       // Catalog is optional — degrade silently to manual entry.
+    }
+  }
+
+  async function fetchUpstreamProxies() {
+    try {
+      const proxies = await listUpstreamProxies();
+      setUpstreamProxyNames(proxies.map((p) => p.name));
+    } catch {
+      // Owner-only and optional: the field degrades to whatever the service
+      // already references rather than blocking the edit.
     }
   }
 
@@ -422,6 +446,9 @@ export default function ServicesTab() {
           defaultAuthHeader={editingIndex === -1 ? addWithHost?.authHeader : undefined}
           defaultPreset={editingIndex === -1 && !addWithHost ? presetParam : undefined}
           catalog={catalog}
+          upstreamProxyNames={upstreamProxyNames}
+          canSelectUpstreamProxy={isOwner}
+          canRenameName={isOwner}
           onClose={() => {
             setEditingIndex(null);
             setAddWithHost(null);
@@ -454,6 +481,9 @@ function ServiceModal({
   defaultAuthHeader,
   defaultPreset,
   catalog,
+  upstreamProxyNames,
+  canSelectUpstreamProxy,
+  canRenameName,
   onClose,
   onSave,
 }: {
@@ -465,13 +495,20 @@ function ServiceModal({
   defaultAuthHeader?: string;
   defaultPreset?: string;
   catalog: CatalogTemplate[];
+  upstreamProxyNames: string[];
+  canSelectUpstreamProxy: boolean;
+  canRenameName: boolean;
   onClose: () => void;
   onSave: (service: Service) => Promise<void>;
 }) {
   const [name, setName] = useState(initial?.name ?? defaultName ?? "");
+  const canEditName = !initial || canRenameName;
   const [pattern, setPattern] = useState(initial?.host ?? defaultHost ?? "");
   const [enabled, setEnabled] = useState(initial ? initial.enabled !== false : true);
   const [authType, setAuthType] = useState<AuthType>((initial?.auth?.type as AuthType) ?? (defaultAuthScheme as AuthType) ?? "passthrough");
+  const [upstreamProxy, setUpstreamProxy] = useState(
+    initial?.upstream_proxy ? initial.upstream_proxy : initial && !initial.bypass_upstream_proxy ? ":default" : ""
+  );
 
   // Bearer fields
   const [token, setToken] = useState(initial?.auth?.token ?? "");
@@ -629,6 +666,13 @@ function ServiceModal({
     }
   }
 
+  // Show the existing profile to non-owners, but omit all route fields from
+  // their writes so the server preserves even legacy inherited selections.
+  const proxyOptions =
+    upstreamProxy && upstreamProxy !== ":default" && !upstreamProxyNames.includes(upstreamProxy)
+      ? [upstreamProxy, ...upstreamProxyNames]
+      : upstreamProxyNames;
+
   const cleanedSubs = subs
     .map((s) => ({
       key: s.key.trim(),
@@ -646,11 +690,18 @@ function ServiceModal({
       // Send only `host` (inline-form accepted). Server splits into
       // host + path on ingest — the UI never names a separate path field.
       const service: Service = {
-        name: name.trim(),
+        name: initial && !canRenameName ? initial.name : name.trim(),
         host: pattern.trim(),
         ...(enabled ? {} : { enabled: false }),
         auth: buildAuth(),
         ...(cleanedSubs.length > 0 && { substitutions: cleanedSubs }),
+        ...(canSelectUpstreamProxy
+          ? upstreamProxy === ":default"
+            ? { use_upstream_proxy: true }
+            : upstreamProxy
+              ? { upstream_proxy: upstreamProxy }
+              : { bypass_upstream_proxy: true }
+          : {}),
       };
       await onSave(service);
     } catch (err: unknown) {
@@ -696,12 +747,18 @@ function ServiceModal({
             label="Name"
             tooltip="Slug-style identifier (3–64 chars, lowercase, hyphens). The canonical per-vault key for this service."
             required
+            helperText={
+              initial && !canRenameName
+                ? "Only instance owners can rename here. Admins may still remove and add services."
+                : undefined
+            }
           >
             <Input
               placeholder="e.g. stripe, slack-bot, internal-billing"
               value={name}
               onChange={(e) => setName(e.target.value)}
               autoFocus
+              disabled={!canEditName}
             />
           </FormField>
           <FormField
@@ -724,6 +781,32 @@ function ServiceModal({
             </div>
             <Toggle checked={enabled} onChange={setEnabled} ariaLabel="Enabled" />
           </div>
+
+          {(canSelectUpstreamProxy || initial) && (
+            <FormField
+              label="Upstream Proxy"
+              tooltip="New services dial directly unless you opt into the instance default or select a named profile."
+              helperText={
+                canSelectUpstreamProxy
+                  ? "This choice affects only requests matching this service. Unmatched and broker control-plane traffic still use the instance default."
+                  : "Only instance owners can change egress routing. The current selection is preserved on save."
+              }
+            >
+              <Select
+                value={upstreamProxy}
+                onChange={(e) => setUpstreamProxy(e.target.value)}
+                disabled={!canSelectUpstreamProxy}
+              >
+                <option value="">Direct (default for new services)</option>
+                <option value=":default">Use instance default proxy</option>
+                {proxyOptions.map((proxyName) => (
+                  <option key={proxyName} value={proxyName}>
+                    {proxyName}
+                  </option>
+                ))}
+              </Select>
+            </FormField>
+          )}
         </Section>
 
         <Section title="Authentication">

@@ -28,8 +28,8 @@ package mitm
 
 import (
 	"context"
-	"log/slog"
 	"crypto/tls"
+	"log/slog"
 	"net"
 	"net/http"
 	"sync/atomic"
@@ -37,6 +37,7 @@ import (
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/ca"
+	"github.com/Infisical/agent-vault/internal/egress"
 	"github.com/Infisical/agent-vault/internal/netguard"
 	"github.com/Infisical/agent-vault/internal/ratelimit"
 	"github.com/Infisical/agent-vault/internal/requestlog"
@@ -50,6 +51,8 @@ type Proxy struct {
 	creds            brokercore.CredentialProvider
 	httpServer       *http.Server
 	upstream         *http.Transport
+	upstreamRes      brokercore.UpstreamProxyResolver // nil → every upstream is dialled directly
+	egress           *egress.Registry                 // per-profile transports; nil clears with resolver
 	isListening      atomic.Bool
 	baseURL          string // externally-reachable control-plane URL for help links
 	logger           *slog.Logger
@@ -75,12 +78,18 @@ type Options struct {
 	LogSink          requestlog.Sink // nil → Nop
 	MaxResponseBytes int64           // 0 = unlimited (default); >0 = cap in bytes
 	MaxRequestBytes  int64           // 0 → DefaultMaxRequestBytes (1 GiB)
+	// UpstreamProxies resolves an operator-configured egress proxy for a
+	// request, once credentials have been injected. Nil means "no egress
+	// proxies configured", which keeps every part of the forwarding path
+	// byte-for-byte identical to the pre-feature behaviour.
+	UpstreamProxies brokercore.UpstreamProxyResolver
 }
 
-// New builds a Proxy bound to addr. The returned Proxy does not begin
-// listening until ListenAndServe is called.
-func New(addr string, opts Options) *Proxy {
-	upstream := &http.Transport{
+// newUpstreamTransport builds the baseline transport used to reach upstreams.
+// Every dial shares its tuning whether it goes direct or through an egress
+// proxy, so timeouts and TLS floors cannot drift between the two paths.
+func newUpstreamTransport() *http.Transport {
+	return &http.Transport{
 		DialContext:           netguard.SafeDialContext(netguard.AllowPrivateFromEnv()),
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 		ForceAttemptHTTP2:     false,
@@ -89,6 +98,12 @@ func New(addr string, opts Options) *Proxy {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 5 * time.Minute,
 	}
+}
+
+// New builds a Proxy bound to addr. The returned Proxy does not begin
+// listening until ListenAndServe is called.
+func New(addr string, opts Options) *Proxy {
+	upstream := newUpstreamTransport()
 
 	sink := opts.LogSink
 	if sink == nil {
@@ -113,12 +128,33 @@ func New(addr string, opts Options) *Proxy {
 		maxRequestBytes:  maxReq,
 	}
 
+	if opts.UpstreamProxies != nil {
+		p.upstreamRes = opts.UpstreamProxies
+		// Target validation stays on: routing through a proxy must not
+		// become a way around network policy. The policy itself
+		// (private ranges, IMDS) is read per request by netguard.
+		p.egress = egress.NewRegistry(p.baseTransport, opts.Logger, true)
+	}
+
 	p.httpServer = &http.Server{
 		Addr:              addr,
 		Handler:           http.HandlerFunc(p.dispatch),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return p
+}
+
+// baseTransport clones the live baseline transport, so a transport built for
+// an egress proxy inherits every knob already configured on the direct path
+// (timeouts, pool sizing, and — importantly for callers that pin an upstream
+// CA — TLS roots). Proxied dials must not silently use weaker settings than
+// direct ones.
+func (p *Proxy) baseTransport() *http.Transport {
+	tr := newUpstreamTransport()
+	if p.upstream != nil && p.upstream.TLSClientConfig != nil {
+		tr.TLSClientConfig = p.upstream.TLSClientConfig.Clone()
+	}
+	return tr
 }
 
 // Addr returns the listener address the Proxy was configured with.
@@ -166,6 +202,9 @@ func (p *Proxy) Serve(l net.Listener) error {
 // Shutdown returns; the tunnels will die with it.
 func (p *Proxy) Shutdown(ctx context.Context) error {
 	p.upstream.CloseIdleConnections()
+	if p.egress != nil {
+		p.egress.CloseIdleConnections()
+	}
 	return p.httpServer.Shutdown(ctx)
 }
 

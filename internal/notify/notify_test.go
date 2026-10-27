@@ -2,11 +2,13 @@ package notify
 
 import (
 	"bufio"
+	"context"
 	"net"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadSMTPConfig_Disabled(t *testing.T) {
@@ -257,7 +259,8 @@ func TestSendSTARTTLS_RequiredMode_NoSTARTTLS(t *testing.T) {
 	smtpAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(addr.Port))
 	msg := buildMessage(cfg.FromName, cfg.From, []string{"to@example.com"}, "Test", "body")
 
-	err = sendSTARTTLS(cfg, smtpAddr, []string{"to@example.com"}, msg)
+	n := New(cfg)
+	err = n.sendSTARTTLS(cfg, smtpAddr, []string{"to@example.com"}, msg)
 	if err == nil {
 		t.Fatal("expected error when STARTTLS required but not available")
 	}
@@ -415,5 +418,24 @@ func TestSendMail_MockServer(t *testing.T) {
 	}
 	if !strings.Contains(data, "Hello from Agent Vault") {
 		t.Error("email missing body")
+	}
+}
+
+func TestDialTCPPassesBoundedContextToProxyDialer(t *testing.T) {
+	n := New(&SMTPConfig{Host: "example.test", Port: 587, From: "from@example.test"})
+	called := false
+	n.SetDialer(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		called = true
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > 10*time.Second || time.Until(deadline) < 9*time.Second {
+			t.Errorf("SMTP proxy dial needs bounded 10s context; deadline %v", deadline)
+		}
+		if network != "tcp" || addr != "example.test:587" {
+			t.Errorf("dial target %s %s", network, addr)
+		}
+		return nil, context.Canceled
+	})
+	if _, err := n.dialTCP("example.test:587"); err != context.Canceled || !called {
+		t.Fatalf("dial result err=%v called=%v", err, called)
 	}
 }

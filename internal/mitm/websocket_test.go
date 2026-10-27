@@ -19,12 +19,12 @@ type fakeConn struct {
 	io.Writer
 }
 
-func (fakeConn) Close() error                       { return nil }
-func (fakeConn) LocalAddr() net.Addr                { return nil }
-func (fakeConn) RemoteAddr() net.Addr               { return nil }
-func (fakeConn) SetDeadline(time.Time) error        { return nil }
-func (fakeConn) SetReadDeadline(time.Time) error    { return nil }
-func (fakeConn) SetWriteDeadline(time.Time) error   { return nil }
+func (fakeConn) Close() error                     { return nil }
+func (fakeConn) LocalAddr() net.Addr              { return nil }
+func (fakeConn) RemoteAddr() net.Addr             { return nil }
+func (fakeConn) SetDeadline(time.Time) error      { return nil }
+func (fakeConn) SetReadDeadline(time.Time) error  { return nil }
+func (fakeConn) SetWriteDeadline(time.Time) error { return nil }
 
 func maskedTextFrame(t *testing.T, text string) []byte {
 	t.Helper()

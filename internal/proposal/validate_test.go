@@ -317,7 +317,7 @@ func TestValidateProposalSubstitutionWithoutAuth(t *testing.T) {
 	on := true
 	services := []Service{{
 		Action:  ActionSet,
-		Name:   "api-twilio-com",
+		Name:    "api-twilio-com",
 		Host:    "api.twilio.com",
 		Enabled: &on,
 		Substitutions: []broker.Substitution{

@@ -19,7 +19,6 @@ const (
 	MaxObtainInstructionsLen = 1000
 )
 
-
 // ValidateMessages checks length limits for proposal-level message fields.
 func ValidateMessages(message, userMessage string) error {
 	if len(message) > MaxMessageLen {
