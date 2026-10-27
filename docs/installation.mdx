@@ -4,11 +4,14 @@ description: "Get a server running in under a minute."
 ---
 
 import InstallCommand from "/snippets/install-command.mdx";
+import EnterpriseCTA from "/snippets/enterprise-cta.mdx";
 import DeprecationNotice from "/snippets/deprecation-notice.mdx";
 
 <DeprecationNotice />
 
 Agent Vault ships as a single binary that acts as both a server and CLI client.
+
+<EnterpriseCTA />
 
 Each install method below configures a master password at startup. Store it somewhere safe. The password wraps the [data encryption key](/learn/security) and is held only in memory once the server is unlocked.
 
@@ -38,7 +41,7 @@ Each install method below configures a master password at startup. Store it some
 
   </Tab>
   <Tab title="From source">
-    **Prerequisites**: [Go 1.25+](https://go.dev/dl/), [Node.js 22+](https://nodejs.org/)
+    **Prerequisites**: [Go 1.26.10+](https://go.dev/dl/), [Node.js 22+](https://nodejs.org/)
 
     ```bash
     git clone https://github.com/Infisical/agent-vault.git

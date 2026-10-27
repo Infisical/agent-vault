@@ -45,6 +45,7 @@ type mockStore struct {
 	agentVaultGrants   []store.VaultGrant                     // agent vault grants
 	settings           map[string]string                      // instance settings
 	vaultSettings      map[string]map[string]string           // per-vault: vaultID -> key -> value
+	skills             map[string]map[string]store.Skill      // per-vault: vaultID -> name -> skill
 	credStores         map[string]*store.VaultCredentialStore // per-vault external credential store config
 	unmatchedHosts     map[string][]store.UnmatchedHost       // keyed by vaultID
 	sessionCounter     int
@@ -61,6 +62,7 @@ func newMockStore() *mockStore {
 		agents:        make(map[string]*store.Agent),
 		settings:      make(map[string]string),
 		vaultSettings: make(map[string]map[string]string),
+		skills:        make(map[string]map[string]store.Skill),
 		credStores:    make(map[string]*store.VaultCredentialStore),
 	}
 	// Seed root vault
@@ -1142,6 +1144,71 @@ func (m *mockStore) DeleteVaultSetting(_ context.Context, vaultID, key string) e
 	if vs, ok := m.vaultSettings[vaultID]; ok {
 		delete(vs, key)
 	}
+	return nil
+}
+
+// Vault skills: real in-memory behavior, not stubs — the handler tests assert
+// on stored state.
+
+func (m *mockStore) ListSkills(_ context.Context, vaultID string) ([]store.SkillMeta, error) {
+	var out []store.SkillMeta
+	for _, sk := range m.skills[vaultID] {
+		out = append(out, store.SkillMeta{
+			Name:        sk.Name,
+			Description: sk.Description,
+			CreatedAt:   sk.CreatedAt,
+			UpdatedAt:   sk.UpdatedAt,
+		})
+	}
+	slices.SortFunc(out, func(a, b store.SkillMeta) int { return strings.Compare(a.Name, b.Name) })
+	return out, nil
+}
+
+func (m *mockStore) GetSkill(_ context.Context, vaultID, name string) (*store.Skill, error) {
+	if sk, ok := m.skills[vaultID][name]; ok {
+		copied := sk
+		return &copied, nil
+	}
+	return nil, sql.ErrNoRows
+}
+
+func (m *mockStore) InsertSkill(_ context.Context, sk store.Skill) (*store.Skill, error) {
+	if _, ok := m.skills[sk.VaultID][sk.Name]; ok {
+		return nil, store.ErrSkillExists
+	}
+	if m.skills[sk.VaultID] == nil {
+		m.skills[sk.VaultID] = make(map[string]store.Skill)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	sk.CreatedAt = now
+	sk.UpdatedAt = now
+	m.skills[sk.VaultID][sk.Name] = sk
+	return &sk, nil
+}
+
+func (m *mockStore) UpdateSkill(_ context.Context, vaultID, oldName string, sk store.Skill) (*store.Skill, error) {
+	existing, ok := m.skills[vaultID][oldName]
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	if sk.Name != oldName {
+		if _, taken := m.skills[vaultID][sk.Name]; taken {
+			return nil, store.ErrSkillExists
+		}
+	}
+	sk.VaultID = vaultID
+	sk.CreatedAt = existing.CreatedAt
+	sk.UpdatedAt = time.Now().UTC().Truncate(time.Second)
+	delete(m.skills[vaultID], oldName)
+	m.skills[vaultID][sk.Name] = sk
+	return &sk, nil
+}
+
+func (m *mockStore) DeleteSkill(_ context.Context, vaultID, name string) error {
+	if _, ok := m.skills[vaultID][name]; !ok {
+		return sql.ErrNoRows
+	}
+	delete(m.skills[vaultID], name)
 	return nil
 }
 
@@ -7503,5 +7570,76 @@ func TestVaultLeaveNoAccess(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCacheStaticSetsCacheHeaderOnlyOnSuccess(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		want   string
+	}{
+		{"hashed asset found", http.StatusOK, cacheImmutable},
+		{"range request", http.StatusPartialContent, cacheImmutable},
+		// A rolling upgrade can route a chunk request to an instance still on
+		// the previous build; caching that 404 for a year would wedge the UI.
+		{"chunk missing", http.StatusNotFound, ""},
+		{"server error", http.StatusInternalServerError, ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := cacheStatic(cacheImmutable, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+			}))
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/assets/index-abc123.js", nil))
+
+			if rec.Code != tc.status {
+				t.Fatalf("expected status %d, got %d", tc.status, rec.Code)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != tc.want {
+				t.Fatalf("expected Cache-Control %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestCacheStaticSetsCacheHeaderOnImplicit200(t *testing.T) {
+	// http.FileServer writes the body without an explicit WriteHeader call.
+	h := cacheStatic(cacheImmutable, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("console.log(1)"))
+	}))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/assets/index-abc123.js", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != cacheImmutable {
+		t.Fatalf("expected Cache-Control %q, got %q", cacheImmutable, got)
+	}
+	if rec.Body.String() != "console.log(1)" {
+		t.Fatalf("body was altered: %q", rec.Body.String())
+	}
+}
+
+func TestCacheStaticUsesShorterLifetimeForUnhashedFiles(t *testing.T) {
+	// Favicons and fonts are copied verbatim from web/public/, so their names
+	// carry no content hash and they must stay revalidatable.
+	h := cacheStatic(cacheDay, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("woff2"))
+	}))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/fonts/UncutSans-Book.woff2", nil))
+
+	if got := rec.Header().Get("Cache-Control"); got != cacheDay {
+		t.Fatalf("expected Cache-Control %q, got %q", cacheDay, got)
+	}
+	if cacheDay == cacheImmutable {
+		t.Fatal("unhashed files must not share the immutable lifetime")
 	}
 }
