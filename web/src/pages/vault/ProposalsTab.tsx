@@ -8,6 +8,17 @@ import Input from "../../components/Input";
 import FormField from "../../components/FormField";
 import ProposalPreview, { parseServices, parseCredentials, type CredentialSlot } from "../../components/ProposalPreview";
 import { apiFetch, isAbortError } from "../../lib/api";
+import {
+  acquisitionCancelRequest,
+  acquisitionStartRequest,
+  acquisitionStatusPath,
+  buildApprovalCredentialPayload,
+  isAcquisitionActive,
+  normalizeAcquisitionRecord,
+  pollAcquisitionStatuses,
+  type AcquisitionDeclaration,
+  type ProposalAcquisition,
+} from "../../lib/acquisition";
 
 interface Proposal {
   id: number;
@@ -248,10 +259,51 @@ function ProposalModal({
   const pollTimers = useRef<Record<string, ReturnType<typeof setInterval>>>({});
   useEffect(() => { return () => { Object.values(pollTimers.current).forEach(clearInterval); }; }, []);
 
+  // Provider-acquisition state is metadata only. Responses are normalized into
+  // an allowlisted shape before they enter React state.
+  const [acquisitionJobs, setAcquisitionJobs] = useState<ProposalAcquisition[]>([]);
+  const [acquisitionError, setAcquisitionError] = useState("");
+  const [acquisitionActionKey, setAcquisitionActionKey] = useState("");
+  const [acquisitionPollGeneration, setAcquisitionPollGeneration] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    void pollAcquisitionStatuses({
+      signal: controller.signal,
+      fetchStatus: async (signal) => {
+        const resp = await apiFetch(acquisitionStatusPath(vaultName, proposal.id), {
+          signal,
+        });
+        if (!resp.ok) {
+          const body = await resp.json().catch(() => ({}));
+          throw new Error(body.error || "Failed to load acquisition status");
+        }
+        return resp.json();
+      },
+      onJobs: (jobs) => {
+        setAcquisitionJobs(jobs);
+        setAcquisitionError("");
+      },
+      onError: (err) => setAcquisitionError(err.message),
+    });
+    return () => controller.abort();
+  }, [proposal.id, vaultName, acquisitionPollGeneration]);
+
+  const acquisitionByKey = useMemo(() => {
+    const result = new Map<string, ProposalAcquisition>();
+    for (const job of acquisitionJobs) {
+      const current = result.get(job.key);
+      if (!current || job.attempt > current.attempt) result.set(job.key, job);
+    }
+    return result;
+  }, [acquisitionJobs]);
+
   const setCredentials = credentials.filter(
     (s: CredentialSlot) => s.action === "set" && !s.has_value
   );
   const allFilled = setCredentials.every((s: CredentialSlot) => {
+    if (acquisitionByKey.get(s.key)?.state === "succeeded") return true;
     if (s.type === "oauth") {
       const fields = oauthFields[s.key] ?? {};
       const isUpload = !s.oauth?.authorization_url && !fields.authorization_url;
@@ -260,6 +312,55 @@ function ProposalModal({
     }
     return (credentialValues[s.key] ?? "").trim() !== "";
   });
+
+  async function startAcquisition(cred: CredentialSlot) {
+    if (!cred.acquisition) return;
+    setAcquisitionActionKey(cred.key);
+    setAcquisitionError("");
+    const request = acquisitionStartRequest(
+      vaultName,
+      proposal.id,
+      cred.key,
+      cred.acquisition.handler,
+      cred.acquisition.profile,
+    );
+    try {
+      const resp = await apiFetch(request.path, request.init);
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to start credential acquisition");
+      }
+      const job = normalizeAcquisitionRecord(await resp.json());
+      if (!job) throw new Error("Invalid acquisition response");
+      setAcquisitionJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+      setAcquisitionPollGeneration((value) => value + 1);
+    } catch (err) {
+      setAcquisitionError(err instanceof Error ? err.message : "Failed to start credential acquisition");
+    } finally {
+      setAcquisitionActionKey("");
+    }
+  }
+
+  async function cancelAcquisition(cred: CredentialSlot) {
+    setAcquisitionActionKey(cred.key);
+    setAcquisitionError("");
+    const request = acquisitionCancelRequest(vaultName, proposal.id, cred.key);
+    try {
+      const resp = await apiFetch(request.path, request.init);
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to cancel credential acquisition");
+      }
+      const job = normalizeAcquisitionRecord(await resp.json());
+      if (!job) throw new Error("Invalid acquisition response");
+      setAcquisitionJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+      setAcquisitionPollGeneration((value) => value + 1);
+    } catch (err) {
+      setAcquisitionError(err instanceof Error ? err.message : "Failed to cancel credential acquisition");
+    } finally {
+      setAcquisitionActionKey("");
+    }
+  }
 
   function updateOauthField(credKey: string, field: string, value: string) {
     setOauthFields((prev) => ({ ...prev, [credKey]: { ...(prev[credKey] ?? {}), [field]: value } }));
@@ -316,11 +417,11 @@ function ProposalModal({
     setFormError("");
     setSubmitting(true);
 
-    const credentialPayload: Record<string, string> = {};
-    for (const s of setCredentials) {
-      if (s.type === "oauth") continue;
-      credentialPayload[s.key] = (credentialValues[s.key] ?? "").trim();
-    }
+    const credentialPayload = buildApprovalCredentialPayload(
+      setCredentials,
+      credentialValues,
+      acquisitionByKey,
+    );
 
     try {
       const resp = await apiFetch(
@@ -390,6 +491,8 @@ function ProposalModal({
       {isPending && setCredentials.length > 0 && (
         <form onSubmit={handleApprove} className="mt-5 space-y-4">
           {setCredentials.map((cred: CredentialSlot) => {
+            const acquisitionJob = acquisitionByKey.get(cred.key);
+            const acquisitionSatisfied = acquisitionJob?.state === "succeeded";
             if (cred.type === "oauth") {
               const fields = oauthFields[cred.key] ?? {};
               const hasAuthUrl = !!(cred.oauth?.authorization_url || fields.authorization_url);
@@ -406,7 +509,18 @@ function ProposalModal({
                       {connected ? "Connected" : "OAuth"}
                     </span>
                   </div>
-                  {connected ? (
+                  {cred.acquisition && (
+                    <CredentialAcquisitionControl
+                      declaration={cred.acquisition}
+                      job={acquisitionJob}
+                      busy={acquisitionActionKey === cred.key}
+                      onStart={() => startAcquisition(cred)}
+                      onCancel={() => cancelAcquisition(cred)}
+                    />
+                  )}
+                  {acquisitionSatisfied ? (
+                    <p className="text-sm text-success">Credential acquired and encrypted for this proposal.</p>
+                  ) : connected ? (
                     <p className="text-sm text-success">Connected successfully.</p>
                   ) : (
                     <>
@@ -447,29 +561,43 @@ function ProposalModal({
               );
             }
             return (
-              <FormField
-                key={cred.key}
-                label={cred.description || cred.key}
-                helperText={
-                  (cred.obtain || cred.obtain_instructions) ? (
-                    <span>
-                      {cred.obtain ? (
-                        <a href={cred.obtain.startsWith("http") ? cred.obtain : `https://${cred.obtain}`} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Get it here</a>
-                      ) : null}
-                      {cred.obtain && cred.obtain_instructions ? " — " : ""}
-                      {cred.obtain_instructions}
-                    </span>
-                  ) : undefined
-                }
-              >
-                <Input
-                  type="password"
-                  placeholder={`Paste your ${cred.description || cred.key}`}
-                  autoComplete="off"
-                  value={credentialValues[cred.key] ?? ""}
-                  onChange={(e) => setCredentialValues((prev) => ({ ...prev, [cred.key]: e.target.value }))}
-                />
-              </FormField>
+              <div key={cred.key} className="space-y-3">
+                {cred.acquisition && (
+                  <CredentialAcquisitionControl
+                    declaration={cred.acquisition}
+                    job={acquisitionJob}
+                    busy={acquisitionActionKey === cred.key}
+                    onStart={() => startAcquisition(cred)}
+                    onCancel={() => cancelAcquisition(cred)}
+                  />
+                )}
+                {acquisitionSatisfied ? (
+                  <p className="text-sm text-success">Credential acquired and encrypted for this proposal.</p>
+                ) : (
+                  <FormField
+                    label={cred.description || cred.key}
+                    helperText={
+                      (cred.obtain || cred.obtain_instructions) ? (
+                        <span>
+                          {cred.obtain ? (
+                            <a href={cred.obtain.startsWith("http") ? cred.obtain : `https://${cred.obtain}`} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Get it here</a>
+                          ) : null}
+                          {cred.obtain && cred.obtain_instructions ? " — " : ""}
+                          {cred.obtain_instructions}
+                        </span>
+                      ) : undefined
+                    }
+                  >
+                    <Input
+                      type="password"
+                      placeholder={`Paste your ${cred.description || cred.key}`}
+                      autoComplete="off"
+                      value={credentialValues[cred.key] ?? ""}
+                      onChange={(e) => setCredentialValues((prev) => ({ ...prev, [cred.key]: e.target.value }))}
+                    />
+                  </FormField>
+                )}
+              </div>
             );
           })}
         </form>
@@ -484,8 +612,58 @@ function ProposalModal({
         </div>
       )}
 
+      {acquisitionError && <ErrorBanner message={acquisitionError} className="mt-4" />}
       {formError && <ErrorBanner message={formError} className="mt-4" />}
     </Modal>
+  );
+}
+
+function CredentialAcquisitionControl({
+  declaration,
+  job,
+  busy,
+  onStart,
+  onCancel,
+}: {
+  declaration: AcquisitionDeclaration;
+  job?: ProposalAcquisition;
+  busy: boolean;
+  onStart: () => void;
+  onCancel: () => void;
+}) {
+  const active = !!job && isAcquisitionActive(job.state);
+  const succeeded = job?.state === "succeeded";
+  return (
+    <div className="rounded-lg border border-border bg-bg p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xs font-semibold uppercase tracking-wider text-text-muted">Secure provider</div>
+          <div className="text-sm font-mono text-text mt-1 break-all">
+            {declaration.handler} · {declaration.profile} · {declaration.mode}
+          </div>
+          {job?.error_code && (
+            <p className="text-xs text-danger mt-1">Provider failed: {job.error_code}</p>
+          )}
+          {job?.state === "awaiting_user" && (
+            <p className="text-xs text-text-muted mt-1">Waiting for the provider's local user interaction.</p>
+          )}
+        </div>
+        {job && <StatusBadge status={job.state} />}
+      </div>
+      {!succeeded && (
+        <div className="mt-3 flex justify-end">
+          {active ? (
+            <Button type="button" variant="secondary" onClick={onCancel} loading={busy}>
+              Cancel acquisition
+            </Button>
+          ) : (
+            <Button type="button" onClick={onStart} loading={busy}>
+              {job ? "Try provider again" : "Acquire securely"}
+            </Button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

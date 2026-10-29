@@ -5,8 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/Infisical/agent-vault/internal/contextbinding"
 )
 
 func tp(t time.Time) *time.Time { return &t }
@@ -60,6 +64,445 @@ func TestMigrationIdempotency(t *testing.T) {
 		t.Fatalf("second Open: %v", err)
 	}
 	_ = s2.Close()
+}
+
+func testContextBindingTuple() contextbinding.Tuple {
+	return contextbinding.Tuple{
+		OriginType:                          contextbinding.OriginCodex,
+		OriginCodexThreadID:                 "01a026f1-a339-77c3-bbc1-a0071b64171c",
+		OriginCodexSessionID:                "01a026f1-a339-77c3-bbc1-a0071b64171c",
+		PerplexityProjectID:                 "9ee48ba0-ff1c-4792-aa10-cb95748ae537",
+		RegisteredPersonalComputerMachineID: "7807737D-53A7-5792-BFCB-AC25AD2441F8",
+		RuntimeDeviceID:                     "macos:7807737D-53A7-5792-BFCB-AC25AD2441F8",
+		WorkspaceRoot:                       "/Users/pv/zbst-tech",
+	}
+}
+
+func TestContextBindingMigrationSchema(t *testing.T) {
+	s := openTestDB(t)
+
+	var table string
+	if err := s.db.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'context_bindings'").Scan(&table); err != nil {
+		t.Fatalf("context_bindings table missing: %v", err)
+	}
+
+	rows, err := s.db.Query("PRAGMA table_info(proposals)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, kind string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &kind, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		if name == "context_binding_id" {
+			found = true
+			if notNull != 0 {
+				t.Fatal("proposals.context_binding_id must remain nullable for backward compatibility")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("proposals.context_binding_id column missing")
+	}
+
+	fkRows, err := s.db.Query("PRAGMA foreign_key_list(proposals)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fkRows.Close()
+	foundBindingFK := false
+	for fkRows.Next() {
+		var id, seq int
+		var table, from, to, onUpdate, onDelete, match string
+		if err := fkRows.Scan(&id, &seq, &table, &from, &to, &onUpdate, &onDelete, &match); err != nil {
+			t.Fatal(err)
+		}
+		if table == "context_bindings" && from == "context_binding_id" && to == "id" && onDelete == "RESTRICT" {
+			foundBindingFK = true
+		}
+	}
+	if !foundBindingFK {
+		t.Fatal("proposals.context_binding_id foreign key missing")
+	}
+}
+
+func TestContextBindingLifecycleAndExactTupleUniqueness(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	tuple := testContextBindingTuple()
+
+	created, err := s.CreateContextBinding(ctx, tuple)
+	if err != nil {
+		t.Fatalf("CreateContextBinding: %v", err)
+	}
+	if err := contextbinding.ValidateBindingID(created.ID); err != nil {
+		t.Fatalf("generated binding ID: %v", err)
+	}
+	if created.Tuple != tuple || created.RetiredAt != nil {
+		t.Fatalf("unexpected created binding: %+v", created)
+	}
+
+	got, err := s.GetContextBinding(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetContextBinding: %v", err)
+	}
+	if got.Tuple != tuple {
+		t.Fatalf("tuple changed during persistence: got %+v want %+v", got.Tuple, tuple)
+	}
+
+	if _, err := s.CreateContextBinding(ctx, tuple); err == nil {
+		t.Fatal("expected exact duplicate tuple to be rejected")
+	}
+	diagnosticVariant := tuple
+	diagnosticVariant.OriginCodexSessionID = "01a026f1-a339-7b84-8bc1-a0071b64171c"
+	diagnosticVariant.RuntimeDeviceID = "macos:11111111-1111-4111-8111-111111111111"
+	diagnosticVariant.WorkspaceRoot = "/Users/pv/other-workspace"
+	if _, err := s.CreateContextBinding(ctx, diagnosticVariant); err == nil {
+		t.Fatal("expected the same authoritative thread/project/machine triple to remain unique despite diagnostic metadata changes")
+	}
+
+	if err := s.RetireContextBinding(ctx, created.ID); err != nil {
+		t.Fatalf("RetireContextBinding: %v", err)
+	}
+	retired, err := s.GetContextBinding(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetContextBinding retired: %v", err)
+	}
+	if retired.RetiredAt == nil {
+		t.Fatal("expected retired_at to be set")
+	}
+	if err := s.RetireContextBinding(ctx, created.ID); err == nil {
+		t.Fatal("expected a second retirement to be rejected")
+	}
+}
+
+func TestCreateContextBindingRejectsInvalidTupleWithoutWriting(t *testing.T) {
+	s := openTestDB(t)
+	tuple := testContextBindingTuple()
+	tuple.RegisteredPersonalComputerMachineID = tuple.RuntimeDeviceID
+	if _, err := s.CreateContextBinding(context.Background(), tuple); err == nil {
+		t.Fatal("expected malformed registered machine ID to be rejected")
+	}
+	var count int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM context_bindings").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("invalid tuple wrote %d rows", count)
+	}
+}
+
+func TestProposalContextBindingIsAtomicOptionalAndActive(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	vault, err := s.CreateVault(ctx, "context-bound")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := s.CreateContextBinding(ctx, testContextBindingTuple())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bound, err := s.CreateProposalWithContext(ctx, vault.ID, "session-1", binding.ID, "[]", "[]", "bound", "", nil)
+	if err != nil {
+		t.Fatalf("CreateProposalWithContext: %v", err)
+	}
+	if bound.ContextBindingID == nil || *bound.ContextBindingID != binding.ID {
+		t.Fatalf("proposal missing context binding: %+v", bound)
+	}
+	loaded, err := s.GetProposal(ctx, vault.ID, bound.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ContextBindingID == nil || *loaded.ContextBindingID != binding.ID {
+		t.Fatalf("loaded proposal missing context binding: %+v", loaded)
+	}
+	if _, err := s.db.Exec("DELETE FROM context_bindings WHERE id = ?", binding.ID); err == nil {
+		t.Fatal("expected proposal foreign key to prevent deleting a referenced binding")
+	}
+
+	unbound, err := s.CreateProposal(ctx, vault.ID, "session-2", "[]", "[]", "legacy", "", nil)
+	if err != nil {
+		t.Fatalf("legacy CreateProposal: %v", err)
+	}
+	if unbound.ContextBindingID != nil {
+		t.Fatalf("legacy proposal must remain unbound, got %q", *unbound.ContextBindingID)
+	}
+
+	if _, err := s.CreateProposalWithContext(ctx, vault.ID, "session-3", "av_ctx_00000000000000000000000000000000", "[]", "[]", "missing", "", nil); err == nil {
+		t.Fatal("expected unknown context binding to be rejected")
+	}
+	if err := s.RetireContextBinding(ctx, binding.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateProposalWithContext(ctx, vault.ID, "session-4", binding.ID, "[]", "[]", "retired", "", nil); err == nil {
+		t.Fatal("expected retired context binding to be rejected")
+	}
+}
+
+func TestContextBindingsAndProposalLinksAreIncludedInDataCopy(t *testing.T) {
+	src := openTestDB(t)
+	dst := openTestDB(t)
+	ctx := context.Background()
+
+	binding, err := src.CreateContextBinding(ctx, testContextBindingTuple())
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault, err := src.GetVault(ctx, DefaultVault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := src.CreateProposalWithContext(ctx, vault.ID, "copy-session", binding.ID, "[]", "[]", "copy", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	counts, err := CountSourceTables(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundContextCount := false
+	for _, count := range counts {
+		if count.Table == "context_bindings" {
+			foundContextCount = count.Count == 1
+		}
+	}
+	if !foundContextCount {
+		t.Fatalf("context_bindings missing from source counts: %+v", counts)
+	}
+
+	tx, err := dst.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if copied, err := copyContextBindings(ctx, src, tx, dst.dialect); err != nil || copied != 1 {
+		t.Fatalf("copyContextBindings copied=%d err=%v", copied, err)
+	}
+	if copied, err := copyProposals(ctx, src, tx, dst.dialect); err != nil || copied != 1 {
+		t.Fatalf("copyProposals copied=%d err=%v", copied, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	gotBinding, err := dst.GetContextBinding(ctx, binding.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotBinding.Tuple != testContextBindingTuple() {
+		t.Fatalf("copied tuple mismatch: %+v", gotBinding.Tuple)
+	}
+	gotProposal, err := dst.GetProposal(ctx, vault.ID, proposal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotProposal.ContextBindingID == nil || *gotProposal.ContextBindingID != binding.ID {
+		t.Fatalf("copied proposal lost context binding: %+v", gotProposal)
+	}
+}
+
+func testAcquisitionHandler() AcquisitionHandler {
+	return AcquisitionHandler{
+		ID:               "github-cli",
+		Kind:             "executable",
+		ExecutablePath:   "/opt/homebrew/bin/gh",
+		SHA256:           strings.Repeat("a", 64),
+		SigningIdentity:  "Developer ID Application: Example (TEAMID1234)",
+		AllowedKeys:      []string{"GITHUB_TOKEN"},
+		AllowedVaults:    []string{"11111111-1111-4111-8111-111111111111"},
+		AllowedProfiles:  []string{"github.com"},
+		TimeoutSeconds:   10,
+		OutputLimitBytes: 65536,
+		Enabled:          false,
+	}
+}
+
+func TestAcquisitionHandlerValidateRegistration(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*AcquisitionHandler)
+		want string
+	}{
+		{"id", func(h *AcquisitionHandler) { h.ID = "GitHub CLI" }, "id"},
+		{"kind", func(h *AcquisitionHandler) { h.Kind = "shell" }, "kind"},
+		{"relative executable", func(h *AcquisitionHandler) { h.ExecutablePath = "bin/gh" }, "absolute"},
+		{"unclean executable", func(h *AcquisitionHandler) { h.ExecutablePath = "/opt/../bin/gh" }, "clean"},
+		{"hash length", func(h *AcquisitionHandler) { h.SHA256 = "abc" }, "sha256"},
+		{"hash case", func(h *AcquisitionHandler) { h.SHA256 = strings.Repeat("A", 64) }, "sha256"},
+		{"signing identity newline", func(h *AcquisitionHandler) { h.SigningIdentity = "Team\nInjected" }, "signing_identity"},
+		{"no keys", func(h *AcquisitionHandler) { h.AllowedKeys = nil }, "allowed_keys"},
+		{"bad key", func(h *AcquisitionHandler) { h.AllowedKeys = []string{"github-token"} }, "allowed_keys"},
+		{"duplicate key", func(h *AcquisitionHandler) { h.AllowedKeys = []string{"GITHUB_TOKEN", "GITHUB_TOKEN"} }, "allowed_keys"},
+		{"no vaults", func(h *AcquisitionHandler) { h.AllowedVaults = nil }, "allowed_vaults"},
+		{"bad vault", func(h *AcquisitionHandler) { h.AllowedVaults = []string{"../vault"} }, "allowed_vaults"},
+		{"duplicate vault", func(h *AcquisitionHandler) {
+			h.AllowedVaults = []string{"11111111-1111-4111-8111-111111111111", "11111111-1111-4111-8111-111111111111"}
+		}, "allowed_vaults"},
+		{"no profiles", func(h *AcquisitionHandler) { h.AllowedProfiles = nil }, "allowed_profiles"},
+		{"bad profile", func(h *AcquisitionHandler) { h.AllowedProfiles = []string{"GitHub.com"} }, "allowed_profiles"},
+		{"duplicate profile", func(h *AcquisitionHandler) { h.AllowedProfiles = []string{"github.com", "github.com"} }, "allowed_profiles"},
+		{"short timeout", func(h *AcquisitionHandler) { h.TimeoutSeconds = 0 }, "timeout_seconds"},
+		{"long timeout", func(h *AcquisitionHandler) { h.TimeoutSeconds = 301 }, "timeout_seconds"},
+		{"small output", func(h *AcquisitionHandler) { h.OutputLimitBytes = 1023 }, "output_limit_bytes"},
+		{"large output", func(h *AcquisitionHandler) { h.OutputLimitBytes = 1048577 }, "output_limit_bytes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := testAcquisitionHandler()
+			tt.edit(&handler)
+			err := handler.ValidateRegistration()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected error containing %q, got %v", tt.want, err)
+			}
+		})
+	}
+
+	handler := testAcquisitionHandler()
+	if err := handler.ValidateRegistration(); err != nil {
+		t.Fatalf("valid handler rejected: %v", err)
+	}
+	handler.Kind = "browser_dom"
+	if err := handler.ValidateRegistration(); err != nil {
+		t.Fatalf("valid browser DOM handler rejected: %v", err)
+	}
+}
+
+func TestAcquisitionHandlerMigrationAndLifecycle(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	var table string
+	if err := s.db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='acquisition_handlers'").Scan(&table); err != nil {
+		t.Fatalf("acquisition_handlers table missing: %v", err)
+	}
+
+	want := testAcquisitionHandler()
+	want.Enabled = true // registration never trusts caller-supplied enabled state
+	created, err := s.CreateAcquisitionHandler(ctx, want)
+	if err != nil {
+		t.Fatalf("CreateAcquisitionHandler: %v", err)
+	}
+	if created.ID != want.ID || created.Enabled || created.Generation == "" || created.CreatedAt.IsZero() || created.UpdatedAt.IsZero() {
+		t.Fatalf("unexpected created handler: %+v", created)
+	}
+
+	got, err := s.GetAcquisitionHandler(ctx, want.ID)
+	if err != nil {
+		t.Fatalf("GetAcquisitionHandler: %v", err)
+	}
+	if got.ExecutablePath != want.ExecutablePath || got.SHA256 != want.SHA256 || got.SigningIdentity != want.SigningIdentity ||
+		!slices.Equal(got.AllowedKeys, want.AllowedKeys) || !slices.Equal(got.AllowedVaults, want.AllowedVaults) || !slices.Equal(got.AllowedProfiles, want.AllowedProfiles) {
+		t.Fatalf("handler round trip mismatch: got=%+v want=%+v", got, want)
+	}
+
+	if _, err := s.CreateAcquisitionHandler(ctx, want); err == nil {
+		t.Fatal("expected duplicate handler ID to be rejected")
+	}
+	if err := s.SetAcquisitionHandlerEnabled(ctx, want.ID, true); err != nil {
+		t.Fatalf("enable handler: %v", err)
+	}
+	list, err := s.ListAcquisitionHandlers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || !list[0].Enabled {
+		t.Fatalf("unexpected handler list: %+v", list)
+	}
+	if err := s.SetAcquisitionHandlerEnabled(ctx, want.ID, false); err != nil {
+		t.Fatalf("disable handler: %v", err)
+	}
+	if err := s.DeleteAcquisitionHandler(ctx, want.ID); err != nil {
+		t.Fatalf("delete handler: %v", err)
+	}
+	if _, err := s.GetAcquisitionHandler(ctx, want.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected deleted handler to be absent, got %v", err)
+	}
+}
+
+func TestAcquisitionHandlerGenerationPreventsReplacementEnable(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	first, err := s.CreateAcquisitionHandler(ctx, testAcquisitionHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteAcquisitionHandler(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	replacement := testAcquisitionHandler()
+	replacement.SHA256 = strings.Repeat("b", 64)
+	second, err := s.CreateAcquisitionHandler(ctx, replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Generation == second.Generation {
+		t.Fatal("delete/re-register must create a new handler generation")
+	}
+	updated, err := s.SetAcquisitionHandlerEnabledIfGeneration(ctx, first.ID, first.Generation, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated {
+		t.Fatal("stale handler generation enabled its replacement")
+	}
+	got, err := s.GetAcquisitionHandler(ctx, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Enabled {
+		t.Fatal("replacement handler must remain disabled")
+	}
+}
+
+func TestAcquisitionHandlersAreIncludedInDataCopy(t *testing.T) {
+	src := openTestDB(t)
+	dst := openTestDB(t)
+	ctx := context.Background()
+	want := testAcquisitionHandler()
+	if _, err := src.CreateAcquisitionHandler(ctx, want); err != nil {
+		t.Fatal(err)
+	}
+
+	counts, err := CountSourceTables(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, count := range counts {
+		if count.Table == "acquisition_handlers" && count.Count == 1 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("acquisition_handlers missing from source counts: %+v", counts)
+	}
+
+	tx, err := dst.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if copied, err := copyAcquisitionHandlers(ctx, src, tx, dst.dialect); err != nil || copied != 1 {
+		t.Fatalf("copyAcquisitionHandlers copied=%d err=%v", copied, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := dst.GetAcquisitionHandler(ctx, want.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != want.ID || got.ExecutablePath != want.ExecutablePath || got.Generation == "" {
+		t.Fatalf("copied handler mismatch: %+v", got)
+	}
 }
 
 // --- Vault CRUD ---
@@ -1384,6 +1827,151 @@ func TestApplyProposal(t *testing.T) {
 	}
 }
 
+func TestApplyProposalRevalidatesContextBindingAtomically(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		retire     bool
+		wantErr    bool
+		wantStatus string
+	}{
+		{name: "active", wantStatus: "applied"},
+		{name: "retired", retire: true, wantErr: true, wantStatus: "pending"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openTestDB(t)
+			ctx := context.Background()
+			vault, err := s.CreateVault(ctx, "apply-bound-"+tc.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tuple := testContextBindingTuple()
+			tuple.OriginCodexThreadID = "01a026f1-a339-7b84-8bc1-a0071b64171c"
+			binding, err := s.CreateContextBinding(ctx, tuple)
+			if err != nil {
+				t.Fatal(err)
+			}
+			proposal, err := s.CreateProposalWithContext(ctx, vault.ID, "s1", binding.ID, "[]", "[]", "bound", "", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.retire {
+				if err := s.RetireContextBinding(ctx, binding.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			before, err := s.GetBrokerConfig(ctx, vault.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = s.ApplyProposal(ctx, vault.ID, proposal.ID, `[{"host":"bound.example"}]`, map[string]EncryptedCredential{
+				"BOUND_TOKEN": {Ciphertext: []byte("ciphertext"), Nonce: []byte("nonce")},
+			}, nil, nil)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected retired context binding to block apply")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("active context binding apply: %v", err)
+			}
+
+			loaded, err := s.GetProposal(ctx, vault.ID, proposal.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if loaded.Status != tc.wantStatus {
+				t.Fatalf("status=%q want %q", loaded.Status, tc.wantStatus)
+			}
+			if tc.wantErr {
+				after, err := s.GetBrokerConfig(ctx, vault.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if after.ServicesJSON != before.ServicesJSON {
+					t.Fatalf("blocked apply changed broker config: before=%q after=%q", before.ServicesJSON, after.ServicesJSON)
+				}
+				if _, err := s.GetCredential(ctx, vault.ID, "BOUND_TOKEN"); err == nil {
+					t.Fatal("blocked apply persisted credential")
+				}
+			}
+		})
+	}
+}
+
+func TestSQLiteContextBindingRetirementSerializesWithProposalApply(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	vault, err := s.CreateVault(ctx, "sqlite-apply-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tuple := testContextBindingTuple()
+	tuple.OriginCodexThreadID = "01a026f1-a339-7b84-8bc1-a0071b64171c"
+	binding, err := s.CreateContextBinding(ctx, tuple)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.CreateProposalWithContext(ctx, vault.ID, "s1", binding.ID, "[]", "[]", "race", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reached := make(chan struct{})
+	resume := make(chan struct{})
+	applyDone := make(chan error, 1)
+	go func() {
+		applyDone <- s.applyProposalWithHook(ctx, vault.ID, created.ID, `[{"host":"sqlite.example"}]`, nil, nil, nil, func() {
+			close(reached)
+			<-resume
+		})
+	}()
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("apply never reached post-binding-check hook")
+	}
+
+	retireDone := make(chan error, 1)
+	go func() { retireDone <- s.RetireContextBinding(ctx, binding.ID) }()
+	select {
+	case err := <-retireDone:
+		t.Fatalf("retirement bypassed SQLite apply transaction: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(resume)
+	select {
+	case err := <-applyDone:
+		if err != nil {
+			t.Fatalf("apply failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("apply remained blocked")
+	}
+	select {
+	case err := <-retireDone:
+		if err != nil {
+			t.Fatalf("retirement after apply: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("retirement remained blocked after apply")
+	}
+
+	proposal, err := s.GetProposal(ctx, vault.ID, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.Status != "applied" {
+		t.Fatalf("status=%q", proposal.Status)
+	}
+	retired, err := s.GetContextBinding(ctx, binding.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retired.RetiredAt == nil {
+		t.Fatal("binding was not retired after apply committed")
+	}
+}
+
 func TestApplyProposalWithCredentialDeletion(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
@@ -1448,7 +2036,6 @@ func TestCascadeDeleteVaultRemovesProposals(t *testing.T) {
 		t.Fatalf("expected 0 proposal credentials after cascade delete, got %d", len(csCreds))
 	}
 }
-
 
 // --- UUID ---
 
@@ -1676,7 +2263,6 @@ func TestDeleteUserSessions(t *testing.T) {
 		t.Fatalf("expected sql.ErrNoRows after deleting user sessions, got %v", err)
 	}
 }
-
 
 func TestDeleteUserCascadesGrants(t *testing.T) {
 	s := openTestDB(t)
@@ -1954,7 +2540,6 @@ func TestGetSessionBackwardCompat(t *testing.T) {
 		t.Fatalf("expected empty agent_id for old session, got %q", fetched.AgentID)
 	}
 }
-
 
 func TestDeleteAgentTokens(t *testing.T) {
 	s := openTestDB(t)
