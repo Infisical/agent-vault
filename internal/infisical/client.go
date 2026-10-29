@@ -3,17 +3,20 @@ package infisical
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	sdk "github.com/infisical/go-sdk"
+	"github.com/infisical/go-sdk/packages/models"
 )
 
 // SecretsFetcher is the slice of the SDK the syncer actually uses; tests
@@ -119,26 +122,71 @@ func NewClient(ctx context.Context, logger *slog.Logger) (*Client, error) {
 // AuthMethod returns the detected machine-identity flow this client uses.
 func (c *Client) AuthMethod() AuthMethod { return c.method }
 
+// ErrDuplicateKey marks a recursive-sync failure: the same secret key exists
+// in more than one folder. Surfaced so the operator can rename upstream.
+var ErrDuplicateKey = errors.New("infisical: duplicate secret key across folders")
+
 // FetchSecrets honors ctx.Done() via runSDK; on cancel the orphaned SDK call
 // runs to completion (up to the SDK's internal timeout) and is discarded.
 func (c *Client) FetchSecrets(ctx context.Context, cfg VaultConfig) ([]Secret, error) {
 	return runSDK(ctx, func() ([]Secret, error) {
-		res, err := c.sdk.Secrets().ListSecrets(sdk.ListSecretsOptions{
-			ProjectID:              cfg.ProjectID,
-			Environment:            cfg.Environment,
-			SecretPath:             cfg.SecretPath,
-			ExpandSecretReferences: true,
-			AttachToProcessEnv:     false,
-		})
+		res, err := c.sdk.Secrets().ListSecrets(listSecretsOptions(cfg))
 		if err != nil {
 			return nil, err
 		}
-		out := make([]Secret, len(res.Secrets))
-		for i, s := range res.Secrets {
-			out[i] = Secret{Key: s.SecretKey, Value: s.SecretValue}
-		}
-		return out, nil
+		return secretsFromList(res.Secrets, cfg.Recursive)
 	})
+}
+
+// listSecretsOptions maps a VaultConfig onto the SDK request. Recursive mode
+// also sets SkipUniqueValidation: without it the SDK collapses cross-folder
+// duplicates to one arbitrary winner before we can reject them.
+func listSecretsOptions(cfg VaultConfig) sdk.ListSecretsOptions {
+	return sdk.ListSecretsOptions{
+		ProjectID:              cfg.ProjectID,
+		Environment:            cfg.Environment,
+		SecretPath:             cfg.SecretPath,
+		ExpandSecretReferences: true,
+		AttachToProcessEnv:     false,
+		Recursive:              cfg.Recursive,
+		SkipUniqueValidation:   cfg.Recursive,
+	}
+}
+
+// secretsFromList maps SDK results to broker secrets. In recursive mode the
+// flat credential keyspace can collide across folders; any key found at more
+// than one path fails the whole fetch (all-or-nothing, like ErrInvalidKey).
+// Sorted before formatting: the SDK refills its result slice from a map, so
+// input order is nondeterministic.
+func secretsFromList(raw []models.Secret, recursive bool) ([]Secret, error) {
+	if recursive {
+		pathsByKey := make(map[string][]string, len(raw))
+		for _, s := range raw {
+			pathsByKey[s.SecretKey] = append(pathsByKey[s.SecretKey], s.SecretPath)
+		}
+		var dupKeys []string
+		for key, paths := range pathsByKey {
+			if len(paths) > 1 {
+				dupKeys = append(dupKeys, key)
+			}
+		}
+		if len(dupKeys) > 0 {
+			sort.Strings(dupKeys)
+			paths := pathsByKey[dupKeys[0]]
+			sort.Strings(paths)
+			more := ""
+			if len(dupKeys) > 1 {
+				more = fmt.Sprintf(" (and %d more duplicate keys)", len(dupKeys)-1)
+			}
+			return nil, fmt.Errorf("%w: %q found at %s (secret keys must be unique across all folders when recursive sync is enabled; rename the secret upstream)%s",
+				ErrDuplicateKey, dupKeys[0], strings.Join(paths, ", "), more)
+		}
+	}
+	out := make([]Secret, len(raw))
+	for i, s := range raw {
+		out[i] = Secret{Key: s.SecretKey, Value: s.SecretValue}
+	}
+	return out, nil
 }
 
 // runSDK runs a context-unaware SDK call in a goroutine so ctx.Done() is
