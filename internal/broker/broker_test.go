@@ -42,6 +42,51 @@ func TestMatchServiceWildcard(t *testing.T) {
 	}
 }
 
+func TestMatchServiceHostCaseInsensitive(t *testing.T) {
+	services := []Service{
+		{Name: "stripe", Host: "api.stripe.com", Auth: Auth{Type: "bearer", Token: "STRIPE_KEY"}},
+		{Name: "github", Host: "*.GitHub.com", Auth: Auth{Type: "bearer", Token: "GH_TOKEN"}},
+	}
+	cases := []struct {
+		host string
+		want string
+		tier int
+	}{
+		{"API.Stripe.COM", "stripe", HostTierExact},
+		{"api.github.com", "github", HostTierWildcard},
+		{"Uploads.GITHUB.com", "github", HostTierWildcard},
+	}
+	for _, tc := range cases {
+		r, score := MatchService(tc.host, 0, "/", services)
+		if r == nil || r.Name != tc.want {
+			t.Fatalf("host %q: expected %s, got %+v", tc.host, tc.want, r)
+		}
+		if score.HostTier != tc.tier {
+			t.Fatalf("host %q: expected tier %d, got %d", tc.host, tc.tier, score.HostTier)
+		}
+	}
+	if !AnyHostMatches("API.STRIPE.COM", services) {
+		t.Fatal("expected AnyHostMatches to ignore host case")
+	}
+}
+
+func TestMatchServiceHostNonASCIINotFolded(t *testing.T) {
+	services := []Service{
+		{Name: "stripe", Host: "api.stripe.com", Auth: Auth{Type: "bearer", Token: "STRIPE_KEY"}},
+		{Name: "kube", Host: "*.k8s.example.com", Auth: Auth{Type: "bearer", Token: "KUBE_TOKEN"}},
+	}
+	// U+0130 and the Kelvin sign U+212A lowercase to ASCII "i" and "k"
+	// under Unicode rules, but name different IDNA domains.
+	for _, host := range []string{"api.str\u0130pe.com", "api.\u212A8s.example.com"} {
+		if r, _ := MatchService(host, 0, "/", services); r != nil {
+			t.Fatalf("host %q: expected no match, got %s", host, r.Name)
+		}
+		if AnyHostMatches(host, services) {
+			t.Fatalf("host %q: expected AnyHostMatches to be false", host)
+		}
+	}
+}
+
 func TestMatchServiceNoMatch(t *testing.T) {
 	services := []Service{
 		{Name: "stripe", Host: "api.stripe.com", Auth: Auth{Type: "bearer", Token: "STRIPE_KEY"}},

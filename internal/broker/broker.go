@@ -585,10 +585,15 @@ func MatchService(host string, targetPort int, path string, services []Service) 
 // matchHostPattern reports the tier and whether pattern matches host.
 // "*." matches exactly one subdomain level (e.g. "*.github.com" matches
 // "api.github.com" but not "a.b.github.com" or the bare "github.com").
+// Hostnames are case-insensitive (RFC 4343), so both sides are lowercased.
+// Only ASCII letters are folded: Unicode case mapping would turn e.g.
+// U+0130 into "i" and let a different IDNA domain match a service.
 func matchHostPattern(pattern, host string) (tier int, ok bool) {
 	if h, _, err := net.SplitHostPort(pattern); err == nil {
 		pattern = h
 	}
+	pattern = asciiLower(pattern)
+	host = asciiLower(host)
 	if pattern == host {
 		return HostTierExact, true
 	}
@@ -602,6 +607,17 @@ func matchHostPattern(pattern, host string) (tier int, ok bool) {
 		}
 	}
 	return 0, false
+}
+
+// asciiLower lowercases ASCII letters in s and leaves all other bytes alone.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
 }
 
 // AnyHostMatches reports whether any service's host pattern matches
