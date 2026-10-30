@@ -70,6 +70,23 @@ func TestMatchServiceHostCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestMatchServiceHostNonASCIINotFolded(t *testing.T) {
+	services := []Service{
+		{Name: "stripe", Host: "api.stripe.com", Auth: Auth{Type: "bearer", Token: "STRIPE_KEY"}},
+		{Name: "kube", Host: "*.k8s.example.com", Auth: Auth{Type: "bearer", Token: "KUBE_TOKEN"}},
+	}
+	// U+0130 and the Kelvin sign U+212A lowercase to ASCII "i" and "k"
+	// under Unicode rules, but name different IDNA domains.
+	for _, host := range []string{"api.str\u0130pe.com", "api.\u212A8s.example.com"} {
+		if r, _ := MatchService(host, 0, "/", services); r != nil {
+			t.Fatalf("host %q: expected no match, got %s", host, r.Name)
+		}
+		if AnyHostMatches(host, services) {
+			t.Fatalf("host %q: expected AnyHostMatches to be false", host)
+		}
+	}
+}
+
 func TestMatchServiceNoMatch(t *testing.T) {
 	services := []Service{
 		{Name: "stripe", Host: "api.stripe.com", Auth: Auth{Type: "bearer", Token: "STRIPE_KEY"}},
