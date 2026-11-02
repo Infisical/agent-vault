@@ -143,6 +143,35 @@ jobs:
       - name: Check go mod tidy
         run: go mod tidy && git diff --exit-code go.mod go.sum
 
+  # Reachability-based dependency scan. Runs on every PR for the same reason as
+  # go-test: a vulnerable module can arrive through go.mod alone, and Dependabot
+  # does not flag reachable vulnerabilities in the versions already pinned.
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      # go:embed all:webdist needs the directory at compile time.
+      - name: Stub webdist for go:embed
+        run: |
+          mkdir -p internal/server/webdist
+          printf '<!doctype html><title>ci-stub</title>' > internal/server/webdist/index.html
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+
+      # Exits non-zero when any vulnerability is reachable from our code.
+      - name: Run govulncheck
+        run: govulncheck ./...
+
   sdk-ts:
     needs: changes
     if: needs.changes.outputs.sdk_ts == 'true'
@@ -180,7 +209,7 @@ jobs:
   # required check blocks merging.
   ci-summary:
     if: always()
-    needs: [changes, frontend-build, go-test, go-lint, go-mod-tidy, sdk-ts]
+    needs: [changes, frontend-build, go-test, go-lint, go-mod-tidy, govulncheck, sdk-ts]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required jobs
@@ -190,6 +219,7 @@ jobs:
           GO_TEST: ${{ needs.go-test.result }}
           GO_LINT: ${{ needs.go-lint.result }}
           GO_MOD_TIDY: ${{ needs.go-mod-tidy.result }}
+          GOVULNCHECK: ${{ needs.govulncheck.result }}
           SDK_TS: ${{ needs.sdk-ts.result }}
         run: |
           fail=0
@@ -208,5 +238,6 @@ jobs:
           check go-test        "$GO_TEST"
           check go-lint        "$GO_LINT"
           check go-mod-tidy    "$GO_MOD_TIDY"
+          check govulncheck    "$GOVULNCHECK"
           check sdk-ts         "$SDK_TS"
           exit $fail
