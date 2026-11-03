@@ -118,8 +118,37 @@ func New(addr string, opts Options) *Proxy {
 		Addr:              addr,
 		Handler:           http.HandlerFunc(p.dispatch),
 		ReadHeaderTimeout: 10 * time.Second,
+		ConnContext:       withBoundIdentity,
 	}
 	return p
+}
+
+// BoundConn is a connection whose proxy identity was set by whoever passed
+// it (connpass.TagProxyAs): every request on it uses that identity, and a
+// client's Proxy-Authorization is ignored.
+type BoundConn interface {
+	ProxyIdentity() (token, vault string)
+}
+
+type boundIdentityKey struct{}
+
+type boundIdentity struct{ token, vault string }
+
+func withBoundIdentity(ctx context.Context, c net.Conn) context.Context {
+	if b, ok := c.(BoundConn); ok {
+		token, vault := b.ProxyIdentity()
+		return context.WithValue(ctx, boundIdentityKey{}, boundIdentity{token, vault})
+	}
+	return ctx
+}
+
+// proxyAuth is the request's proxy identity: its connection's bound one,
+// else its Proxy-Authorization header.
+func proxyAuth(r *http.Request) (token, vaultHint string, err error) {
+	if id, ok := r.Context().Value(boundIdentityKey{}).(boundIdentity); ok {
+		return id.token, id.vault, nil
+	}
+	return brokercore.ParseProxyAuth(r)
 }
 
 // Addr returns the listener address the Proxy was configured with.

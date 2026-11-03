@@ -74,7 +74,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Authenticate the CONNECT request via Proxy-Authorization and resolve
 	// the target vault. All error responses must be written BEFORE the
 	// connection is hijacked — once hijacked, no HTTP status can be sent.
-	token, hint, err := brokercore.ParseProxyAuth(r)
+	token, hint, err := proxyAuth(r)
 	if err != nil {
 		p.recordAuthFailure(r)
 		writeProxyAuthChallenge(w, "Proxy-Authorization required")

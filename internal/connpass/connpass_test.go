@@ -140,6 +140,62 @@ func TestServe_AcksEachMessageWithItsTagOnceItHoldsTheDescriptor(t *testing.T) {
 	}
 }
 
+// A proxy connection passed with TagProxyAs starts with one line,
+// "<token> <vault>", that the parent wrote: the connection's identity. The
+// bytes after it are the client's.
+func TestServe_BindsAProxyAsConnectionsPreambleAsItsIdentity(t *testing.T) {
+	parent, child := controlPair(t)
+	proxy := NewListener("proxy")
+	go Serve(child, NewListener("api"), proxy)
+
+	near := pass(t, parent, TagProxyAs)
+	if _, err := near.Write([]byte("av_sess_tok vault-a\nCONNECT x:443")); err != nil {
+		t.Fatal(err)
+	}
+	c := accept(t, proxy)
+	bound, ok := c.(interface{ ProxyIdentity() (string, string) })
+	if !ok {
+		t.Fatalf("%T has no identity", c)
+	}
+	if token, vault := bound.ProxyIdentity(); token != "av_sess_tok" || vault != "vault-a" {
+		t.Fatalf("identity %q %q", token, vault)
+	}
+	buf := make([]byte, len("CONNECT x:443"))
+	if _, err := io.ReadFull(c, buf); err != nil || string(buf) != "CONNECT x:443" {
+		t.Fatalf("read %q, %v", buf, err)
+	}
+	roundTrip(t, c, near)
+}
+
+// A TagProxy connection carries no identity.
+func TestServe_PassesAPlainProxyConnectionWithoutAnIdentity(t *testing.T) {
+	parent, child := controlPair(t)
+	proxy := NewListener("proxy")
+	go Serve(child, NewListener("api"), proxy)
+
+	pass(t, parent, TagProxy)
+	c := accept(t, proxy)
+	if _, ok := c.(interface{ ProxyIdentity() (string, string) }); ok {
+		t.Fatalf("%T has an identity", c)
+	}
+}
+
+// A preamble that isn't "<token> <vault>" closes the connection.
+func TestServe_ClosesAProxyAsConnectionWithABadPreamble(t *testing.T) {
+	for _, preamble := range []string{"onlytoken\n", " vault\n", "tok \n", "a b c\n"} {
+		parent, child := controlPair(t)
+		go Serve(child, NewListener("api"), NewListener("proxy"))
+		near := pass(t, parent, TagProxyAs)
+		if _, err := near.Write([]byte(preamble)); err != nil {
+			t.Fatal(err)
+		}
+		_ = near.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if n, err := near.Read(make([]byte, 1)); n != 0 || err == nil {
+			t.Fatalf("%q: connection still open: %d, %v", preamble, n, err)
+		}
+	}
+}
+
 func TestListener_AcceptFailsOnceClosed(t *testing.T) {
 	l := NewListener("api")
 	errs := make(chan error, 1)

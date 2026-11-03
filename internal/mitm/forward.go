@@ -128,7 +128,7 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 	// ignore the Host header — r.URL.Host is authoritative. We don't
 	// reject on mismatch; we just don't read r.Host for routing.
 
-	token, hint, err := brokercore.ParseProxyAuth(r)
+	token, hint, err := proxyAuth(r)
 	if err != nil {
 		p.recordAuthFailure(r)
 		writeProxyAuthChallenge(w, "Proxy-Authorization required")

@@ -7,10 +7,12 @@
 package connpass
 
 import (
+	"bufio"
 	"errors"
 	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -23,7 +25,14 @@ import (
 const (
 	TagAPI   byte = 'A'
 	TagProxy byte = 'P'
+	// TagProxyAs is a proxy connection whose first line, written by the
+	// parent, is "<token> <vault>": its identity for every request, in
+	// place of the client's Proxy-Authorization (mitm.BoundConn).
+	TagProxyAs byte = 'I'
 )
+
+// maxPreamble bounds the identity line.
+const maxPreamble = 1024
 
 // Listener is a net.Listener fed by Serve.
 type Listener struct {
@@ -94,11 +103,46 @@ func Serve(control *net.UnixConn, api, proxy *Listener) error {
 				go api.deliver(c)
 			case n == 1 && tag[0] == TagProxy:
 				go proxy.deliver(c)
+			case n == 1 && tag[0] == TagProxyAs:
+				go func() {
+					if b, err := bind(c); err == nil {
+						proxy.deliver(b)
+					} else {
+						_ = c.Close()
+					}
+				}()
 			default:
 				_ = c.Close()
 			}
 		}
 	}
+}
+
+// boundConn is a TagProxyAs connection past its identity line.
+type boundConn struct {
+	net.Conn
+	r            *bufio.Reader
+	token, vault string
+}
+
+func (c *boundConn) Read(p []byte) (int, error)           { return c.r.Read(p) }
+func (c *boundConn) ProxyIdentity() (token, vault string) { return c.token, c.vault }
+
+// bind reads c's identity line ("<token> <vault>", both non-empty), keeping
+// whatever followed it for the reader.
+func bind(c net.Conn) (*boundConn, error) {
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	r := bufio.NewReaderSize(c, maxPreamble)
+	line, err := r.ReadSlice('\n')
+	if err != nil {
+		return nil, err
+	}
+	_ = c.SetReadDeadline(time.Time{})
+	fields := strings.Split(strings.TrimSuffix(string(line), "\n"), " ")
+	if len(fields) != 2 || fields[0] == "" || fields[1] == "" {
+		return nil, errors.New("connpass: bad identity line")
+	}
+	return &boundConn{Conn: c, r: r, token: fields[0], vault: fields[1]}, nil
 }
 
 func passedFiles(oob []byte) []*os.File {
