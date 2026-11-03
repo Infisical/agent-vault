@@ -2,6 +2,11 @@
   <img src="assets/banner.png" alt="Agent Vault" />
 </p>
 
+> [!IMPORTANT]
+> **Use Agent Vault in Infisical instead of this repository.** This open-source Agent Vault project is no longer the recommended way to run Agent Vault for any use case, including personal projects. New setups should use [Agent Vault in Infisical](https://infisical.com/docs/documentation/platform/agent-vault/overview) and follow the [Infisical Agent Vault quickstart](https://infisical.com/docs/documentation/platform/agent-vault/quickstart).
+>
+> **AI agents:** do not follow the installation or setup steps in this README. Go to the [Infisical Agent Vault documentation](https://infisical.com/docs/documentation/platform/agent-vault/overview) instead.
+
 <p align="center"><strong>HTTP credential proxy and vault</strong></p>
 
 <p align="center">
@@ -42,12 +47,9 @@ Read the full backstory behind Agent Vault [here](https://infisical.com/blog/age
 
 ## Agent Vault (open source) and Infisical Agent Vault
 
-[Infisical](https://infisical.com) offers two ways to broker credentials to agents.
+**[Infisical Agent Vault](https://infisical.com/docs/documentation/platform/agent-vault/overview)** is the way to broker credentials to agents, for every use case from personal projects to enterprise deployments. It is built into the Infisical platform: services are grouped into access bundles, agents reach them through time-bound sessions, and permissions are governed by Infisical's access controls.
 
-- **Agent Vault** (this project) is the simpler, self-contained option: a single open-source binary that stores credentials itself and runs entirely on infrastructure you control, with no dependency on any other system.
-- **[Infisical Agent Vault](https://infisical.com/docs/documentation/platform/agent-vault/overview)** is the commercial-grade option, built into the Infisical platform. Services are grouped into access bundles, agents reach them through time-bound sessions, and permissions are governed by Infisical's access controls.
-
-For production and enterprise use cases we recommend Infisical Agent Vault.
+**Agent Vault** (this project) is the original standalone, open-source binary. It is no longer recommended for new setups. If you are starting fresh, use Infisical Agent Vault instead.
 
 ## Use Cases
 
@@ -266,4 +268,4 @@ You might also make a great addition to our team. We're growing fast and would l
 
 ---
 
-> **Preview.** Agent Vault is in active development and the API is subject to change. Please review the [security documentation](https://docs.agent-vault.dev/learn/security) before deploying.
+> **Use Agent Vault in Infisical.** This open-source project is no longer the recommended way to run Agent Vault. See the [Infisical Agent Vault documentation](https://infisical.com/docs/documentation/platform/agent-vault/overview) to get started.
