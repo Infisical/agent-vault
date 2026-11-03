@@ -25,6 +25,7 @@ func CountSourceTables(src *SQLStore) ([]TableCount, error) {
 		"master_key",
 		"vaults",
 		"vault_settings",
+		"skills",
 		"users",
 		"agents",
 		"vault_grants",
@@ -120,6 +121,7 @@ func MigrateData(ctx context.Context, src, dst *SQLStore, progressFn func(table 
 		{"master_key", copyMasterKey},
 		{"vaults", copyVaults},
 		{"vault_settings", copyVaultSettings},
+		{"skills", copySkills},
 		{"users", copyUsers},
 		{"agents", copyAgents},
 		{"vault_grants", copyVaultGrants},
@@ -342,6 +344,42 @@ func copyVaultSettings(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialec
 		_, err = tx.ExecContext(ctx,
 			dstDialect.Rebind("INSERT INTO vault_settings (vault_id, key, value, updated_at) VALUES (?, ?, ?, ?)"),
 			vaultID, key, value, ts,
+		)
+		if err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, rows.Err()
+}
+
+func copySkills(ctx context.Context, src *SQLStore, tx *sql.Tx, dstDialect Dialect) (int, error) {
+	rows, err := src.db.QueryContext(ctx,
+		"SELECT vault_id, name, description, content, created_at, updated_at FROM skills")
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	n := 0
+	for rows.Next() {
+		var vaultID, name, description, content string
+		var createdAt, updatedAt interface{}
+		if err := rows.Scan(&vaultID, &name, &description, &content, &createdAt, &updatedAt); err != nil {
+			return n, err
+		}
+		created, err := convertTime(createdAt, src.dialect, dstDialect)
+		if err != nil {
+			return n, fmt.Errorf("converting created_at: %w", err)
+		}
+		updated, err := convertTime(updatedAt, src.dialect, dstDialect)
+		if err != nil {
+			return n, fmt.Errorf("converting updated_at: %w", err)
+		}
+		_, err = tx.ExecContext(ctx,
+			dstDialect.Rebind(`INSERT INTO skills (vault_id, name, description, content, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`),
+			vaultID, name, description, content, created, updated,
 		)
 		if err != nil {
 			return n, err

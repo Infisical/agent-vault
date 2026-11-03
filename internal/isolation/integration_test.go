@@ -1,7 +1,7 @@
 //go:build docker_integration
 
 // To run: go test -tags docker_integration ./internal/isolation/ -run Integration -v
-// Requires: docker daemon, network access to node:22-bookworm-slim +
+// Requires: docker daemon, network access to node:26-bookworm-slim +
 // debian apt mirrors on first run (for the image build).
 package isolation
 

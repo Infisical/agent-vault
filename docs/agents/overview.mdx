@@ -3,6 +3,10 @@ title: "Agents"
 description: "Understand how agents connect to Agent Vault and how to manage them."
 ---
 
+import DeprecationNotice from "/snippets/deprecation-notice.mdx";
+
+<DeprecationNotice />
+
 An `Agent` is any AI-powered process that connects to Agent Vault to proxy requests and raise [proposals](/learn/proposals). Agents are **instance-level entities** (like users) with an [instance-level role](/learn/permissions#instance-roles) (`owner`, `member`, or `no-access`) and can be granted access to multiple [vaults](/learn/vaults) with independent roles per vault.
 
 There are two ways to connect an agent: **wrapping** a local process or **creating** a named agent and supplying its token to a remote runtime.

@@ -3,6 +3,10 @@ title: "Configure Email SMTP"
 description: "Configure SMTP to enable email verification, vault invites, and notifications."
 ---
 
+import DeprecationNotice from "/snippets/deprecation-notice.mdx";
+
+<DeprecationNotice />
+
 Agent Vault uses SMTP to send registration verification codes, vault invite emails, proposal approval links, and test emails. If `AGENT_VAULT_SMTP_HOST` is unset, email notifications are silently disabled.
 
 See [environment variables](/self-hosting/environment-variables#smtp-configuration) for the full list of SMTP variables.

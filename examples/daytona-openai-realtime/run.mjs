@@ -24,7 +24,7 @@ git clone --depth 1 --branch "$AGENT_VAULT_REF" "$AGENT_VAULT_REPO" /tmp/agent-v
 cd /tmp/agent-vault
 mkdir -p internal/server/webdist
 printf '<!doctype html><html><body>agent-vault-daytona-example</body></html>\n' > internal/server/webdist/index.html
-docker run --rm -v /tmp/agent-vault:/src -w /src golang:1.25-alpine \
+docker run --rm -v /tmp/agent-vault:/src -w /src golang:1.26-alpine \
   sh -c 'CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /src/agent-vault .' >/tmp/build-agent-vault.log
 
 cat > Dockerfile.example <<'DOCKER'

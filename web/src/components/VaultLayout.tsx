@@ -3,7 +3,22 @@ import { Link, Outlet, useLocation, useNavigate, useRouteContext } from "@tansta
 import type { AuthContext, VaultContext } from "../router";
 import Navbar from "./Navbar";
 
-type VaultTab = "proposals" | "logs" | "services" | "credentials" | "users" | "agents" | "tokens" | "settings";
+// Source of truth for vault tab ids: the union and active-tab lookup derive
+// from it. An id must equal its route path segment. New tab = entry here plus
+// a NavItem.
+const VAULT_TABS = [
+  "services",
+  "credentials",
+  "proposals",
+  "skills",
+  "logs",
+  "users",
+  "agents",
+  "tokens",
+  "settings",
+] as const;
+
+type VaultTab = (typeof VAULT_TABS)[number];
 
 interface NavItem {
   id: VaultTab;
@@ -71,7 +86,7 @@ export default function VaultLayout() {
   // Derive active tab from current URL path
   const pathSegments = location.pathname.split("/");
   const lastSegment = pathSegments[pathSegments.length - 1] as VaultTab;
-  const activeTab: VaultTab = ["proposals", "logs", "services", "credentials", "users", "agents", "tokens", "settings"].includes(lastSegment)
+  const activeTab: VaultTab = (VAULT_TABS as readonly string[]).includes(lastSegment)
     ? lastSegment
     : "services";
 
@@ -103,6 +118,16 @@ export default function VaultLayout() {
       icon: (
         <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>
+      ),
+    },
+    {
+      id: "skills",
+      label: "Skills",
+      icon: (
+        <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+          <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
         </svg>
       ),
     },

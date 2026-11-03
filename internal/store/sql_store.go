@@ -5,12 +5,14 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
+	mrand "math/rand/v2"
 	"os"
 	"strings"
 	"sync"
@@ -42,8 +44,6 @@ func utcTimePtr(t *time.Time) *time.Time {
 	u := t.UTC()
 	return &u
 }
-
-
 
 // nullableString returns nil for empty strings, enabling SQL NULL inserts.
 func nullableString(s string) interface{} {
@@ -161,12 +161,24 @@ func (s *SQLStore) DialectName() string {
 	return s.dialect.Name()
 }
 
-// LockVault acquires an exclusive advisory lock scoped to vaultID.
+// Postgres advisory-lock polling schedule (see LockVault). lockPollMax stays
+// low because exponential backoff inverts fairness — the longer a caller has
+// waited, the less often it looks — so a high ceiling would let newcomers beat
+// a backed-off waiter. lockMaxWait bounds total wait.
+const (
+	lockPollMin = 2 * time.Millisecond
+	lockPollMax = 50 * time.Millisecond
+	lockMaxWait = 15 * time.Second
+)
+
+// LockVault acquires an exclusive advisory lock scoped to vaultID. SQLite uses
+// a per-vault in-memory mutex; Postgres pins a *sql.Conn so the lock spans the
+// caller's whole critical section.
 //
-// SQLite path: per-vault in-memory mutex (single-process, same as the old
-// server-level vaultServiceMu). Postgres path: pg_advisory_lock on a pinned
-// *sql.Conn so the lock survives for the caller's critical section, not just
-// a single statement.
+// Postgres polls rather than blocking in pg_advisory_lock: a blocking wait
+// holds its pooled connection, and callers query again inside the critical
+// section, so enough waiters on one vault deadlock the pool against the holder.
+// Polling gives up FIFO ordering, acceptable for admin-only mutations.
 func (s *SQLStore) LockVault(ctx context.Context, vaultID string) (func(), error) {
 	if s.dialect.Name() == "sqlite" {
 		v, _ := s.vaultMu.LoadOrStore(vaultID, &sync.Mutex{})
@@ -175,26 +187,55 @@ func (s *SQLStore) LockVault(ctx context.Context, vaultID string) (func(), error
 		return mu.Unlock, nil
 	}
 
-	// Postgres: advisory lock on a pinned connection.
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("LockVault: acquiring connection: %w", err)
-	}
-
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(vaultID))
 	key := int64(h.Sum64())
 
-	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", key); err != nil {
+	deadline := time.Now().Add(lockMaxWait)
+	backoff := lockPollMin
+	for {
+		conn, err := s.db.Conn(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("LockVault: acquiring connection: %w", err)
+		}
+		var acquired bool
+		if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("LockVault: pg_try_advisory_lock: %w", err)
+		}
+		if acquired {
+			return func() { releaseAdvisoryLock(conn, key) }, nil
+		}
 		_ = conn.Close()
-		return nil, fmt.Errorf("LockVault: pg_advisory_lock: %w", err)
-	}
 
-	return func() {
-		// Best-effort unlock; the lock is released on conn close anyway.
-		_, _ = conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key)
-		_ = conn.Close()
-	}, nil
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("LockVault: vault %s still locked after %v", vaultID, lockMaxWait)
+		}
+
+		// Jitter spreads a thundering herd across the poll window rather
+		// than re-colliding on every tick.
+		wait := backoff/2 + time.Duration(mrand.Int64N(int64(backoff/2)+1)) // #nosec G404 -- retry jitter only; nothing here is a secret or a token
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("LockVault: %w", ctx.Err())
+		case <-time.After(wait):
+		}
+		backoff = min(backoff*2, lockPollMax)
+	}
+}
+
+// releaseAdvisoryLock unlocks key and returns conn to the pool. Closing a
+// pooled *sql.Conn recycles the session rather than ending it, so a failed
+// unlock would strand the session-scoped lock and wedge the vault; poison the
+// connection there so the pool discards it instead.
+func releaseAdvisoryLock(conn *sql.Conn, key int64) {
+	// Background: the request context is usually already cancelled by the
+	// time a deferred unlock runs.
+	_, err := conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key)
+	if err != nil {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
+	_ = conn.Close()
 }
 
 // now returns the current UTC time formatted for the active dialect.
@@ -229,6 +270,133 @@ func (s *SQLStore) DeleteVaultSetting(ctx context.Context, vaultID, key string) 
 		s.dialect.Rebind(`DELETE FROM vault_settings WHERE vault_id = ? AND key = ?`),
 		vaultID, key)
 	return err
+}
+
+// --- Vault Skills ---
+
+// ListSkills returns every skill in the vault, name-ordered, without the
+// markdown bodies — callers that need a body fetch it with GetSkill.
+func (s *SQLStore) ListSkills(ctx context.Context, vaultID string) ([]SkillMeta, error) {
+	rows, err := s.db.QueryContext(ctx,
+		s.dialect.Rebind(`SELECT name, description, created_at, updated_at
+		   FROM skills WHERE vault_id = ? ORDER BY name`), vaultID)
+	if err != nil {
+		return nil, fmt.Errorf("listing skills: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []SkillMeta
+	for rows.Next() {
+		var m SkillMeta
+		var createdAt, updatedAt interface{}
+		if err := rows.Scan(&m.Name, &m.Description, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scanning skill: %w", err)
+		}
+		m.CreatedAt, _ = s.dialect.ScanTime(createdAt)
+		m.UpdatedAt, _ = s.dialect.ScanTime(updatedAt)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLStore) scanSkill(row rowScanner) (*Skill, error) {
+	var sk Skill
+	var createdAt, updatedAt interface{}
+	if err := row.Scan(&sk.VaultID, &sk.Name, &sk.Description, &sk.Content, &createdAt, &updatedAt); err != nil {
+		return nil, err
+	}
+	sk.CreatedAt, _ = s.dialect.ScanTime(createdAt)
+	sk.UpdatedAt, _ = s.dialect.ScanTime(updatedAt)
+	return &sk, nil
+}
+
+// GetSkill returns one skill including its markdown body. Returns a bare
+// sql.ErrNoRows when absent, matching GetVaultSetting/GetCredential.
+func (s *SQLStore) GetSkill(ctx context.Context, vaultID, name string) (*Skill, error) {
+	row := s.db.QueryRowContext(ctx,
+		s.dialect.Rebind(`SELECT vault_id, name, description, content, created_at, updated_at
+		   FROM skills WHERE vault_id = ? AND name = ?`), vaultID, name)
+	return s.scanSkill(row)
+}
+
+// InsertSkill creates a skill, returning ErrSkillExists when the name is
+// already taken in the vault.
+func (s *SQLStore) InsertSkill(ctx context.Context, sk Skill) (*Skill, error) {
+	// Truncate to second resolution: SQLite persists timestamps as
+	// time.DateTime, so an untruncated returned value would not match what
+	// the next read gives back and the UI timestamp would shift on refresh.
+	now := time.Now().UTC().Truncate(time.Second)
+	nowVal := s.dialect.FormatTime(now)
+	res, err := s.db.ExecContext(ctx,
+		s.dialect.Rebind(`INSERT INTO skills (vault_id, name, description, content, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(vault_id, name) DO NOTHING`),
+		sk.VaultID, sk.Name, sk.Description, sk.Content, nowVal, nowVal)
+	if err != nil {
+		return nil, fmt.Errorf("inserting skill: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, ErrSkillExists
+	}
+	sk.CreatedAt = now
+	sk.UpdatedAt = now
+	return &sk, nil
+}
+
+// UpdateSkill replaces the skill named oldName with sk, which may carry a new
+// name. Returns sql.ErrNoRows when oldName is absent and ErrSkillExists when a
+// rename would collide. Callers hold the per-vault lock; the composite primary
+// key is the backstop.
+func (s *SQLStore) UpdateSkill(ctx context.Context, vaultID, oldName string, sk Skill) (*Skill, error) {
+	if sk.Name != oldName {
+		// Distinguish a rename collision from a missing row, which a bare
+		// constraint violation cannot do portably across the two dialects.
+		if _, err := s.GetSkill(ctx, vaultID, sk.Name); err == nil {
+			return nil, ErrSkillExists
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("checking skill name: %w", err)
+		}
+	}
+	// RETURNING folds the row-count check and the CreatedAt re-read into the
+	// write, so the markdown body crosses the connection once instead of
+	// twice.
+	row := s.db.QueryRowContext(ctx,
+		s.dialect.Rebind(`UPDATE skills SET name = ?, description = ?, content = ?, updated_at = ?
+		   WHERE vault_id = ? AND name = ?
+		 RETURNING vault_id, name, description, content, created_at, updated_at`),
+		sk.Name, sk.Description, sk.Content,
+		s.dialect.FormatTime(time.Now().UTC().Truncate(time.Second)), vaultID, oldName)
+	updated, err := s.scanSkill(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, sql.ErrNoRows
+	}
+	if err != nil {
+		// The pre-check above is not atomic with the write: a concurrent
+		// create of the target name turns this into a primary-key violation.
+		// Re-check rather than pattern-match driver error strings, so the
+		// caller still gets ErrSkillExists (409) instead of a 500 on both
+		// dialects. Only reachable under real concurrency, so no unit test
+		// covers it — TestSkillRenameCollisionReturnsErrSkillExists exercises
+		// the pre-check path instead.
+		if sk.Name != oldName {
+			if _, getErr := s.GetSkill(ctx, vaultID, sk.Name); getErr == nil {
+				return nil, ErrSkillExists
+			}
+		}
+		return nil, fmt.Errorf("updating skill: %w", err)
+	}
+	return updated, nil
+}
+
+func (s *SQLStore) DeleteSkill(ctx context.Context, vaultID, name string) error {
+	res, err := s.db.ExecContext(ctx,
+		s.dialect.Rebind(`DELETE FROM skills WHERE vault_id = ? AND name = ?`), vaultID, name)
+	if err != nil {
+		return fmt.Errorf("deleting skill: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // --- External Credential Stores ---
