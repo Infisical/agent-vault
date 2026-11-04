@@ -19,7 +19,6 @@ const (
 	MaxObtainInstructionsLen = 1000
 )
 
-
 // ValidateMessages checks length limits for proposal-level message fields.
 func ValidateMessages(message, userMessage string) error {
 	if len(message) > MaxMessageLen {
@@ -74,8 +73,8 @@ func Validate(services []Service, credentials []CredentialSlot) error {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
 		if s.Action == ActionSet {
-			if s.Auth == nil && s.Enabled == nil {
-				return fmt.Errorf("service %d: set action requires auth or enabled change", i)
+			if s.Auth == nil && s.Enabled == nil && s.ResponseRedaction == nil {
+				return fmt.Errorf("service %d: set action requires auth, enabled change, or response_redaction change", i)
 			}
 			if s.Auth != nil {
 				if err := s.Auth.Validate(); err != nil {
