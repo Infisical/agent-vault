@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/broker"
@@ -57,14 +58,35 @@ type InjectResult struct {
 	// Passthrough is set when no service matched but the unmatched-host
 	// policy permitted forwarding.
 	Passthrough bool
+
+	// MethodRestricted is set when the matched service declares a Methods
+	// list. The MITM ingress strips method-override headers and the
+	// _method query parameter on such requests so an allowed method can't
+	// stand in for a denied one. Safe to log.
+	MethodRestricted bool
 }
 
 // CredentialProvider resolves a service for (targetHost, targetPath) in
 // vaultID and returns the headers to attach. targetPath must be the URL
-// path only — no query, no fragment.
+// path only — no query, no fragment. method is the request's HTTP method,
+// checked against the matched service's Methods list.
 type CredentialProvider interface {
-	Inject(ctx context.Context, vaultID, targetHost string, targetPort int, targetPath string) (*InjectResult, error)
+	Inject(ctx context.Context, vaultID, targetHost string, targetPort int, targetPath, method string) (*InjectResult, error)
 }
+
+// MethodNotAllowedError reports the denied method and the methods the
+// matched service permits. Unwraps to ErrMethodNotAllowed.
+type MethodNotAllowedError struct {
+	Method  string
+	Allowed []string
+}
+
+func (e *MethodNotAllowedError) Error() string {
+	return fmt.Sprintf("brokercore: method %s not allowed by broker service (allowed: %s)",
+		e.Method, strings.Join(e.Allowed, ", "))
+}
+
+func (e *MethodNotAllowedError) Unwrap() error { return ErrMethodNotAllowed }
 
 // CredentialStore is the minimal store surface used by StoreCredentialProvider.
 type CredentialStore interface {
@@ -108,8 +130,10 @@ func NewStoreCredentialProvider(s CredentialStore, encKey []byte) *StoreCredenti
 // Inject matches (targetHost, targetPath) and resolves the matched
 // service's auth into HTTP headers. targetHost may include a port —
 // stripped before matching. Pass "/" for targetPath when no path is
-// meaningful.
-func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHost string, targetPort int, targetPath string) (*InjectResult, error) {
+// meaningful. method is checked against the matched service's Methods
+// list after selection, parallel to the IsEnabled check — a
+// method-excluded winner hard-fails with no fall-through.
+func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHost string, targetPort int, targetPath, method string) (*InjectResult, error) {
 	// A missing row is equivalent to an empty services list — fall
 	// through to the unmatched-host policy. Any other error fails closed
 	// so a transient store failure can't silently strip enforcement.
@@ -154,6 +178,12 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	}
 	if !matched.IsEnabled() {
 		return nil, ErrServiceDisabled
+	}
+	// The method check runs here, before either credential path (auth
+	// headers or substitutions) resolves, so a denied request receives
+	// the credential in no form.
+	if !matched.AllowsMethod(method) {
+		return nil, &MethodNotAllowedError{Method: method, Allowed: matched.Methods}
 	}
 	slog.Default().Debug("broker matched",
 		slog.String("vault", vaultID),
@@ -210,11 +240,12 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	// Capture non-secret metadata up front so a downstream credential-missing
 	// error still carries it for diagnostic logging.
 	result := &InjectResult{
-		MatchedName:    matched.Name,
-		MatchedHost:    matched.Host,
-		MatchedPath:    matched.Path,
-		MatchedPort:    matched.Port,
-		CredentialKeys: matched.CredentialKeys(),
+		MatchedName:      matched.Name,
+		MatchedHost:      matched.Host,
+		MatchedPath:      matched.Path,
+		MatchedPort:      matched.Port,
+		CredentialKeys:   matched.CredentialKeys(),
+		MethodRestricted: len(matched.Methods) > 0,
 	}
 
 	// Resolve substitutions before auth so passthrough services (which
