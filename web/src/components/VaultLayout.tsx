@@ -10,6 +10,7 @@ const VAULT_TABS = [
   "services",
   "credentials",
   "proposals",
+  "request-approvals",
   "skills",
   "logs",
   "users",
@@ -35,6 +36,8 @@ export default function VaultLayout() {
   const [isExiting, setIsExiting] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
   const [pendingCount, setPendingCount] = useState(0);
+  const [approvalCount, setApprovalCount] = useState({ vault: vaultContext.vault_name, count: 0 });
+  const pendingApprovalCount = approvalCount.vault === vaultContext.vault_name ? approvalCount.count : 0;
   const [discoveredCount, setDiscoveredCount] = useState(0);
 
   // The Members section (Users / Agents / Tokens) is only meaningful at
@@ -43,6 +46,32 @@ export default function VaultLayout() {
   // on the people/agents/tokens lists, and the underlying GET endpoints
   // require `member`+ anyway.
   const showMembersNav = vaultContext.vault_role !== "proxy";
+
+  useEffect(() => {
+    if (vaultContext.vault_role !== "admin") return;
+    let active = true;
+    const controllers = new Set<AbortController>();
+    setApprovalCount({ vault: vaultContext.vault_name, count: 0 });
+    async function fetchApprovalCount() {
+      const controller = new AbortController();
+      controllers.add(controller);
+      try {
+        const resp = await fetch(`/v1/vaults/${encodeURIComponent(vaultContext.vault_name)}/request-approvals`, { signal: controller.signal });
+        if (resp.ok && active) {
+          const data = await resp.json();
+          if (active) setApprovalCount({ vault: vaultContext.vault_name, count: (data.approvals ?? []).length });
+        }
+      } catch { /* Retain the last count until the next poll. */ }
+      finally { controllers.delete(controller); }
+    }
+    fetchApprovalCount();
+    const interval = setInterval(fetchApprovalCount, 5_000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+      controllers.forEach((controller) => controller.abort());
+    };
+  }, [vaultContext.vault_name, vaultContext.vault_role]);
 
   useEffect(() => {
     async function fetchPendingCount() {
@@ -121,6 +150,12 @@ export default function VaultLayout() {
         </svg>
       ),
     },
+    ...(vaultContext.vault_role === "admin" ? [{
+      id: "request-approvals" as VaultTab,
+      label: "Request approvals",
+      badge: pendingApprovalCount > 0 ? pendingApprovalCount : undefined,
+      icon: <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m8 12 3 3 5-6"/></svg>,
+    }] : []),
     {
       id: "skills",
       label: "Skills",

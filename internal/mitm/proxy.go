@@ -28,8 +28,8 @@ package mitm
 
 import (
 	"context"
-	"log/slog"
 	"crypto/tls"
+	"log/slog"
 	"net"
 	"net/http"
 	"sync/atomic"
@@ -57,6 +57,7 @@ type Proxy struct {
 	logSink          requestlog.Sink     // never nil (Nop default); shared with the HTTP server
 	maxResponseBytes int64               // 0 = unlimited
 	maxRequestBytes  int64
+	httpsReadTimeout time.Duration // per HTTPS request, excluding approval wait
 }
 
 // Options carries the dependencies a Proxy needs. BaseURL is the
@@ -111,6 +112,7 @@ func New(addr string, opts Options) *Proxy {
 		logSink:          sink,
 		maxResponseBytes: opts.MaxResponseBytes, // 0 = unlimited
 		maxRequestBytes:  maxReq,
+		httpsReadTimeout: 60 * time.Second,
 	}
 
 	p.httpServer = &http.Server{

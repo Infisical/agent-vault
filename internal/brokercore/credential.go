@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"reflect"
 	"time"
 
+	"github.com/Infisical/agent-vault/internal/approval"
 	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/oauth"
@@ -40,10 +42,11 @@ type InjectResult struct {
 
 	// MatchedName/Host/Path/Port describe the matched service. Safe to log.
 	// Empty under unmatched-host passthrough.
-	MatchedName string
-	MatchedHost string
-	MatchedPath string
-	MatchedPort *int
+	MatchedName     string
+	MatchedHost     string
+	MatchedPath     string
+	MatchedPort     *int
+	RequireApproval bool
 
 	// CredentialKeys are the key names referenced by the matched
 	// service. Populated before resolution so credential-missing
@@ -63,7 +66,7 @@ type InjectResult struct {
 // vaultID and returns the headers to attach. targetPath must be the URL
 // path only — no query, no fragment.
 type CredentialProvider interface {
-	Inject(ctx context.Context, vaultID, targetHost string, targetPort int, targetPath string) (*InjectResult, error)
+	Inject(ctx context.Context, vaultID, targetHost string, targetPort int, targetPath string, request ...approval.Request) (*InjectResult, error)
 }
 
 // CredentialStore is the minimal store surface used by StoreCredentialProvider.
@@ -98,6 +101,7 @@ type StoreCredentialProvider struct {
 	EncKey     []byte
 	Refresher  *oauth.Refresher          // nil = no OAuth refresh
 	Dynamic    DynamicCredentialResolver // nil = no dynamic-secret resolution
+	Approvals  *approval.Manager         // nil fails closed for approval-required services
 }
 
 // NewStoreCredentialProvider constructs a provider. encKey must be 32 bytes.
@@ -109,7 +113,7 @@ func NewStoreCredentialProvider(s CredentialStore, encKey []byte) *StoreCredenti
 // service's auth into HTTP headers. targetHost may include a port —
 // stripped before matching. Pass "/" for targetPath when no path is
 // meaningful.
-func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHost string, targetPort int, targetPath string) (*InjectResult, error) {
+func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHost string, targetPort int, targetPath string, request ...approval.Request) (*InjectResult, error) {
 	// A missing row is equivalent to an empty services list — fall
 	// through to the unmatched-host policy. Any other error fails closed
 	// so a transient store failure can't silently strip enforcement.
@@ -154,6 +158,41 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	}
 	if !matched.IsEnabled() {
 		return nil, ErrServiceDisabled
+	}
+	result := &InjectResult{
+		MatchedName: matched.Name, MatchedHost: matched.Host,
+		MatchedPath: matched.Path, MatchedPort: matched.Port,
+		CredentialKeys:  matched.CredentialKeys(),
+		RequireApproval: matched.RequireApproval,
+	}
+	if matched.RequireApproval {
+		if len(request) != 1 || p.Approvals == nil {
+			return result, approval.ErrUnavailable
+		}
+		req := request[0]
+		req.VaultID = vaultID
+		req.Service = matched.Name
+		if err := p.Approvals.Wait(ctx, req); err != nil {
+			return result, err
+		}
+		// A service can be disabled or changed while a reviewer is deciding.
+		// Fail closed instead of using credentials from an obsolete matcher.
+		current, err := p.Store.GetBrokerConfig(ctx, vaultID)
+		if err != nil || current == nil {
+			return result, ErrServiceNotFound
+		}
+		var latest []broker.Service
+		if err := json.Unmarshal([]byte(current.ServicesJSON), &latest); err != nil {
+			return result, ErrServiceNotFound
+		}
+		for i := range latest {
+			latest[i].Host, latest[i].Path, latest[i].Port = broker.SplitInlineHost(latest[i].Host, latest[i].Path)
+		}
+		broker.AssignSlugNames(latest)
+		again, _ := broker.MatchService(matchHost, targetPort, targetPath, latest)
+		if again == nil || !again.IsEnabled() || !again.RequireApproval || !sameApprovedService(*matched, *again) {
+			return result, ErrServiceNotFound
+		}
 	}
 	slog.Default().Debug("broker matched",
 		slog.String("vault", vaultID),
@@ -209,14 +248,6 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 
 	// Capture non-secret metadata up front so a downstream credential-missing
 	// error still carries it for diagnostic logging.
-	result := &InjectResult{
-		MatchedName:    matched.Name,
-		MatchedHost:    matched.Host,
-		MatchedPath:    matched.Path,
-		MatchedPort:    matched.Port,
-		CredentialKeys: matched.CredentialKeys(),
-	}
-
 	// Resolve substitutions before auth so passthrough services (which
 	// skip the auth branch) still surface ErrCredentialMissing here.
 	// Hold locally and attach only on success — error returns must not
@@ -250,6 +281,10 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	result.Headers = headers
 	result.Substitutions = resolvedSubs
 	return result, nil
+}
+
+func sameApprovedService(before, after broker.Service) bool {
+	return reflect.DeepEqual(before, after)
 }
 
 const oauthRefreshBuffer = 5 * time.Minute

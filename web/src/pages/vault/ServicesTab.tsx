@@ -28,6 +28,7 @@ interface Service {
   name: string;
   host: string;
   enabled?: boolean;
+  require_approval?: boolean;
   auth: Auth;
   substitutions?: Substitution[];
 }
@@ -226,6 +227,7 @@ export default function ServicesTab() {
         <div>
           <div className="text-sm font-semibold text-text">{service.name}</div>
           <div className="text-xs text-text-muted mt-0.5">{service.host}</div>
+          {service.require_approval && <div className="text-xs text-warning mt-0.5">Approval required for every request</div>}
         </div>
       ),
     },
@@ -471,6 +473,7 @@ function ServiceModal({
   const [name, setName] = useState(initial?.name ?? defaultName ?? "");
   const [pattern, setPattern] = useState(initial?.host ?? defaultHost ?? "");
   const [enabled, setEnabled] = useState(initial ? initial.enabled !== false : true);
+  const [requireApproval, setRequireApproval] = useState(initial?.require_approval ?? false);
   const [authType, setAuthType] = useState<AuthType>((initial?.auth?.type as AuthType) ?? (defaultAuthScheme as AuthType) ?? "passthrough");
 
   // Bearer fields
@@ -649,6 +652,7 @@ function ServiceModal({
         name: name.trim(),
         host: pattern.trim(),
         ...(enabled ? {} : { enabled: false }),
+        ...(requireApproval ? { require_approval: true } : {}),
         auth: buildAuth(),
         ...(cleanedSubs.length > 0 && { substitutions: cleanedSubs }),
       };
@@ -723,6 +727,15 @@ function ServiceModal({
               </div>
             </div>
             <Toggle checked={enabled} onChange={setEnabled} ariaLabel="Enabled" />
+          </div>
+          <div className="flex items-start justify-between gap-4 pt-4">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-text">Approve every request</div>
+              <div className="text-xs text-text-muted mt-0.5">
+                Hold each proxy call for a vault admin to approve. Requests expire after two minutes.
+              </div>
+            </div>
+            <Toggle checked={requireApproval} onChange={setRequireApproval} ariaLabel="Approve every request" />
           </div>
         </Section>
 
