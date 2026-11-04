@@ -350,11 +350,13 @@ func (p *Proxy) forwardRequest(
 	// OAuth 401 retry: if the upstream rejected the token and we have an
 	// OAuth credential, force-refresh and retry once. Only safe methods
 	// (GET/HEAD) are retried — the request body is consumed and cannot be replayed.
-	if resp.StatusCode == http.StatusUnauthorized && inject != nil && !inject.Passthrough &&
+	// Services with no injected headers (auth "passthrough") have nothing to
+	// refresh. The original response is closed only once a retry response
+	// replaces it; otherwise it is relayed intact (#362).
+	if resp.StatusCode == http.StatusUnauthorized && inject != nil && len(inject.Headers) > 0 &&
 		(r.Method == http.MethodGet || r.Method == http.MethodHead) {
-		_ = resp.Body.Close()
 		retryInject, retryErr := p.creds.Inject(r.Context(), scope.VaultID, host, port, r.URL.Path)
-		if retryErr == nil && retryInject != nil && retryInject.Headers != nil {
+		if retryErr == nil && retryInject != nil && len(retryInject.Headers) > 0 {
 			retryReq := outReq.Clone(outReq.Context())
 			for k, v := range retryInject.Headers {
 				retryReq.Header.Set(k, v)
@@ -362,11 +364,18 @@ func (p *Proxy) forwardRequest(
 			retryReq.Body = http.NoBody
 			retryReq.ContentLength = 0
 			if retryResp, retryRTErr := p.upstream.RoundTrip(retryReq); retryRTErr == nil {
+				_ = resp.Body.Close()
 				resp = retryResp
 				p.logger.Debug("oauth 401 retry succeeded",
 					slog.String("host", host),
 					slog.String("path", r.URL.Path),
 					slog.Int("status", resp.StatusCode),
+				)
+			} else {
+				p.logger.Debug("oauth 401 retry failed; relaying original response",
+					slog.String("host", host),
+					slog.String("path", r.URL.Path),
+					slog.String("error", retryRTErr.Error()),
 				)
 			}
 		}
