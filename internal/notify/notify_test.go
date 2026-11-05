@@ -274,26 +274,26 @@ func TestNotifier_Enabled(t *testing.T) {
 		t.Fatal("nil notifier should not be enabled")
 	}
 
-	noop := New(nil)
+	noop := New(nil, nil)
 	if noop.Enabled() {
 		t.Fatal("notifier with nil config should not be enabled")
 	}
 
-	active := New(&SMTPConfig{Host: "smtp.example.com", Port: 587, From: "test@example.com"})
+	active := New(&SMTPConfig{Host: "smtp.example.com", Port: 587, From: "test@example.com"}, nil)
 	if !active.Enabled() {
 		t.Fatal("notifier with config should be enabled")
 	}
 }
 
 func TestNotifier_SendMail_NoOp(t *testing.T) {
-	noop := New(nil)
+	noop := New(nil, nil)
 	if err := noop.SendMail([]string{"a@b.com"}, "test", "body"); err != nil {
 		t.Fatalf("no-op SendMail should not error: %v", err)
 	}
 }
 
 func TestNotifier_SendMail_EmptyRecipients(t *testing.T) {
-	n := New(&SMTPConfig{Host: "smtp.example.com", Port: 587, From: "test@example.com"})
+	n := New(&SMTPConfig{Host: "smtp.example.com", Port: 587, From: "test@example.com"}, nil)
 	if err := n.SendMail(nil, "test", "body"); err != nil {
 		t.Fatalf("SendMail with no recipients should not error: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestSendMail_MockServer(t *testing.T) {
 		Host: "127.0.0.1",
 		Port: addr.Port,
 		From: "sb@test.com",
-	})
+	}, nil)
 
 	err = n.SendMail([]string{"admin@test.com"}, "Test", "Hello from Agent Vault")
 	if err != nil {
