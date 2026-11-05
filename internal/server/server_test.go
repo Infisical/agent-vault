@@ -3,7 +3,9 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,14 +13,18 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"github.com/Infisical/agent-vault/internal/auth"
 	"github.com/Infisical/agent-vault/internal/brokercore"
+	"github.com/Infisical/agent-vault/internal/contextbinding"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/notify"
@@ -30,40 +36,59 @@ var tp = timePtr
 
 // mockStore implements Store for testing.
 type mockStore struct {
-	masterKeyRecord    *store.MasterKeyRecord
-	sessions           map[string]*store.Session
-	vaults             map[string]*store.Vault
-	credentials        map[string]*store.Credential   // keyed by "vaultID:key"
-	brokerConfigs      map[string]*store.BrokerConfig // keyed by vaultID
-	proposals          map[string][]store.Proposal    // keyed by vaultID
-	users              map[string]*store.User         // keyed by email
-	grants             map[string]map[string]string   // keyed by userID -> vaultID -> role
-	userInvites        map[string]*store.UserInvite   // keyed by token
-	emailVerifications []*store.EmailVerification
-	passwordResets     []*store.PasswordReset
-	agents             map[string]*store.Agent                // keyed by name
-	agentVaultGrants   []store.VaultGrant                     // agent vault grants
-	settings           map[string]string                      // instance settings
-	vaultSettings      map[string]map[string]string           // per-vault: vaultID -> key -> value
-	skills             map[string]map[string]store.Skill      // per-vault: vaultID -> name -> skill
-	credStores         map[string]*store.VaultCredentialStore // per-vault external credential store config
-	unmatchedHosts     map[string][]store.UnmatchedHost       // keyed by vaultID
-	sessionCounter     int
+	masterKeyRecord                 *store.MasterKeyRecord
+	sessions                        map[string]*store.Session
+	vaults                          map[string]*store.Vault
+	credentials                     map[string]*store.Credential   // keyed by "vaultID:key"
+	brokerConfigs                   map[string]*store.BrokerConfig // keyed by vaultID
+	proposals                       map[string][]store.Proposal    // keyed by vaultID
+	contextBindings                 map[string]*store.ContextBinding
+	acquisitionHandlers             map[string]*store.AcquisitionHandler
+	users                           map[string]*store.User       // keyed by email
+	grants                          map[string]map[string]string // keyed by userID -> vaultID -> role
+	userInvites                     map[string]*store.UserInvite // keyed by token
+	emailVerifications              []*store.EmailVerification
+	passwordResets                  []*store.PasswordReset
+	agents                          map[string]*store.Agent                // keyed by name
+	agentVaultGrants                []store.VaultGrant                     // agent vault grants
+	settings                        map[string]string                      // instance settings
+	vaultSettings                   map[string]map[string]string           // per-vault: vaultID -> key -> value
+	skills                          map[string]map[string]store.Skill      // per-vault: vaultID -> name -> skill
+	credStores                      map[string]*store.VaultCredentialStore // per-vault external credential store config
+	unmatchedHosts                  map[string][]store.UnmatchedHost       // keyed by vaultID
+	createProposalWithContextErr    error
+	getContextBindingErr            error
+	getProposalErr                  error
+	applyProposalErr                error
+	sessionCounter                  int
+	handlerGenerationCounter        int
+	setHandlerGenerationHook        func()
+	setAcquisitionPolicyHook        func()
+	acquisitionMu                   sync.Mutex
+	proposalAcquisitions            map[string]*store.ProposalAcquisition
+	proposalAcquisitionSecrets      map[string]store.EncryptedCredential
+	proposalAcquisitionCounter      int
+	proposalAcquisitionByIDFailures int
+	proposalAcquisitionByIDFailure  chan struct{}
 }
 
 func newMockStore() *mockStore {
 	ms := &mockStore{
-		sessions:      make(map[string]*store.Session),
-		vaults:        make(map[string]*store.Vault),
-		credentials:   make(map[string]*store.Credential),
-		brokerConfigs: make(map[string]*store.BrokerConfig),
-		users:         make(map[string]*store.User),
-		userInvites:   make(map[string]*store.UserInvite),
-		agents:        make(map[string]*store.Agent),
-		settings:      make(map[string]string),
-		vaultSettings: make(map[string]map[string]string),
-		skills:        make(map[string]map[string]store.Skill),
-		credStores:    make(map[string]*store.VaultCredentialStore),
+		sessions:                   make(map[string]*store.Session),
+		vaults:                     make(map[string]*store.Vault),
+		credentials:                make(map[string]*store.Credential),
+		brokerConfigs:              make(map[string]*store.BrokerConfig),
+		contextBindings:            make(map[string]*store.ContextBinding),
+		acquisitionHandlers:        make(map[string]*store.AcquisitionHandler),
+		proposalAcquisitions:       make(map[string]*store.ProposalAcquisition),
+		proposalAcquisitionSecrets: make(map[string]store.EncryptedCredential),
+		users:                      make(map[string]*store.User),
+		userInvites:                make(map[string]*store.UserInvite),
+		agents:                     make(map[string]*store.Agent),
+		settings:                   make(map[string]string),
+		vaultSettings:              make(map[string]map[string]string),
+		skills:                     make(map[string]map[string]store.Skill),
+		credStores:                 make(map[string]*store.VaultCredentialStore),
 	}
 	// Seed root vault
 	ms.vaults["default"] = &store.Vault{ID: "root-ns-id", Name: "default"}
@@ -323,13 +348,347 @@ func (m *mockStore) CreateProposal(_ context.Context, vaultID, sessionID, servic
 	return &cs, nil
 }
 
+func (m *mockStore) CreateContextBinding(_ context.Context, tuple contextbinding.Tuple) (*store.ContextBinding, error) {
+	id := "av_ctx_01JQ6T9J2WR8MVB7F2K4N6P8RA"
+	binding := &store.ContextBinding{ID: id, Tuple: tuple, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	m.contextBindings[id] = binding
+	return binding, nil
+}
+
+func (m *mockStore) GetContextBinding(_ context.Context, id string) (*store.ContextBinding, error) {
+	if m.getContextBindingErr != nil {
+		return nil, m.getContextBindingErr
+	}
+	binding, ok := m.contextBindings[id]
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	copy := *binding
+	return &copy, nil
+}
+
+func (m *mockStore) RetireContextBinding(_ context.Context, id string) error {
+	binding, ok := m.contextBindings[id]
+	if !ok || binding.RetiredAt != nil {
+		return sql.ErrNoRows
+	}
+	now := time.Now()
+	binding.RetiredAt = &now
+	return nil
+}
+
+func (m *mockStore) CreateAcquisitionHandler(_ context.Context, handler store.AcquisitionHandler) (*store.AcquisitionHandler, error) {
+	if _, ok := m.acquisitionHandlers[handler.ID]; ok {
+		return nil, store.ErrAcquisitionHandlerExists
+	}
+	handler.Enabled = false
+	m.handlerGenerationCounter++
+	handler.Generation = fmt.Sprintf("test-generation-%d", m.handlerGenerationCounter)
+	handler.CreatedAt = time.Now().UTC()
+	handler.UpdatedAt = handler.CreatedAt
+	copy := handler
+	m.acquisitionHandlers[handler.ID] = &copy
+	return &copy, nil
+}
+
+func (m *mockStore) GetAcquisitionHandler(_ context.Context, id string) (*store.AcquisitionHandler, error) {
+	handler, ok := m.acquisitionHandlers[id]
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	copy := *handler
+	return &copy, nil
+}
+
+func (m *mockStore) ListAcquisitionHandlers(_ context.Context) ([]store.AcquisitionHandler, error) {
+	result := make([]store.AcquisitionHandler, 0, len(m.acquisitionHandlers))
+	for _, handler := range m.acquisitionHandlers {
+		result = append(result, *handler)
+	}
+	slices.SortFunc(result, func(a, b store.AcquisitionHandler) int { return strings.Compare(a.ID, b.ID) })
+	return result, nil
+}
+
+func (m *mockStore) SetAcquisitionHandlerEnabled(_ context.Context, id string, enabled bool) error {
+	handler, ok := m.acquisitionHandlers[id]
+	if !ok {
+		return sql.ErrNoRows
+	}
+	handler.Enabled = enabled
+	handler.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func (m *mockStore) SetAcquisitionHandlerEnabledIfGeneration(_ context.Context, id, generation string, enabled bool) (bool, error) {
+	if m.setHandlerGenerationHook != nil {
+		hook := m.setHandlerGenerationHook
+		m.setHandlerGenerationHook = nil
+		hook()
+	}
+	handler, ok := m.acquisitionHandlers[id]
+	if !ok || handler.Generation != generation {
+		return false, nil
+	}
+	handler.Enabled = enabled
+	handler.UpdatedAt = time.Now().UTC()
+	return true, nil
+}
+
+func (m *mockStore) DeleteAcquisitionHandler(_ context.Context, id string) error {
+	if _, ok := m.acquisitionHandlers[id]; !ok {
+		return sql.ErrNoRows
+	}
+	delete(m.acquisitionHandlers, id)
+	return nil
+}
+
+func (m *mockStore) StartProposalAcquisition(_ context.Context, start store.ProposalAcquisitionStart) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	if m.settings[store.InstanceSettingCredentialAcquisitionEnabled] != "true" {
+		return nil, store.ErrCredentialAcquisitionDisabled
+	}
+	proposalRow, err := m.GetProposal(context.Background(), start.VaultID, start.ProposalID)
+	if err != nil {
+		return nil, err
+	}
+	if proposalRow.Status != "pending" {
+		return nil, store.ErrProposalStateConflict
+	}
+	if proposalRow.ContextBindingID == nil {
+		return nil, store.ErrProposalAcquisitionContextBindingRequired
+	}
+	binding := m.contextBindings[*proposalRow.ContextBindingID]
+	if binding == nil || binding.RetiredAt != nil {
+		return nil, store.ErrContextBindingInactive
+	}
+	handler := m.acquisitionHandlers[start.HandlerID]
+	if handler == nil || !handler.Enabled || !containsExact(handler.AllowedKeys, start.CredentialKey) ||
+		!containsExact(handler.AllowedVaults, start.VaultID) || !containsExact(handler.AllowedProfiles, start.Profile) {
+		return nil, store.ErrAcquisitionHandlerUnavailable
+	}
+	raw := m.vaultSettings[start.VaultID][store.VaultSettingCredentialAcquisitionPolicy]
+	policy, err := store.ParseVaultAcquisitionPolicyJSON(raw)
+	if err != nil || !containsExact(policy.EnabledHandlers, start.HandlerID) {
+		return nil, store.ErrAcquisitionPolicyHandlerUnavailable
+	}
+	for _, existing := range m.proposalAcquisitions {
+		if existing.VaultID == start.VaultID && existing.ProposalID == start.ProposalID && existing.CredentialKey == start.CredentialKey &&
+			(existing.State == store.AcquisitionQueued || existing.State == store.AcquisitionRunning || existing.State == store.AcquisitionAwaitingUser) {
+			return nil, store.ErrProposalAcquisitionActive
+		}
+	}
+	m.proposalAcquisitionCounter++
+	now := time.Now().UTC()
+	job := &store.ProposalAcquisition{
+		ID: fmt.Sprintf("acquisition-%d", m.proposalAcquisitionCounter), VaultID: start.VaultID,
+		ProposalID: start.ProposalID, CredentialKey: start.CredentialKey, Attempt: m.proposalAcquisitionCounter,
+		HandlerID: start.HandlerID, HandlerGeneration: handler.Generation, Profile: start.Profile, Mode: start.Mode,
+		State: store.AcquisitionQueued, ContextBindingID: *proposalRow.ContextBindingID, CreatedAt: now, UpdatedAt: now,
+	}
+	m.proposalAcquisitions[job.ID] = job
+	copy := *job
+	return &copy, nil
+}
+
+func (m *mockStore) GetProposalAcquisition(_ context.Context, vaultID string, proposalID int, credentialKey string) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	var latest *store.ProposalAcquisition
+	for _, job := range m.proposalAcquisitions {
+		if job.VaultID == vaultID && job.ProposalID == proposalID && job.CredentialKey == credentialKey && (latest == nil || job.Attempt > latest.Attempt) {
+			copy := *job
+			latest = &copy
+		}
+	}
+	if latest == nil {
+		return nil, sql.ErrNoRows
+	}
+	return latest, nil
+}
+
+func (m *mockStore) GetProposalAcquisitionByID(_ context.Context, id string) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	if m.proposalAcquisitionByIDFailures > 0 {
+		m.proposalAcquisitionByIDFailures--
+		if m.proposalAcquisitionByIDFailure != nil {
+			select {
+			case m.proposalAcquisitionByIDFailure <- struct{}{}:
+			default:
+			}
+		}
+		return nil, errors.New("transient acquisition lookup failure")
+	}
+	job := m.proposalAcquisitions[id]
+	if job == nil {
+		return nil, sql.ErrNoRows
+	}
+	copy := *job
+	return &copy, nil
+}
+
+func (m *mockStore) ListProposalAcquisitions(_ context.Context, vaultID string, proposalID int) ([]store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	var jobs []store.ProposalAcquisition
+	for _, job := range m.proposalAcquisitions {
+		if job.VaultID == vaultID && job.ProposalID == proposalID {
+			jobs = append(jobs, *job)
+		}
+	}
+	slices.SortFunc(jobs, func(a, b store.ProposalAcquisition) int { return strings.Compare(a.ID, b.ID) })
+	return jobs, nil
+}
+
+func (m *mockStore) MarkProposalAcquisitionRunning(_ context.Context, id string) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	job := m.proposalAcquisitions[id]
+	if job == nil {
+		return nil, sql.ErrNoRows
+	}
+	handler := m.acquisitionHandlers[job.HandlerID]
+	if handler == nil || !handler.Enabled || handler.Generation != job.HandlerGeneration {
+		return nil, store.ErrAcquisitionHandlerUnavailable
+	}
+	if job.State != store.AcquisitionQueued {
+		return nil, store.ErrProposalAcquisitionStateConflict
+	}
+	now := time.Now().UTC()
+	job.State, job.StartedAt, job.UpdatedAt = store.AcquisitionRunning, &now, now
+	copy := *job
+	return &copy, nil
+}
+
+func (m *mockStore) MarkProposalAcquisitionAwaitingUser(_ context.Context, id string, ticketHash []byte, expiresAt time.Time) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	job := m.proposalAcquisitions[id]
+	if job == nil || job.State != store.AcquisitionRunning {
+		return nil, store.ErrProposalAcquisitionStateConflict
+	}
+	now := time.Now().UTC()
+	job.State, job.ContinuationTicketHash, job.ContinuationExpiresAt, job.UpdatedAt =
+		store.AcquisitionAwaitingUser, append([]byte(nil), ticketHash...), &expiresAt, now
+	copy := *job
+	return &copy, nil
+}
+
+func (m *mockStore) CompleteProposalAcquisition(_ context.Context, id string, credential store.EncryptedCredential, source string, expiresAt *time.Time) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	job := m.proposalAcquisitions[id]
+	if job == nil || job.State != store.AcquisitionRunning {
+		return nil, store.ErrProposalAcquisitionStateConflict
+	}
+	return m.completeProposalAcquisitionLocked(job, credential, source, expiresAt), nil
+}
+
+func (m *mockStore) CompleteProposalAcquisitionContinuation(_ context.Context, ticketHash []byte, credential store.EncryptedCredential, source string, expiresAt *time.Time) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	for _, job := range m.proposalAcquisitions {
+		if job.State == store.AcquisitionAwaitingUser && bytes.Equal(job.ContinuationTicketHash, ticketHash) &&
+			job.ContinuationUsedAt == nil && job.ContinuationExpiresAt != nil && job.ContinuationExpiresAt.After(time.Now()) {
+			now := time.Now().UTC()
+			job.ContinuationUsedAt = &now
+			return m.completeProposalAcquisitionLocked(job, credential, source, expiresAt), nil
+		}
+	}
+	return nil, store.ErrProposalAcquisitionContinuationUnavailable
+}
+
+func (m *mockStore) completeProposalAcquisitionLocked(job *store.ProposalAcquisition, credential store.EncryptedCredential, source string, expiresAt *time.Time) *store.ProposalAcquisition {
+	now := time.Now().UTC()
+	job.State, job.Source, job.CredentialExpiresAt, job.CompletedAt, job.UpdatedAt =
+		store.AcquisitionSucceeded, source, expiresAt, &now, now
+	m.proposalAcquisitionSecrets[fmt.Sprintf("%s:%d:%s", job.VaultID, job.ProposalID, job.CredentialKey)] = credential
+	copy := *job
+	return &copy
+}
+
+func (m *mockStore) CancelProposalAcquisition(_ context.Context, vaultID string, proposalID int, credentialKey string) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	var latest *store.ProposalAcquisition
+	for _, job := range m.proposalAcquisitions {
+		if job.VaultID == vaultID && job.ProposalID == proposalID && job.CredentialKey == credentialKey && (latest == nil || job.Attempt > latest.Attempt) {
+			latest = job
+		}
+	}
+	if latest == nil {
+		return nil, sql.ErrNoRows
+	}
+	return m.cancelProposalAcquisitionLocked(latest)
+}
+
+func (m *mockStore) CancelProposalAcquisitionByID(_ context.Context, id string) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	job := m.proposalAcquisitions[id]
+	if job == nil {
+		return nil, sql.ErrNoRows
+	}
+	return m.cancelProposalAcquisitionLocked(job)
+}
+
+func (m *mockStore) cancelProposalAcquisitionLocked(job *store.ProposalAcquisition) (*store.ProposalAcquisition, error) {
+	if job.State != store.AcquisitionQueued && job.State != store.AcquisitionRunning && job.State != store.AcquisitionAwaitingUser {
+		return nil, store.ErrProposalAcquisitionStateConflict
+	}
+	now := time.Now().UTC()
+	job.State, job.CompletedAt, job.UpdatedAt = store.AcquisitionCancelled, &now, now
+	copy := *job
+	return &copy, nil
+}
+
+func (m *mockStore) FailProposalAcquisition(_ context.Context, id, errorCode string) (*store.ProposalAcquisition, error) {
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	job := m.proposalAcquisitions[id]
+	if job == nil || (job.State != store.AcquisitionQueued && job.State != store.AcquisitionRunning && job.State != store.AcquisitionAwaitingUser) {
+		return nil, store.ErrProposalAcquisitionStateConflict
+	}
+	now := time.Now().UTC()
+	job.State, job.ErrorCode, job.CompletedAt, job.UpdatedAt = store.AcquisitionFailed, errorCode, &now, now
+	copy := *job
+	return &copy, nil
+}
+
+func (m *mockStore) CreateProposalWithContext(ctx context.Context, vaultID, sessionID, contextBindingID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]store.EncryptedCredential) (*store.Proposal, error) {
+	if m.createProposalWithContextErr != nil {
+		return nil, m.createProposalWithContextErr
+	}
+	binding, err := m.GetContextBinding(ctx, contextBindingID)
+	if err != nil {
+		return nil, err
+	}
+	if binding.RetiredAt != nil {
+		return nil, fmt.Errorf("context binding retired")
+	}
+	created, err := m.CreateProposal(ctx, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage, credentials)
+	if err != nil {
+		return nil, err
+	}
+	id := contextBindingID
+	created.ContextBindingID = &id
+	items := m.proposals[vaultID]
+	items[len(items)-1] = *created
+	m.proposals[vaultID] = items
+	return created, nil
+}
+
 func (m *mockStore) GetProposal(_ context.Context, vaultID string, id int) (*store.Proposal, error) {
+	if m.getProposalErr != nil {
+		return nil, m.getProposalErr
+	}
 	for _, cs := range m.proposals[vaultID] {
 		if cs.ID == id {
 			return &cs, nil
 		}
 	}
-	return nil, fmt.Errorf("not found")
+	return nil, sql.ErrNoRows
 }
 
 func (m *mockStore) ListProposals(_ context.Context, vaultID, status string) ([]store.Proposal, error) {
@@ -366,10 +725,22 @@ func (m *mockStore) UpdateProposalStatus(_ context.Context, vaultID string, id i
 }
 
 func (m *mockStore) GetProposalCredentials(_ context.Context, vaultID string, proposalID int) (map[string]store.EncryptedCredential, error) {
-	return map[string]store.EncryptedCredential{}, nil
+	m.acquisitionMu.Lock()
+	defer m.acquisitionMu.Unlock()
+	result := make(map[string]store.EncryptedCredential)
+	prefix := fmt.Sprintf("%s:%d:", vaultID, proposalID)
+	for composite, credential := range m.proposalAcquisitionSecrets {
+		if strings.HasPrefix(composite, prefix) {
+			result[strings.TrimPrefix(composite, prefix)] = credential
+		}
+	}
+	return result, nil
 }
 
 func (m *mockStore) ApplyProposal(_ context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string, _ []store.OAuthCredentialConfig) error {
+	if m.applyProposalErr != nil {
+		return m.applyProposalErr
+	}
 	// Update proposal status to applied.
 	css := m.proposals[vaultID]
 	for i, cs := range css {
@@ -391,9 +762,9 @@ func (m *mockStore) ExpirePendingProposals(_ context.Context, before time.Time) 
 	return 0, nil
 }
 
-func (m *mockStore) Close() error                                     { return nil }
-func (m *mockStore) Ping(_ context.Context) error                      { return nil }
-func (m *mockStore) DialectName() string                               { return "sqlite" }
+func (m *mockStore) Close() error                                         { return nil }
+func (m *mockStore) Ping(_ context.Context) error                         { return nil }
+func (m *mockStore) DialectName() string                                  { return "sqlite" }
 func (m *mockStore) GetCAState(_ context.Context) (*store.CAState, error) { return nil, nil }
 func (m *mockStore) SetCAState(_ context.Context, _ *store.CAState) error { return nil }
 
@@ -1140,6 +1511,24 @@ func (m *mockStore) SetVaultSetting(_ context.Context, vaultID, key, value strin
 	return nil
 }
 
+func (m *mockStore) SetVaultAcquisitionPolicy(ctx context.Context, vaultID string, policy store.VaultAcquisitionPolicy) error {
+	if hook := m.setAcquisitionPolicyHook; hook != nil {
+		m.setAcquisitionPolicyHook = nil
+		hook()
+	}
+	for _, id := range policy.EnabledHandlers {
+		handler, ok := m.acquisitionHandlers[id]
+		if !ok || !handler.Enabled || !containsExact(handler.AllowedVaults, vaultID) {
+			return store.ErrAcquisitionPolicyHandlerUnavailable
+		}
+	}
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		return err
+	}
+	return m.SetVaultSetting(ctx, vaultID, store.VaultSettingCredentialAcquisitionPolicy, string(raw))
+}
+
 func (m *mockStore) DeleteVaultSetting(_ context.Context, vaultID, key string) error {
 	if vs, ok := m.vaultSettings[vaultID]; ok {
 		delete(vs, key)
@@ -1824,6 +2213,203 @@ func setupMockStoreWithSession(t *testing.T) (*mockStore, string) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	return ms, sess.ID
+}
+
+func testHandlerRegistrationBody(t *testing.T, executablePath, digest string, extras map[string]any) string {
+	t.Helper()
+	body := map[string]any{
+		"id":                 "github-cli",
+		"kind":               "executable",
+		"executable_path":    executablePath,
+		"sha256":             digest,
+		"signing_identity":   "",
+		"allowed_keys":       []string{"GITHUB_TOKEN"},
+		"allowed_vaults":     []string{"root-ns-id"},
+		"allowed_profiles":   []string{"github.com"},
+		"timeout_seconds":    10,
+		"output_limit_bytes": 65536,
+	}
+	for key, value := range extras {
+		body[key] = value
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func testExecutableAndSHA256(t *testing.T) (string, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "provider")
+	content := []byte("test-provider-binary")
+	if err := os.WriteFile(path, content, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(content)
+	return path, hex.EncodeToString(digest[:])
+}
+
+func TestAcquisitionHandlerOwnerLifecycle(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+	path, digest := testExecutableAndSHA256(t)
+
+	register := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers", strings.NewReader(testHandlerRegistrationBody(t, path, digest, nil)))
+	register.Header.Set("Authorization", "Bearer "+ownerToken)
+	registerRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(registerRec, register)
+	if registerRec.Code != http.StatusCreated {
+		t.Fatalf("register status=%d body=%s", registerRec.Code, registerRec.Body.String())
+	}
+	if ms.acquisitionHandlers["github-cli"] == nil || ms.acquisitionHandlers["github-cli"].Enabled {
+		t.Fatalf("registered handler must exist disabled: %+v", ms.acquisitionHandlers["github-cli"])
+	}
+
+	list := httptest.NewRequest(http.MethodGet, "/v1/admin/handlers", nil)
+	list.Header.Set("Authorization", "Bearer "+ownerToken)
+	listRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(listRec, list)
+	if listRec.Code != http.StatusOK || !strings.Contains(listRec.Body.String(), `"id":"github-cli"`) {
+		t.Fatalf("list status=%d body=%s", listRec.Code, listRec.Body.String())
+	}
+
+	show := httptest.NewRequest(http.MethodGet, "/v1/admin/handlers/github-cli", nil)
+	show.Header.Set("Authorization", "Bearer "+ownerToken)
+	showRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(showRec, show)
+	if showRec.Code != http.StatusOK || !strings.Contains(showRec.Body.String(), `"enabled":false`) {
+		t.Fatalf("show status=%d body=%s", showRec.Code, showRec.Body.String())
+	}
+
+	verify := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers/github-cli/verify", strings.NewReader(`{}`))
+	verify.Header.Set("Authorization", "Bearer "+ownerToken)
+	verifyRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(verifyRec, verify)
+	if verifyRec.Code != http.StatusOK || !ms.acquisitionHandlers["github-cli"].Enabled {
+		t.Fatalf("verify status=%d body=%s handler=%+v", verifyRec.Code, verifyRec.Body.String(), ms.acquisitionHandlers["github-cli"])
+	}
+
+	disable := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers/github-cli/disable", strings.NewReader(`{}`))
+	disable.Header.Set("Authorization", "Bearer "+ownerToken)
+	disableRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(disableRec, disable)
+	if disableRec.Code != http.StatusOK || ms.acquisitionHandlers["github-cli"].Enabled {
+		t.Fatalf("disable status=%d body=%s handler=%+v", disableRec.Code, disableRec.Body.String(), ms.acquisitionHandlers["github-cli"])
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/v1/admin/handlers/github-cli", nil)
+	deleteReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	deleteRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK || ms.acquisitionHandlers["github-cli"] != nil {
+		t.Fatalf("delete status=%d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+}
+
+func TestAcquisitionHandlerRegistryIsOwnerOnlyAndStrict(t *testing.T) {
+	ms, _ := setupMockStoreWithSession(t)
+	memberToken := setupMemberSession(t, ms, "root-ns-id")
+	srv := newTestServer(withStore(ms))
+	path, digest := testExecutableAndSHA256(t)
+
+	memberReq := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers", strings.NewReader(testHandlerRegistrationBody(t, path, digest, nil)))
+	memberReq.Header.Set("Authorization", "Bearer "+memberToken)
+	memberRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(memberRec, memberReq)
+	if memberRec.Code != http.StatusForbidden {
+		t.Fatalf("member register status=%d body=%s", memberRec.Code, memberRec.Body.String())
+	}
+
+	ownerMS, ownerToken := setupMockStoreWithSession(t)
+	ownerSrv := newTestServer(withStore(ownerMS))
+	strictReq := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers", strings.NewReader(testHandlerRegistrationBody(t, path, digest, map[string]any{"enabled": true})))
+	strictReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	strictRec := httptest.NewRecorder()
+	ownerSrv.httpServer.Handler.ServeHTTP(strictRec, strictReq)
+	if strictRec.Code != http.StatusBadRequest || len(ownerMS.acquisitionHandlers) != 0 {
+		t.Fatalf("unknown enabled field status=%d body=%s", strictRec.Code, strictRec.Body.String())
+	}
+}
+
+func TestAcquisitionHandlerVerifyHashMismatchFailsClosed(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+	path, _ := testExecutableAndSHA256(t)
+	body := testHandlerRegistrationBody(t, path, strings.Repeat("0", 64), nil)
+	register := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers", strings.NewReader(body))
+	register.Header.Set("Authorization", "Bearer "+ownerToken)
+	registerRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(registerRec, register)
+	if registerRec.Code != http.StatusCreated {
+		t.Fatalf("register status=%d body=%s", registerRec.Code, registerRec.Body.String())
+	}
+
+	verify := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers/github-cli/verify", strings.NewReader(`{}`))
+	verify.Header.Set("Authorization", "Bearer "+ownerToken)
+	verifyRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(verifyRec, verify)
+	if verifyRec.Code != http.StatusConflict || ms.acquisitionHandlers["github-cli"].Enabled {
+		t.Fatalf("verify mismatch status=%d body=%s handler=%+v", verifyRec.Code, verifyRec.Body.String(), ms.acquisitionHandlers["github-cli"])
+	}
+	if strings.Contains(verifyRec.Body.String(), path) {
+		t.Fatalf("verification response leaked executable path: %s", verifyRec.Body.String())
+	}
+}
+
+func TestAcquisitionHandlerActionsRejectJSONNull(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	handler := store.AcquisitionHandler{
+		ID: "github-cli", Kind: "executable", ExecutablePath: "/opt/homebrew/bin/gh",
+		SHA256: strings.Repeat("a", 64), AllowedKeys: []string{"GITHUB_TOKEN"},
+		AllowedVaults: []string{"root-ns-id"}, AllowedProfiles: []string{"github.com"},
+		TimeoutSeconds: 10, OutputLimitBytes: 65536,
+	}
+	if _, err := ms.CreateAcquisitionHandler(context.Background(), handler); err != nil {
+		t.Fatal(err)
+	}
+	srv := newTestServer(withStore(ms))
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers/github-cli/disable", strings.NewReader(`null`))
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want=400 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAcquisitionHandlerVerifyCannotEnableReplacementGeneration(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	path, digest := testExecutableAndSHA256(t)
+	handler := store.AcquisitionHandler{
+		ID: "github-cli", Kind: "executable", ExecutablePath: path, SHA256: digest,
+		AllowedKeys: []string{"GITHUB_TOKEN"}, AllowedVaults: []string{"root-ns-id"},
+		AllowedProfiles: []string{"github.com"}, TimeoutSeconds: 10, OutputLimitBytes: 65536,
+	}
+	first, err := ms.CreateAcquisitionHandler(context.Background(), handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms.setHandlerGenerationHook = func() {
+		delete(ms.acquisitionHandlers, handler.ID)
+		replacement := handler
+		replacement.SHA256 = strings.Repeat("b", 64)
+		if _, err := ms.CreateAcquisitionHandler(context.Background(), replacement); err != nil {
+			t.Errorf("create replacement: %v", err)
+		}
+	}
+	srv := newTestServer(withStore(ms))
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/handlers/github-cli/verify", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"handler_changed"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	replacement := ms.acquisitionHandlers[handler.ID]
+	if replacement == nil || replacement.Generation == first.Generation || replacement.Enabled {
+		t.Fatalf("replacement was enabled or generation not replaced: first=%+v replacement=%+v", first, replacement)
+	}
 }
 
 func TestCredentialsSetSuccess(t *testing.T) {
@@ -2727,6 +3313,234 @@ func TestProposalCreateSuccess(t *testing.T) {
 	}
 }
 
+const testServerContextBindingID = "av_ctx_01JQ6T9J2WR8MVB7F2K4N6P8RA"
+
+func seedProposalContextBinding(ms *mockStore, retired bool) {
+	binding := &store.ContextBinding{
+		ID: testServerContextBindingID,
+		Tuple: contextbinding.Tuple{
+			OriginType:                          contextbinding.OriginCodex,
+			OriginCodexThreadID:                 "01a026f1-a339-77c3-bbc1-a0071b64171c",
+			OriginCodexSessionID:                "01a026f1-a339-77c3-bbc1-a0071b64171c",
+			PerplexityProjectID:                 "9ee48ba0-ff1c-4792-aa10-cb95748ae537",
+			RegisteredPersonalComputerMachineID: "7807737D-53A7-5792-BFCB-AC25AD2441F8",
+			RuntimeDeviceID:                     "macos:7807737D-53A7-5792-BFCB-AC25AD2441F8",
+			WorkspaceRoot:                       "/Users/pv/zbst-tech",
+		},
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if retired {
+		now := time.Now()
+		binding.RetiredAt = &now
+	}
+	ms.contextBindings[binding.ID] = binding
+}
+
+func acquisitionProposalBody(contextJSON string) string {
+	return `{
+		"credentials": [{"action":"set","key":"GITHUB_TOKEN","type":"static","acquisition":{"handler":"github-cli","profile":"github.com","mode":"native"}}],
+		"message": "acquire GitHub token"` + contextJSON + `
+	}`
+}
+
+func TestProposalCreateAcquisitionDisabledByDefault(t *testing.T) {
+	srv, ms, token := setupProposalTest(t)
+	seedProposalContextBinding(ms, false)
+	body := acquisitionProposalBody(`,"context_binding":{"context_binding_id":"` + testServerContextBindingID + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/proposals", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "disabled") {
+		t.Fatalf("expected disabled-by-default rejection, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProposalCreateAcquisitionRequiresContextBinding(t *testing.T) {
+	srv, ms, token := setupProposalTest(t)
+	ms.settings[settingCredentialAcquisitionEnabled] = "true"
+	body := acquisitionProposalBody("")
+	req := httptest.NewRequest(http.MethodPost, "/v1/proposals", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "context_binding") {
+		t.Fatalf("expected missing context-binding rejection, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProposalCreateAcquisitionRejectsUnknownAndRetiredContextBindings(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		retired bool
+		seed    bool
+	}{
+		{name: "unknown"},
+		{name: "retired", seed: true, retired: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, ms, token := setupProposalTest(t)
+			ms.settings[settingCredentialAcquisitionEnabled] = "true"
+			if tc.seed {
+				seedProposalContextBinding(ms, tc.retired)
+			}
+			body := acquisitionProposalBody(`,"context_binding":{"context_binding_id":"` + testServerContextBindingID + `"}`)
+			req := httptest.NewRequest(http.MethodPost, "/v1/proposals", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+token)
+			rec := httptest.NewRecorder()
+
+			srv.httpServer.Handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "context binding") {
+				t.Fatalf("expected invalid context-binding rejection, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestProposalCreateAcquisitionRejectsTupleAuthorship(t *testing.T) {
+	for _, contextJSON := range []string{
+		`,"context_binding":{"context_binding_id":"` + testServerContextBindingID + `","runtime_device_id":"override"}`,
+		`,"context_binding":{"context_binding_id":"` + testServerContextBindingID + `"},"registered_personal_computer_machine_id":"override"`,
+	} {
+		t.Run(contextJSON, func(t *testing.T) {
+			srv, ms, token := setupProposalTest(t)
+			ms.settings[settingCredentialAcquisitionEnabled] = "true"
+			seedProposalContextBinding(ms, false)
+			req := httptest.NewRequest(http.MethodPost, "/v1/proposals", strings.NewReader(acquisitionProposalBody(contextJSON)))
+			req.Header.Set("Authorization", "Bearer "+token)
+			rec := httptest.NewRecorder()
+
+			srv.httpServer.Handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected tuple-authorship rejection, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestProposalCreateRequestRejectsDuplicateAndNonCanonicalContextFields(t *testing.T) {
+	for _, raw := range []string{
+		`{"credentials":[],"context_binding":{"context_binding_id":"` + testServerContextBindingID + `"},"context_binding":{"context_binding_id":"` + testServerContextBindingID + `"}}`,
+		`{"credentials":[],"Context_Binding":{"context_binding_id":"` + testServerContextBindingID + `"}}`,
+		`{"credentials":[],"context_binding":{"Context_Binding_ID":"` + testServerContextBindingID + `"}}`,
+	} {
+		var req proposalCreateRequest
+		if err := json.Unmarshal([]byte(raw), &req); err == nil {
+			t.Errorf("expected ambiguous context JSON to be rejected: %s", raw)
+		}
+	}
+}
+
+func TestProposalCreateRequestAllowsUnknownTopLevelFieldsForCompatibility(t *testing.T) {
+	var req proposalCreateRequest
+	err := json.Unmarshal([]byte(`{
+		"credentials":[],
+		"future_extension":{"version":2},
+		"context_binding":{"context_binding_id":"`+testServerContextBindingID+`"}
+	}`), &req)
+	if err != nil {
+		t.Fatalf("unknown non-context top-level fields were previously ignored and must remain compatible: %v", err)
+	}
+}
+
+func TestProposalCreateContextStoreErrorMapping(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		storeErr   error
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "binding race", storeErr: store.ErrContextBindingInactive, wantStatus: http.StatusConflict, wantCode: "context_binding_inactive"},
+		{name: "database failure", storeErr: errors.New("database contains SENTINEL_INTERNAL_DETAIL"), wantStatus: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, ms, token := setupProposalTest(t)
+			ms.settings[settingCredentialAcquisitionEnabled] = "true"
+			seedProposalContextBinding(ms, false)
+			ms.createProposalWithContextErr = tc.storeErr
+			body := acquisitionProposalBody(`,"context_binding":{"context_binding_id":"` + testServerContextBindingID + `"}`)
+			req := httptest.NewRequest(http.MethodPost, "/v1/proposals", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+token)
+			rec := httptest.NewRecorder()
+			srv.httpServer.Handler.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status=%d want=%d body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if tc.wantCode != "" && !strings.Contains(rec.Body.String(), tc.wantCode) {
+				t.Fatalf("missing safe conflict code %q: %s", tc.wantCode, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), "SENTINEL_INTERNAL_DETAIL") {
+				t.Fatalf("internal store error leaked: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestProposalCreateContextLookupFailureIsInternal(t *testing.T) {
+	srv, ms, token := setupProposalTest(t)
+	ms.settings[settingCredentialAcquisitionEnabled] = "true"
+	seedProposalContextBinding(ms, false)
+	ms.getContextBindingErr = errors.New("lookup SENTINEL_CONTEXT_LOOKUP_DETAIL")
+	body := acquisitionProposalBody(`,"context_binding":{"context_binding_id":"` + testServerContextBindingID + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/proposals", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d want=500 body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "SENTINEL_CONTEXT_LOOKUP_DETAIL") {
+		t.Fatalf("context lookup error leaked: %s", rec.Body.String())
+	}
+}
+
+func TestProposalCreateAcquisitionWithContextBinding(t *testing.T) {
+	srv, ms, token := setupProposalTest(t)
+	ms.settings[settingCredentialAcquisitionEnabled] = "true"
+	seedProposalContextBinding(ms, false)
+	body := acquisitionProposalBody(`,"context_binding":{"context_binding_id":"` + testServerContextBindingID + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/proposals", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var createResponse map[string]interface{}
+	_ = json.NewDecoder(rec.Body).Decode(&createResponse)
+	if createResponse["context_binding_id"] != testServerContextBindingID {
+		t.Fatalf("create response lost context binding: %v", createResponse)
+	}
+	created := ms.proposals["root-ns-id"][0]
+	if created.ContextBindingID == nil || *created.ContextBindingID != testServerContextBindingID {
+		t.Fatalf("proposal was not context-bound: %+v", created)
+	}
+	if strings.Contains(created.CredentialsJSON, "runtime_device_id") || strings.Contains(created.CredentialsJSON, "machine_id") {
+		t.Fatalf("tuple metadata leaked into proposal credentials: %s", created.CredentialsJSON)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/proposals/1", nil)
+	getReq.Header.Set("Authorization", "Bearer "+token)
+	getRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(getRec, getReq)
+	var getResponse map[string]interface{}
+	_ = json.NewDecoder(getRec.Body).Decode(&getResponse)
+	if getResponse["context_binding_id"] != testServerContextBindingID {
+		t.Fatalf("get response lost context binding: %v", getResponse)
+	}
+}
+
 func TestProposalCreateRequiresScopedSession(t *testing.T) {
 	ms := newMockStore()
 	ms.proposals = make(map[string][]store.Proposal)
@@ -3011,6 +3825,69 @@ func setupAdminProposalTest(t *testing.T) (*Server, *mockStore, string) {
 	}
 
 	return srv, ms, adminSess.ID
+}
+
+func TestAdminProposalResponsesIncludeOnlyOpaqueContextBindingID(t *testing.T) {
+	srv, ms, token := setupAdminProposalTest(t)
+	id := testServerContextBindingID
+	items := ms.proposals["root-ns-id"]
+	items[0].ContextBindingID = &id
+	ms.proposals["root-ns-id"] = items
+
+	for _, path := range []string{
+		"/v1/admin/proposals/1?vault=default",
+		"/v1/admin/proposals?vault=default",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", path, rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, `"context_binding_id":"`+testServerContextBindingID+`"`) {
+			t.Fatalf("%s lost opaque context binding: %s", path, body)
+		}
+		for _, forbidden := range []string{"runtime_device_id", "registered_personal_computer_machine_id", "perplexity_project_id", "origin_codex_thread_id"} {
+			if strings.Contains(body, forbidden) {
+				t.Fatalf("%s leaked tuple field %q: %s", path, forbidden, body)
+			}
+		}
+	}
+}
+
+func TestAdminProposalApproveStoreErrorMapping(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		storeErr   error
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "state race", storeErr: store.ErrProposalStateConflict, wantStatus: http.StatusConflict, wantCode: "proposal_state_conflict"},
+		{name: "binding retired", storeErr: store.ErrContextBindingInactive, wantStatus: http.StatusConflict, wantCode: "context_binding_inactive"},
+		{name: "database failure", storeErr: errors.New("database SENTINEL_APPLY_DETAIL"), wantStatus: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, ms, token := setupAdminProposalTest(t)
+			ms.applyProposalErr = tc.storeErr
+			body := `{"vault":"default","credentials":{"MY_KEY":"value"}}`
+			req := httptest.NewRequest(http.MethodPost, "/v1/admin/proposals/1/approve", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+token)
+			rec := httptest.NewRecorder()
+			srv.httpServer.Handler.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status=%d want=%d body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if tc.wantCode != "" && !strings.Contains(rec.Body.String(), tc.wantCode) {
+				t.Fatalf("missing safe code %q: %s", tc.wantCode, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), "SENTINEL_APPLY_DETAIL") {
+				t.Fatalf("internal store error leaked: %s", rec.Body.String())
+			}
+		})
+	}
 }
 
 func TestAdminProposalApproveSuccess(t *testing.T) {
@@ -5154,6 +6031,9 @@ func TestSettingsGetIncludesInviteOnly(t *testing.T) {
 	if resp["smtp_configured"] != false {
 		t.Fatalf("expected smtp_configured=false (nil notifier), got %v", resp["smtp_configured"])
 	}
+	if resp["credential_acquisition_enabled"] != false {
+		t.Fatalf("expected credential acquisition to default false, got %v", resp["credential_acquisition_enabled"])
+	}
 }
 
 func TestSettingsGetIncludesSMTPConfigured(t *testing.T) {
@@ -5214,6 +6094,34 @@ func TestSettingsSetInviteOnly(t *testing.T) {
 	json.NewDecoder(rec.Body).Decode(&resp)
 	if resp["invite_only"] != true {
 		t.Fatalf("expected invite_only=true in response, got %v", resp["invite_only"])
+	}
+}
+
+func TestSettingsSetCredentialAcquisitionEnabled(t *testing.T) {
+	ms := setupMockStoreWithUser(t, "owner@test.com", "owner-password-123")
+	srv := newTestServer(withStore(ms))
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(`{"email":"owner@test.com","password":"owner-password-123"}`))
+	loginRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(loginRec, loginReq)
+	var loginResp loginResponse
+	_ = json.NewDecoder(loginRec.Body).Decode(&loginResp)
+
+	req := httptest.NewRequest(http.MethodPut, "/v1/admin/settings", strings.NewReader(`{"credential_acquisition_enabled":true}`))
+	req.Header.Set("Authorization", "Bearer "+loginResp.Token)
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if ms.settings[settingCredentialAcquisitionEnabled] != "true" {
+		t.Fatalf("expected setting true, got %q", ms.settings[settingCredentialAcquisitionEnabled])
+	}
+	var resp map[string]interface{}
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["credential_acquisition_enabled"] != true {
+		t.Fatalf("expected response true, got %v", resp["credential_acquisition_enabled"])
 	}
 }
 

@@ -19,7 +19,6 @@ const (
 	MaxObtainInstructionsLen = 1000
 )
 
-
 // ValidateMessages checks length limits for proposal-level message fields.
 func ValidateMessages(message, userMessage string) error {
 	if len(message) > MaxMessageLen {
@@ -33,6 +32,18 @@ func ValidateMessages(message, userMessage string) error {
 
 // Validate checks that a proposal is well-formed.
 func Validate(services []Service, credentials []CredentialSlot) error {
+	return ValidateWithOptions(services, credentials, ValidationOptions{})
+}
+
+// ValidationOptions contains server-owned feature gates that must not be
+// controlled by proposal input.
+type ValidationOptions struct {
+	CredentialAcquisitionEnabled bool
+}
+
+// ValidateWithOptions checks that a proposal is well-formed under the supplied
+// server-owned feature gates.
+func ValidateWithOptions(services []Service, credentials []CredentialSlot, options ValidationOptions) error {
 	if len(services) == 0 && len(credentials) == 0 {
 		return fmt.Errorf("at least one service or credential is required")
 	}
@@ -144,6 +155,27 @@ func Validate(services []Service, credentials []CredentialSlot) error {
 		}
 		if len(c.ObtainInstructions) > MaxObtainInstructionsLen {
 			return fmt.Errorf("credential slot %q: obtain_instructions too long (max %d characters)", c.Key, MaxObtainInstructionsLen)
+		}
+
+		if c.Acquisition != nil {
+			if !options.CredentialAcquisitionEnabled {
+				return fmt.Errorf("credential slot %q: credential acquisition is disabled", c.Key)
+			}
+			if c.Action == ActionDelete {
+				return fmt.Errorf("credential slot %q: acquisition must not be set for delete actions", c.Key)
+			}
+			if c.Value != nil {
+				return fmt.Errorf("credential slot %q: acquisition and value are mutually exclusive", c.Key)
+			}
+			if c.HasValue {
+				return fmt.Errorf("credential slot %q: acquisition and has_value are mutually exclusive", c.Key)
+			}
+			if c.Type == "oauth" || c.OAuth != nil {
+				return fmt.Errorf("credential slot %q: acquisition and oauth are mutually exclusive", c.Key)
+			}
+			if err := c.Acquisition.validate(); err != nil {
+				return fmt.Errorf("credential slot %q: %w", c.Key, err)
+			}
 		}
 
 		if c.Type != "" && c.Type != "static" && c.Type != "oauth" {

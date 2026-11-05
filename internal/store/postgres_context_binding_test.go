@@ -1,0 +1,291 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Infisical/agent-vault/internal/contextbinding"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+func TestPostgresAcquisitionHandlerMigrationAndSQLiteCopy(t *testing.T) {
+	databaseURL := os.Getenv("AGENT_VAULT_TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("set AGENT_VAULT_TEST_POSTGRES_URL to run PostgreSQL handler tests")
+	}
+
+	dst, err := openPostgres(databaseURL)
+	if err != nil {
+		t.Fatalf("open Postgres: %v", err)
+	}
+	defer dst.Close()
+
+	src := openTestDB(t)
+	handler := testAcquisitionHandler()
+	handler.ID = "pg-handler-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+	if _, err := src.CreateAcquisitionHandler(context.Background(), handler); err != nil {
+		t.Fatalf("create source handler: %v", err)
+	}
+	if err := src.SetAcquisitionHandlerEnabled(context.Background(), handler.ID, true); err != nil {
+		t.Fatalf("enable source handler: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = dst.DeleteAcquisitionHandler(context.Background(), handler.ID)
+	})
+
+	tx, err := dst.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if copied, err := copyAcquisitionHandlers(context.Background(), src, tx, dst.dialect); err != nil || copied != 1 {
+		t.Fatalf("copyAcquisitionHandlers copied=%d err=%v", copied, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := dst.GetAcquisitionHandler(context.Background(), handler.ID)
+	if err != nil {
+		t.Fatalf("get copied handler: %v", err)
+	}
+	if !got.Enabled || got.ExecutablePath != handler.ExecutablePath || got.SHA256 != handler.SHA256 {
+		t.Fatalf("PostgreSQL handler mismatch: %+v", got)
+	}
+}
+
+func TestPostgresContextBindingRetirementWaitsForProposalLock(t *testing.T) {
+	databaseURL := os.Getenv("AGENT_VAULT_TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("set AGENT_VAULT_TEST_POSTGRES_URL to run PostgreSQL locking tests")
+	}
+
+	s, err := openPostgres(databaseURL)
+	if err != nil {
+		t.Fatalf("open Postgres: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	machineID := uuid.NewString()
+	binding, err := s.CreateContextBinding(ctx, contextbinding.Tuple{
+		OriginType:                          contextbinding.OriginCodex,
+		OriginCodexThreadID:                 uuid.NewString(),
+		OriginCodexSessionID:                uuid.NewString(),
+		PerplexityProjectID:                 uuid.NewString(),
+		RegisteredPersonalComputerMachineID: machineID,
+		RuntimeDeviceID:                     "macos:" + machineID,
+		WorkspaceRoot:                       "/tmp/agent-vault-postgres-context-test-" + uuid.NewString(),
+	})
+	if err != nil {
+		t.Fatalf("create context binding: %v", err)
+	}
+	vault, err := s.CreateVault(ctx, "pg-context-"+uuid.NewString())
+	if err != nil {
+		t.Fatalf("create vault: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.ExecContext(context.Background(), s.dialect.Rebind("DELETE FROM proposals WHERE vault_id = ?"), vault.ID)
+		_, _ = s.db.ExecContext(context.Background(), s.dialect.Rebind("DELETE FROM context_bindings WHERE id = ?"), binding.ID)
+		_ = s.DeleteVault(context.Background(), vault.Name)
+	})
+
+	// Hold the vault lock that CreateProposalWithContext acquires only after
+	// the binding lock. This exposes the production transaction's binding lock
+	// long enough for the test to probe it and race retirement against it.
+	vaultBlocker, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = vaultBlocker.Rollback() }()
+	var present int
+	if err := vaultBlocker.QueryRowContext(ctx,
+		s.dialect.Rebind("SELECT 1 FROM vaults WHERE id = ? FOR UPDATE"), vault.ID,
+	).Scan(&present); err != nil {
+		t.Fatalf("lock vault: %v", err)
+	}
+
+	proposalDone := make(chan error, 1)
+	go func() {
+		_, err := s.CreateProposalWithContext(ctx, vault.ID, "pg-race-session", binding.ID, "[]", "[]", "race", "", nil)
+		proposalDone <- err
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		probe, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = probe.QueryRowContext(ctx,
+			s.dialect.Rebind("SELECT 1 FROM context_bindings WHERE id = ? FOR UPDATE NOWAIT"), binding.ID,
+		).Scan(&present)
+		_ = probe.Rollback()
+
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+			break
+		}
+		if err != nil {
+			t.Fatalf("probe binding lock: %v", err)
+		}
+		select {
+		case err := <-proposalDone:
+			t.Fatalf("proposal returned before reaching the blocked vault lock: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("proposal never acquired the context-binding lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	retired := make(chan error, 1)
+	go func() {
+		retired <- s.RetireContextBinding(ctx, binding.ID)
+	}()
+
+	select {
+	case err := <-retired:
+		t.Fatalf("retirement completed while proposal transaction held the binding lock: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	if err := vaultBlocker.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-proposalDone:
+		if err != nil {
+			t.Fatalf("CreateProposalWithContext: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("proposal remained blocked after vault lock was released")
+	}
+	select {
+	case err := <-retired:
+		if err != nil {
+			t.Fatalf("retirement after proposal commit: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("retirement remained blocked after proposal transaction committed")
+	}
+}
+
+func TestPostgresContextBindingRetirementWaitsForProposalApply(t *testing.T) {
+	databaseURL := os.Getenv("AGENT_VAULT_TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("set AGENT_VAULT_TEST_POSTGRES_URL to run PostgreSQL locking tests")
+	}
+
+	s, err := openPostgres(databaseURL)
+	if err != nil {
+		t.Fatalf("open Postgres: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	machineID := uuid.NewString()
+	binding, err := s.CreateContextBinding(ctx, contextbinding.Tuple{
+		OriginType:                          contextbinding.OriginCodex,
+		OriginCodexThreadID:                 uuid.NewString(),
+		OriginCodexSessionID:                uuid.NewString(),
+		PerplexityProjectID:                 uuid.NewString(),
+		RegisteredPersonalComputerMachineID: machineID,
+		RuntimeDeviceID:                     "macos:" + machineID,
+		WorkspaceRoot:                       "/tmp/agent-vault-postgres-apply-" + uuid.NewString(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault, err := s.CreateVault(ctx, "pg-apply-"+uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := s.CreateProposalWithContext(ctx, vault.ID, "pg-apply-session", binding.ID, "[]", "[]", "apply race", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.ExecContext(context.Background(), s.dialect.Rebind("DELETE FROM proposals WHERE vault_id = ?"), vault.ID)
+		_, _ = s.db.ExecContext(context.Background(), s.dialect.Rebind("DELETE FROM context_bindings WHERE id = ?"), binding.ID)
+		_ = s.DeleteVault(context.Background(), vault.Name)
+	})
+
+	brokerBlocker, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = brokerBlocker.Rollback() }()
+	var present int
+	if err := brokerBlocker.QueryRowContext(ctx,
+		s.dialect.Rebind("SELECT 1 FROM broker_configs WHERE vault_id = ? FOR UPDATE"), vault.ID,
+	).Scan(&present); err != nil {
+		t.Fatalf("lock broker config: %v", err)
+	}
+
+	applyDone := make(chan error, 1)
+	go func() {
+		applyDone <- s.ApplyProposal(ctx, vault.ID, proposal.ID, `[{"host":"apply.example"}]`, nil, nil, nil)
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		probe, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = probe.QueryRowContext(ctx,
+			s.dialect.Rebind("SELECT 1 FROM context_bindings WHERE id = ? FOR UPDATE NOWAIT"), binding.ID,
+		).Scan(&present)
+		_ = probe.Rollback()
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+			break
+		}
+		if err != nil {
+			t.Fatalf("probe apply binding lock: %v", err)
+		}
+		select {
+		case err := <-applyDone:
+			t.Fatalf("apply returned before reaching blocked broker update: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("apply never acquired the context-binding lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	retired := make(chan error, 1)
+	go func() { retired <- s.RetireContextBinding(ctx, binding.ID) }()
+	select {
+	case err := <-retired:
+		t.Fatalf("retirement completed while apply held the binding lock: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	if err := brokerBlocker.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-applyDone:
+		if err != nil {
+			t.Fatalf("ApplyProposal: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("apply remained blocked after broker lock release")
+	}
+	select {
+	case err := <-retired:
+		if err != nil {
+			t.Fatalf("retirement after apply commit: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("retirement remained blocked after apply committed")
+	}
+}

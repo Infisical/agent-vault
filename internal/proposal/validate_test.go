@@ -1,6 +1,7 @@
 package proposal
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -208,6 +209,197 @@ func TestValidateApiKeyAuth(t *testing.T) {
 	}
 }
 
+func TestValidateCredentialAcquisitionModes(t *testing.T) {
+	for _, mode := range []AcquisitionMode{
+		AcquisitionModeNative,
+		AcquisitionModeGuided,
+		AcquisitionModeOAuth,
+		AcquisitionModeDevice,
+		AcquisitionModeServerPassthrough,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			creds := []CredentialSlot{{
+				Action: ActionSet,
+				Key:    "GITHUB_TOKEN",
+				Type:   "static",
+				Acquisition: &AcquisitionRef{
+					Handler: "github-cli",
+					Profile: "github.com",
+					Mode:    mode,
+				},
+			}}
+			if err := ValidateWithOptions(nil, creds, ValidationOptions{CredentialAcquisitionEnabled: true}); err != nil {
+				t.Fatalf("expected mode %q to be valid, got %v", mode, err)
+			}
+		})
+	}
+}
+
+func TestValidateCredentialAcquisitionConflicts(t *testing.T) {
+	value := "secret"
+	oauth := &OAuthConfig{TokenURL: "https://example.com/token"}
+	valid := func() CredentialSlot {
+		return CredentialSlot{
+			Action:      ActionSet,
+			Key:         "TOKEN",
+			Type:        "static",
+			Acquisition: &AcquisitionRef{Handler: "provider", Profile: "default", Mode: AcquisitionModeNative},
+		}
+	}
+
+	tests := []struct {
+		name string
+		edit func(*CredentialSlot)
+		want string
+	}{
+		{"delete", func(v *CredentialSlot) { v.Action = ActionDelete }, "delete"},
+		{"value", func(v *CredentialSlot) { v.Value = &value }, "value"},
+		{"has value", func(v *CredentialSlot) { v.HasValue = true }, "has_value"},
+		{"oauth type", func(v *CredentialSlot) { v.Type = "oauth" }, "oauth"},
+		{"oauth config", func(v *CredentialSlot) { v.OAuth = oauth }, "oauth"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			credential := valid()
+			tt.edit(&credential)
+			err := ValidateWithOptions(nil, []CredentialSlot{credential}, ValidationOptions{CredentialAcquisitionEnabled: true})
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), tt.want) {
+				t.Fatalf("expected error containing %q, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestValidateCredentialAcquisitionIdentifiers(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler string
+		profile string
+		want    string
+	}{
+		{"empty handler", "", "default", "handler"},
+		{"invalid handler", "../provider", "default", "handler"},
+		{"uppercase handler", "Provider", "default", "handler"},
+		{"empty profile", "provider", "", "profile"},
+		{"invalid profile", "provider", "default profile", "profile"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			credential := CredentialSlot{
+				Action:      ActionSet,
+				Key:         "TOKEN",
+				Acquisition: &AcquisitionRef{Handler: tt.handler, Profile: tt.profile, Mode: AcquisitionModeNative},
+			}
+			err := ValidateWithOptions(nil, []CredentialSlot{credential}, ValidationOptions{CredentialAcquisitionEnabled: true})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected error containing %q, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestValidateCredentialAcquisitionIdentifierBoundaries(t *testing.T) {
+	for _, id := range []string{"a", strings.Repeat("a", 64)} {
+		credential := CredentialSlot{
+			Action:      ActionSet,
+			Key:         "TOKEN",
+			Acquisition: &AcquisitionRef{Handler: id, Profile: id, Mode: AcquisitionModeNative},
+		}
+		if err := ValidateWithOptions(nil, []CredentialSlot{credential}, ValidationOptions{CredentialAcquisitionEnabled: true}); err != nil {
+			t.Errorf("expected identifier length %d to be accepted: %v", len(id), err)
+		}
+	}
+
+	for _, id := range []string{strings.Repeat("a", 65), "-provider", ".provider", "_provider"} {
+		credential := CredentialSlot{
+			Action:      ActionSet,
+			Key:         "TOKEN",
+			Acquisition: &AcquisitionRef{Handler: id, Profile: "default", Mode: AcquisitionModeNative},
+		}
+		if err := ValidateWithOptions(nil, []CredentialSlot{credential}, ValidationOptions{CredentialAcquisitionEnabled: true}); err == nil {
+			t.Errorf("expected identifier %q to be rejected", id)
+		}
+	}
+}
+
+func TestValidateCredentialAcquisitionRejectsUnsupportedAndBrowserModes(t *testing.T) {
+	for _, mode := range []AcquisitionMode{"", "browser", "dom", "browser_dom", "cdp", "native_messaging", "other"} {
+		t.Run(string(mode), func(t *testing.T) {
+			credential := CredentialSlot{
+				Action:      ActionSet,
+				Key:         "TOKEN",
+				Acquisition: &AcquisitionRef{Handler: "provider", Profile: "default", Mode: mode},
+			}
+			if err := ValidateWithOptions(nil, []CredentialSlot{credential}, ValidationOptions{CredentialAcquisitionEnabled: true}); err == nil {
+				t.Fatalf("expected mode %q to be rejected", mode)
+			}
+		})
+	}
+}
+
+func TestAcquisitionRefJSONRejectsUnknownFields(t *testing.T) {
+	for _, field := range []string{"executable", "args", "environment", "selector", "dom_selector", "unknown"} {
+		raw := `{"action":"set","key":"TOKEN","acquisition":{"handler":"provider","profile":"default","mode":"native","` + field + `":"override"}}`
+		var slot CredentialSlot
+		if err := json.Unmarshal([]byte(raw), &slot); err == nil {
+			t.Errorf("expected acquisition field %q to be rejected", field)
+		}
+	}
+}
+
+func TestAcquisitionRefJSONRejectsDuplicateAndNonCanonicalFields(t *testing.T) {
+	for _, raw := range []string{
+		`{"action":"set","key":"TOKEN","acquisition":{"handler":"provider","handler":"other","profile":"default","mode":"native"}}`,
+		`{"action":"set","key":"TOKEN","acquisition":{"Handler":"provider","profile":"default","mode":"native"}}`,
+		`{"action":"set","key":"TOKEN","acquisition":{"handler":"provider","PROFILE":"default","mode":"native"}}`,
+	} {
+		var slot CredentialSlot
+		if err := json.Unmarshal([]byte(raw), &slot); err == nil {
+			t.Errorf("expected non-canonical acquisition JSON to be rejected: %s", raw)
+		}
+	}
+}
+
+func TestValidateRejectsAcquisitionWhenFeatureDisabled(t *testing.T) {
+	credential := CredentialSlot{
+		Action:      ActionSet,
+		Key:         "TOKEN",
+		Acquisition: &AcquisitionRef{Handler: "provider", Profile: "default", Mode: AcquisitionModeNative},
+	}
+	if err := Validate(nil, []CredentialSlot{credential}); err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("expected disabled-by-default rejection, got %v", err)
+	}
+}
+
+func TestCredentialAcquisitionFeatureGateDoesNotChangeExistingProposalValidation(t *testing.T) {
+	credential := CredentialSlot{Action: ActionSet, Key: "TOKEN", Type: "static"}
+	withoutGate := Validate(nil, []CredentialSlot{credential})
+	withGate := ValidateWithOptions(nil, []CredentialSlot{credential}, ValidationOptions{CredentialAcquisitionEnabled: true})
+	if withoutGate != nil || withGate != nil {
+		t.Fatalf("feature gate must not alter non-acquisition proposals: disabled=%v enabled=%v", withoutGate, withGate)
+	}
+}
+
+func TestCredentialSlotJSONWithoutAcquisitionRemainsCompatible(t *testing.T) {
+	var staticSlot CredentialSlot
+	if err := json.Unmarshal([]byte(`{"action":"set","key":"TOKEN","type":"static","value":"secret"}`), &staticSlot); err != nil {
+		t.Fatalf("decode existing static slot: %v", err)
+	}
+	if err := Validate(nil, []CredentialSlot{staticSlot}); err != nil {
+		t.Fatalf("validate existing static slot: %v", err)
+	}
+
+	var oauthSlot CredentialSlot
+	if err := json.Unmarshal([]byte(`{"action":"set","key":"TOKEN","type":"oauth","oauth":{"token_url":"https://example.com/token"}}`), &oauthSlot); err != nil {
+		t.Fatalf("decode existing oauth slot: %v", err)
+	}
+	if err := Validate(nil, []CredentialSlot{oauthSlot}); err != nil {
+		t.Fatalf("validate existing oauth slot: %v", err)
+	}
+}
+
 // --- ValidateCredentialRefs tests ---
 
 func TestValidateCredentialRefsAllInSlots(t *testing.T) {
@@ -317,7 +509,7 @@ func TestValidateProposalSubstitutionWithoutAuth(t *testing.T) {
 	on := true
 	services := []Service{{
 		Action:  ActionSet,
-		Name:   "api-twilio-com",
+		Name:    "api-twilio-com",
 		Host:    "api.twilio.com",
 		Enabled: &on,
 		Substitutions: []broker.Substitution{

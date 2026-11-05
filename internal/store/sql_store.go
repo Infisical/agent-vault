@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/Infisical/agent-vault/internal/contextbinding"
 
 	_ "modernc.org/sqlite"
 )
@@ -1974,6 +1977,245 @@ func (s *SQLStore) GetBrokerConfig(ctx context.Context, vaultID string) (*Broker
 
 const approvalTokenTTL = 24 * time.Hour
 
+func newContextBindingID() string {
+	var b [24]byte
+	if _, err := io.ReadFull(rand.Reader, b[:]); err != nil {
+		panic("crypto/rand: " + err.Error())
+	}
+	return "av_ctx_" + base64.RawURLEncoding.EncodeToString(b[:])
+}
+
+func (s *SQLStore) CreateContextBinding(ctx context.Context, tuple contextbinding.Tuple) (*ContextBinding, error) {
+	if err := tuple.Validate(); err != nil {
+		return nil, fmt.Errorf("validating context binding: %w", err)
+	}
+
+	now := time.Now().UTC()
+	id := newContextBindingID()
+	_, err := s.db.ExecContext(ctx, s.dialect.Rebind(`INSERT INTO context_bindings (
+		id, origin_type, origin_codex_thread_id, origin_codex_session_id,
+		perplexity_project_id, registered_personal_computer_machine_id,
+		runtime_device_id, workspace_root, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		id,
+		tuple.OriginType,
+		tuple.OriginCodexThreadID,
+		tuple.OriginCodexSessionID,
+		tuple.PerplexityProjectID,
+		tuple.RegisteredPersonalComputerMachineID,
+		tuple.RuntimeDeviceID,
+		tuple.WorkspaceRoot,
+		s.dialect.FormatTime(now),
+		s.dialect.FormatTime(now),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating context binding: %w", err)
+	}
+
+	return &ContextBinding{ID: id, Tuple: tuple, CreatedAt: now, UpdatedAt: now}, nil
+}
+
+func (s *SQLStore) GetContextBinding(ctx context.Context, id string) (*ContextBinding, error) {
+	if err := contextbinding.ValidateBindingID(id); err != nil {
+		return nil, err
+	}
+	row := s.db.QueryRowContext(ctx, s.dialect.Rebind(`SELECT
+		id, origin_type, origin_codex_thread_id, origin_codex_session_id,
+		perplexity_project_id, registered_personal_computer_machine_id,
+		runtime_device_id, workspace_root, retired_at, created_at, updated_at
+		FROM context_bindings WHERE id = ?`), id)
+
+	var binding ContextBinding
+	var retiredAt, createdAt, updatedAt interface{}
+	if err := row.Scan(
+		&binding.ID,
+		&binding.Tuple.OriginType,
+		&binding.Tuple.OriginCodexThreadID,
+		&binding.Tuple.OriginCodexSessionID,
+		&binding.Tuple.PerplexityProjectID,
+		&binding.Tuple.RegisteredPersonalComputerMachineID,
+		&binding.Tuple.RuntimeDeviceID,
+		&binding.Tuple.WorkspaceRoot,
+		&retiredAt,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return nil, err
+	}
+	var err error
+	if binding.RetiredAt, err = s.dialect.ScanNullableTime(retiredAt); err != nil {
+		return nil, fmt.Errorf("scanning context binding retired_at: %w", err)
+	}
+	if binding.CreatedAt, err = s.dialect.ScanTime(createdAt); err != nil {
+		return nil, fmt.Errorf("scanning context binding created_at: %w", err)
+	}
+	if binding.UpdatedAt, err = s.dialect.ScanTime(updatedAt); err != nil {
+		return nil, fmt.Errorf("scanning context binding updated_at: %w", err)
+	}
+	return &binding, nil
+}
+
+func (s *SQLStore) RetireContextBinding(ctx context.Context, id string) error {
+	if err := contextbinding.ValidateBindingID(id); err != nil {
+		return err
+	}
+	now := s.dialect.FormatTime(time.Now().UTC())
+	result, err := s.db.ExecContext(ctx, s.dialect.Rebind(`UPDATE context_bindings
+		SET retired_at = ?, updated_at = ? WHERE id = ? AND retired_at IS NULL`), now, now, id)
+	if err != nil {
+		return fmt.Errorf("retiring context binding: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return fmt.Errorf("context binding %q not found or already retired", id)
+	}
+	return nil
+}
+
+func (s *SQLStore) CreateAcquisitionHandler(ctx context.Context, handler AcquisitionHandler) (*AcquisitionHandler, error) {
+	if err := handler.ValidateRegistration(); err != nil {
+		return nil, err
+	}
+	// Registration and verification are intentionally separate. A caller can
+	// never smuggle an enabled handler into the registry through this method.
+	handler.Enabled = false
+	handler.Generation = newPrefixedToken("av_hgen_")
+	allowedKeys, err := json.Marshal(handler.AllowedKeys)
+	if err != nil {
+		return nil, fmt.Errorf("encoding handler allowed keys: %w", err)
+	}
+	allowedVaults, err := json.Marshal(handler.AllowedVaults)
+	if err != nil {
+		return nil, fmt.Errorf("encoding handler allowed vaults: %w", err)
+	}
+	allowedProfiles, err := json.Marshal(handler.AllowedProfiles)
+	if err != nil {
+		return nil, fmt.Errorf("encoding handler allowed profiles: %w", err)
+	}
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, s.dialect.Rebind(`INSERT INTO acquisition_handlers (
+		id, generation, kind, executable_path, sha256, signing_identity,
+		allowed_keys_json, allowed_vaults_json, allowed_profiles_json,
+		timeout_seconds, output_limit_bytes, enabled, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING`),
+		handler.ID, handler.Generation, handler.Kind, handler.ExecutablePath, handler.SHA256, handler.SigningIdentity,
+		string(allowedKeys), string(allowedVaults), string(allowedProfiles),
+		handler.TimeoutSeconds, handler.OutputLimitBytes, s.dialect.BoolVal(handler.Enabled),
+		s.dialect.FormatTime(now), s.dialect.FormatTime(now),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating acquisition handler: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return nil, ErrAcquisitionHandlerExists
+	}
+	handler.CreatedAt = now
+	handler.UpdatedAt = now
+	return &handler, nil
+}
+
+const acquisitionHandlerColumns = `id, generation, kind, executable_path, sha256, signing_identity,
+	allowed_keys_json, allowed_vaults_json, allowed_profiles_json,
+	timeout_seconds, output_limit_bytes, enabled, created_at, updated_at`
+
+func (s *SQLStore) scanAcquisitionHandler(scan func(dest ...interface{}) error) (*AcquisitionHandler, error) {
+	var handler AcquisitionHandler
+	var allowedKeys, allowedVaults, allowedProfiles string
+	var enabledRaw, createdAt, updatedAt interface{}
+	if err := scan(
+		&handler.ID, &handler.Generation, &handler.Kind, &handler.ExecutablePath, &handler.SHA256, &handler.SigningIdentity,
+		&allowedKeys, &allowedVaults, &allowedProfiles,
+		&handler.TimeoutSeconds, &handler.OutputLimitBytes, &enabledRaw, &createdAt, &updatedAt,
+	); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(allowedKeys), &handler.AllowedKeys); err != nil {
+		return nil, fmt.Errorf("decoding handler allowed keys: %w", err)
+	}
+	if err := json.Unmarshal([]byte(allowedVaults), &handler.AllowedVaults); err != nil {
+		return nil, fmt.Errorf("decoding handler allowed vaults: %w", err)
+	}
+	if err := json.Unmarshal([]byte(allowedProfiles), &handler.AllowedProfiles); err != nil {
+		return nil, fmt.Errorf("decoding handler allowed profiles: %w", err)
+	}
+	var err error
+	if handler.Enabled, err = s.dialect.ScanBool(enabledRaw); err != nil {
+		return nil, fmt.Errorf("scanning handler enabled: %w", err)
+	}
+	if handler.CreatedAt, err = s.dialect.ScanTime(createdAt); err != nil {
+		return nil, fmt.Errorf("scanning handler created_at: %w", err)
+	}
+	if handler.UpdatedAt, err = s.dialect.ScanTime(updatedAt); err != nil {
+		return nil, fmt.Errorf("scanning handler updated_at: %w", err)
+	}
+	return &handler, nil
+}
+
+func (s *SQLStore) GetAcquisitionHandler(ctx context.Context, id string) (*AcquisitionHandler, error) {
+	row := s.db.QueryRowContext(ctx,
+		s.dialect.Rebind(`SELECT `+acquisitionHandlerColumns+` FROM acquisition_handlers WHERE id = ?`), id,
+	)
+	return s.scanAcquisitionHandler(row.Scan)
+}
+
+func (s *SQLStore) ListAcquisitionHandlers(ctx context.Context) ([]AcquisitionHandler, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+acquisitionHandlerColumns+` FROM acquisition_handlers ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing acquisition handlers: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var handlers []AcquisitionHandler
+	for rows.Next() {
+		handler, err := s.scanAcquisitionHandler(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		handlers = append(handlers, *handler)
+	}
+	return handlers, rows.Err()
+}
+
+func (s *SQLStore) SetAcquisitionHandlerEnabled(ctx context.Context, id string, enabled bool) error {
+	result, err := s.db.ExecContext(ctx,
+		s.dialect.Rebind(`UPDATE acquisition_handlers SET enabled = ?, updated_at = ? WHERE id = ?`),
+		s.dialect.BoolVal(enabled), s.now(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("updating acquisition handler: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *SQLStore) SetAcquisitionHandlerEnabledIfGeneration(ctx context.Context, id, generation string, enabled bool) (bool, error) {
+	result, err := s.db.ExecContext(ctx,
+		s.dialect.Rebind(`UPDATE acquisition_handlers SET enabled = ?, updated_at = ? WHERE id = ? AND generation = ?`),
+		s.dialect.BoolVal(enabled), s.now(), id, generation,
+	)
+	if err != nil {
+		return false, fmt.Errorf("updating acquisition handler generation: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("checking acquisition handler generation update: %w", err)
+	}
+	return affected == 1, nil
+}
+
+func (s *SQLStore) DeleteAcquisitionHandler(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx,
+		s.dialect.Rebind(`DELETE FROM acquisition_handlers WHERE id = ?`), id,
+	)
+	if err != nil {
+		return fmt.Errorf("deleting acquisition handler: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // newPrefixedToken generates a 256-bit cryptographically random token
 // with the given prefix followed by 64 hex characters.
 func newPrefixedToken(prefix string) string {
@@ -1987,6 +2229,39 @@ func newPrefixedToken(prefix string) string {
 func newApprovalToken() string { return newPrefixedToken("av_appr_") }
 
 func (s *SQLStore) CreateProposal(ctx context.Context, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error) {
+	return s.createProposal(ctx, vaultID, sessionID, nil, servicesJSON, credentialsJSON, message, userMessage, credentials)
+}
+
+func (s *SQLStore) CreateProposalWithContext(ctx context.Context, vaultID, sessionID, contextBindingID, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error) {
+	if err := contextbinding.ValidateBindingID(contextBindingID); err != nil {
+		return nil, err
+	}
+	return s.createProposal(ctx, vaultID, sessionID, &contextBindingID, servicesJSON, credentialsJSON, message, userMessage, credentials)
+}
+
+// lockActiveContextBinding serializes PostgreSQL proposal creation with
+// retirement. SQLite has no SELECT FOR UPDATE; its bound INSERT below performs
+// the active check in the same statement that acquires the database write lock.
+func (s *SQLStore) lockActiveContextBinding(ctx context.Context, tx *sql.Tx, id string) error {
+	forUpdate := s.dialect.ForUpdateClause()
+	if forUpdate != "" {
+		forUpdate = " " + forUpdate
+	}
+	var present int
+	err := tx.QueryRowContext(ctx,
+		s.dialect.Rebind("SELECT 1 FROM context_bindings WHERE id = ? AND retired_at IS NULL"+forUpdate),
+		id,
+	).Scan(&present)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: %q", ErrContextBindingInactive, id)
+	}
+	if err != nil {
+		return fmt.Errorf("locking context binding %q: %w", id, err)
+	}
+	return nil
+}
+
+func (s *SQLStore) createProposal(ctx context.Context, vaultID, sessionID string, contextBindingID *string, servicesJSON, credentialsJSON, message, userMessage string, credentials map[string]EncryptedCredential) (*Proposal, error) {
 	now := time.Now().UTC()
 	nowStr := s.dialect.FormatTime(now)
 	approvalToken := newApprovalToken()
@@ -1998,6 +2273,11 @@ func (s *SQLStore) CreateProposal(ctx context.Context, vaultID, sessionID, servi
 		return nil, fmt.Errorf("beginning transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if contextBindingID != nil {
+		if err := s.lockActiveContextBinding(ctx, tx, *contextBindingID); err != nil {
+			return nil, err
+		}
+	}
 
 	// For Postgres, lock the vault row so concurrent proposal creations
 	// are serialized and cannot compute the same next ID.
@@ -2019,13 +2299,32 @@ func (s *SQLStore) CreateProposal(ctx context.Context, vaultID, sessionID, servi
 		return nil, fmt.Errorf("computing next proposal id: %w", err)
 	}
 
-	_, err = tx.ExecContext(ctx,
-		s.dialect.Rebind(`INSERT INTO proposals (id, vault_id, session_id, status, services_json, credentials_json, message, user_message, approval_token_hash, approval_token_expires_at, created_at, updated_at)
-		 VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`),
-		nextID, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage, hashToken(approvalToken), tokenExpiresAtStr, nowStr, nowStr,
-	)
+	var insertResult sql.Result
+	if contextBindingID == nil {
+		insertResult, err = tx.ExecContext(ctx,
+			s.dialect.Rebind(`INSERT INTO proposals (id, vault_id, session_id, status, services_json, credentials_json, message, user_message, approval_token_hash, approval_token_expires_at, context_binding_id, created_at, updated_at)
+			 VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, NULL, ?, ?)`),
+			nextID, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage, hashToken(approvalToken), tokenExpiresAtStr, nowStr, nowStr,
+		)
+	} else {
+		// The active-binding predicate and proposal insert are one SQL
+		// statement, so a concurrent retirement cannot slip between a check
+		// and the write on SQLite. PostgreSQL additionally holds the row lock
+		// acquired above until this transaction commits.
+		insertResult, err = tx.ExecContext(ctx,
+			s.dialect.Rebind(`INSERT INTO proposals (id, vault_id, session_id, status, services_json, credentials_json, message, user_message, approval_token_hash, approval_token_expires_at, context_binding_id, created_at, updated_at)
+			 SELECT ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?
+			 WHERE EXISTS (SELECT 1 FROM context_bindings WHERE id = ? AND retired_at IS NULL)`),
+			nextID, vaultID, sessionID, servicesJSON, credentialsJSON, message, userMessage, hashToken(approvalToken), tokenExpiresAtStr, *contextBindingID, nowStr, nowStr, *contextBindingID,
+		)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("inserting proposal: %w", err)
+	}
+	if contextBindingID != nil {
+		if affected, _ := insertResult.RowsAffected(); affected == 0 {
+			return nil, fmt.Errorf("%w: %q", ErrContextBindingInactive, *contextBindingID)
+		}
 	}
 
 	// Store agent-provided encrypted credential values.
@@ -2048,7 +2347,7 @@ func (s *SQLStore) CreateProposal(ctx context.Context, vaultID, sessionID, servi
 		ID: nextID, VaultID: vaultID, SessionID: sessionID,
 		Status: "pending", ServicesJSON: servicesJSON, CredentialsJSON: credentialsJSON,
 		Message: message, UserMessage: userMessage,
-		ApprovalToken: approvalToken, ApprovalTokenExpiresAt: &tokenExpiresAt,
+		ApprovalToken: approvalToken, ApprovalTokenExpiresAt: &tokenExpiresAt, ContextBindingID: contextBindingID,
 		CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
@@ -2167,6 +2466,10 @@ func (s *SQLStore) GetProposalCredentials(ctx context.Context, vaultID string, p
 }
 
 func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []OAuthCredentialConfig) error {
+	return s.applyProposalWithHook(ctx, vaultID, proposalID, mergedServicesJSON, credentials, deleteCredentialKeys, oauthConfigs, nil)
+}
+
+func (s *SQLStore) applyProposalWithHook(ctx context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]EncryptedCredential, deleteCredentialKeys []string, oauthConfigs []OAuthCredentialConfig, afterBindingCheck func()) error {
 	nowStr := s.now()
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -2174,6 +2477,35 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// Re-verify a bound proposal at apply time. PostgreSQL locks both the
+	// proposal and active binding rows until commit; SQLite rechecks the binding
+	// in the final guarded status update, after this transaction has acquired
+	// its writer lock through the mutations below.
+	var contextBindingID sql.NullString
+	forUpdate := s.dialect.ForUpdateClause()
+	if forUpdate != "" {
+		forUpdate = " " + forUpdate
+	}
+	err = tx.QueryRowContext(ctx,
+		s.dialect.Rebind(`SELECT context_binding_id FROM proposals
+			WHERE vault_id = ? AND id = ? AND status = 'pending'`+forUpdate),
+		vaultID, proposalID,
+	).Scan(&contextBindingID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: proposal is not pending", ErrProposalStateConflict)
+	}
+	if err != nil {
+		return fmt.Errorf("loading proposal context binding: %w", err)
+	}
+	if contextBindingID.Valid {
+		if err := s.lockActiveContextBinding(ctx, tx, contextBindingID.String); err != nil {
+			return err
+		}
+	}
+	if afterBindingCheck != nil {
+		afterBindingCheck()
+	}
 
 	// 1. Update broker config with merged services.
 	_, err = tx.ExecContext(ctx,
@@ -2276,7 +2608,12 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 	// 4. Mark proposal as applied (status guard prevents double-apply race).
 	res, err := tx.ExecContext(ctx,
 		s.dialect.Rebind(`UPDATE proposals SET status = 'applied', reviewed_at = ?, updated_at = ?
-		 WHERE vault_id = ? AND id = ? AND status = 'pending'`),
+		 WHERE vault_id = ? AND id = ? AND status = 'pending'
+		   AND (context_binding_id IS NULL OR EXISTS (
+		     SELECT 1 FROM context_bindings
+		     WHERE context_bindings.id = proposals.context_binding_id
+		       AND context_bindings.retired_at IS NULL
+		   ))`),
 		nowStr, nowStr, vaultID, proposalID,
 	)
 	if err != nil {
@@ -2284,7 +2621,7 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("proposal already processed (not pending)")
+		return fmt.Errorf("%w: proposal was processed or its context binding retired", ErrProposalStateConflict)
 	}
 
 	return tx.Commit()
@@ -2295,15 +2632,16 @@ func (s *SQLStore) ApplyProposal(ctx context.Context, vaultID string, proposalID
 // proposalColumns is the column list used by all proposal SELECT queries.
 const proposalColumns = `id, vault_id, session_id, status, services_json, credentials_json,
 		message, user_message, review_note, reviewed_at,
-		approval_token_expires_at, created_at, updated_at`
+		approval_token_expires_at, context_binding_id, created_at, updated_at`
 
 func (s *SQLStore) scanProposalFields(cs *Proposal, scan func(dest ...interface{}) error) error {
 	var reviewedAtRaw interface{}
 	var approvalTokenExpiresAt interface{}
+	var contextBindingID sql.NullString
 	var createdAt, updatedAt interface{}
 	if err := scan(&cs.ID, &cs.VaultID, &cs.SessionID, &cs.Status,
 		&cs.ServicesJSON, &cs.CredentialsJSON, &cs.Message, &cs.UserMessage, &cs.ReviewNote,
-		&reviewedAtRaw, &approvalTokenExpiresAt,
+		&reviewedAtRaw, &approvalTokenExpiresAt, &contextBindingID,
 		&createdAt, &updatedAt); err != nil {
 		return err
 	}
@@ -2312,6 +2650,9 @@ func (s *SQLStore) scanProposalFields(cs *Proposal, scan func(dest ...interface{
 		cs.ReviewedAt = &s
 	}
 	cs.ApprovalTokenExpiresAt, _ = s.dialect.ScanNullableTime(approvalTokenExpiresAt)
+	if contextBindingID.Valid {
+		cs.ContextBindingID = &contextBindingID.String
+	}
 	cs.CreatedAt, _ = s.dialect.ScanTime(createdAt)
 	cs.UpdatedAt, _ = s.dialect.ScanTime(updatedAt)
 	return nil

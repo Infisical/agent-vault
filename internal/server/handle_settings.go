@@ -76,9 +76,10 @@ func (s *Server) writeSettingsResponse(w http.ResponseWriter, ctx context.Contex
 	}
 
 	resp := map[string]interface{}{
-		"allowed_email_domains": []string{},
-		"invite_only":           false,
-		"smtp_configured":       s.notifier.Enabled(),
+		"allowed_email_domains":          []string{},
+		"invite_only":                    false,
+		"credential_acquisition_enabled": false,
+		"smtp_configured":                s.notifier.Enabled(),
 	}
 	if raw, ok := settings[settingAllowedDomains]; ok {
 		var domains []string
@@ -88,6 +89,9 @@ func (s *Server) writeSettingsResponse(w http.ResponseWriter, ctx context.Contex
 	}
 	if raw, ok := settings[settingInviteOnly]; ok {
 		resp["invite_only"] = raw == "true"
+	}
+	if raw, ok := settings[settingCredentialAcquisitionEnabled]; ok {
+		resp["credential_acquisition_enabled"] = raw == "true"
 	}
 
 	// Rate-limit settings: include the effective config, its source per
@@ -105,9 +109,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		AllowedEmailDomains *[]string                `json:"allowed_email_domains"`
-		InviteOnly          *bool                    `json:"invite_only"`
-		RateLimit           *rateLimitSettingPayload `json:"rate_limit"`
+		AllowedEmailDomains          *[]string                `json:"allowed_email_domains"`
+		InviteOnly                   *bool                    `json:"invite_only"`
+		CredentialAcquisitionEnabled *bool                    `json:"credential_acquisition_enabled"`
+		RateLimit                    *rateLimitSettingPayload `json:"rate_limit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "Invalid request body")
@@ -122,6 +127,17 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			val = "true"
 		}
 		if err := s.store.SetSetting(ctx, settingInviteOnly, val); err != nil {
+			jsonError(w, http.StatusInternalServerError, "Failed to save settings")
+			return
+		}
+	}
+
+	if req.CredentialAcquisitionEnabled != nil {
+		value := "false"
+		if *req.CredentialAcquisitionEnabled {
+			value = "true"
+		}
+		if err := s.store.SetSetting(ctx, settingCredentialAcquisitionEnabled, value); err != nil {
 			jsonError(w, http.StatusInternalServerError, "Failed to save settings")
 			return
 		}

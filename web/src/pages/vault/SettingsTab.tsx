@@ -6,6 +6,7 @@ import Button from "../../components/Button";
 import ConfirmDeleteModal from "../../components/ConfirmDeleteModal";
 import InfoTooltip from "../../components/InfoTooltip";
 import Sheet from "../../components/Sheet";
+import AcquisitionPolicyPanel from "../../components/AcquisitionPolicyPanel";
 import VaultForm, {
   infisicalFieldsValid,
   buildInfisicalConfig,
@@ -129,6 +130,8 @@ export default function SettingsTab() {
           <CredentialStoreDisplay store={credentialStore} />
         </div>
       </section>
+
+      <AcquisitionPolicyPanel vaultName={vaultName} canManage={canManage} />
 
       {/* Danger zone */}
       <section>
