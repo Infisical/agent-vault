@@ -45,6 +45,8 @@ type mockStore struct {
 	agentVaultGrants   []store.VaultGrant                     // agent vault grants
 	settings           map[string]string                      // instance settings
 	vaultSettings      map[string]map[string]string           // per-vault: vaultID -> key -> value
+	vaultSettingErrs   map[string]vaultSettingErr             // injected failures, keyed by setting key
+	onUpdateVaultSettings func()                              // runs before UpdateVaultSettings applies, to simulate a concurrent write
 	skills             map[string]map[string]store.Skill      // per-vault: vaultID -> name -> skill
 	credStores         map[string]*store.VaultCredentialStore // per-vault external credential store config
 	unmatchedHosts     map[string][]store.UnmatchedHost       // keyed by vaultID
@@ -1123,7 +1125,15 @@ func (m *mockStore) GetAllSettings(_ context.Context) (map[string]string, error)
 	return result, nil
 }
 
+// vaultSettingErr injects a store failure for one vault setting key.
+type vaultSettingErr struct {
+	read, write error
+}
+
 func (m *mockStore) GetVaultSetting(_ context.Context, vaultID, key string) (string, error) {
+	if err := m.vaultSettingErrs[key].read; err != nil {
+		return "", err
+	}
 	if vs, ok := m.vaultSettings[vaultID]; ok {
 		if v, ok := vs[key]; ok {
 			return v, nil
@@ -1133,6 +1143,9 @@ func (m *mockStore) GetVaultSetting(_ context.Context, vaultID, key string) (str
 }
 
 func (m *mockStore) SetVaultSetting(_ context.Context, vaultID, key, value string) error {
+	if err := m.vaultSettingErrs[key].write; err != nil {
+		return err
+	}
 	if m.vaultSettings[vaultID] == nil {
 		m.vaultSettings[vaultID] = make(map[string]string)
 	}
@@ -1141,10 +1154,47 @@ func (m *mockStore) SetVaultSetting(_ context.Context, vaultID, key, value strin
 }
 
 func (m *mockStore) DeleteVaultSetting(_ context.Context, vaultID, key string) error {
+	if err := m.vaultSettingErrs[key].write; err != nil {
+		return err
+	}
 	if vs, ok := m.vaultSettings[vaultID]; ok {
 		delete(vs, key)
 	}
 	return nil
+}
+
+// UpdateVaultSettings is all-or-nothing, like the SQL store: an injected
+// write failure on any key, or a read failure on any key, leaves every key
+// untouched.
+func (m *mockStore) UpdateVaultSettings(_ context.Context, vaultID string, settings map[string]string) (map[string]string, error) {
+	if m.onUpdateVaultSettings != nil {
+		m.onUpdateVaultSettings()
+	}
+	for k := range settings {
+		if err := m.vaultSettingErrs[k].write; err != nil {
+			return nil, err
+		}
+	}
+	for _, e := range m.vaultSettingErrs {
+		if e.read != nil {
+			return nil, e.read
+		}
+	}
+	for k, v := range settings {
+		if v == "" {
+			delete(m.vaultSettings[vaultID], k)
+			continue
+		}
+		if m.vaultSettings[vaultID] == nil {
+			m.vaultSettings[vaultID] = make(map[string]string)
+		}
+		m.vaultSettings[vaultID][k] = v
+	}
+	current := make(map[string]string, len(m.vaultSettings[vaultID]))
+	for k, v := range m.vaultSettings[vaultID] {
+		current[k] = v
+	}
+	return current, nil
 }
 
 // Vault skills: real in-memory behavior, not stubs — the handler tests assert
@@ -4590,6 +4640,163 @@ func TestVaultSettingsUnmatchedHostPolicy(t *testing.T) {
 		srv.httpServer.Handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("expected PATCH 403 for member, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestVaultSettingsUnmatchedHostCookies(t *testing.T) {
+	ms, ownerToken := setupMockStoreWithSession(t)
+	srv := newTestServer(withStore(ms))
+
+	do := func(method, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		var r io.Reader
+		if body != "" {
+			r = strings.NewReader(body)
+		}
+		req := httptest.NewRequest(method, "/v1/vaults/default/settings", r)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		return rec
+	}
+	decode := func(rec *httptest.ResponseRecorder) map[string]interface{} {
+		t.Helper()
+		var resp map[string]interface{}
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		return resp
+	}
+
+	t.Run("default is strip", func(t *testing.T) {
+		rec := do(http.MethodGet, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if got := decode(rec)["unmatched_host_cookies"]; got != "strip" {
+			t.Fatalf("expected strip default, got %v", got)
+		}
+	})
+
+	t.Run("set to forward", func(t *testing.T) {
+		rec := do(http.MethodPatch, `{"unmatched_host_cookies": "forward"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if v := ms.vaultSettings["root-ns-id"][settingUnmatchedHostCookies]; v != "forward" {
+			t.Fatalf("expected stored forward, got %q", v)
+		}
+		resp := decode(rec)
+		if resp["unmatched_host_cookies"] != "forward" {
+			t.Fatalf("expected response to echo forward, got %v", resp["unmatched_host_cookies"])
+		}
+		// Untouched fields are still reported.
+		if resp["unmatched_host_policy"] != "passthrough" {
+			t.Fatalf("expected unmatched_host_policy=passthrough, got %v", resp["unmatched_host_policy"])
+		}
+	})
+
+	t.Run("invalid value rejected", func(t *testing.T) {
+		rec := do(http.MethodPatch, `{"unmatched_host_cookies": "sometimes"}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("empty string reverts to default", func(t *testing.T) {
+		_ = ms.SetVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostCookies, "forward")
+		rec := do(http.MethodPatch, `{"unmatched_host_cookies": ""}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if v := ms.vaultSettings["root-ns-id"][settingUnmatchedHostCookies]; v != "" {
+			t.Fatalf("expected setting cleared, got %q", v)
+		}
+		if got := decode(rec)["unmatched_host_cookies"]; got != "strip" {
+			t.Fatalf("expected response strip after clear, got %v", got)
+		}
+	})
+
+	t.Run("both fields in one PATCH", func(t *testing.T) {
+		rec := do(http.MethodPatch, `{"unmatched_host_policy": "deny", "unmatched_host_cookies": "forward"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		st := ms.vaultSettings["root-ns-id"]
+		if st[settingUnmatchedHostPolicy] != "deny" || st[settingUnmatchedHostCookies] != "forward" {
+			t.Fatalf("expected both stored, got policy=%q cookies=%q",
+				st[settingUnmatchedHostPolicy], st[settingUnmatchedHostCookies])
+		}
+	})
+
+	t.Run("one invalid field writes nothing", func(t *testing.T) {
+		_ = ms.DeleteVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostPolicy)
+		_ = ms.DeleteVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostCookies)
+		rec := do(http.MethodPatch, `{"unmatched_host_policy": "deny", "unmatched_host_cookies": "sometimes"}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if v := ms.vaultSettings["root-ns-id"][settingUnmatchedHostPolicy]; v != "" {
+			t.Fatalf("valid field must not be persisted when another is invalid, got policy=%q", v)
+		}
+	})
+
+	t.Run("write failure commits neither field", func(t *testing.T) {
+		_ = ms.SetVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostPolicy, "deny")
+		_ = ms.SetVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostCookies, "forward")
+		ms.vaultSettingErrs = map[string]vaultSettingErr{settingUnmatchedHostCookies: {write: errors.New("db down")}}
+		defer func() { ms.vaultSettingErrs = nil }()
+		rec := do(http.MethodPatch, `{"unmatched_host_policy": "passthrough", "unmatched_host_cookies": "strip"}`)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
+		}
+		st := ms.vaultSettings["root-ns-id"]
+		if st[settingUnmatchedHostPolicy] != "deny" || st[settingUnmatchedHostCookies] != "forward" {
+			t.Fatalf("failed PATCH must not partially commit, got policy=%q cookies=%q",
+				st[settingUnmatchedHostPolicy], st[settingUnmatchedHostCookies])
+		}
+	})
+
+	t.Run("read failure for untouched field writes nothing", func(t *testing.T) {
+		_ = ms.DeleteVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostPolicy)
+		ms.vaultSettingErrs = map[string]vaultSettingErr{settingUnmatchedHostCookies: {read: errors.New("db down")}}
+		defer func() { ms.vaultSettingErrs = nil }()
+		rec := do(http.MethodPatch, `{"unmatched_host_policy": "deny"}`)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if v := ms.vaultSettings["root-ns-id"][settingUnmatchedHostPolicy]; v != "" {
+			t.Fatalf("a PATCH that reports failure must not have committed, got policy=%q", v)
+		}
+	})
+
+	t.Run("response reflects a concurrent commit to an omitted field", func(t *testing.T) {
+		_ = ms.DeleteVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostPolicy)
+		_ = ms.DeleteVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostCookies)
+		// Another admin enables cookie forwarding while this PATCH is in flight.
+		ms.onUpdateVaultSettings = func() {
+			_ = ms.SetVaultSetting(context.Background(), "root-ns-id", settingUnmatchedHostCookies, "forward")
+		}
+		defer func() { ms.onUpdateVaultSettings = nil }()
+		rec := do(http.MethodPatch, `{"unmatched_host_policy": "deny"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if got := decode(rec)["unmatched_host_cookies"]; got != "forward" {
+			t.Fatalf("expected response to report the committed forward, got %v", got)
+		}
+	})
+
+	t.Run("non-admin member cannot PATCH", func(t *testing.T) {
+		memberToken := setupMemberSession(t, ms, "root-ns-id")
+		req := httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/settings",
+			strings.NewReader(`{"unmatched_host_cookies": "forward"}`))
+		req.Header.Set("Authorization", "Bearer "+memberToken)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for member, got %d: %s", rec.Code, rec.Body.String())
 		}
 	})
 }

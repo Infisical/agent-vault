@@ -18,6 +18,8 @@ type fakeCredStore struct {
 	creds        map[string]*store.Credential   // key = vaultID+"|"+key
 	missKey      string                         // if set, GetCredential for this key returns nil/err
 	policy       UnmatchedHostPolicy            // unmatched-host policy returned by UnmatchedHostPolicy
+	cookies      UnmatchedHostCookies           // unmatched-host cookie setting returned by UnmatchedHostCookies
+	cookiesErr   error                          // if non-nil, UnmatchedHostCookies returns this error
 	brokerCfgErr error                          // if non-nil, GetBrokerConfig returns this error
 
 	getCredentialCalls int // call count — used by passthrough tests to assert no lookup
@@ -58,6 +60,16 @@ func (f *fakeCredStore) UnmatchedHostPolicy(_ context.Context, _ string) (Unmatc
 		return PolicyPassthrough, nil
 	}
 	return f.policy, nil
+}
+
+func (f *fakeCredStore) UnmatchedHostCookies(_ context.Context, _ string) (UnmatchedHostCookies, error) {
+	if f.cookiesErr != nil {
+		return CookiesStrip, f.cookiesErr
+	}
+	if f.cookies == "" {
+		return CookiesStrip, nil
+	}
+	return f.cookies, nil
 }
 
 // make32 returns a deterministic 32-byte key for tests.
@@ -807,5 +819,68 @@ func TestInject_DynamicFallback_ErrorPropagates(t *testing.T) {
 	_, err := p.Inject(context.Background(), "v1", "db.example.com", 0, "/")
 	if err == nil {
 		t.Fatalf("expected error to propagate")
+	}
+}
+
+func TestInject_UnmatchedHost_CookiesStripByDefault(t *testing.T) {
+	p := NewStoreCredentialProvider(newFakeCredStore(), make32(0x77))
+	res, err := p.Inject(context.Background(), "v1", "api.example.com", 0, "/")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !res.Passthrough || res.ForwardSetCookie {
+		t.Fatalf("expected passthrough with cookies stripped, got %+v", res)
+	}
+}
+
+func TestInject_UnmatchedHost_CookiesForward(t *testing.T) {
+	f := newFakeCredStore()
+	f.cookies = CookiesForward
+	p := NewStoreCredentialProvider(f, make32(0x77))
+	res, err := p.Inject(context.Background(), "v1", "api.example.com", 0, "/")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !res.Passthrough || !res.ForwardSetCookie {
+		t.Fatalf("expected passthrough with cookies forwarded, got %+v", res)
+	}
+}
+
+// A failed cookie-setting lookup must fall back to stripping without
+// failing a request the unmatched-host policy already permitted.
+func TestInject_UnmatchedHost_CookiesLookupErrorStrips(t *testing.T) {
+	f := newFakeCredStore()
+	f.cookies = CookiesForward
+	f.cookiesErr = errors.New("store down")
+	p := NewStoreCredentialProvider(f, make32(0x77))
+	res, err := p.Inject(context.Background(), "v1", "api.example.com", 0, "/")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !res.Passthrough || res.ForwardSetCookie {
+		t.Fatalf("expected passthrough with cookies stripped on lookup error, got %+v", res)
+	}
+}
+
+// Matched services never forward Set-Cookie, even when the vault opted
+// in: a cookie minted in exchange for a brokered credential is itself a
+// credential.
+func TestInject_MatchedService_NeverForwardsCookies(t *testing.T) {
+	key32 := make32(0x88)
+	f := newFakeCredStore()
+	f.cookies = CookiesForward
+	f.setServices(t, "v1", []broker.Service{{
+		Host: "api.example.com",
+		Auth: broker.Auth{Type: "bearer", Token: "T"},
+	}})
+	f.setCred(t, key32, "v1", "T", "x")
+
+	p := NewStoreCredentialProvider(f, key32)
+	res, err := p.Inject(context.Background(), "v1", "api.example.com", 0, "/")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Passthrough || res.ForwardSetCookie {
+		t.Fatalf("matched service must strip cookies, got %+v", res)
 	}
 }

@@ -826,3 +826,55 @@ func TestDetectAuthFromHeaders(t *testing.T) {
 		})
 	}
 }
+
+// TestMITMForwardSetCookieFollowsInjectResult verifies upstream Set-Cookie
+// headers reach the client only when the InjectResult opts in (the
+// vault's unmatched_host_cookies=forward under passthrough), and are
+// stripped otherwise. Every value of a multi-valued Set-Cookie must be
+// relayed, not just the first.
+func TestMITMForwardSetCookieFollowsInjectResult(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		inject  *brokercore.InjectResult
+		wantLen int
+	}{
+		{"stripped by default", &brokercore.InjectResult{Passthrough: true}, 0},
+		{"forwarded when opted in", &brokercore.InjectResult{Passthrough: true, ForwardSetCookie: true}, 2},
+		{"matched service strips", &brokercore.InjectResult{MatchedName: "svc", Headers: map[string]string{"Authorization": "Bearer x"}}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Add("Set-Cookie", "a=1; Path=/")
+				w.Header().Add("Set-Cookie", "b=2; Path=/")
+				_, _ = io.WriteString(w, "ok")
+			}))
+			defer upstream.Close()
+
+			upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+			sr := validTokenResolver("av_sess_ok",
+				&brokercore.ProxyScope{VaultID: "v1", VaultName: "default", VaultRole: "proxy"})
+			cp := &fakeCredProvider{byHost: map[string]fakeInjectResult{
+				upstreamHost: {result: tc.inject},
+			}}
+			proxyURL, _, _ := setupProxy(t, sr, cp)
+
+			conn := dialProxy(t, proxyURL)
+			defer conn.Close()
+
+			auth := base64.StdEncoding.EncodeToString([]byte("av_sess_ok:"))
+			resp := writeRawRequestLine(t, conn,
+				"GET "+upstream.URL+"/x HTTP/1.1",
+				map[string]string{
+					"Host":                upstreamHost,
+					"Proxy-Authorization": "Basic " + auth,
+				})
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", resp.StatusCode)
+			}
+			if got := resp.Header.Values("Set-Cookie"); len(got) != tc.wantLen {
+				t.Fatalf("client Set-Cookie = %q, want %d values", got, tc.wantLen)
+			}
+		})
+	}
+}

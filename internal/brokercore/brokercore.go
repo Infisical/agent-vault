@@ -150,11 +150,16 @@ func ForbiddenHintBody(targetHost, vaultName, baseURL string) map[string]interfa
 }
 
 // ShouldStripResponseHeader reports whether an upstream response header
-// must not be forwarded to the agent: hop-by-hop headers plus Set-Cookie.
-// Stripping Set-Cookie prevents the upstream from planting cookies in the
-// agent's jar.
-func ShouldStripResponseHeader(name string) bool {
-	return IsHopByHop(name) || strings.EqualFold(name, "Set-Cookie")
+// must not be forwarded to the agent: hop-by-hop headers plus, unless
+// forwardSetCookie is true, Set-Cookie. Stripping Set-Cookie prevents the
+// upstream from planting cookies in the agent's jar. Pass
+// InjectResult.ForwardSetCookie, which is only ever true for unmatched-host
+// passthrough traffic in a vault that opted in via unmatched_host_cookies.
+func ShouldStripResponseHeader(name string, forwardSetCookie bool) bool {
+	if IsHopByHop(name) {
+		return true
+	}
+	return !forwardSetCookie && strings.EqualFold(name, "Set-Cookie")
 }
 
 // WriteProxyError writes a JSON error response with Content-Type, the

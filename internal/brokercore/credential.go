@@ -30,6 +30,23 @@ func IsValidUnmatchedHostPolicy(p UnmatchedHostPolicy) bool {
 	return p == PolicyPassthrough || p == PolicyDeny
 }
 
+// UnmatchedHostCookies controls whether upstream Set-Cookie response
+// headers are relayed to the agent for requests forwarded under the
+// unmatched-host passthrough policy. CookiesStrip is the system-wide
+// default. Matched services always strip Set-Cookie regardless of this
+// setting: a session cookie minted by an upstream in exchange for a
+// brokered credential is itself a credential and must not reach the agent.
+type UnmatchedHostCookies string
+
+const (
+	CookiesStrip   UnmatchedHostCookies = "strip"
+	CookiesForward UnmatchedHostCookies = "forward"
+)
+
+func IsValidUnmatchedHostCookies(c UnmatchedHostCookies) bool {
+	return c == CookiesStrip || c == CookiesForward
+}
+
 // InjectResult is the outcome of matching (host, path) and resolving
 // credentials to ready-to-attach HTTP headers.
 type InjectResult struct {
@@ -57,6 +74,11 @@ type InjectResult struct {
 	// Passthrough is set when no service matched but the unmatched-host
 	// policy permitted forwarding.
 	Passthrough bool
+
+	// ForwardSetCookie is set only alongside Passthrough, when the vault's
+	// unmatched_host_cookies setting is CookiesForward. Callers relaying
+	// the upstream response pass it to ShouldStripResponseHeader.
+	ForwardSetCookie bool
 }
 
 // CredentialProvider resolves a service for (targetHost, targetPath) in
@@ -71,6 +93,7 @@ type CredentialStore interface {
 	GetBrokerConfig(ctx context.Context, vaultID string) (*store.BrokerConfig, error)
 	GetCredential(ctx context.Context, vaultID, key string) (*store.Credential, error)
 	UnmatchedHostPolicy(ctx context.Context, vaultID string) (UnmatchedHostPolicy, error)
+	UnmatchedHostCookies(ctx context.Context, vaultID string) (UnmatchedHostCookies, error)
 }
 
 // OAuthStore is the store surface for OAuth token refresh.
@@ -150,7 +173,13 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 		if err != nil || policy == PolicyDeny {
 			return nil, ErrServiceNotFound
 		}
-		return &InjectResult{Passthrough: true}, nil
+		// Fail safe on cookie-setting lookup errors: strip, but don't
+		// fail a request the policy already permitted.
+		cookies, err := p.Store.UnmatchedHostCookies(ctx, vaultID)
+		return &InjectResult{
+			Passthrough:      true,
+			ForwardSetCookie: err == nil && cookies == CookiesForward,
+		}, nil
 	}
 	if !matched.IsEnabled() {
 		return nil, ErrServiceDisabled
