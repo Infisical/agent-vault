@@ -30,6 +30,8 @@ var tp = timePtr
 
 // mockStore implements Store for testing.
 type mockStore struct {
+	upstreamProxies    map[string]*store.UpstreamProxy
+	upstreamProxyRefs  map[string][]string
 	masterKeyRecord    *store.MasterKeyRecord
 	sessions           map[string]*store.Session
 	vaults             map[string]*store.Vault
@@ -53,17 +55,19 @@ type mockStore struct {
 
 func newMockStore() *mockStore {
 	ms := &mockStore{
-		sessions:      make(map[string]*store.Session),
-		vaults:        make(map[string]*store.Vault),
-		credentials:   make(map[string]*store.Credential),
-		brokerConfigs: make(map[string]*store.BrokerConfig),
-		users:         make(map[string]*store.User),
-		userInvites:   make(map[string]*store.UserInvite),
-		agents:        make(map[string]*store.Agent),
-		settings:      make(map[string]string),
-		vaultSettings: make(map[string]map[string]string),
-		skills:        make(map[string]map[string]store.Skill),
-		credStores:    make(map[string]*store.VaultCredentialStore),
+		sessions:          make(map[string]*store.Session),
+		vaults:            make(map[string]*store.Vault),
+		credentials:       make(map[string]*store.Credential),
+		brokerConfigs:     make(map[string]*store.BrokerConfig),
+		users:             make(map[string]*store.User),
+		userInvites:       make(map[string]*store.UserInvite),
+		agents:            make(map[string]*store.Agent),
+		settings:          make(map[string]string),
+		vaultSettings:     make(map[string]map[string]string),
+		skills:            make(map[string]map[string]store.Skill),
+		credStores:        make(map[string]*store.VaultCredentialStore),
+		upstreamProxies:   make(map[string]*store.UpstreamProxy),
+		upstreamProxyRefs: make(map[string][]string),
 	}
 	// Seed root vault
 	ms.vaults["default"] = &store.Vault{ID: "root-ns-id", Name: "default"}
@@ -370,6 +374,9 @@ func (m *mockStore) GetProposalCredentials(_ context.Context, vaultID string, pr
 }
 
 func (m *mockStore) ApplyProposal(_ context.Context, vaultID string, proposalID int, mergedServicesJSON string, credentials map[string]store.EncryptedCredential, deleteCredentialKeys []string, _ []store.OAuthCredentialConfig) error {
+	if err := m.validateMockProxyRefs(mergedServicesJSON); err != nil {
+		return err
+	}
 	// Update proposal status to applied.
 	css := m.proposals[vaultID]
 	for i, cs := range css {
@@ -391,9 +398,9 @@ func (m *mockStore) ExpirePendingProposals(_ context.Context, before time.Time) 
 	return 0, nil
 }
 
-func (m *mockStore) Close() error                                     { return nil }
-func (m *mockStore) Ping(_ context.Context) error                      { return nil }
-func (m *mockStore) DialectName() string                               { return "sqlite" }
+func (m *mockStore) Close() error                                         { return nil }
+func (m *mockStore) Ping(_ context.Context) error                         { return nil }
+func (m *mockStore) DialectName() string                                  { return "sqlite" }
 func (m *mockStore) GetCAState(_ context.Context) (*store.CAState, error) { return nil, nil }
 func (m *mockStore) SetCAState(_ context.Context, _ *store.CAState) error { return nil }
 
@@ -542,6 +549,9 @@ func (m *mockStore) RenameVault(_ context.Context, oldName string, newName strin
 }
 
 func (m *mockStore) SetBrokerConfig(_ context.Context, vaultID, servicesJSON string) (*store.BrokerConfig, error) {
+	if err := m.validateMockProxyRefs(servicesJSON); err != nil {
+		return nil, err
+	}
 	bc := &store.BrokerConfig{
 		ID:           "bc-" + vaultID,
 		VaultID:      vaultID,
@@ -551,6 +561,21 @@ func (m *mockStore) SetBrokerConfig(_ context.Context, vaultID, servicesJSON str
 	}
 	m.brokerConfigs[vaultID] = bc
 	return bc, nil
+}
+
+func (m *mockStore) validateMockProxyRefs(servicesJSON string) error {
+	var services []struct {
+		UpstreamProxy string `json:"upstream_proxy"`
+	}
+	if err := json.Unmarshal([]byte(servicesJSON), &services); err != nil {
+		return err
+	}
+	for _, service := range services {
+		if service.UpstreamProxy != "" && m.upstreamProxies[service.UpstreamProxy] == nil {
+			return &store.UnknownUpstreamProxyError{Name: service.UpstreamProxy}
+		}
+	}
+	return nil
 }
 
 func (m *mockStore) GrantVaultRole(_ context.Context, actorID, actorType, vaultID, role string) error {
@@ -1145,6 +1170,138 @@ func (m *mockStore) DeleteVaultSetting(_ context.Context, vaultID, key string) e
 		delete(vs, key)
 	}
 	return nil
+}
+
+// --- Upstream proxies (egress) ---
+//
+// The mock keeps profiles in a name-keyed map so handler tests can assert
+// permission decisions and reference protection without a database.
+
+func (m *mockStore) ListUpstreamProxies(_ context.Context) ([]store.UpstreamProxy, error) {
+	out := make([]store.UpstreamProxy, 0, len(m.upstreamProxies))
+	for _, p := range m.upstreamProxies {
+		out = append(out, *p)
+	}
+	return out, nil
+}
+
+func (m *mockStore) GetUpstreamProxyByName(_ context.Context, name string) (*store.UpstreamProxy, error) {
+	if p, ok := m.upstreamProxies[name]; ok {
+		return p, nil
+	}
+	return nil, sql.ErrNoRows
+}
+
+func (m *mockStore) GetDefaultUpstreamProxy(_ context.Context) (*store.UpstreamProxy, error) {
+	for _, p := range m.upstreamProxies {
+		if p.IsDefault && p.Enabled {
+			return p, nil
+		}
+	}
+	return nil, sql.ErrNoRows
+}
+
+func (m *mockStore) CreateUpstreamProxy(_ context.Context, p *store.UpstreamProxy) error {
+	if _, exists := m.upstreamProxies[p.Name]; exists {
+		return fmt.Errorf("UNIQUE constraint failed: upstream_proxies.name")
+	}
+	if p.IsDefault {
+		for _, existing := range m.upstreamProxies {
+			existing.IsDefault = false
+		}
+	}
+	copied := *p
+	m.upstreamProxies[p.Name] = &copied
+	return nil
+}
+
+func (m *mockStore) UpdateUpstreamProxy(_ context.Context, params store.UpdateUpstreamProxyParams) (*store.UpstreamProxy, error) {
+	p, ok := m.upstreamProxies[params.Name]
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	if params.Scheme != nil {
+		p.Scheme = *params.Scheme
+	}
+	if params.Host != nil {
+		p.Host = *params.Host
+	}
+	if params.NoProxy != nil {
+		p.NoProxy = *params.NoProxy
+	}
+	if params.ProxyCAPEM != nil {
+		p.ProxyCAPEM = *params.ProxyCAPEM
+	}
+	if params.OnFailure != nil {
+		p.OnFailure = *params.OnFailure
+	}
+	if params.Enabled != nil {
+		p.Enabled = *params.Enabled
+	}
+	if params.IsDefault != nil {
+		if *params.IsDefault {
+			for name, existing := range m.upstreamProxies {
+				if name != params.Name {
+					existing.IsDefault = false
+				}
+			}
+		}
+		p.IsDefault = *params.IsDefault
+	}
+	if params.UsernameCT != nil {
+		p.UsernameCT = *params.UsernameCT
+	}
+	if params.UsernameNonce != nil {
+		p.UsernameNonce = *params.UsernameNonce
+	}
+	if params.PasswordCT != nil {
+		p.PasswordCT = *params.PasswordCT
+	}
+	if params.PasswordNonce != nil {
+		p.PasswordNonce = *params.PasswordNonce
+	}
+	return p, nil
+}
+
+func (m *mockStore) DeleteUpstreamProxy(_ context.Context, name string) error {
+	if _, ok := m.upstreamProxies[name]; !ok {
+		return sql.ErrNoRows
+	}
+	if refs := m.mockProxyReferences(name); len(refs) > 0 {
+		return &store.UpstreamProxyReferencedError{Name: name, References: refs}
+	}
+	delete(m.upstreamProxies, name)
+	return nil
+}
+
+func (m *mockStore) mockProxyReferences(name string) []string {
+	refs := append([]string(nil), m.upstreamProxyRefs[name]...)
+	for vaultID, config := range m.brokerConfigs {
+		var services []struct {
+			Name          string `json:"name"`
+			UpstreamProxy string `json:"upstream_proxy"`
+		}
+		if json.Unmarshal([]byte(config.ServicesJSON), &services) != nil {
+			continue
+		}
+		vaultName := vaultID
+		for _, vault := range m.vaults {
+			if vault.ID == vaultID {
+				vaultName = vault.Name
+				break
+			}
+		}
+		for _, service := range services {
+			if strings.EqualFold(service.UpstreamProxy, name) {
+				refs = append(refs, vaultName+"/"+service.Name)
+			}
+		}
+	}
+	return refs
+}
+
+func (m *mockStore) CountUpstreamProxyReferences(_ context.Context, name string) ([]string, error) {
+	return m.mockProxyReferences(name), nil
 }
 
 // Vault skills: real in-memory behavior, not stubs — the handler tests assert
@@ -5968,6 +6125,138 @@ func TestServicesUpsertAddNew(t *testing.T) {
 	}
 	if resp["services_count"].(float64) != 1 {
 		t.Fatalf("expected services_count=1, got %v", resp["services_count"])
+	}
+}
+
+func TestServiceRouteRepeatedWriteAndExplicitOptOut(t *testing.T) {
+	for _, method := range []string{http.MethodPost, http.MethodPut} {
+		for _, routeField := range []string{"", `,"use_upstream_proxy":false`} {
+			t.Run(method+routeField, func(t *testing.T) {
+				ms, token := setupMockStoreWithSession(t)
+				seedProxy(t, ms, "default-corp", "http", "default.internal:3128", true, true)
+				srv := newTestServer(withStore(ms))
+				path := "/v1/vaults/default/services"
+				service := `{"name":"public","host":"public.example.com","auth":{"type":"passthrough"}` + routeField + `}`
+				body := `{"services":[` + service + `]}`
+				for iteration := 1; iteration <= 2; iteration++ {
+					if rec := proxyRequest(t, srv, method, path, token, body); rec.Code != http.StatusOK {
+						t.Fatalf("write %d = %d: %s", iteration, rec.Code, rec.Body.String())
+					}
+					route, err := srv.UpstreamProxyResolver().ResolveUpstreamProxy(t.Context(), "root-ns-id", "public")
+					if err != nil || route != nil {
+						t.Fatalf("write %d resolved %#v, err %v; want direct", iteration, route, err)
+					}
+					get := proxyRequest(t, srv, http.MethodGet, path, token, "")
+					rawGet := get.Body.String()
+					var saved struct {
+						Services []struct {
+							Bypass bool `json:"bypass_upstream_proxy"`
+						} `json:"services"`
+					}
+					if err := json.NewDecoder(get.Body).Decode(&saved); err != nil || len(saved.Services) != 1 || !saved.Services[0].Bypass {
+						t.Fatalf("write %d lost direct route: %+v, err %v", iteration, saved, err)
+					}
+					if iteration == 2 {
+						if rec := proxyRequest(t, srv, http.MethodPut, path, token, rawGet); rec.Code != http.StatusOK {
+							t.Fatalf("GET-to-PUT = %d: %s", rec.Code, rec.Body.String())
+						}
+					}
+				}
+			})
+		}
+	}
+
+	for _, initial := range []string{`,"use_upstream_proxy":true`, `,"upstream_proxy":"corp"`} {
+		t.Run("opt-out"+initial, func(t *testing.T) {
+			ms, token := setupMockStoreWithSession(t)
+			seedProxy(t, ms, "default-corp", "http", "default.internal:3128", true, true)
+			seedProxy(t, ms, "corp", "http", "corp.internal:3128", false, true)
+			srv := newTestServer(withStore(ms))
+			path := "/v1/vaults/default/services"
+			service := `{"name":"public","host":"public.example.com","auth":{"type":"passthrough"}`
+			if rec := proxyRequest(t, srv, http.MethodPut, path, token,
+				`{"services":[`+service+initial+`}]}`); rec.Code != http.StatusOK {
+				t.Fatalf("opt-in = %d: %s", rec.Code, rec.Body.String())
+			}
+			before, err := srv.UpstreamProxyResolver().ResolveUpstreamProxy(t.Context(), "root-ns-id", "public")
+			if err != nil || before == nil {
+				t.Fatalf("opt-in route = %#v, err %v", before, err)
+			}
+			if rec := proxyRequest(t, srv, http.MethodPut, path, token,
+				`{"services":[`+service+`,"use_upstream_proxy":false}]}`); rec.Code != http.StatusOK {
+				t.Fatalf("explicit opt-out = %d: %s", rec.Code, rec.Body.String())
+			}
+			after, err := srv.UpstreamProxyResolver().ResolveUpstreamProxy(t.Context(), "root-ns-id", "public")
+			if err != nil || after != nil {
+				t.Fatalf("explicit opt-out route = %#v, err %v; want direct", after, err)
+			}
+		})
+	}
+}
+
+func TestServiceEgressChangesRequireInstanceOwner(t *testing.T) {
+	for _, method := range []string{http.MethodPost, http.MethodPut} {
+		t.Run(method, func(t *testing.T) {
+			ms, ownerToken := setupMockStoreWithSession(t)
+			memberToken := setupMemberSession(t, ms, "root-ns-id")
+			ms.users["vault-admin@test.com"] = &store.User{
+				ID: "vault-admin-user-id", Email: "vault-admin@test.com", Role: "member", IsActive: true,
+			}
+			adminToken := "vault-admin-session"
+			ms.sessions[adminToken] = &store.Session{
+				ID: adminToken, UserID: "vault-admin-user-id",
+				ExpiresAt: tp(time.Now().Add(time.Hour)), CreatedAt: time.Now(),
+			}
+			if err := ms.GrantVaultRole(t.Context(), "vault-admin-user-id", "user", "root-ns-id", "admin"); err != nil {
+				t.Fatal(err)
+			}
+			proxyToken := setupProxyRoleSession(t, ms, "root-ns-id")
+			seedProxy(t, ms, "corp", "http", "corp.internal:3128", false, true)
+			srv := newTestServer(withStore(ms))
+			path := "/v1/vaults/default/services"
+			named := `{"name":"public","host":"public.example.com","auth":{"type":"passthrough"},"upstream_proxy":"corp"}`
+			direct := `{"name":"public","host":"public.example.com","auth":{"type":"passthrough"},"bypass_upstream_proxy":true}`
+			neighbor := `{"name":"neighbor","host":"neighbor.example.com","auth":{"type":"passthrough"},"bypass_upstream_proxy":true}`
+			write := func(token, service string) *httptest.ResponseRecorder {
+				body := `{"services":[` + service
+				if method == http.MethodPut {
+					body += `,` + neighbor
+				}
+				return proxyRequest(t, srv, method, path, token, body+`]}`)
+			}
+			if rec := proxyRequest(t, srv, http.MethodPut, path, ownerToken,
+				`{"services":[`+named+`,`+neighbor+`]}`); rec.Code != http.StatusOK {
+				t.Fatalf("owner setup = %d: %s", rec.Code, rec.Body.String())
+			}
+			for _, tc := range []struct {
+				name, token, service string
+				status               int
+			}{
+				{"vault admin direct", adminToken, direct, http.StatusForbidden},
+				{"vault member direct", memberToken, direct, http.StatusForbidden},
+				{"vault proxy direct", proxyToken, direct, http.StatusForbidden},
+				{"vault admin new named", adminToken, `{"name":"other","host":"other.example.com","auth":{"type":"passthrough"},"upstream_proxy":"corp"}`, http.StatusForbidden},
+				{"vault admin new default", adminToken, `{"name":"other","host":"other.example.com","auth":{"type":"passthrough"},"use_upstream_proxy":true}`, http.StatusForbidden},
+				{"vault admin unchanged", adminToken, `{"name":"public","host":"public.example.com","auth":{"type":"passthrough"}}`, http.StatusOK},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					rec := write(tc.token, tc.service)
+					if rec.Code != tc.status {
+						t.Fatalf("%s = %d, want %d: %s", tc.name, rec.Code, tc.status, rec.Body.String())
+					}
+					route, err := srv.UpstreamProxyResolver().ResolveUpstreamProxy(t.Context(), "root-ns-id", "public")
+					if err != nil || route == nil || route.Name != "corp" {
+						t.Fatalf("%s changed stored route: %#v, err %v", tc.name, route, err)
+					}
+				})
+			}
+			if rec := write(ownerToken, direct); rec.Code != http.StatusOK {
+				t.Fatalf("owner direct = %d: %s", rec.Code, rec.Body.String())
+			}
+			if rec := write(adminToken, named); rec.Code != http.StatusForbidden {
+				t.Fatalf("vault admin direct-to-named = %d, want 403: %s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

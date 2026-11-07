@@ -85,7 +85,7 @@ var serviceSetCmd = &cobra.Command{
 			return err
 		}
 
-		servicesJSON, err := json.Marshal(services)
+		servicesJSON, err := marshalServiceFileEntries(services)
 		if err != nil {
 			return fmt.Errorf("marshalling services: %w", err)
 		}
@@ -165,7 +165,7 @@ File mode (upsert, not replace-all):
 		vault := resolveVault(cmd)
 		filePath, _ := cmd.Flags().GetString("file")
 
-		var services []broker.Service
+		var services []serviceFileEntry
 
 		if filePath != "" {
 			var err error
@@ -193,13 +193,13 @@ File mode (upsert, not replace-all):
 			name, _ := cmd.Flags().GetString("name")
 
 			host, path, port := broker.SplitInlineHost(host, "")
-
 			svc := broker.Service{Name: name, Host: host, Path: path, Port: port, Auth: *auth}
 			if disabled, _ := cmd.Flags().GetBool("disabled"); disabled {
 				f := false
 				svc.Enabled = &f
 			}
-			services = []broker.Service{svc}
+
+			services = []serviceFileEntry{{Service: svc}}
 		}
 
 		sess, err := ensureSession()
@@ -207,7 +207,7 @@ File mode (upsert, not replace-all):
 			return err
 		}
 
-		servicesJSON, err := json.Marshal(services)
+		servicesJSON, err := marshalServiceFileEntries(services)
 		if err != nil {
 			return fmt.Errorf("marshalling services: %w", err)
 		}
@@ -358,9 +358,43 @@ func patchServiceEnabled(cmd *cobra.Command, ref string, enabled bool) error {
 	return nil
 }
 
-// loadServicesFromFile parses a services YAML file ("-" for stdin) and
-// applies the inline-host split. Validation runs server-side.
-func loadServicesFromFile(filePath, vault string) ([]broker.Service, error) {
+// serviceFileEntry retains explicit route fields from YAML independently of
+// broker.Service, whose omitempty fields cannot distinguish false/empty from
+// omission.
+type serviceFileEntry struct {
+	Service     broker.Service
+	RouteFields map[string]json.RawMessage
+}
+
+// marshalServiceFileEntries emits route fields exactly when the YAML supplied
+// them, including explicit false and empty string values.
+func marshalServiceFileEntries(entries []serviceFileEntry) ([]byte, error) {
+	services := make([]json.RawMessage, 0, len(entries))
+	for _, entry := range entries {
+		base, err := json.Marshal(entry.Service)
+		if err != nil {
+			return nil, err
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(base, &fields); err != nil {
+			return nil, err
+		}
+		for name, value := range entry.RouteFields {
+			fields[name] = value
+		}
+		serviceJSON, err := json.Marshal(fields)
+		if err != nil {
+			return nil, err
+		}
+		services = append(services, serviceJSON)
+	}
+	return json.Marshal(services)
+}
+
+// loadServicesFromFile parses a services YAML file ("-" for stdin), applies
+// the inline-host split, and preserves explicit egress route field presence.
+// Validation runs server-side.
+func loadServicesFromFile(filePath, vault string) ([]serviceFileEntry, error) {
 	var data []byte
 	var err error
 	if filePath == "-" {
@@ -371,17 +405,70 @@ func loadServicesFromFile(filePath, vault string) ([]broker.Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading file: %w", err)
 	}
-	var cfg broker.Config
+	var cfg struct {
+		Services []yaml.Node `yaml:"services"`
+	}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing yaml: %w", err)
 	}
-	cfg.Vault = vault
+	entries := make([]serviceFileEntry, len(cfg.Services))
 	for i := range cfg.Services {
-		if err := broker.NormalizePort(&cfg.Services[i]); err != nil {
+		var service broker.Service
+		if err := cfg.Services[i].Decode(&service); err != nil {
+			return nil, fmt.Errorf("parsing service %d: %w", i, err)
+		}
+		var routePresence struct {
+			UpstreamProxy       yaml.Node `yaml:"upstream_proxy"`
+			UseUpstreamProxy    yaml.Node `yaml:"use_upstream_proxy"`
+			BypassUpstreamProxy yaml.Node `yaml:"bypass_upstream_proxy"`
+		}
+		if err := cfg.Services[i].Decode(&routePresence); err != nil {
+			return nil, fmt.Errorf("parsing service %d route fields: %w", i, err)
+		}
+		// Decode the same mapping so aliases and YAML merges are resolved.
+		// Use the already-typed service values for JSON: yaml.Node.Decode into
+		// any would turn e.g. `yes` into a string, although the bool field
+		// above correctly decoded it as true.
+		var routeFields map[string]json.RawMessage
+		for _, field := range []struct {
+			name  string
+			node  *yaml.Node
+			value any
+		}{
+			{"upstream_proxy", &routePresence.UpstreamProxy, service.UpstreamProxy},
+			{"use_upstream_proxy", &routePresence.UseUpstreamProxy, service.UseUpstreamProxy},
+			{"bypass_upstream_proxy", &routePresence.BypassUpstreamProxy, service.BypassUpstreamProxy},
+		} {
+			if field.node.Kind == 0 {
+				continue
+			}
+			if routeFields == nil {
+				routeFields = make(map[string]json.RawMessage, 3)
+			}
+			encoded, err := serviceRouteFieldJSON(field.node, field.value)
+			if err != nil {
+				return nil, fmt.Errorf("service %d field %s: %w", i, field.name, err)
+			}
+			routeFields[field.name] = encoded
+		}
+		if err := broker.NormalizePort(&service); err != nil {
 			return nil, fmt.Errorf("service %d: %w", i, err)
 		}
+		entries[i] = serviceFileEntry{Service: service, RouteFields: routeFields}
 	}
-	return cfg.Services, nil
+	return entries, nil
+}
+
+// serviceRouteFieldJSON keeps an explicitly present YAML null distinct from
+// omission. Other values use the type already validated by broker.Service.
+func serviceRouteFieldJSON(node *yaml.Node, typedValue any) (json.RawMessage, error) {
+	for node.Kind == yaml.AliasNode {
+		node = node.Alias
+	}
+	if node.ShortTag() == "!!null" {
+		return json.RawMessage("null"), nil
+	}
+	return json.Marshal(typedValue)
 }
 
 func readStdin() ([]byte, error) {

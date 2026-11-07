@@ -682,6 +682,34 @@ func TestValidateConfigInvalidPath(t *testing.T) {
 	}
 }
 
+func TestValidateConfigRejectsDirectBypassWithNamedProxy(t *testing.T) {
+	cfg := &Config{
+		Vault: "default",
+		Services: []Service{{
+			Name:                "stripe",
+			Host:                "api.stripe.com",
+			Auth:                Auth{Type: "bearer", Token: "STRIPE_KEY"},
+			UpstreamProxy:       "corp",
+			BypassUpstreamProxy: true,
+		}},
+	}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("Validate error = %v, want mutually exclusive egress controls rejected", err)
+	}
+}
+
+func TestValidateConfigRejectsConflictingProxyOptIn(t *testing.T) {
+	for _, svc := range []Service{
+		{Name: "stripe", Host: "api.stripe.com", Auth: Auth{Type: "passthrough"}, UseUpstreamProxy: true, BypassUpstreamProxy: true},
+		{Name: "stripe", Host: "api.stripe.com", Auth: Auth{Type: "passthrough"}, UseUpstreamProxy: true, UpstreamProxy: "corp"},
+	} {
+		cfg := &Config{Vault: "default", Services: []Service{svc}}
+		if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+			t.Fatalf("Validate(%+v) = %v; want conflicting egress controls rejected", svc, err)
+		}
+	}
+}
+
 // --- ValidateHost tests ---
 
 func TestValidateHostHappyPath(t *testing.T) {

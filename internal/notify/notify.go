@@ -2,6 +2,7 @@
 package notify
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -77,6 +78,29 @@ func LoadSMTPConfig() *SMTPConfig {
 // If created with a nil config, all operations are silent no-ops.
 type Notifier struct {
 	config *SMTPConfig
+	// dialer overrides SMTP connections; the supplied context bounds the
+	// entire proxy handshake, not just the TCP connection to the proxy.
+	dialer func(context.Context, string, string) (net.Conn, error)
+}
+
+// SetDialer installs an optional connection factory used for every SMTP
+// dial (both STARTTLS and implicit TLS).
+func (n *Notifier) SetDialer(d func(context.Context, string, string) (net.Conn, error)) {
+	if n == nil {
+		return
+	}
+	n.dialer = d
+}
+
+// dialTCP opens the SMTP connection, routing through the configured egress
+// dialer when one is installed.
+func (n *Notifier) dialTCP(addr string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if n != nil && n.dialer != nil {
+		return n.dialer(ctx, "tcp", addr)
+	}
+	return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 }
 
 // New creates a Notifier. Pass nil config to create a no-op notifier.
@@ -103,14 +127,14 @@ func (n *Notifier) SendMail(to []string, subject, body string) error {
 	msg := buildMessage(cfg.FromName, cfg.From, to, subject, body)
 
 	if cfg.Port == 465 {
-		return sendImplicitTLS(cfg, addr, to, msg)
+		return n.sendImplicitTLS(cfg, addr, to, msg)
 	}
-	return sendSTARTTLS(cfg, addr, to, msg)
+	return n.sendSTARTTLS(cfg, addr, to, msg)
 }
 
 // sendSTARTTLS connects on a plain TCP socket and upgrades via STARTTLS.
-func sendSTARTTLS(cfg *SMTPConfig, addr string, to []string, msg []byte) error {
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+func (n *Notifier) sendSTARTTLS(cfg *SMTPConfig, addr string, to []string, msg []byte) error {
+	conn, err := n.dialTCP(addr)
 	if err != nil {
 		return fmt.Errorf("smtp dial: %w", err)
 	}
@@ -141,12 +165,20 @@ func sendSTARTTLS(cfg *SMTPConfig, addr string, to []string, msg []byte) error {
 }
 
 // sendImplicitTLS connects over TLS directly (port 465).
-func sendImplicitTLS(cfg *SMTPConfig, addr string, to []string, msg []byte) error {
+func (n *Notifier) sendImplicitTLS(cfg *SMTPConfig, addr string, to []string, msg []byte) error {
 	tlsCfg := &tls.Config{ServerName: cfg.Host, InsecureSkipVerify: cfg.TLSSkipVerify} //nolint:gosec // user-configurable TLS skip verify for SMTP
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, tlsCfg)
+	baseConn, err := n.dialTCP(addr)
 	if err != nil {
 		return fmt.Errorf("smtp tls dial: %w", err)
 	}
+	tlsConn := tls.Client(baseConn, tlsCfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		_ = baseConn.Close()
+		return fmt.Errorf("smtp tls handshake: %w", err)
+	}
+	conn := tlsConn
 
 	c, err := smtp.NewClient(conn, cfg.Host)
 	if err != nil {
@@ -205,9 +237,9 @@ func (n *Notifier) SendHTMLMail(to []string, subject, htmlBody string) error {
 	msg := buildHTMLMessage(cfg.FromName, cfg.From, to, subject, htmlBody)
 
 	if cfg.Port == 465 {
-		return sendImplicitTLS(cfg, addr, to, msg)
+		return n.sendImplicitTLS(cfg, addr, to, msg)
 	}
-	return sendSTARTTLS(cfg, addr, to, msg)
+	return n.sendSTARTTLS(cfg, addr, to, msg)
 }
 
 // sanitizeHeader strips \r and \n characters to prevent email header injection.

@@ -243,6 +243,29 @@ func TestParseCIDRList(t *testing.T) {
 	}
 }
 
+func TestResolveTargetIPsAppliesPolicyToIPLiterals(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("AGENT_VAULT_ALLOW_PRIVATE_RANGES", "false")
+	t.Setenv("AGENT_VAULT_NETWORK_ALLOWLIST", "")
+	if _, err := ResolveTargetIPs(ctx, "169.254.169.254"); err == nil {
+		t.Fatal("metadata IP literal must be rejected")
+	}
+	if _, err := ResolveTargetIPs(ctx, "10.0.0.1"); err == nil {
+		t.Fatal("private IP literal must be rejected by default")
+	}
+	t.Setenv("AGENT_VAULT_ALLOW_PRIVATE_RANGES", "true")
+	ips, err := ResolveTargetIPs(ctx, "10.0.0.1")
+	if err != nil {
+		t.Fatalf("allowed private IP: %v", err)
+	}
+	if len(ips) != 1 || !ips[0].IP.Equal(net.ParseIP("10.0.0.1")) {
+		t.Fatalf("resolved literal IPs = %#v", ips)
+	}
+	if err := ValidateRemoteTargetName(ctx, "169.254.169.254"); err == nil {
+		t.Fatal("remote DNS validation must still reject metadata IP literals")
+	}
+}
+
 func TestCheckDialAddress(t *testing.T) {
 	allowlist := ParseCIDRList("10.1.2.0/24", "test")
 	tests := []struct {

@@ -4,29 +4,64 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
 
 func tp(t time.Time) *time.Time { return &t }
 
+// Bootstrap migrations once for CRUD fixtures; each test gets an independent
+// snapshot opened with the same WAL/FK settings as a production SQLite store.
+var sqliteTestSnapshot = sync.OnceValues(func() ([]byte, error) {
+	dir, err := os.MkdirTemp("", "agent-vault-store-fixture-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	seed, err := Open(":memory:")
+	if err != nil {
+		return nil, err
+	}
+	defer seed.Close()
+	path := filepath.Join(dir, "snapshot.db")
+	if _, err := seed.db.Exec("VACUUM INTO ?", path); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(path)
+})
+
 func openTestDB(t *testing.T) *SQLStore {
 	t.Helper()
-	s, err := Open(":memory:")
+	snapshot, err := sqliteTestSnapshot()
 	if err != nil {
-		t.Fatalf("Open(:memory:): %v", err)
+		t.Fatalf("create SQLite fixture snapshot: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "fixture.db")
+	if err := os.WriteFile(path, snapshot, 0600); err != nil {
+		t.Fatalf("write SQLite fixture: %v", err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open SQLite fixture: %v", err)
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
 }
 
 func TestOpenAndMigrate(t *testing.T) {
-	s := openTestDB(t)
+	// Migration coverage uses a fresh database, not the cached CRUD snapshot.
+	s, err := Open(filepath.Join(t.TempDir(), "fresh.db"))
+	if err != nil {
+		t.Fatalf("open fresh migration database: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
 
 	// Verify schema_migrations has migrations applied (new format uses name-based tracking).
 	var count int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count)
+	err = s.db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count)
 	if err != nil {
 		t.Fatalf("querying schema_migrations: %v", err)
 	}
@@ -1449,7 +1484,6 @@ func TestCascadeDeleteVaultRemovesProposals(t *testing.T) {
 	}
 }
 
-
 // --- UUID ---
 
 func TestNewUUIDUniqueness(t *testing.T) {
@@ -1676,7 +1710,6 @@ func TestDeleteUserSessions(t *testing.T) {
 		t.Fatalf("expected sql.ErrNoRows after deleting user sessions, got %v", err)
 	}
 }
-
 
 func TestDeleteUserCascadesGrants(t *testing.T) {
 	s := openTestDB(t)
@@ -1954,7 +1987,6 @@ func TestGetSessionBackwardCompat(t *testing.T) {
 		t.Fatalf("expected empty agent_id for old session, got %q", fetched.AgentID)
 	}
 }
-
 
 func TestDeleteAgentTokens(t *testing.T) {
 	s := openTestDB(t)

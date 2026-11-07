@@ -272,5 +272,3 @@ func (s *Server) handleRevokeScopedSession(w http.ResponseWriter, r *http.Reques
 	}
 	jsonOK(w, map[string]string{"status": "revoked"})
 }
-
-

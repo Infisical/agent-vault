@@ -58,9 +58,12 @@ func (p *Proxy) forwardWebSocket(
 	outReq *http.Request,
 	wsSubs []brokercore.ResolvedSubstitution,
 	emit func(status int, errCode string),
+	route upstreamRoute,
+	logFailure func(stage string, err error),
 ) {
-	upstreamConn, upstreamReader, resp, err := p.dialWebSocketUpstream(r.Context(), outReq)
+	upstreamConn, upstreamReader, resp, err := p.dialWebSocketUpstream(r.Context(), outReq, route)
 	if err != nil {
+		logFailure("websocket_handshake", err)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		emit(http.StatusBadGateway, "upstream_error")
 		return
@@ -154,17 +157,22 @@ func (p *Proxy) forwardWebSocket(
 // keepalive pings comfortably fit inside this window.
 const wsIdleTimeout = 10 * time.Minute
 
+// dialWebSocketUpstream opens the upstream connection for a hijacked
+// WebSocket upgrade. When route carries an egress proxy the raw socket is a
+// tunnel through that proxy (CONNECT or SOCKS); otherwise it is the same
+// direct dial this file has always used. Everything past this point is
+// TLS-and-frame work that is identical on either path.
 func (p *Proxy) dialWebSocketUpstream(
 	ctx context.Context,
 	outReq *http.Request,
+	route upstreamRoute,
 ) (net.Conn, *bufio.Reader, *http.Response, error) {
-	dialCtx := p.upstream.DialContext
-	if dialCtx == nil {
-		dialer := &net.Dialer{}
-		dialCtx = dialer.DialContext
+	transport := route.transport
+	if transport == nil {
+		transport = p.upstream
 	}
 
-	rawConn, err := dialCtx(ctx, "tcp", outReq.URL.Host)
+	rawConn, err := p.dial(ctx, outReq.URL.Host, route, transport)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -190,8 +198,8 @@ func (p *Proxy) dialWebSocketUpstream(
 	}
 
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
-	if p.upstream.TLSClientConfig != nil {
-		tlsConfig = p.upstream.TLSClientConfig.Clone()
+	if transport.TLSClientConfig != nil {
+		tlsConfig = transport.TLSClientConfig.Clone()
 	}
 	if tlsConfig.ServerName == "" {
 		if host, _, err := net.SplitHostPort(outReq.URL.Host); err == nil {

@@ -317,7 +317,7 @@ func tableExists(db *sql.DB, dialect, table string) (bool, error) {
 	case "postgres":
 		var exists bool
 		err := db.QueryRow(
-			"SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=$1)",
+			"SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=$1)",
 			table,
 		).Scan(&exists)
 		return exists, err
@@ -336,7 +336,7 @@ func columnExists(db *sql.DB, dialect, table, column string) (bool, error) {
 	case "postgres":
 		var exists bool
 		err := db.QueryRow(
-			"SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name=$1 AND column_name=$2)",
+			"SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=$1 AND column_name=$2)",
 			table, column,
 		).Scan(&exists)
 		return exists, err

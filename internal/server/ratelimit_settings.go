@@ -31,7 +31,6 @@ type rateLimitTierOverride struct {
 	Concurrency *int     `json:"concurrency,omitempty"`
 }
 
-
 // loadRateLimitSetting returns the parsed setting payload, or a
 // zero-value payload if the setting is absent.
 func loadRateLimitSetting(ctx context.Context, s Store) (rateLimitSettingPayload, bool, error) {

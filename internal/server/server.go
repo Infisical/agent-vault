@@ -21,6 +21,7 @@ import (
 
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/crypto"
+	"github.com/Infisical/agent-vault/internal/egress"
 	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/mitm"
 	"github.com/Infisical/agent-vault/internal/netguard"
@@ -59,18 +60,18 @@ type agentVaultJSON struct {
 
 // Server is the Agent Vault HTTP server.
 type Server struct {
-	httpServer  *http.Server
-	store       Store
-	encKey      []byte // 32-byte encryption key, held in memory while running
-	notifier    *notify.Notifier
-	initialized    bool                // true when at least one owner account exists
-	lastInitCheck  atomic.Int64        // unix-millis of last DB check for initialization (throttle)
-	baseURL     string              // externally-reachable base URL (e.g. "https://sb.example.com")
-	skillCLI    []byte              // embedded CLI skill content (served at GET /v1/skills/cli)
-	mitm        *mitm.Proxy         // transparent MITM proxy; nil only when --mitm-port 0
-	logger      *slog.Logger        // structured logger for per-request observability
-	rateLimit   *ratelimit.Registry // tiered rate limiter; shared with the MITM ingress
-	logSink     requestlog.Sink     // per-request persistence sink; never nil (Nop default)
+	httpServer    *http.Server
+	store         Store
+	encKey        []byte // 32-byte encryption key, held in memory while running
+	notifier      *notify.Notifier
+	initialized   bool                // true when at least one owner account exists
+	lastInitCheck atomic.Int64        // unix-millis of last DB check for initialization (throttle)
+	baseURL       string              // externally-reachable base URL (e.g. "https://sb.example.com")
+	skillCLI      []byte              // embedded CLI skill content (served at GET /v1/skills/cli)
+	mitm          *mitm.Proxy         // transparent MITM proxy; nil only when --mitm-port 0
+	logger        *slog.Logger        // structured logger for per-request observability
+	rateLimit     *ratelimit.Registry // tiered rate limiter; shared with the MITM ingress
+	logSink       requestlog.Sink     // per-request persistence sink; never nil (Nop default)
 	// touchCache short-circuits per-request session-touch writes. With
 	// db.SetMaxOpenConns(1), every UPDATE — even a no-op — opens the
 	// single WAL writer slot. Caching the last-touch wall-clock per
@@ -89,6 +90,12 @@ type Server struct {
 	infisicalDynamic *infisical.DynamicResolver
 	oauthRefresher   *oauth.Refresher
 	telemetry        *telemetry.Telemetry
+
+	// Upstream egress proxy state (built lazily so instances that never
+	// configure a proxy pay nothing).
+	upstreamRes          *upstreamProxyResolver
+	controlPlaneOnce     sync.Once
+	controlPlaneRegistry *egress.Registry
 }
 
 // lockVault acquires the per-vault mutation lock via the store's
@@ -107,7 +114,9 @@ func (s *Server) RateLimit() *ratelimit.Registry { return s.rateLimit }
 func (s *Server) AttachMITM(p *mitm.Proxy) { s.mitm = p }
 
 // AttachInfisical registers the Infisical client. Must be called before Start.
-func (s *Server) AttachInfisical(c *infisical.Client) { s.infisicalClient = c }
+func (s *Server) AttachInfisical(c *infisical.Client) {
+	s.infisicalClient = c
+}
 
 // AttachInfisicalSyncer pre-wires a syncer instead of letting Start build one
 // from the attached client. Used by tests to inject a fake fetcher; in prod
@@ -362,6 +371,15 @@ type Store interface {
 	GetVaultSetting(ctx context.Context, vaultID, key string) (string, error)
 	SetVaultSetting(ctx context.Context, vaultID, key, value string) error
 	DeleteVaultSetting(ctx context.Context, vaultID, key string) error
+
+	// Upstream proxies (egress profiles)
+	ListUpstreamProxies(ctx context.Context) ([]store.UpstreamProxy, error)
+	GetUpstreamProxyByName(ctx context.Context, name string) (*store.UpstreamProxy, error)
+	GetDefaultUpstreamProxy(ctx context.Context) (*store.UpstreamProxy, error)
+	CreateUpstreamProxy(ctx context.Context, p *store.UpstreamProxy) error
+	UpdateUpstreamProxy(ctx context.Context, params store.UpdateUpstreamProxyParams) (*store.UpstreamProxy, error)
+	DeleteUpstreamProxy(ctx context.Context, name string) error
+	CountUpstreamProxyReferences(ctx context.Context, name string) ([]string, error)
 
 	// Vault skills (markdown instruction documents)
 	ListSkills(ctx context.Context, vaultID string) ([]store.SkillMeta, error)
@@ -800,7 +818,10 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	oauthTransport := http.DefaultTransport.(*http.Transport).Clone()
 	oauthTransport.Proxy = nil
 	oauthTransport.DialContext = netguard.SafeDialContext(netguard.AllowPrivateFromEnv())
-	oauth.TokenClient = &http.Client{Timeout: 30 * time.Second, Transport: oauthTransport}
+	oauth.TokenClient = &http.Client{Timeout: 30 * time.Second, Transport: s.ControlPlaneRoundTripper(oauthTransport)}
+
+	// SMTP notifications use the same instance-default egress policy.
+	notifier.SetDialer(s.controlPlaneDial())
 
 	ipAuth := s.tier(ratelimit.TierAuth, s.ipKeyer())
 
@@ -870,6 +891,13 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 	mux.HandleFunc("GET /v1/admin/settings", s.requireInitialized(s.requireAuth(actorAuthed(s.handleGetSettings))))
 	mux.HandleFunc("PUT /v1/admin/settings", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleUpdateSettings)))))
 	mux.HandleFunc("POST /v1/admin/settings/rate-limit/preview", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleRateLimitPreview)))))
+
+	// Upstream (egress) proxy profiles — instance-level, owner-only.
+	mux.HandleFunc("GET /v1/admin/upstream-proxies", s.requireInitialized(s.requireAuth(actorAuthed(s.handleListUpstreamProxies))))
+	mux.HandleFunc("POST /v1/admin/upstream-proxies", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleCreateUpstreamProxy)))))
+	mux.HandleFunc("GET /v1/admin/upstream-proxies/{name}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleGetUpstreamProxy))))
+	mux.HandleFunc("PATCH /v1/admin/upstream-proxies/{name}", s.requireInitialized(s.requireAuth(actorAuthed(limitBody(s.handleUpdateUpstreamProxy)))))
+	mux.HandleFunc("DELETE /v1/admin/upstream-proxies/{name}", s.requireInitialized(s.requireAuth(actorAuthed(s.handleDeleteUpstreamProxy))))
 
 	// Public user list (any authenticated user)
 	mux.HandleFunc("GET /v1/users", s.requireInitialized(s.requireAuth(actorAuthed(s.handlePublicUserList))))

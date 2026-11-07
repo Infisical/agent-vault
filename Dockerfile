@@ -17,6 +17,7 @@ ARG POSTHOG_API_KEY=
 
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY third_party/infisical-go-sdk ./third_party/infisical-go-sdk
 RUN go mod download
 COPY . .
 COPY --from=frontend /internal/server/webdist /src/internal/server/webdist
