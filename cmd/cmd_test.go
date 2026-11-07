@@ -175,10 +175,82 @@ func TestVaultCredentialStoreSubcommandsRegistered(t *testing.T) {
 	if setCmd == nil {
 		t.Fatal("set command not found under credential-store")
 	}
-	for _, flag := range []string{"kind", "infisical-project-id", "infisical-environment", "infisical-path", "poll-interval-seconds", "yes"} {
+	for _, flag := range []string{"kind", "infisical-project-id", "infisical-environment", "infisical-path", "infisical-recursive", "poll-interval-seconds", "yes"} {
 		if setCmd.Flags().Lookup(flag) == nil {
 			t.Errorf("expected credential-store set to define --%s flag", flag)
 		}
+	}
+}
+
+func TestVaultCreateInfisicalFlags(t *testing.T) {
+	vCmd := findSubcommand(rootCmd, "vault")
+	if vCmd == nil {
+		t.Fatal("vault command not found")
+	}
+	createCmd := findSubcommand(vCmd, "create")
+	if createCmd == nil {
+		t.Fatal("create command not found under vault")
+	}
+	for _, flag := range []string{"credential-store", "infisical-project-id", "infisical-environment", "infisical-path", "infisical-recursive", "poll-interval-seconds"} {
+		if createCmd.Flags().Lookup(flag) == nil {
+			t.Errorf("expected vault create to define --%s flag", flag)
+		}
+	}
+}
+
+// newInfisicalFlagCommand mirrors the Infisical flag set shared by
+// `vault create` and `vault credential-store set` without mutating the
+// package-level commands.
+func newInfisicalFlagCommand() *cobra.Command {
+	c := &cobra.Command{}
+	c.Flags().String("infisical-project-id", "", "")
+	c.Flags().String("infisical-environment", "", "")
+	c.Flags().String("infisical-path", "/", "")
+	c.Flags().Bool("infisical-recursive", false, "")
+	c.Flags().Int("poll-interval-seconds", 60, "")
+	return c
+}
+
+func TestInfisicalStorePayloadFromFlags_Recursive(t *testing.T) {
+	c := newInfisicalFlagCommand()
+	mustSet := func(name, val string) {
+		t.Helper()
+		if err := c.Flags().Set(name, val); err != nil {
+			t.Fatalf("set --%s: %v", name, err)
+		}
+	}
+	mustSet("infisical-project-id", "p")
+	mustSet("infisical-environment", "dev")
+	mustSet("infisical-recursive", "true")
+
+	payload, err := infisicalStorePayloadFromFlags(c)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cfg, ok := payload["config"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("payload has no config map: %+v", payload)
+	}
+	if cfg["recursive"] != true {
+		t.Errorf("config.recursive: want true, got %v", cfg["recursive"])
+	}
+}
+
+func TestInfisicalStorePayloadFromFlags_RecursiveDefaultsFalse(t *testing.T) {
+	c := newInfisicalFlagCommand()
+	if err := c.Flags().Set("infisical-project-id", "p"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Flags().Set("infisical-environment", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := infisicalStorePayloadFromFlags(c)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cfg := payload["config"].(map[string]interface{})
+	if cfg["recursive"] != false {
+		t.Errorf("config.recursive: want false by default, got %v", cfg["recursive"])
 	}
 }
 

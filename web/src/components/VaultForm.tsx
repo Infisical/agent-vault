@@ -14,6 +14,7 @@ export type VaultFormValues = {
   projectID: string;
   environment: string;
   secretPath: string;
+  recursive: boolean;
 };
 
 export const emptyVaultForm: VaultFormValues = {
@@ -23,6 +24,7 @@ export const emptyVaultForm: VaultFormValues = {
   projectID: "",
   environment: "",
   secretPath: "/",
+  recursive: false,
 };
 
 // Infisical needs a project + environment; everything else may be blank.
@@ -42,6 +44,7 @@ export function buildInfisicalConfig(v: VaultFormValues) {
     project_id: v.projectID.trim(),
     environment: v.environment.trim(),
     secret_path: secretPath,
+    recursive: v.recursive,
   };
 }
 
@@ -140,6 +143,16 @@ export default function VaultForm({
               placeholder="/"
               value={values.secretPath}
               onChange={(e) => onChange({ secretPath: e.target.value })}
+            />
+          </FormField>
+          <FormField
+            label="Recursive sync"
+            tooltip="Also sync secrets from all subfolders of the secret path. Secret names must be unique across the entire folder tree — the same name in two folders fails the sync."
+          >
+            <Toggle
+              checked={values.recursive}
+              onChange={(v) => onChange({ recursive: v })}
+              ariaLabel="Recursive sync"
             />
           </FormField>
         </div>
