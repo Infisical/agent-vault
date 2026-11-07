@@ -57,6 +57,11 @@ type InjectResult struct {
 	// Passthrough is set when no service matched but the unmatched-host
 	// policy permitted forwarding.
 	Passthrough bool
+
+	// ForwardSetCookie is set for a matched passthrough service without
+	// substitutions. The broker adds nothing secret to such a request, so
+	// cookies the upstream sets in response belong to the agent.
+	ForwardSetCookie bool
 }
 
 // CredentialProvider resolves a service for (targetHost, targetPath) in
@@ -239,6 +244,7 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 
 	if matched.Auth.Type == "passthrough" {
 		result.Substitutions = resolvedSubs
+		result.ForwardSetCookie = len(resolvedSubs) == 0
 		return result, nil
 	}
 

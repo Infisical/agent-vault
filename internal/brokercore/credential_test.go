@@ -312,6 +312,9 @@ func TestInject_UnmatchedHost_DefaultPassthrough(t *testing.T) {
 	if res.MatchedHost != "" {
 		t.Fatalf("expected empty MatchedHost, got %q", res.MatchedHost)
 	}
+	if res.ForwardSetCookie {
+		t.Fatal("expected Set-Cookie stripped for an unmatched host")
+	}
 }
 
 func TestInject_UnmatchedHost_HostMissPassthrough(t *testing.T) {
@@ -436,6 +439,9 @@ func TestInject_Passthrough(t *testing.T) {
 	if f.getCredentialCalls != 0 {
 		t.Fatalf("expected GetCredential to NOT be called, got %d calls", f.getCredentialCalls)
 	}
+	if !res.ForwardSetCookie {
+		t.Fatal("expected Set-Cookie forwarded for a passthrough service")
+	}
 }
 
 func TestInject_ServiceDisabled(t *testing.T) {
@@ -550,6 +556,9 @@ func TestInject_ResolvesSubstitutionAlongsideAuth(t *testing.T) {
 	if res.Headers["Authorization"] == "" {
 		t.Fatal("expected basic auth header still injected")
 	}
+	if res.ForwardSetCookie {
+		t.Fatal("expected Set-Cookie stripped for a service that injects credentials")
+	}
 }
 
 func TestInject_ResolvesSubstitutionOnPassthrough(t *testing.T) {
@@ -574,6 +583,9 @@ func TestInject_ResolvesSubstitutionOnPassthrough(t *testing.T) {
 	}
 	if len(res.Substitutions) != 1 || res.Substitutions[0].Value != "AC12345" {
 		t.Fatalf("expected substitution resolved on passthrough service, got %+v", res.Substitutions)
+	}
+	if res.ForwardSetCookie {
+		t.Fatal("expected Set-Cookie stripped for a passthrough service with substitutions")
 	}
 }
 

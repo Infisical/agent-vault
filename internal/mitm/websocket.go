@@ -83,7 +83,7 @@ func (p *Proxy) forwardWebSocket(
 		}
 
 		for k, vv := range resp.Header {
-			if brokercore.ShouldStripResponseHeader(k) {
+			if brokercore.ShouldStripResponseHeader(k, false) {
 				continue
 			}
 			for _, v := range vv {
@@ -289,7 +289,7 @@ func isSafeWebSocketSwitchHeader(name string) bool {
 		"Sec-Websocket-Protocol":
 		return true
 	default:
-		return !brokercore.ShouldStripResponseHeader(name) && !strings.HasPrefix(http.CanonicalHeaderKey(name), "Sec-")
+		return !brokercore.ShouldStripResponseHeader(name, false) && !strings.HasPrefix(http.CanonicalHeaderKey(name), "Sec-")
 	}
 }
 
