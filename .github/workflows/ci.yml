@@ -70,7 +70,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - name: Build frontend (tsc + vite)
-        run: cd web && npm ci && npm run build
+        run: cd web && npm ci --ignore-scripts && npm rebuild esbuild && npm run build
 
   # Security-critical: always run on every PR. Path-gating these would mean
   # a missed filter entry (e.g. a new //go:embed target) silently turns the
@@ -164,7 +164,7 @@ jobs:
           cache-dependency-path: sdks/sdk-typescript/package-lock.json
 
       - name: Install
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Typecheck
         run: npm run typecheck
