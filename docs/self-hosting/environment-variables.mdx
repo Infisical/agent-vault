@@ -17,7 +17,7 @@ import DeprecationNotice from "/snippets/deprecation-notice.mdx";
 | `AGENT_VAULT_ADDR` | Optional (auto-derived) | The externally-reachable base URL of the server (e.g., `https://vault.example.com`). Used for invite links, discovery responses, and MITM cert SANs. Falls back to `https://<FLY_APP_NAME>.fly.dev` on Fly.io, then `http://{host}:{port}`. |
 | `FLY_APP_NAME` | Set by Fly.io | The Fly.io app name. Used to derive `AGENT_VAULT_ADDR` when unset. |
 | `AGENT_VAULT_ALLOW_PRIVATE_RANGES` | Optional (defaults to `false`) | Whether the proxy may dial private/reserved IP ranges (RFC-1918, loopback, link-local, IPv6 ULA, CGN). Cloud metadata endpoints stay blocked either way. |
-| `AGENT_VAULT_NETWORK_ALLOWLIST` | Optional | Comma-separated CIDRs or bare IPs the proxy may dial when `AGENT_VAULT_ALLOW_PRIVATE_RANGES=false` (e.g., `10.163.0.0/16,192.168.1.1`). |
+| `AGENT_VAULT_NETWORK_ALLOWLIST` | Optional | Comma-separated CIDRs or bare IPs the proxy may dial when `AGENT_VAULT_ALLOW_PRIVATE_RANGES=false` (e.g., `10.163.0.0/16,192.168.1.1`). An entry may also be one address and port (`127.0.0.1:3000`, `[::1]:3000`), which allows that port only. |
 | `AGENT_VAULT_TRUSTED_PROXIES` | Optional | Comma-separated CIDRs of reverse proxies whose `X-Forwarded-For` headers are honored (e.g., `10.0.0.0/8,172.16.0.0/12`). |
 | `AGENT_VAULT_LOG_LEVEL` | Optional (defaults to `info`) | Log verbosity. One of: `info`, `debug`. `debug` adds one structured line per proxied request (no credential values). Overridden by `--log-level`. |
 | `AGENT_VAULT_RATELIMIT_PROFILE` | Optional (defaults to `default`) | Rate-limit preset. One of: `default`, `strict` (≈0.5× the defaults), `loose` (≈2×), `off`. |

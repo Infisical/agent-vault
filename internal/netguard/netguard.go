@@ -30,10 +30,76 @@ func AllowPrivateFromEnv() bool {
 	return b
 }
 
-// AllowlistFromEnv reads AGENT_VAULT_NETWORK_ALLOWLIST and returns a list of
-// IP networks to allow when private-range blocking is on.
+// AllowlistFromEnv reads AGENT_VAULT_NETWORK_ALLOWLIST and returns the IP
+// networks it allows on every port, when private-range blocking is on.
+// Entries that name a port (see allowEntriesFromEnv) are not among them.
 func AllowlistFromEnv() []net.IPNet {
-	return ParseCIDRList(os.Getenv("AGENT_VAULT_NETWORK_ALLOWLIST"), "AGENT_VAULT_NETWORK_ALLOWLIST")
+	var out []net.IPNet
+	for _, e := range allowEntriesFromEnv() {
+		if e.port == 0 {
+			out = append(out, e.ipNet)
+		}
+	}
+	return out
+}
+
+// allowEntry is one AGENT_VAULT_NETWORK_ALLOWLIST entry: a network, and the
+// one port it is allowed on, or 0 for every port.
+type allowEntry struct {
+	ipNet net.IPNet
+	port  uint16
+}
+
+// allowEntriesFromEnv reads AGENT_VAULT_NETWORK_ALLOWLIST. Besides CIDRs and
+// bare IPs (every port), an entry may be one address and port, such as
+// 127.0.0.1:3000 or [::1]:3000, which allows that port only: a local service
+// can be reached without opening every other one on the same address.
+func allowEntriesFromEnv() []allowEntry {
+	return parseAllowEntries(os.Getenv("AGENT_VAULT_NETWORK_ALLOWLIST"), "AGENT_VAULT_NETWORK_ALLOWLIST")
+}
+
+// parseAllowEntries parses a comma-separated allowlist (see
+// allowEntriesFromEnv). An address and port with port 0 or a zone is invalid
+// and skipped, like any other invalid entry.
+func parseAllowEntries(raw, envName string) []allowEntry {
+	var out []allowEntry
+	for _, p := range strings.Split(raw, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+
+		if addrPort, err := netip.ParseAddrPort(p); err == nil {
+			addr := addrPort.Addr()
+			if addrPort.Port() == 0 || addr.Zone() != "" {
+				slog.Warn("netguard: invalid address and port, skipping", //nolint:gosec // G706: structured slog attrs, handlers quote control chars
+					slog.String("env", envName), slog.String("value", p))
+				continue
+			}
+			addr = addr.Unmap()
+			out = append(out, allowEntry{
+				ipNet: net.IPNet{IP: addr.AsSlice(), Mask: net.CIDRMask(addr.BitLen(), addr.BitLen())},
+				port:  addrPort.Port(),
+			})
+			continue
+		}
+
+		for _, n := range ParseCIDRList(p, envName) {
+			out = append(out, allowEntry{ipNet: n})
+		}
+	}
+	return out
+}
+
+// allowedOn returns the networks entries allow on port.
+func allowedOn(entries []allowEntry, port uint16) []net.IPNet {
+	var out []net.IPNet
+	for _, e := range entries {
+		if e.port == 0 || e.port == port {
+			out = append(out, e.ipNet)
+		}
+	}
+	return out
 }
 
 // ParseCIDRList parses a comma-separated list of CIDRs or bare IPs. Bare IPv4
@@ -175,14 +241,14 @@ func isBlockedIP(ip net.IP, allowPrivate bool, allowed []net.IPNet) bool {
 // connect, so blocked addresses are skipped and DNS rebinding cannot swap in
 // an unchecked IP between validation and connection.
 func SafeDialContext(allowPrivate bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
-	var allowed []net.IPNet
+	var allowed []allowEntry
 	if !allowPrivate {
-		allowed = AllowlistFromEnv()
+		allowed = allowEntriesFromEnv()
 	}
 	return newSafeDialer(allowPrivate, allowed).DialContext
 }
 
-func newSafeDialer(allowPrivate bool, allowed []net.IPNet) *net.Dialer {
+func newSafeDialer(allowPrivate bool, allowed []allowEntry) *net.Dialer {
 	return &net.Dialer{
 		Timeout:   10 * time.Second,
 		KeepAlive: 30 * time.Second,
@@ -200,15 +266,16 @@ func newSafeDialer(allowPrivate bool, allowed []net.IPNet) *net.Dialer {
 }
 
 // checkDialAddress applies the network policy to the ip:port net.Dialer is
-// about to connect to. Anything that does not parse as an IP address is
-// rejected, so an unexpected address form cannot slip past the policy.
-func checkDialAddress(address string, allowPrivate bool, allowed []net.IPNet) error {
+// about to connect to, with the allowlist entries for that port. Anything that
+// does not parse as an IP address is rejected, so an unexpected address form
+// cannot slip past the policy.
+func checkDialAddress(address string, allowPrivate bool, allowed []allowEntry) error {
 	addrPort, err := netip.ParseAddrPort(address)
 	if err != nil {
 		return fmt.Errorf("netguard: cannot validate dial address %q: %w", address, err)
 	}
 	ip := addrPort.Addr().Unmap()
-	if isBlockedIP(ip.AsSlice(), allowPrivate, allowed) {
+	if isBlockedIP(ip.AsSlice(), allowPrivate, allowedOn(allowed, addrPort.Port())) {
 		return fmt.Errorf("netguard: connection to %s blocked by network policy", ip)
 	}
 	return nil

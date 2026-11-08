@@ -244,7 +244,7 @@ func TestParseCIDRList(t *testing.T) {
 }
 
 func TestCheckDialAddress(t *testing.T) {
-	allowlist := ParseCIDRList("10.1.2.0/24", "test")
+	allowlist := parseAllowEntries("10.1.2.0/24", "test")
 	tests := []struct {
 		name         string
 		address      string
@@ -270,7 +270,7 @@ func TestCheckDialAddress(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var allowed []net.IPNet
+			var allowed []allowEntry
 			if !tt.allowPrivate {
 				allowed = allowlist
 			}
@@ -383,7 +383,7 @@ func TestSafeDialer_SkipsBlockedAddresses(t *testing.T) {
 	_, port, _ := net.SplitHostPort(listener.Addr().String())
 	// Loopback is blocked except for the allowlisted 127.0.0.1, so ::1 (tried
 	// first on hosts with IPv6) must be refused and 127.0.0.1 used instead.
-	d := newSafeDialer(false, ParseCIDRList("127.0.0.1", "test"))
+	d := newSafeDialer(false, parseAllowEntries("127.0.0.1", "test"))
 	d.Resolver = fakeResolver(t, map[string][]netip.Addr{
 		"mixed.test.": {netip.MustParseAddr("::1"), netip.MustParseAddr("127.0.0.1")},
 	})
@@ -517,4 +517,82 @@ func fakeDNSAnswer(query []byte, records map[string][]netip.Addr) ([]byte, error
 		}
 	}
 	return b.Finish()
+}
+
+func TestParseAllowEntries_PortScoped(t *testing.T) {
+	entries := parseAllowEntries("127.0.0.1:3000, [::1]:3000, 10.1.2.0/24, 192.168.1.1", "test")
+	if len(entries) != 4 {
+		t.Fatalf("expected 4 entries, got %d", len(entries))
+	}
+
+	want := []struct {
+		ip   string
+		port uint16
+	}{{"127.0.0.1", 3000}, {"::1", 3000}, {"10.1.2.3", 0}, {"192.168.1.1", 0}}
+	for i, w := range want {
+		if !entries[i].ipNet.Contains(net.ParseIP(w.ip)) || entries[i].port != w.port {
+			t.Errorf("entry %d = %v port %d, want %s port %d", i, entries[i].ipNet, entries[i].port, w.ip, w.port)
+		}
+	}
+	if entries[0].ipNet.Contains(net.ParseIP("127.0.0.2")) {
+		t.Error("127.0.0.1:3000 must cover that one address only")
+	}
+}
+
+func TestParseAllowEntries_SkipsInvalidAddressAndPort(t *testing.T) {
+	for _, raw := range []string{"127.0.0.1:0", "[fe80::1%eth0]:3000", "127.0.0.1:99999", "localhost:3000"} {
+		if got := parseAllowEntries(raw, "test"); len(got) != 0 {
+			t.Errorf("parseAllowEntries(%q) = %v, want nothing", raw, got)
+		}
+	}
+}
+
+func TestAllowlistFromEnv_LeavesOutPortScopedEntries(t *testing.T) {
+	t.Setenv("AGENT_VAULT_NETWORK_ALLOWLIST", "127.0.0.1:3000,10.1.2.0/24")
+	ranges := AllowlistFromEnv()
+	if len(ranges) != 1 || !ranges[0].Contains(net.ParseIP("10.1.2.3")) {
+		t.Fatalf("AllowlistFromEnv() = %v, want only 10.1.2.0/24", ranges)
+	}
+}
+
+func TestCheckDialAddress_PortScoped(t *testing.T) {
+	allowed := parseAllowEntries("127.0.0.1:3000,[::1]:3000", "test")
+	tests := []struct {
+		name        string
+		address     string
+		wantBlocked bool
+	}{
+		{"the allowed port", "127.0.0.1:3000", false},
+		{"the allowed port over IPv6", "[::1]:3000", false},
+		{"IPv4-mapped form of the allowed address", "[::ffff:127.0.0.1]:3000", false},
+		{"another port on the same address", "127.0.0.1:5432", true},
+		{"the same port on another loopback address", "127.0.0.2:3000", true},
+		{"IMDS stays blocked", "169.254.169.254:3000", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkDialAddress(tt.address, false, allowed)
+			if blocked := err != nil; blocked != tt.wantBlocked {
+				t.Fatalf("checkDialAddress(%q) error = %v, want blocked = %v", tt.address, err, tt.wantBlocked)
+			}
+		})
+	}
+}
+
+func TestSafeDialContext_PortScopedAllowlist(t *testing.T) {
+	allowedListener := listenTCP(t, "tcp4", "127.0.0.1:0")
+	otherListener := listenTCP(t, "tcp4", "127.0.0.1:0")
+	t.Setenv("AGENT_VAULT_NETWORK_ALLOWLIST", allowedListener.Addr().String())
+
+	conn, err := SafeDialContext(false)(context.Background(), "tcp", allowedListener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial the allowed port: %v", err)
+	}
+	_ = conn.Close()
+
+	_, err = SafeDialContext(false)(context.Background(), "tcp", otherListener.Addr().String())
+	if err == nil || !strings.Contains(err.Error(), "blocked by network policy") {
+		t.Fatalf("dial another port: error = %v, want network policy error", err)
+	}
 }
