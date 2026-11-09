@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Infisical/agent-vault/internal/approval"
 	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/ratelimit"
 	"github.com/Infisical/agent-vault/internal/requestlog"
@@ -237,8 +238,31 @@ func (p *Proxy) forwardRequest(
 		emit(http.StatusRequestEntityTooLarge, "request_too_large")
 		return
 	}
+	// The CONNECT tunnel normally permits 60 seconds to read a request
+	// body. A protected call may wait two minutes before body streaming
+	// begins, so extend that deadline while Inject waits for approval and
+	// restore the ordinary body window immediately afterwards.
+	var readController *http.ResponseController
+	if useTLSUpstream {
+		readController = http.NewResponseController(w)
+		if err := readController.SetReadDeadline(time.Now().Add(approval.Timeout + p.httpsReadTimeout)); err != nil {
+			brokercore.WriteProxyError(w, http.StatusInternalServerError, "read_deadline", "Could not prepare request approval")
+			emit(http.StatusInternalServerError, "read_deadline")
+			return
+		}
+	}
 
-	inject, err := p.creds.Inject(r.Context(), scope.VaultID, host, port, r.URL.Path)
+	inject, err := p.creds.Inject(r.Context(), scope.VaultID, host, port, r.URL.Path, approval.Request{
+		ActorID: scope.ActorID(), Method: r.Method, Host: target,
+		Path: r.URL.EscapedPath(), BodyBytes: r.ContentLength,
+	})
+	if readController != nil {
+		if deadlineErr := readController.SetReadDeadline(time.Now().Add(p.httpsReadTimeout)); deadlineErr != nil {
+			brokercore.WriteProxyError(w, http.StatusInternalServerError, "read_deadline", "Could not restore request body deadline")
+			emit(http.StatusInternalServerError, "read_deadline")
+			return
+		}
+	}
 	if inject != nil {
 		event.MatchedService = inject.MatchedName
 		event.MatchedHost = inject.MatchedHost
@@ -250,6 +274,19 @@ func (p *Proxy) forwardRequest(
 	if err != nil {
 		errCode := "no_match"
 		status := http.StatusForbidden
+		if errors.Is(err, approval.ErrDenied) || errors.Is(err, approval.ErrTimeout) || errors.Is(err, approval.ErrQueueFull) || errors.Is(err, approval.ErrUnavailable) {
+			errCode = "approval_denied"
+			if errors.Is(err, approval.ErrTimeout) {
+				errCode = "approval_timeout"
+			}
+			if errors.Is(err, approval.ErrQueueFull) {
+				errCode = "approval_queue_full"
+				status = http.StatusTooManyRequests
+			}
+			brokercore.WriteProxyError(w, status, errCode, "Request approval was not granted")
+			emit(status, errCode)
+			return
+		}
 		if errors.Is(err, brokercore.ErrCredentialMissing) {
 			errCode = "credential_not_found"
 			status = http.StatusBadGateway
@@ -350,7 +387,7 @@ func (p *Proxy) forwardRequest(
 	// OAuth 401 retry: if the upstream rejected the token and we have an
 	// OAuth credential, force-refresh and retry once. Only safe methods
 	// (GET/HEAD) are retried — the request body is consumed and cannot be replayed.
-	if resp.StatusCode == http.StatusUnauthorized && inject != nil && !inject.Passthrough &&
+	if resp.StatusCode == http.StatusUnauthorized && inject != nil && !inject.Passthrough && !inject.RequireApproval &&
 		(r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		_ = resp.Body.Close()
 		retryInject, retryErr := p.creds.Inject(r.Context(), scope.VaultID, host, port, r.URL.Path)

@@ -74,6 +74,17 @@ func TestMergeServicesSetReplacesExisting(t *testing.T) {
 	}
 }
 
+func TestMergeServicesPreservesRequestApproval(t *testing.T) {
+	existing := []broker.Service{{Name: "production", Host: "api.example.com", RequireApproval: true,
+		Auth: broker.Auth{Type: "passthrough"}}}
+	auth := broker.Auth{Type: "passthrough"}
+	proposed := []Service{{Action: ActionSet, Name: "production", Host: "api.example.com", Auth: &auth}}
+	merged, _ := MergeServices(existing, proposed)
+	if len(merged) != 1 || !merged[0].RequireApproval {
+		t.Fatal("proposal removed human approval requirement")
+	}
+}
+
 func TestMergeServicesDelete(t *testing.T) {
 	existing := []broker.Service{
 		{Name: "api-github-com", Host: "api.github.com", Auth: broker.Auth{Type: "bearer", Token: "GH"}},

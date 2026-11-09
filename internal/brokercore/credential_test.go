@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/Infisical/agent-vault/internal/approval"
 	"github.com/Infisical/agent-vault/internal/broker"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/store"
@@ -87,6 +89,89 @@ func (f *fakeCredStore) setServices(t *testing.T, vaultID string, svcs []broker.
 		t.Fatalf("marshal: %v", err)
 	}
 	f.brokerCfg[vaultID] = &store.BrokerConfig{VaultID: vaultID, ServicesJSON: string(b)}
+}
+
+func TestInjectApprovalBeforeCredentialResolution(t *testing.T) {
+	key := make32(0x42)
+	f := newFakeCredStore()
+	service := broker.Service{Name: "production", Host: "api.example.com", RequireApproval: true,
+		Auth: broker.Auth{Type: "bearer", Token: "TOKEN"}}
+	f.setServices(t, "v1", []broker.Service{service})
+	f.setCred(t, key, "v1", "TOKEN", "test-secret")
+	p := NewStoreCredentialProvider(f, key)
+	p.Approvals = approval.NewManager()
+	type outcome struct {
+		result *InjectResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := p.Inject(context.Background(), "v1", "api.example.com", 443, "/deploy", approval.Request{Method: "POST", Host: "api.example.com", Path: "/deploy"})
+		done <- outcome{result, err}
+	}()
+	var pending approval.Request
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if items := p.Approvals.List("v1"); len(items) == 1 {
+			pending = items[0]
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if pending.ID == "" {
+		t.Fatal("approval was not requested")
+	}
+	if f.getCredentialCalls != 0 {
+		t.Fatal("credential resolved before approval")
+	}
+	if err := p.Approvals.Decide("v1", pending.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	got := <-done
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if got.result.Headers["Authorization"] != "Bearer test-secret" {
+		t.Fatal("approved request did not receive credential")
+	}
+}
+
+func TestInjectApprovalFailsClosedWhenServiceChanges(t *testing.T) {
+	key := make32(0x43)
+	f := newFakeCredStore()
+	service := broker.Service{Name: "production", Host: "api.example.com", RequireApproval: true,
+		Auth: broker.Auth{Type: "bearer", Token: "TOKEN"}}
+	f.setServices(t, "v1", []broker.Service{service})
+	p := NewStoreCredentialProvider(f, key)
+	p.Approvals = approval.NewManager()
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.Inject(context.Background(), "v1", "api.example.com", 443, "/deploy", approval.Request{Method: "POST"})
+		done <- err
+	}()
+	var id string
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if items := p.Approvals.List("v1"); len(items) == 1 {
+			id = items[0].ID
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if id == "" {
+		t.Fatal("approval was not requested")
+	}
+	service.RequireApproval = false
+	f.setServices(t, "v1", []broker.Service{service})
+	if err := p.Approvals.Decide("v1", id, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; !errors.Is(err, ErrServiceNotFound) {
+		t.Fatalf("changed service: %v", err)
+	}
+	if f.getCredentialCalls != 0 {
+		t.Fatal("changed service resolved credential")
+	}
 }
 
 func TestInject_BearerHappyPath(t *testing.T) {
