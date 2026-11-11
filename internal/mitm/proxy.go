@@ -54,6 +54,7 @@ type Proxy struct {
 	baseURL          string // externally-reachable control-plane URL for help links
 	logger           *slog.Logger
 	rateLimit        *ratelimit.Registry // shared with the HTTP server; nil = no-op
+	denials          denialLog           // throttles rate-limit denial logs per key
 	logSink          requestlog.Sink     // never nil (Nop default); shared with the HTTP server
 	maxResponseBytes int64               // 0 = unlimited
 	maxRequestBytes  int64
