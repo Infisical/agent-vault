@@ -27,6 +27,10 @@ const tickInterval = 10 * time.Second
 // (which can embed INFISICAL_URL + upstream rejection bodies) goes to logs.
 const syncFailedPublicMessage = "Infisical sync failed. See server logs for details."
 
+// syncDisabledPublicMessage is persisted when the server has no Infisical
+// client (INFISICAL_URL unset or machine-identity login failed).
+const syncDisabledPublicMessage = "Infisical is not configured on this server; credentials are not refreshing. See server logs for details."
+
 var (
 	// ErrSyncerDisabled: no Fetcher (e.g. INFISICAL_URL unset). → 503.
 	ErrSyncerDisabled = errors.New("infisical: syncer disabled (no client)")
@@ -69,6 +73,7 @@ func NewSyncer(s SyncerStore, fetcher SecretsFetcher, dek []byte, logger *slog.L
 func (s *Syncer) Run(ctx context.Context) {
 	if s.fetcher == nil {
 		s.logger.Info("infisical syncer disabled (no client)")
+		s.runDisabled(ctx)
 		return
 	}
 	s.logger.Info("infisical syncer started", slog.Duration("tick", tickInterval))
@@ -109,6 +114,64 @@ func (s *Syncer) tick(ctx context.Context) {
 			defer s.clearInFlight(cs.VaultID)
 			_ = s.refresh(ctx, cs)
 		}(cs)
+	}
+}
+
+// runDisabled is Run's loop for a server with no client. It re-checks every
+// tick, so a failed write is retried and a vault is flagged once whichever
+// replica was refreshing it stops.
+func (s *Syncer) runDisabled(ctx context.Context) {
+	ticker := time.NewTicker(tickInterval)
+	defer ticker.Stop()
+	for {
+		s.markStale(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// staleAfter is how long a row may go unrefreshed before a client-less
+// server reports it as not refreshing: two poll intervals, so a replica
+// that does have a client (shared Postgres) keeps its rows healthy.
+func staleAfter(cs store.VaultCredentialStore) time.Duration {
+	return 2 * time.Duration(max(cs.PollIntervalSeconds, MinPollIntervalSeconds)) * time.Second
+}
+
+// markStale flips overdue Infisical-backed rows to error when this server
+// has no client, so a stale "ok" from connect time (or from an earlier,
+// correctly configured run) can't claim the vault is still refreshing.
+// last_synced_at is preserved: nothing was fetched, so it must not advance.
+func (s *Syncer) markStale(ctx context.Context) {
+	stores, err := s.store.ListVaultCredentialStores(ctx)
+	if err != nil {
+		s.logger.Warn("listing credential stores failed", slog.String("err", err.Error()))
+		return
+	}
+	now := s.clock()
+	for _, cs := range stores {
+		if cs.Kind != store.CredentialStoreInfisical {
+			continue
+		}
+		if cs.LastSyncStatus == store.SyncStatusError && cs.LastSyncError == syncDisabledPublicMessage {
+			continue
+		}
+		if cs.LastSyncedAt != nil && now.Sub(*cs.LastSyncedAt) < staleAfter(cs) {
+			continue // recently refreshed, possibly by another replica
+		}
+		syncedAt := now
+		if cs.LastSyncedAt != nil {
+			syncedAt = *cs.LastSyncedAt
+		}
+		s.logger.Warn("infisical-backed vault will not refresh: no client on this server",
+			slog.String("vault_id", cs.VaultID))
+		if err := s.store.UpdateVaultCredentialStoreHealth(ctx, cs.VaultID, store.SyncStatusError, syncDisabledPublicMessage, syncedAt); err != nil && !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, context.Canceled) {
+			s.logger.Warn("updating health=error failed",
+				slog.String("vault_id", cs.VaultID),
+				slog.String("err", err.Error()))
+		}
 	}
 }
 

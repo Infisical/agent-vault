@@ -153,7 +153,7 @@ func (s *Server) handleVaultSyncNow(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, infisical.ErrSyncerDisabled):
 			jsonCodedError(w, http.StatusServiceUnavailable, "infisical_not_configured",
-				"Infisical is not configured on this server.")
+				"Infisical is not configured on this server. Set INFISICAL_URL to enable external-store vaults.")
 		case errors.Is(err, infisical.ErrNotExternal):
 			jsonError(w, http.StatusBadRequest, "Vault has no external credential store")
 		case errors.Is(err, infisical.ErrSyncInFlight):
