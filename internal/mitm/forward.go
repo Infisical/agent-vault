@@ -81,11 +81,12 @@ func isAbsoluteForwardProxyRequest(r *http.Request) bool {
 // and the scope is resolved per request rather than once
 // per tunnel.
 func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
-	// Read-only pre-gate: reject if this IP's auth-failure budget is
-	// exhausted. Only auth failures are recorded (below). Shares the
-	// TierAuth budget and key shape with CONNECT. Loopback is exempt.
+	// Read-only pre-gate: reject if this peer's or credential's
+	// auth-failure budget is exhausted. Only auth failures are recorded
+	// (below). Shares the TierAuth budgets and keys with CONNECT.
+	// Loopback is exempt.
 	if p.rateLimit != nil && !isLoopbackPeer(r) {
-		if d := p.rateLimit.Check(ratelimit.TierAuth, mitmIPKey(r)); !d.Allow {
+		if d := p.checkAuthFlood(r); !d.Allow {
 			ratelimit.WriteDenial(w, d, "Too many proxy requests")
 			return
 		}
