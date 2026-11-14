@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate, useRouteContext } from "@tanstack/react-router";
 import type { AuthContext, VaultContext } from "../router";
 import Navbar from "./Navbar";
+import ResponsiveSidebar from "./ResponsiveSidebar";
 
 // Source of truth for vault tab ids: the union and active-tab lookup derive
 // from it. An id must equal its route path segment. New tab = entry here plus
@@ -31,6 +32,7 @@ export default function VaultLayout() {
   const { auth } = useRouteContext({ from: "/_auth" }) as { auth: AuthContext };
   const vaultContext = useRouteContext({ from: "/_auth/vaults/$name" }) as VaultContext;
   const location = useLocation();
+  const [navOpen, setNavOpen] = useState(false);
   const navigate = useNavigate();
   const [isExiting, setIsExiting] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
@@ -191,12 +193,14 @@ export default function VaultLayout() {
 
   return (
     <div className="min-h-screen w-full flex flex-col bg-bg">
-      <Navbar email={auth.email} vaultName={vaultContext.vault_name} isOwner={auth.is_owner} />
+      <Navbar email={auth.email} vaultName={vaultContext.vault_name} isOwner={auth.is_owner} onMenuClick={() => setNavOpen(true)} menuOpen={navOpen} />
       <div className="flex flex-1">
         {/* Sidebar */}
-        <aside
-          ref={sidebarRef}
-          className={`w-[220px] flex-shrink-0 border-r border-border bg-surface flex flex-col ${isExiting ? "animate-sidebar-out" : "animate-sidebar-in"}`}
+        <ResponsiveSidebar
+          open={navOpen}
+          onClose={() => setNavOpen(false)}
+          asideRef={sidebarRef}
+          className={`w-[220px] flex-shrink-0 border-r border-border bg-surface flex-col ${isExiting ? "animate-sidebar-out" : "animate-sidebar-in"}`}
         >
           <div className="px-4 pt-5 pb-3">
             <a
@@ -206,13 +210,15 @@ export default function VaultLayout() {
                 if (isExiting) return;
                 setIsExiting(true);
                 const aside = sidebarRef.current;
-                if (aside) {
+                // The desktop sidebar is display:none in the mobile drawer view, so
+                // its exit animation never fires there. Navigate straight away.
+                if (aside && aside.getClientRects().length > 0) {
                   aside.addEventListener("animationend", (e) => { if (e.target === aside) navigate({ to: "/" }); }, { once: true });
                 } else {
                   navigate({ to: "/" });
                 }
               }}
-              className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text transition-colors"
+              className="flex items-center gap-1.5 py-2 md:py-0 text-sm md:text-xs text-text-muted hover:text-text transition-colors"
             >
               <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="15 18 9 12 15 6" />
@@ -272,7 +278,7 @@ export default function VaultLayout() {
               </ul>
             </div>
           </nav>
-        </aside>
+        </ResponsiveSidebar>
 
         {/* Content */}
         <main className="flex-1 min-w-0 flex justify-center">
@@ -297,7 +303,7 @@ function SidebarItem({
     <li>
       <Link
         to={tabPath}
-        className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors no-underline ${
+        className={`w-full flex items-center gap-3 px-3 py-3 md:py-2 rounded-lg text-sm transition-colors no-underline ${
           active
             ? "bg-bg/50 text-text font-semibold"
             : "text-text-muted hover:bg-bg/50 hover:text-text"

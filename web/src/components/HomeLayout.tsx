@@ -1,7 +1,8 @@
-import { type ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { Link, Outlet, useLocation, useRouteContext } from "@tanstack/react-router";
 import type { AuthContext } from "../router";
 import Navbar from "./Navbar";
+import ResponsiveSidebar from "./ResponsiveSidebar";
 
 type HomeTab = "vaults" | "users" | "agents";
 
@@ -56,22 +57,27 @@ const navItems: NavItem[] = [
 export default function HomeLayout() {
   const { auth } = useRouteContext({ from: "/_auth" }) as { auth: AuthContext };
   const location = useLocation();
+  const [navOpen, setNavOpen] = useState(false);
 
   const activeTab: HomeTab = location.pathname === "/users" ? "users" : location.pathname === "/agents" ? "agents" : "vaults";
 
   return (
     <div className="min-h-screen w-full flex flex-col bg-bg">
-      <Navbar email={auth.email} isOwner={auth.is_owner} />
+      <Navbar email={auth.email} isOwner={auth.is_owner} onMenuClick={() => setNavOpen(true)} menuOpen={navOpen} />
       <div className="flex flex-1">
         {/* Sidebar */}
-        <aside className="w-[220px] flex-shrink-0 border-r border-border bg-surface flex flex-col animate-sidebar-in">
+        <ResponsiveSidebar
+          open={navOpen}
+          onClose={() => setNavOpen(false)}
+          className="w-[220px] flex-shrink-0 border-r border-border bg-surface flex-col animate-sidebar-in"
+        >
           <nav className="flex-1 px-3 pt-5 pb-4">
             <ul className="space-y-0.5">
               {navItems.map((item) => (
                 <li key={item.id}>
                   <Link
                     to={item.id === "vaults" ? "/" : item.id === "users" ? "/users" : "/agents"}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors no-underline ${
+                    className={`w-full flex items-center gap-3 px-3 py-3 md:py-2 rounded-lg text-sm transition-colors no-underline ${
                       activeTab === item.id
                         ? "bg-bg/50 text-text font-semibold"
                         : "text-text-muted hover:bg-bg/50 hover:text-text"
@@ -84,7 +90,7 @@ export default function HomeLayout() {
               ))}
             </ul>
           </nav>
-        </aside>
+        </ResponsiveSidebar>
 
         {/* Content */}
         <main className="flex-1 min-w-0 flex justify-center">

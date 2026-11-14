@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, type FormEvent } from "react";
+import Tooltip from "../../components/Tooltip";
 import { useRouteContext } from "@tanstack/react-router";
 import { apiFetch } from "../../lib/api";
 import Button from "../../components/Button";
@@ -57,24 +58,22 @@ function toCleanedOverrides(
 
 function TierLabel({ name, label }: { name: string; label: string }) {
   const description = TIER_TOOLTIPS[name];
-  return (
-    <span className="relative group inline-block">
-      <span
-        tabIndex={0}
-        title={description}
-        className="border-b border-dotted border-text-dim cursor-help focus:outline-none focus:border-text-muted"
-      >
-        {label}
-      </span>
-      {description && (
-        <span
-          role="tooltip"
-          className="pointer-events-none absolute left-0 top-full mt-1.5 z-20 w-72 px-3 py-2 rounded-md bg-surface-raised border border-border text-xs text-text-muted leading-snug shadow-lg opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-100"
-        >
-          {description}
-        </span>
-      )}
+  const trigger = (
+    <span
+      tabIndex={0}
+      title={description}
+      className="border-b border-dotted border-text-dim cursor-help focus:outline-none focus:border-text-muted"
+    >
+      {label}
     </span>
+  );
+  if (!description) return <span className="relative inline-block">{trigger}</span>;
+  // Tooltip uses fixed positioning, so it is not clipped by the table's
+  // horizontal scroll container.
+  return (
+    <Tooltip className="inline-block" trigger={trigger}>
+      {description}
+    </Tooltip>
   );
 }
 
@@ -302,14 +301,14 @@ export default function InstanceSettingsTab() {
 
   if (loading) {
     return (
-      <div className="p-8 w-full max-w-[960px]">
+      <div className="p-4 sm:p-8 w-full max-w-[960px]">
         <p className="text-sm text-text-muted">Loading settings...</p>
       </div>
     );
   }
 
   return (
-    <div className="p-8 w-full max-w-[960px]">
+    <div className="p-4 sm:p-8 w-full max-w-[960px]">
       <div className="mb-6">
         <h2 className="text-[22px] font-semibold text-text tracking-tight mb-1">
           Instance Settings
@@ -474,7 +473,7 @@ export default function InstanceSettingsTab() {
             </button>
 
             {rlAdvanced && (
-              <div className="border border-border rounded-lg mb-4">
+              <div className="border border-border rounded-lg mb-4 overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-bg text-text-muted">
                     <tr>

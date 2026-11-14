@@ -26,7 +26,7 @@ export default function CopyButton({
   }
 
   return (
-    <button onClick={handleCopy} className={className}>
+    <button type="button" onClick={handleCopy} className={className} aria-live="polite">
       {copied ? copiedLabel : label}
     </button>
   );

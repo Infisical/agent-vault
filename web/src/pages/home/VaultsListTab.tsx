@@ -96,9 +96,9 @@ export default function VaultsListTab() {
   const otherVaults = useMemo(() => filtered.filter((v) => v.membership === "implicit"), [filtered]);
 
   return (
-    <div className="p-8 w-full max-w-[960px]">
+    <div className="p-4 sm:p-8 w-full max-w-[960px]">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between mb-6">
         <div>
           <h2 className="text-[22px] font-semibold text-text tracking-tight mb-1">
             Vaults
@@ -129,7 +129,7 @@ export default function VaultsListTab() {
           placeholder="Search vaults..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="w-full pl-12 pr-4 py-3.5 bg-surface border border-border rounded-xl text-text text-sm outline-none transition-colors focus:border-border-focus focus:shadow-[0_0_0_3px_var(--color-primary-ring)]"
+          className="w-full pl-12 pr-4 py-3.5 bg-surface border border-border rounded-xl text-text text-base sm:text-sm outline-none transition-colors focus:border-border-focus focus:shadow-[0_0_0_3px_var(--color-primary-ring)]"
         />
       </div>
 

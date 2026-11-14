@@ -1,4 +1,7 @@
 import { useEffect, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { lockBodyScroll } from "../lib/scrollLock";
+import { notifyOverlayOpen } from "../lib/overlayOpen";
 
 interface SheetProps {
   open: boolean;
@@ -34,26 +37,27 @@ export default function Sheet({
 
   useEffect(() => {
     if (!open) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = prev;
-    };
+    return lockBodyScroll();
+  }, [open]);
+
+  // Close the mobile nav (and clear inert on main) so a delayed sheet is usable.
+  useEffect(() => {
+    if (open) notifyOverlayOpen();
   }, [open]);
 
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50" onClick={onClose}>
       <div className="absolute inset-0 bg-black/40" />
       <div
-        className={`absolute right-0 top-0 h-full w-full ${widthClass} bg-surface shadow-[0_0_48px_rgba(0,0,0,0.4)] flex flex-col`}
+        className={`absolute right-0 top-0 h-full w-full ${widthClass} bg-surface shadow-[0_0_48px_rgba(0,0,0,0.4)] flex flex-col pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pr-[env(safe-area-inset-right)]`}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-label={title}
       >
-        <div className="px-6 pt-5 pb-4 border-b border-border">
+        <div className="px-4 sm:px-6 pt-5 pb-4 border-b border-border">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               {eyebrow && (
@@ -66,7 +70,7 @@ export default function Sheet({
             <button
               onClick={onClose}
               aria-label="Close"
-              className="-mr-2 -mt-1 w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-full text-text-dim hover:text-text hover:bg-bg transition-colors"
+              className="-mr-2 -mt-1 w-11 h-11 sm:w-8 sm:h-8 flex-shrink-0 flex items-center justify-center rounded-full text-text-dim hover:text-text hover:bg-bg transition-colors"
             >
               <svg
                 className="w-4 h-4"
@@ -85,14 +89,15 @@ export default function Sheet({
           {headerExtra && <div className="mt-4">{headerExtra}</div>}
         </div>
 
-        <div className="flex-1 overflow-y-auto px-6 py-5">{children}</div>
+        <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-5">{children}</div>
 
         {footer && (
-          <div className="px-6 py-4 border-t border-border flex items-center justify-end gap-3">
+          <div className="px-4 sm:px-6 py-4 border-t border-border flex flex-wrap items-center justify-end gap-3">
             {footer}
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
