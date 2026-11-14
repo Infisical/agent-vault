@@ -121,7 +121,7 @@ func runContainer(cmd *cobra.Command, args []string, scopedToken, addr, vault st
 
 	// Pull the MITM CA from the server. Container mode always routes
 	// through MITM (the only ingress).
-	pem, mitmPort, mitmEnabled, err := fetchMITMCA(addr)
+	pem, mitmPort, mitmEnabled, _, err := fetchMITMCA(addr)
 	if err != nil {
 		return fmt.Errorf("fetch MITM CA: %w", err)
 	}

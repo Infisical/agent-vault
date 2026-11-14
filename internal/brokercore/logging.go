@@ -44,6 +44,7 @@ type ProxyEvent struct {
 	Passthrough    bool     // see InjectResult.Passthrough
 	AuthScheme     string   // best-effort detected auth scheme: "bearer", "basic", "api-key", or ""
 	AuthHeader     string   // header name carrying auth (e.g. "Authorization", "X-API-KEY"), or ""
+	InvocationID   string   // hop invocation id; empty for an ordinary session
 }
 
 // Emit fills in the terminal fields (Status, Err, TotalMs measured from
@@ -76,6 +77,7 @@ func LogProxyEvent(logger *slog.Logger, e ProxyEvent) {
 		slog.Int64("total_ms", e.TotalMs),
 		slog.String("err", e.Err),
 		slog.Bool("passthrough", e.Passthrough),
+		slog.String("invocation_id", e.InvocationID),
 	)
 }
 

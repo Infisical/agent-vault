@@ -140,6 +140,10 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, http.StatusBadRequest, fmt.Sprintf("services[%d]: %s", i, deprecatedDescriptionMsg))
 			return
 		}
+		if i, ok := proposal.ExplicitFilterIndex(probe.Services); ok {
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("services[%d]: proposals cannot set or clear a filter", i))
+			return
+		}
 	}
 	var req proposalCreateRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -176,6 +180,10 @@ func (s *Server) handleProposalCreate(w http.ResponseWriter, r *http.Request) {
 	// Validate that all credential references resolve to existing or proposed credentials.
 	existingKeys := s.listCredentialKeys(ctx, vaultID)
 	if err := proposal.ValidateCredentialRefs(req.Services, req.Credentials, existingKeys); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := proposal.CheckFilterPolicy(existing, req.Services); err != nil {
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -530,6 +538,10 @@ func (s *Server) handleAdminProposalApprove(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	if err := proposal.CheckFilterPolicy(existingServices, proposedServices); err != nil {
+		jsonError(w, http.StatusConflict, err.Error())
+		return
+	}
 	merged, _ := proposal.MergeServices(existingServices, proposedServices)
 	mergedJSON, err := json.Marshal(merged)
 	if err != nil {

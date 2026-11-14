@@ -35,6 +35,11 @@ type Service struct {
 	Enabled       *bool          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Auth          Auth           `yaml:"auth" json:"auth"`
 	Substitutions []Substitution `yaml:"substitutions,omitempty" json:"substitutions,omitempty"`
+	// Filter is the per-service MITM hop. Nil means this service injects directly.
+	// FilterOp records whether a write omitted, set, or cleared the block.
+	// It is not persisted.
+	Filter   *Filter  `yaml:"filter,omitempty" json:"filter,omitempty"`
+	FilterOp FilterOp `yaml:"-" json:"-"`
 }
 
 // MatcherPattern returns the joined inline form (`slack.com/api/*`),
@@ -56,7 +61,19 @@ func (s Service) MarshalJSON() ([]byte, error) {
 	a.Host = s.MatcherPattern()
 	a.Path = ""
 	a.Port = nil
-	return json.Marshal(a)
+	b, err := json.Marshal(a)
+	if err != nil {
+		return nil, err
+	}
+	if s.Filter != nil || s.FilterOp != FilterOpClear {
+		return b, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	m["filter"] = []byte("null")
+	return json.Marshal(m)
 }
 
 // Substitution declares a placeholder string the broker rewrites with a
@@ -377,6 +394,9 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
 		if err := s.ValidateSubstitutions(); err != nil {
+			return fmt.Errorf("service %d: %w", i, err)
+		}
+		if err := s.Filter.Validate(); err != nil {
 			return fmt.Errorf("service %d: %w", i, err)
 		}
 	}

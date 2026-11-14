@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/auth"
+	"github.com/Infisical/agent-vault/internal/brokercore"
 	"github.com/Infisical/agent-vault/internal/ca"
 	"github.com/Infisical/agent-vault/internal/crypto"
 	"github.com/Infisical/agent-vault/internal/infisical"
@@ -217,20 +218,70 @@ func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKe
 		fmt.Fprintf(os.Stderr, "warning: transparent proxy disabled (CA init failed: %v); pass --mitm-port 0 to suppress\n", err)
 		return nil
 	}
+	advertised, explicit, err := advertisedMITMAddr(srv.BaseURL(), mitmPort)
+	if err != nil {
+		return err
+	}
 	srv.AttachMITM(mitm.New(
 		net.JoinHostPort(host, strconv.Itoa(mitmPort)),
 		mitm.Options{
-			CA:               caProv,
-			Sessions:         srv.SessionResolver(),
-			Credentials:      srv.CredentialProvider(),
-			BaseURL:          srv.BaseURL(),
-			Logger:           srv.Logger(),
-			RateLimit:        srv.RateLimit(),
-			LogSink:          srv.LogSink(),
-			MaxResponseBytes: maxRespBytes,
-			MaxRequestBytes:  maxReqBytes,
+			CA:                  caProv,
+			Sessions:            srv.SessionResolver(),
+			Credentials:         srv.CredentialProvider(),
+			BaseURL:             srv.BaseURL(),
+			Logger:              srv.Logger(),
+			RateLimit:           srv.RateLimit(),
+			LogSink:             srv.LogSink(),
+			MaxResponseBytes:    maxRespBytes,
+			MaxRequestBytes:     maxReqBytes,
+			Hop:                 &brokercore.StoreHopMinter{Vaults: db, DEK: masterKey},
+			FilterProxyURL:      advertised,
+			FilterProxyExplicit: explicit,
 		},
 	))
+	return nil
+}
+
+// advertisedMITMAddr is the URL written into hop callbacks. The bool
+// is true only when AGENT_VAULT_MITM_ADDR is set, which is also when
+// vault run should dial that host instead of the one it used to reach
+// the API. An explicit value is used as given after a parse check.
+// When unset, the host comes from the control-plane address and the
+// port from the MITM listener. A wildcard or missing host is
+// advertised as loopback.
+func advertisedMITMAddr(controlAddr string, mitmPort int) (string, bool, error) {
+	if raw := strings.TrimSpace(os.Getenv("AGENT_VAULT_MITM_ADDR")); raw != "" {
+		if err := validateAdvertisedMITMAddr(raw); err != nil {
+			return "", false, err
+		}
+		return raw, true, nil
+	}
+	host := ""
+	if u, err := url.Parse(controlAddr); err == nil {
+		host = u.Hostname()
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(mitmPort)), false, nil
+}
+
+// validateAdvertisedMITMAddr accepts an http base URL: host, optional
+// port, no userinfo, path, query, or fragment. The MITM listener is a
+// plain HTTP proxy, so https and a path would send the sidecar somewhere
+// it cannot continue.
+func validateAdvertisedMITMAddr(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" || u.Hostname() == "" || u.User != nil ||
+		u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" {
+		return fmt.Errorf("AGENT_VAULT_MITM_ADDR %q must be an http base URL", raw)
+	}
+	if port := u.Port(); port != "" {
+		n, nerr := strconv.Atoi(port)
+		if nerr != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("AGENT_VAULT_MITM_ADDR %q must be an http base URL", raw)
+		}
+	}
 	return nil
 }
 
