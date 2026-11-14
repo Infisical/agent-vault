@@ -8,10 +8,7 @@ description: >-
   don't have one, set a dummy value and make the call anyway — the
   proxy handles it. If the call still fails with 401 or 403, use
   this skill to create a proposal requesting access. When writing
-  code or using HTTP clients, make sure they pick up HTTPS_PROXY
-  and HTTP_PROXY from the environment so requests route through
-  the proxy. Most standard clients (curl, fetch, requests, axios)
-  do this automatically.
+  code or using HTTP clients, make sure they pick up HTTPS_PROXY and HTTP_PROXY from the environment so requests route through the proxy. Most standard clients (curl, fetch, requests) do this automatically. Axios-based clients may require an explicit proxy agent or adapter; confirm they use CONNECT for HTTPS rather than silently bypassing the proxy.
 compatibility: Requires the agent-vault binary on $PATH and AGENT_VAULT_TOKEN environment variable
 metadata:
   author: dangtony98
@@ -20,7 +17,7 @@ metadata:
 
 # Requesting API Access
 
-`HTTPS_PROXY` and `HTTP_PROXY` in your environment route all outbound HTTP traffic through an Agent Vault proxy. The proxy matches each request's host against configured services, injects the real credential, and forwards to the upstream. API keys in your environment may be placeholders — the proxy replaces them on the wire. Just make requests normally.
+`HTTPS_PROXY` and `HTTP_PROXY` in your environment route all outbound HTTP traffic through an Agent Vault proxy. The proxy matches each request's host against configured services, injects the real credential, and forwards to the upstream. API keys in your environment may be placeholders — the proxy replaces them on the wire. Just make requests normally. Axios-based clients may require explicit proxy-agent configuration; do not assume that setting these variables alone makes Axios use the broker's HTTPS CONNECT path.
 
 If an API call fails with 401 or 403, you can request access by creating a proposal. A human approves it and provides the credentials.
 
