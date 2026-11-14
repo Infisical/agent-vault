@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agent-vault.fullname" . }}
+  labels:
+    {{- include "agent-vault.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  {{- if .Values.service.clusterIP }}
+  clusterIP: {{ .Values.service.clusterIP | quote }}
+  {{- end }}
+  {{- if .Values.service.loadBalancerClass }}
+  loadBalancerClass: {{ .Values.service.loadBalancerClass | quote }}
+  {{- end }}
+  {{- if .Values.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ .Values.service.externalTrafficPolicy }}
+  {{- end }}
+  ports:
+    - port: {{ .Values.service.api.port }}
+      targetPort: api
+      protocol: TCP
+      name: api
+      {{- if .Values.service.api.nodePort }}
+      nodePort: {{ .Values.service.api.nodePort }}
+      {{- end }}
+    - port: {{ .Values.service.proxy.port }}
+      targetPort: proxy
+      protocol: TCP
+      name: proxy
+      {{- if .Values.service.proxy.nodePort }}
+      nodePort: {{ .Values.service.proxy.nodePort }}
+      {{- end }}
+  selector:
+    {{- include "agent-vault.selectorLabels" . | nindent 4 }}

@@ -1,0 +1,14 @@
+{{- if and .Values.persistence.enabled (gt (int .Values.replicaCount) 1) -}}
+{{- fail "replicaCount must be 1 while persistence.enabled=true; use PostgreSQL and disable persistence before scaling Agent Vault" -}}
+{{- end -}}
+{{- $masterInGeneratedSecret := and (hasKey .Values.secretEnv "AGENT_VAULT_MASTER_PASSWORD") (ne (toString (get .Values.secretEnv "AGENT_VAULT_MASTER_PASSWORD")) "") -}}
+{{- $masterInExistingSecret := and (ne .Values.existingSecret "") (has "AGENT_VAULT_MASTER_PASSWORD" .Values.existingSecretKeys.required) -}}
+{{- $hasMaster := ternary $masterInExistingSecret $masterInGeneratedSecret (ne .Values.existingSecret "") -}}
+{{- if not $hasMaster -}}
+{{- fail "AGENT_VAULT_MASTER_PASSWORD is required: set secretEnv.AGENT_VAULT_MASTER_PASSWORD or include it in existingSecretKeys.required" -}}
+{{- end -}}
+{{- range .Values.existingSecretKeys.required -}}
+{{- if has . $.Values.existingSecretKeys.optional -}}
+{{- fail (printf "%s cannot appear in both existingSecretKeys.required and existingSecretKeys.optional" .) -}}
+{{- end -}}
+{{- end -}}
