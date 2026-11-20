@@ -3,9 +3,14 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // Dialect abstracts the few SQL differences between SQLite and PostgreSQL.
@@ -215,6 +220,16 @@ func (PostgresDialect) InsertReturningID(ctx context.Context, execer interface{}
 }
 
 func (PostgresDialect) ForUpdateClause() string { return "FOR UPDATE" }
+
+// IsUniqueViolation reports whether err is a unique-constraint violation
+// from either backend.
+func IsUniqueViolation(err error) bool {
+	if sqliteErr, ok := errors.AsType[*sqlite.Error](err); ok {
+		return sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE
+	}
+	pgErr, ok := errors.AsType[*pgconn.PgError](err)
+	return ok && pgErr.Code == "23505" // SQLSTATE unique_violation
+}
 
 // rebindDollar replaces '?' placeholders with $1, $2, ... for PostgreSQL.
 // Only replaces '?' outside of single-quoted string literals. Handles
