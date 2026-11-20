@@ -47,7 +47,7 @@ The Client ID `9d1c250a-e61b-44d9-88ed-5944d1962f5e` is Anthropic's public OAuth
 
 ## 3. Create the services
 
-Claude Code communicates with three Anthropic hosts. All three need a service pointing to the same `ANTHROPIC` credential.
+Claude Code communicates with five Anthropic hosts. All five need a service pointing to the same `ANTHROPIC` credential.
 
 In the **Services** tab, add:
 
@@ -56,20 +56,27 @@ In the **Services** tab, add:
 | `anthropic-api` | `api.anthropic.com` | Bearer | `ANTHROPIC` |
 | `claude-platform` | `platform.claude.com` | Bearer | `ANTHROPIC` |
 | `claude-mcp` | `mcp-proxy.anthropic.com` | Bearer | `ANTHROPIC` |
+| `claude-bridge` | `bridge.claudeusercontent.com` | Bearer | `ANTHROPIC` |
+| `claude-bridge-staging` | `bridge-staging.claudeusercontent.com` | Bearer | `ANTHROPIC` |
 
 - `api.anthropic.com` handles the main API (chat, models, settings).
 - `platform.claude.com` handles OAuth validation and token refresh.
 - `mcp-proxy.anthropic.com` handles cloud MCP connectors (Slack, Gmail, Linear, etc.).
+- `bridge.claudeusercontent.com` handles Remote Control (`/remote-control` or `/rc`). Staging uses `bridge-staging.claudeusercontent.com`.
+
+Remote Control sends its OAuth access token in the `Authorization` header of the WebSocket upgrade request. The bearer service replaces the placeholder in that header during the handshake. A `websocket` substitution surface is only needed for placeholders inside client-to-server text frames.
 
 <Accordion title="Using a proposal instead">
-If you already have another agent connected to Agent Vault (e.g., using a different LLM provider or an API key), that agent can propose all three services and the OAuth credential in a single proposal:
+If you already have another agent connected to Agent Vault (e.g., using a different LLM provider or an API key), that agent can propose all five services and the OAuth credential in a single proposal:
 
 ```json
 {
   "services": [
     {"action": "set", "name": "anthropic-api", "host": "api.anthropic.com", "auth": {"type": "bearer", "token": "ANTHROPIC"}},
     {"action": "set", "name": "claude-platform", "host": "platform.claude.com", "auth": {"type": "bearer", "token": "ANTHROPIC"}},
-    {"action": "set", "name": "claude-mcp", "host": "mcp-proxy.anthropic.com", "auth": {"type": "bearer", "token": "ANTHROPIC"}}
+    {"action": "set", "name": "claude-mcp", "host": "mcp-proxy.anthropic.com", "auth": {"type": "bearer", "token": "ANTHROPIC"}},
+    {"action": "set", "name": "claude-bridge", "host": "bridge.claudeusercontent.com", "auth": {"type": "bearer", "token": "ANTHROPIC"}},
+    {"action": "set", "name": "claude-bridge-staging", "host": "bridge-staging.claudeusercontent.com", "auth": {"type": "bearer", "token": "ANTHROPIC"}}
   ],
   "credentials": [{
     "action": "set",
@@ -121,7 +128,7 @@ export AGENT_VAULT_VAULT="default"
 agent-vault run -- claude
 ```
 
-Claude Code starts with the placeholder token. The proxy intercepts every API call to `api.anthropic.com`, `platform.claude.com`, and `mcp-proxy.anthropic.com`, replaces `__PLACEHOLDER__` with the real token from Agent Vault, and forwards to the upstream.
+Claude Code starts with the placeholder token. The proxy intercepts every API call to `api.anthropic.com`, `platform.claude.com`, `mcp-proxy.anthropic.com`, `bridge.claudeusercontent.com`, and `bridge-staging.claudeusercontent.com`, replaces `__PLACEHOLDER__` with the bearer token from the `ANTHROPIC` credential, and forwards the request upstream. Keep both bridge hosts out of `NO_PROXY` so their WebSocket upgrades go through Agent Vault.
 
 ## How refresh works
 
