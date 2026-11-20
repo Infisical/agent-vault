@@ -523,7 +523,7 @@ func (s *Server) handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 
 	ns, err := s.store.CreateVault(ctx, req.Name)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint") {
+		if store.IsUniqueViolation(err) {
 			jsonError(w, http.StatusConflict, fmt.Sprintf("Vault %q already exists", req.Name))
 			return
 		}
@@ -631,7 +631,7 @@ func (s *Server) createExternalVault(w http.ResponseWriter, ctx context.Context,
 		CreatorActorType:    actor.Type,
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint") {
+		if store.IsUniqueViolation(err) {
 			jsonError(w, http.StatusConflict, fmt.Sprintf("Vault %q already exists", req.Name))
 			return
 		}

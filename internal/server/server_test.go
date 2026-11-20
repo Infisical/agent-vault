@@ -23,6 +23,7 @@ import (
 	"github.com/Infisical/agent-vault/internal/infisical"
 	"github.com/Infisical/agent-vault/internal/notify"
 	"github.com/Infisical/agent-vault/internal/store"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // tp is an alias for timePtr (defined in server.go, same package).
@@ -499,7 +500,7 @@ func (m *mockStore) DeleteUserSessions(_ context.Context, userID string) error {
 
 func (m *mockStore) CreateVault(_ context.Context, name string) (*store.Vault, error) {
 	if _, exists := m.vaults[name]; exists {
-		return nil, fmt.Errorf("UNIQUE constraint failed")
+		return nil, &pgconn.PgError{Code: "23505"}
 	}
 	ns := &store.Vault{
 		ID:        "ns-" + name,
@@ -898,7 +899,7 @@ func (m *mockStore) GetProposalByApprovalToken(_ context.Context, token string) 
 
 func (m *mockStore) CreateAgent(_ context.Context, name, createdBy, role string) (*store.Agent, error) {
 	if _, exists := m.agents[name]; exists {
-		return nil, fmt.Errorf("UNIQUE constraint failed: agents.name")
+		return nil, &pgconn.PgError{Code: "23505"}
 	}
 	ag := &store.Agent{
 		ID:        "agent-" + name,

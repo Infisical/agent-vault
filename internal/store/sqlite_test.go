@@ -112,8 +112,8 @@ func TestVaultDuplicateName(t *testing.T) {
 	if _, err := s.CreateVault(ctx, "dup"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateVault(ctx, "dup"); err == nil {
-		t.Fatal("expected error for duplicate vault name")
+	if _, err := s.CreateVault(ctx, "dup"); !IsUniqueViolation(err) {
+		t.Fatalf("expected unique violation for duplicate vault name, got %v", err)
 	}
 }
 
@@ -1822,8 +1822,8 @@ func TestDuplicateAgentName(t *testing.T) {
 		t.Fatalf("first create: %v", err)
 	}
 	_, err = s.CreateAgent(ctx, "dup", "c", "member")
-	if err == nil {
-		t.Fatal("expected error for duplicate agent name")
+	if !IsUniqueViolation(err) {
+		t.Fatalf("expected unique violation for duplicate agent name, got %v", err)
 	}
 }
 
@@ -2268,8 +2268,8 @@ func TestCreateExternalVaultRollbackOnDuplicateName(t *testing.T) {
 		t.Fatalf("first CreateExternalVault: %v", err)
 	}
 	// Second attempt with same name must fail and leave no orphan rows.
-	if _, err := s.CreateExternalVault(ctx, params); err == nil {
-		t.Fatalf("expected duplicate-name failure")
+	if _, err := s.CreateExternalVault(ctx, params); !IsUniqueViolation(err) {
+		t.Fatalf("expected unique violation for duplicate name, got %v", err)
 	}
 
 	// Exactly one vault with this name; exactly one credential row across all

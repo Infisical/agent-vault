@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/Infisical/agent-vault/internal/broker"
@@ -114,7 +113,7 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	agent, sess, err := s.store.CreateAgentWithGrantsAndToken(ctx, req.Name, actor.ID, agentRole, grantSpecs, nil)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint") {
+		if store.IsUniqueViolation(err) {
 			jsonError(w, http.StatusConflict, fmt.Sprintf("An agent named %q already exists", req.Name))
 			return
 		}
