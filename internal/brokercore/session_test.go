@@ -3,6 +3,7 @@ package brokercore
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -231,5 +232,27 @@ func TestResolveForProxy_UserSessionNoVaultNoAgent(t *testing.T) {
 	_, err := r.ResolveForProxy(context.Background(), "tok", "")
 	if !errors.Is(err, ErrNoVaultContext) {
 		t.Fatalf("expected ErrNoVaultContext, got %v", err)
+	}
+}
+
+func TestVaultExists(t *testing.T) {
+	// A real SQLite store: a missing vault is a sql.ErrNoRows error, not
+	// a nil vault, and both must read as "does not exist".
+	s, err := store.Open(filepath.Join(t.TempDir(), "av.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx := context.Background()
+	if _, err := s.CreateVault(ctx, "tenant-a"); err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+	r := NewStoreSessionResolver(s)
+
+	if !r.VaultExists(ctx, "tenant-a") {
+		t.Fatal("VaultExists(tenant-a) = false, want true")
+	}
+	if r.VaultExists(ctx, "no-such-vault") {
+		t.Fatal("VaultExists(no-such-vault) = true, want false")
 	}
 }

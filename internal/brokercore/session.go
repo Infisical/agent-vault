@@ -41,8 +41,12 @@ func (s *ProxyScope) ActorID() string {
 // SessionResolver collapses bearer-token validation and vault selection
 // into one call. The MITM ingress passes a vault hint parsed from
 // Proxy-Authorization. An empty hint means "infer from session".
+//
+// VaultExists reports whether a vault with this name exists. The MITM
+// ingress uses it before auth to key the auth-failure gate per vault.
 type SessionResolver interface {
 	ResolveForProxy(ctx context.Context, token, vaultHint string) (*ProxyScope, error)
+	VaultExists(ctx context.Context, name string) bool
 }
 
 // SessionStore is the minimal store surface used by StoreSessionResolver.
@@ -147,4 +151,11 @@ func (r *StoreSessionResolver) ResolveForProxy(ctx context.Context, token, vault
 	default:
 		return nil, ErrAgentVaultAmbiguous
 	}
+}
+
+// VaultExists reports whether a vault named name exists. A store error
+// counts as "does not exist".
+func (r *StoreSessionResolver) VaultExists(ctx context.Context, name string) bool {
+	v, err := r.Store.GetVault(ctx, name)
+	return err == nil && v != nil
 }

@@ -30,10 +30,15 @@ import (
 // whatever policy they need without adding fields to the struct.
 type fakeSessionResolver struct {
 	resolve func(token, hint string) (*brokercore.ProxyScope, error)
+	vaults  map[string]bool // vault names that VaultExists reports
 }
 
 func (f *fakeSessionResolver) ResolveForProxy(_ context.Context, token, hint string) (*brokercore.ProxyScope, error) {
 	return f.resolve(token, hint)
+}
+
+func (f *fakeSessionResolver) VaultExists(_ context.Context, name string) bool {
+	return f.vaults[name]
 }
 
 // validTokenResolver returns a resolver that succeeds with scope when
@@ -1620,6 +1625,80 @@ func TestMITMConnectAuthRateLimitCountsMissingAuth(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("CONNECT 4 got %d, want 429", resp.StatusCode)
+	}
+}
+
+// connectStatus sends one CONNECT with Basic proxy auth token:vault and
+// returns the status code.
+func connectStatus(t *testing.T, proxyURL *url.URL, roots *x509.CertPool, token, vault string) int {
+	t.Helper()
+	auth := base64.StdEncoding.EncodeToString([]byte(token + ":" + vault))
+	resp := rawConnect(t, proxyURL, roots,
+		fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth))
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// Many tenants can reach the proxy from one peer IP (a load balancer or a
+// NAT gateway). Auth failures that name one vault must not lock out a
+// client that names another vault from the same IP.
+func TestMITMConnectAuthRateLimitKeysByVault(t *testing.T) {
+	sr := validTokenResolver("tenant-b-token",
+		&brokercore.ProxyScope{VaultID: "v2", VaultName: "tenant-b", VaultRole: "proxy"})
+	sr.vaults = map[string]bool{"tenant-a": true, "tenant-b": true}
+	proxyURL, clientRoots, p := setupProxy(t, sr, &fakeCredProvider{})
+
+	cfg := ratelimit.DefaultsFor(ratelimit.ProfileDefault)
+	cfg.Tiers[ratelimit.TierAuth].Max = 3
+	p.rateLimit = ratelimit.New(cfg)
+	overrideRemoteAddr(p, "10.0.0.5:12345")
+
+	for i := 0; i < 3; i++ {
+		if got := connectStatus(t, proxyURL, clientRoots, "bad-token", "tenant-a"); got != http.StatusProxyAuthRequired {
+			t.Fatalf("tenant-a CONNECT %d got %d, want 407", i+1, got)
+		}
+	}
+	if got := connectStatus(t, proxyURL, clientRoots, "bad-token", "tenant-a"); got != http.StatusTooManyRequests {
+		t.Fatalf("tenant-a CONNECT 4 got %d, want 429 after budget exhausted", got)
+	}
+
+	// Same peer IP, other vault: its own budget is untouched.
+	if got := connectStatus(t, proxyURL, clientRoots, "tenant-b-token", "tenant-b"); got != http.StatusOK {
+		t.Fatalf("tenant-b CONNECT got %d, want 200", got)
+	}
+	if got := connectStatus(t, proxyURL, clientRoots, "bad-token", "tenant-b"); got != http.StatusProxyAuthRequired {
+		t.Fatalf("tenant-b bad CONNECT got %d, want 407", got)
+	}
+}
+
+// A vault name that does not exist shares the peer-IP budget, so a client
+// cannot escape the gate (or grow the limiter map) by rotating vault names.
+func TestMITMConnectAuthRateLimitUnknownVaultsSharePeerBudget(t *testing.T) {
+	sr := validTokenResolver("tenant-b-token",
+		&brokercore.ProxyScope{VaultID: "v2", VaultName: "tenant-b", VaultRole: "proxy"})
+	sr.vaults = map[string]bool{"tenant-b": true}
+	proxyURL, clientRoots, p := setupProxy(t, sr, &fakeCredProvider{})
+
+	cfg := ratelimit.DefaultsFor(ratelimit.ProfileDefault)
+	cfg.Tiers[ratelimit.TierAuth].Max = 3
+	p.rateLimit = ratelimit.New(cfg)
+	overrideRemoteAddr(p, "10.0.0.5:12345")
+
+	for i := 0; i < 3; i++ {
+		if got := connectStatus(t, proxyURL, clientRoots, "bad-token", fmt.Sprintf("no-such-vault-%d", i)); got != http.StatusProxyAuthRequired {
+			t.Fatalf("CONNECT %d got %d, want 407", i+1, got)
+		}
+	}
+	if got := connectStatus(t, proxyURL, clientRoots, "bad-token", "no-such-vault-new"); got != http.StatusTooManyRequests {
+		t.Fatalf("unknown vault CONNECT got %d, want 429", got)
+	}
+	if got := connectStatus(t, proxyURL, clientRoots, "bad-token", ""); got != http.StatusTooManyRequests {
+		t.Fatalf("no-vault CONNECT got %d, want 429", got)
+	}
+
+	// A client that names an existing vault keeps its own budget.
+	if got := connectStatus(t, proxyURL, clientRoots, "tenant-b-token", "tenant-b"); got != http.StatusOK {
+		t.Fatalf("tenant-b CONNECT got %d, want 200", got)
 	}
 }
 
