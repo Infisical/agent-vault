@@ -13,18 +13,37 @@ import (
 	"github.com/Infisical/agent-vault/internal/ratelimit"
 )
 
-// mitmIPKey is the rate-limit key for the per-IP flood gate shared by
-// the CONNECT and absolute-form forward-proxy paths. X-Forwarded-For
-// doesn't exist at this layer (the HTTP request is tunnelled or sent
-// over the proxy connection); only the direct peer IP is
-// meaningful. CONNECT and forward share one budget — a peer is one peer
-// regardless of which ingress shape they use.
-func mitmIPKey(r *http.Request) string {
+// authGateKey is the rate-limit key for the pre-auth failure gate shared
+// by the CONNECT and absolute-form forward-proxy paths. CONNECT and
+// forward share one budget — a peer is one peer regardless of which
+// ingress shape they use. X-Forwarded-For doesn't exist at this layer
+// (the HTTP request is tunnelled or sent over the proxy connection);
+// only the direct peer IP is meaningful.
+//
+// Many tenants can share one peer IP (clients behind a load balancer,
+// a NAT gateway, or a container network). So when Proxy-Authorization
+// names a vault that exists, the key also carries that vault name:
+// auth failures against one vault do not lock out clients of another
+// vault behind the same IP. A missing or unknown vault name maps to the
+// IP-only key, so a client cannot escape the gate by rotating vault
+// names, and the limiter holds at most (vaults + 1) keys per peer IP.
+//
+// It returns "" when the gate does not apply: rate limiting is off, or
+// the peer is loopback (see isLoopbackPeer).
+func (p *Proxy) authGateKey(r *http.Request) string {
+	if p.rateLimit == nil || isLoopbackPeer(r) {
+		return ""
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil || host == "" {
 		host = r.RemoteAddr
 	}
-	return "mitm:" + host
+	key := "mitm:" + host
+	if _, vault, err := brokercore.ParseProxyAuth(r); err == nil && vault != "" &&
+		p.sessions.VaultExists(r.Context(), vault) {
+		key += "|vault:" + vault
+	}
+	return key
 }
 
 // isLoopbackPeer reports whether the HTTP request came from a loopback
@@ -48,12 +67,13 @@ func isLoopbackPeer(r *http.Request) bool {
 // CONNECT request line (r.Host) and captured in a closure so subsequent
 // Host-header rewrites by the client cannot redirect the tunnel.
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
-	// Read-only pre-gate: if this IP has exhausted its auth-failure
-	// budget, reject immediately. Only auth failures are recorded
-	// (below) so legitimate agents don't burn the budget. Loopback
-	// is exempt — see isLoopbackPeer.
-	if p.rateLimit != nil && !isLoopbackPeer(r) {
-		if d := p.rateLimit.Check(ratelimit.TierAuth, mitmIPKey(r)); !d.Allow {
+	// Read-only pre-gate: if this (IP, vault) key has exhausted its
+	// auth-failure budget, reject immediately. Only auth failures are
+	// recorded (below) so legitimate agents don't burn the budget.
+	// Loopback is exempt — see isLoopbackPeer.
+	gateKey := p.authGateKey(r)
+	if gateKey != "" {
+		if d := p.rateLimit.Check(ratelimit.TierAuth, gateKey); !d.Allow {
 			ratelimit.WriteDenial(w, d, "Too many CONNECT attempts")
 			return
 		}
@@ -76,13 +96,13 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// connection is hijacked — once hijacked, no HTTP status can be sent.
 	token, hint, err := brokercore.ParseProxyAuth(r)
 	if err != nil {
-		p.recordAuthFailure(r)
+		p.recordAuthFailure(gateKey)
 		writeProxyAuthChallenge(w, "Proxy-Authorization required")
 		return
 	}
 	scope, err := p.sessions.ResolveForProxy(r.Context(), token, hint)
 	if err != nil {
-		p.recordAuthFailure(r)
+		p.recordAuthFailure(gateKey)
 		writeAuthError(w, err)
 		return
 	}
@@ -155,14 +175,15 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	_ = srv.Serve(listener)
 }
 
-// recordAuthFailure records one auth-failure event against the per-IP
-// TierAuth budget so the read-only pre-gate in handleConnect /
-// handleForward will reject subsequent requests once the budget is
-// exhausted. Only called on auth failure — successful requests skip
-// TierAuth entirely (TierProxy covers them). Loopback peers are exempt.
-func (p *Proxy) recordAuthFailure(r *http.Request) {
-	if p.rateLimit != nil && !isLoopbackPeer(r) {
-		p.rateLimit.Allow(ratelimit.TierAuth, mitmIPKey(r))
+// recordAuthFailure records one auth-failure event against the TierAuth
+// budget of gateKey (from authGateKey) so the read-only pre-gate in
+// handleConnect / handleForward will reject subsequent requests once
+// the budget is exhausted. Only called on auth failure — successful
+// requests skip TierAuth entirely (TierProxy covers them). An empty
+// gateKey (loopback peer, or no rate limiter) records nothing.
+func (p *Proxy) recordAuthFailure(gateKey string) {
+	if gateKey != "" {
+		p.rateLimit.Allow(ratelimit.TierAuth, gateKey)
 	}
 }
 

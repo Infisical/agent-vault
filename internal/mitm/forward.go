@@ -81,11 +81,13 @@ func isAbsoluteForwardProxyRequest(r *http.Request) bool {
 // and the scope is resolved per request rather than once
 // per tunnel.
 func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
-	// Read-only pre-gate: reject if this IP's auth-failure budget is
-	// exhausted. Only auth failures are recorded (below). Shares the
-	// TierAuth budget and key shape with CONNECT. Loopback is exempt.
-	if p.rateLimit != nil && !isLoopbackPeer(r) {
-		if d := p.rateLimit.Check(ratelimit.TierAuth, mitmIPKey(r)); !d.Allow {
+	// Read-only pre-gate: reject if this (IP, vault) key's auth-failure
+	// budget is exhausted. Only auth failures are recorded (below).
+	// Shares the TierAuth budget and key shape with CONNECT. Loopback
+	// is exempt.
+	gateKey := p.authGateKey(r)
+	if gateKey != "" {
+		if d := p.rateLimit.Check(ratelimit.TierAuth, gateKey); !d.Allow {
 			ratelimit.WriteDenial(w, d, "Too many proxy requests")
 			return
 		}
@@ -130,13 +132,13 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 
 	token, hint, err := brokercore.ParseProxyAuth(r)
 	if err != nil {
-		p.recordAuthFailure(r)
+		p.recordAuthFailure(gateKey)
 		writeProxyAuthChallenge(w, "Proxy-Authorization required")
 		return
 	}
 	scope, err := p.sessions.ResolveForProxy(r.Context(), token, hint)
 	if err != nil {
-		p.recordAuthFailure(r)
+		p.recordAuthFailure(gateKey)
 		writeAuthError(w, err)
 		return
 	}

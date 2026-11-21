@@ -752,6 +752,45 @@ func TestMITMForwardAuthRateLimitCountsFailures(t *testing.T) {
 	}
 }
 
+// The forward-proxy path shares the CONNECT gate key: auth failures that
+// name one vault do not lock out another vault behind the same peer IP.
+func TestMITMForwardAuthRateLimitKeysByVault(t *testing.T) {
+	sr := validTokenResolver("good-token", nil)
+	sr.vaults = map[string]bool{"tenant-a": true, "tenant-b": true}
+	proxyURL, _, p := setupProxy(t, sr, &fakeCredProvider{})
+
+	cfg := ratelimit.DefaultsFor(ratelimit.ProfileDefault)
+	cfg.Tiers[ratelimit.TierAuth].Max = 3
+	p.rateLimit = ratelimit.New(cfg)
+	overrideRemoteAddr(p, "10.0.0.5:12345")
+
+	forward := func(vault string) int {
+		conn := dialProxy(t, proxyURL)
+		defer conn.Close()
+		auth := base64.StdEncoding.EncodeToString([]byte("bad-token:" + vault))
+		resp := writeRawRequestLine(t, conn,
+			"GET http://example.com/x HTTP/1.1",
+			map[string]string{
+				"Host":                "example.com",
+				"Proxy-Authorization": "Basic " + auth,
+			})
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	for i := 0; i < 3; i++ {
+		if got := forward("tenant-a"); got != http.StatusProxyAuthRequired {
+			t.Fatalf("tenant-a forward %d got %d, want 407", i+1, got)
+		}
+	}
+	if got := forward("tenant-a"); got != http.StatusTooManyRequests {
+		t.Fatalf("tenant-a forward 4 got %d, want 429", got)
+	}
+	if got := forward("tenant-b"); got != http.StatusProxyAuthRequired {
+		t.Fatalf("tenant-b forward got %d, want 407 (own budget)", got)
+	}
+}
+
 func TestDetectAuthFromHeaders(t *testing.T) {
 	tests := []struct {
 		name       string
